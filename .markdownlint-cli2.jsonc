@@ -1,0 +1,15 @@
+{
+  "globs": ["*.md", ".agents/**/*.md", "docs/**/*.md", "nix/**/*.md"],
+
+  // documentation.md: internal references must use [[file.md]] wiki-links.
+  "customRules": ["./scripts/markdownlint-wiki-links.cjs"],
+
+  "config": {
+    // Disable rules that Prettier already owns.
+    "extends": "markdownlint/style/prettier",
+
+    // documentation.md: fenced code blocks must declare a language.
+    "MD040": { "language_only": true }, // fenced-code-language
+    "MD046": { "style": "fenced" }, // code-block-style
+  },
+}

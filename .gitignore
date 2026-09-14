@@ -1,0 +1,7 @@
+.auto/
+.direnv/
+.envrc
+.scratch/
+node_modules/
+result
+result-*
