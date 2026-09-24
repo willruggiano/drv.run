@@ -37,6 +37,7 @@ in {
     with pkgs; [
       pi-ask
       pi-autoresearch
+      pi-notify
       pi-parallel-web
       pi-path-rules
       pi-queued-compact
@@ -70,6 +71,7 @@ in {
   # extensions:
   pi-ask = pkgs.callPackage ./pi/extensions/pi-ask {};
   pi-autoresearch = pkgs.callPackage ./pi/extensions/pi-autoresearch {};
+  pi-notify = pkgs.callPackage ./pi/extensions/pi-notify {};
   pi-parallel-web = pkgs.callPackage ./pi/extensions/pi-parallel {};
   pi-review = pkgs.callPackage ./pi/extensions/pi-review {};
   pi-path-rules = pkgs.runCommandLocal "path-rules" {} ''
