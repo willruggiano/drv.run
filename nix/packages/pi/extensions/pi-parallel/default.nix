@@ -9,12 +9,12 @@
 }:
 stdenv.mkDerivation (finalAttrs: {
   pname = "pi-parallel";
-  version = "1.2.0";
+  version = "1.3.0";
   src = fetchFromGitHub {
     owner = "parallel-web";
     repo = "parallel-npm-packages";
     rev = "pi-extension-v${finalAttrs.version}";
-    hash = "sha256-D1ZmAsbzT6UA3sja15eXekHgN5/x24ZSM6WiUbVOLOM=";
+    hash = "sha256-0x8AdxUmsgg6Ifv8qQBK2L+R40gGT1bDvf+X08pv2yw=";
   };
 
   nativeBuildInputs = [
@@ -36,7 +36,7 @@ stdenv.mkDerivation (finalAttrs: {
       ;
     pnpm = pnpm_11;
     fetcherVersion = 4;
-    hash = "sha256-gU5Jj+wFLgIUkE2eV/h6A/4VfeVqGzj9mMvL6Nuz6Bg=";
+    hash = "sha256-ObIqigFwtyiRQD1mK8yzA02umZxgrrg+6EBwrcsV1as=";
   };
 
   buildPhase = ''
