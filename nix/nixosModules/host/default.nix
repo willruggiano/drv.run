@@ -61,6 +61,9 @@
       }
     ];
   };
+  createVolumes = (import "${microvm}/lib/volumes.nix" {inherit pkgs;}).createVolumesScript (
+    map (volume: volume // {autoCreate = true;}) guest.config.microvm.volumes
+  );
   worker = pkgs.writeShellApplication {
     name = "worker";
     runtimeInputs = [
@@ -69,7 +72,10 @@
       pkgs.openssh
     ];
     text =
-      lib.replaceStrings ["@nc@"] [(lib.getExe' pkgs.netcat-openbsd "nc")] (builtins.readFile ./worker.sh);
+      lib.replaceStrings
+      ["@nc@" "@runner@" "@create-volumes@"]
+      [(lib.getExe' pkgs.netcat-openbsd "nc") (toString guest.config.microvm.declaredRunner) createVolumes]
+      (builtins.readFile ./worker.sh);
   };
   provision = pkgs.writeShellApplication {
     name = "provision";
@@ -82,14 +88,6 @@
       builtins.readFile ./provision.sh
     );
   };
-  cleanup = pkgs.writeShellApplication {
-    name = "cleanup";
-    runtimeInputs = [pkgs.coreutils];
-    text = ''
-      rm -f "$RUNTIME_DIRECTORY/client.conf"
-      rm -rf "$CACHE_DIRECTORY"
-    '';
-  };
   launcher = pkgs.writeShellApplication {
     name = "drv.run";
     runtimeInputs = with pkgs; [coreutils openssh systemd];
@@ -100,14 +98,22 @@ in {
   assertions = [
     {
       assertion = let
-        directories = lib.toList config.systemd.user.services."drv.run@".serviceConfig.CacheDirectory;
+        directories = lib.toList config.systemd.user.services."drv.run@".serviceConfig.StateDirectory;
       in
         builtins.length directories
         == 1
-        && builtins.isString (builtins.head directories)
-        && lib.hasInfix "%i" (builtins.head directories)
-        && builtins.match ".*[[:space:]:].*" (builtins.head directories) == null;
-      message = "drv.run requires one CacheDirectory containing %i, without whitespace or colons.";
+        && builtins.head directories == "drv.run/%i";
+      message = "drv.run requires StateDirectory = drv.run/%i for durable Instance inventory.";
+    }
+    {
+      assertion = let
+        volumes = guest.config.microvm.volumes;
+      in
+        builtins.length volumes
+        == 1
+        && (builtins.head volumes).image == "state.img"
+        && !(builtins.head volumes).autoCreate;
+      message = "drv.run requires one state.img volume with automatic creation disabled.";
     }
     {
       assertion = pkgs.stdenv.hostPlatform.system == "x86_64-linux";
@@ -168,12 +174,13 @@ in {
   systemd.user.services."drv.run@" = {
     description = "drv.run instance %i";
     serviceConfig = {
-      CacheDirectory = lib.mkDefault "drv.run/%i";
-      CacheDirectoryMode = "0700";
-      ExecStart = lib.getExe guest.config.microvm.declaredRunner;
+      StateDirectory = "drv.run/%i";
+      StateDirectoryMode = "0700";
+      ExecStart = "%S/drv.run/%i/runner/bin/microvm-run";
       ExecStartPost = lib.getExe provision;
       ExecStartPre = lib.getExe worker;
-      ExecStopPost = lib.getExe cleanup;
+      ExecStop = "%S/drv.run/%i/runner/bin/microvm-shutdown";
+      ExecStopPost = "${pkgs.coreutils}/bin/rm -f %t/drv.run.%i/client.conf";
       KillMode = "control-group";
       Restart = "no";
       RuntimeDirectory = "drv.run.%i";

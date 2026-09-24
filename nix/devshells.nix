@@ -13,6 +13,7 @@ pkgs: let
     gnused
     gnutar
     gzip
+    hunk
     jq
     jujutsu
     less

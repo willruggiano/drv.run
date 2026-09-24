@@ -4,9 +4,9 @@ set -euo pipefail
 name=${RUNTIME_DIRECTORY##*/}
 export NIX_SSHOPTS='-F @service-ssh@'
 until nix store info --store "ssh-ng://$name"; do
-	# ExecStartPost can outlive the main process; let failure trigger cleanup.
-	kill -0 "${MAINPID:?systemd main process is unavailable}"
-	sleep 1
+  # ExecStartPost can outlive the main process; let failure trigger cleanup.
+  kill -0 "${MAINPID:?systemd main process is unavailable}"
+  sleep 1
 done
 printf 'Copying the prepared closure into the guest...\n'
 IFS= read -r environment <"$RUNTIME_DIRECTORY/environment-path"

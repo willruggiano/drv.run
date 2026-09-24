@@ -10,6 +10,39 @@
 - [ ] Custom `wait` command/pi extension for monitoring background processes?
 - [ ] Expose operator services _in the host_ eg. agentsview
 - [ ] Refactor the queued compact extension to support arbitrary commands
+- [ ] pi-notify should not notify on "Operation aborted", if possible
+- [ ] Decouple `pi` bind mounts from nixosModule in
+      nix/nixosModules/guest/default.nix
+- [ ] Keep an eye on the early unmount warnings:
+
+  ```text
+  vm-test-run-host-basic> host # [ 58.260810] microvm-run[1272]: [ OK ] Stopped target Local File Systems.
+  vm-test-run-host-basic> host # [ 58.264038] microvm-run[1272]: Unmounting /nix/.ro-store...
+  vm-test-run-host-basic> host # [ 58.264680] microvm-run[1272]: Unmounting /nix/store...
+  vm-test-run-host-basic> host # [ 58.267684] microvm-run[1272]: Unmounting /persist/nix/.ro-store...
+  vm-test-run-host-basic> host # [ 58.273667] microvm-run[1272]: Unmounting /persist/nix/store...
+  vm-test-run-host-basic> host # [ 58.275793] microvm-run[1272]: Unmounting /root/.local/state/nix...
+  vm-test-run-host-basic> host # [ 58.279034] microvm-run[1272]: Unmounting /run/keys...
+  vm-test-run-host-basic> host # [ 58.282397] microvm-run[1272]: Unmounting /run/wrappers...
+  vm-test-run-host-basic> host # [ 58.286507] microvm-run[1272]: Unmounting /var/lib/nixos...
+  vm-test-run-host-basic> host # [ 58.288041] microvm-run[1272]: Unmounting /workspace...
+  vm-test-run-host-basic> host # [ 58.291895] microvm-run[1272]: [ OK ] Unmounted /nix/.ro-store.
+  vm-test-run-host-basic> host # [ 58.293965] microvm-run[1272]: [FAILED] Failed unmounting /nix/store.         <--- HERE!
+  vm-test-run-host-basic> host # [ 58.295633] microvm-run[1272]: [ OK ] Unmounted /persist/nix/.ro-store.
+  vm-test-run-host-basic> host # [ 58.299338] microvm-run[1272]: [ OK ] Unmounted /root/.local/state/nix.
+  vm-test-run-host-basic> host # [ 58.299634] microvm-run[1272]: [ OK ] Unmounted /run/keys.
+  vm-test-run-host-basic> host # [ 58.302716] microvm-run[1272]: [ OK ] Unmounted /run/wrappers.
+  vm-test-run-host-basic> host # [ 58.304606] microvm-run[1272]: [ OK ] Unmounted /var/lib/nixos.
+  vm-test-run-host-basic> host # [ 58.305237] microvm-run[1272]: [ OK ] Unmounted /workspace.
+  vm-test-run-host-basic> host # [ 58.308596] microvm-run[1272]: [ OK ] Unmounted /persist/nix/store.
+  vm-test-run-host-basic> host # [ 58.311299] microvm-run[1272]: [ OK ] Stopped target Swaps.
+  vm-test-run-host-basic> host # [ 58.312173] microvm-run[1272]: [ OK ] Reached target Unmount All Filesystems.
+  vm-test-run-host-basic> host # [ 58.318543] microvm-run[1272]: Unmounting /nix...
+  vm-test-run-host-basic> host # [ 58.321690] microvm-run[1272]: [ OK ] Stopped Load Kernel Modules.
+  vm-test-run-host-basic> host # [ 58.326892] microvm-run[1272]: [FAILED] Failed unmounting /nix.               <--- HERE!
+  vm-test-run-host-basic> host # [ 58.329048] microvm-run[1272]: Unmounting /persist...
+  vm-test-run-host-basic> host # [ 58.334465] microvm-run[1272]: [ OK ] Unmounted /persist.
+  ```
 
 ## Stuff to look into
 

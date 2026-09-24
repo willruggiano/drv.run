@@ -4,23 +4,71 @@
 {
   nixpkgs,
   microvm,
+  impermanence,
   ...
 }: {
+  config,
   lib,
   pkgs,
   ...
 }: {
   imports = [
     microvm.nixosModules.microvm
+    impermanence.nixosModules.impermanence
   ];
 
+  assertions = [
+    {
+      assertion = config.boot.initrd.systemd.enable;
+      message = "drv.run persistence requires systemd initrd mount ordering.";
+    }
+    {
+      assertion = config.microvm.shares == [];
+      message = "drv.run Guests must not share Host directories.";
+    }
+  ];
   boot = {
-    initrd.kernelModules = ["qemu_fw_cfg"];
+    initrd = {
+      systemd.enable = true;
+      kernelModules = ["qemu_fw_cfg"];
+    };
     tmp.useTmpfs = false;
   };
-  fileSystems."/" = {
-    neededForBoot = true;
-    options = ["defaults"];
+  fileSystems = {
+    "/" = {
+      device = "rootfs";
+      fsType = "tmpfs";
+      neededForBoot = true;
+      options = ["size=50%" "mode=0755"];
+    };
+    "/persist".neededForBoot = true;
+  };
+  environment.persistence."/persist" = {
+    directories = [
+      # /nix is mounted in the initrd, before its nested store mounts.
+      "/nix"
+      "/var/lib/nixos"
+      {
+        directory = "/workspace";
+        user = "root";
+        group = "root";
+        mode = "0700";
+      }
+    ];
+    users.root = {
+      directories = [
+        {
+          directory = ".local/state/nix";
+          mode = "0700";
+        }
+      ];
+      files = [
+        {
+          file = ".pi/agent/auth.json";
+          parentDirectory.mode = "0700";
+        }
+      ];
+    };
   };
   microvm = {
     hypervisor = "qemu";
@@ -52,16 +100,17 @@
       }
     );
     mem = 3 * 1024;
-    socket = null;
+    socket = "control.sock";
     storeOnDisk = true;
     vcpu = 2;
     volumes = [
       {
-        image = "root.img";
-        label = "guest-root";
-        mountPoint = "/";
+        image = "state.img";
+        label = null;
+        mountPoint = "/persist";
         fsType = "ext4";
         size = 16 * 1024;
+        autoCreate = false;
       }
     ];
     writableStoreOverlay = lib.mkDefault "/nix/.rw-store";
@@ -127,6 +176,5 @@
       "host-key"
       "environment-path"
     ];
-    tmpfiles.rules = ["d /workspace 0700 root root"];
   };
 }

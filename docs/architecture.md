@@ -1,60 +1,62 @@
+<!-- This document is **intentionally** diagram only right now. DO NOT ADD PROSE. -->
+
 # Architecture
 
-```text
-ssh drv.run             -> user's drv.run@ instances -> ssh targets
-
-ssh drv.run <reference> -> /run/user/UID/drv.run.ID/reference
-                           systemctl --user start drv.run@ID.service
-                                |
-                                +-- ExecStartPre:  capture environment,
-                                |                    generate boot credentials
-                                +-- ExecStart:     foreground vm runner
-                                +-- ExecStartPost: authenticated readiness,
-                                |                    copy, root, verify, publish
-                                `-- active
-                           exec ssh drv.run.ID
-
-sudo -u drvrun -H ssh drv.run.ID -> reconnect
-```
-
-## Preparation and activation
+## Connection and activation
 
 ```text
-HOST                                         GUEST
-nix print-dev-env --json --profile
-  +-- evaluate original reference
-  +-- native devShell / package fallback
-  +-- capture environment without activation
-  `-- registered native profile
-          |
-          +-- environment-path -- fw_cfg --> prepared-path validation
-          `-- nix copy --------------------> registered guest store
-                                               |
-                                         /run/environment root
-                                               |
-empty ssh command ----------------------> cd /workspace
-                                         nix develop -- /run/environment
-                                           +-- native activation
-                                           +-- shellHook
-                                           `-- interactive Bash
+Client: ssh drv.run <reference>
+  |
+  v
+Host: launcher -> systemctl --user start drv.run@ID.service
+  |                +-- ExecStartPre:  initialize once; prepare boot credentials
+  |                +-- ExecStart:     pinned QEMU runner
+  |                `-- ExecStartPost: wait for SSH; copy and root Flake closure
+  |                                  publish client.conf
+  |
+  `-- exec ssh drv.run.ID -> Guest: /workspace
+                                   nix develop -- /run/environment
+
+Client: ssh drv.run    -> Host: list durable Instance SSH targets
+Host:   ssh drv.run.ID -> Guest: reconnect to running Instance
 ```
 
-## Gc and teardown
+## State lifetime
 
 ```text
-host gc registration -> runtime environment-N-link -> captured closure
+Host: owning Unix account                       Guest
+StateDirectory: drv.run/ID
+  +-- Flake closure (GC root) --- SSH copy ----> /run/environment
+  +-- runner (GC root) ---------- block image -> read-only store
+  +-- SSH host key -------------- fw_cfg ------> sshd identity
+  `-- state.img ----------------- block disk --> /persist
+                                                  |
+                                             impermanence
+                                                  |
+                                             declared retained paths
+                                             (/nix, /workspace, ...)
 
-ssh exit/disconnect -> vm and profile remain
-
-stop / vm exit / failure / user-manager shutdown
-                        -> terminate cgroup
-                        -> ExecStopPost withdraws record and deletes disk
-                        -> systemd removes runtime state
-next host gc            -> unreferenced closure can be collected
+RuntimeDirectory: drv.run.ID                     tmpfs /
+  bootstrap credentials, sockets, client.conf      undeclared files
+  [removed on stop]                               [lost on fresh boot]
 ```
 
----
+## Lifecycle
 
-[`ssh_config(5)`]: `Include`, tokens, first-value precedence
-[`systemd.exec(5)`]: directory lifetime [`systemd.service(5)`]: `Type=exec`,
-`ExecStartPost`, `ExecStopPost`
+```text
+first creation -> capture Flake closure; pin runner; create disk and host key
+               -> start and provision Guest
+
+SSH disconnect -> Guest keeps running
+stop           -> QMP shutdown request (bounded stop timeout)
+               -> remove runtime state; retain durable state
+start          -> reuse disk, host key, runner and captured Flake closure
+               -> fresh runtime state; boot and provision Guest
+Host reboot    -> retain durable state; explicit start required
+
+incomplete creation / missing established disk -> startup fails
+
+clean --what=state (stopped Instance)
+  -> delete disk, keys, metadata and GC-root links
+  -> Host GC may collect unreferenced closures
+```

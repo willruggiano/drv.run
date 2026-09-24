@@ -11,6 +11,13 @@
   };
 
   inputs = {
+    impermanence = {
+      url = "github:nix-community/impermanence";
+      inputs = {
+        home-manager.follows = "";
+        nixpkgs.follows = "nixpkgs";
+      };
+    };
     jail.url = "sourcehut:~alexdavid/jail.nix";
     microvm = {
       url = "github:microvm-nix/microvm.nix";
@@ -36,6 +43,7 @@
     checks = eachSystem (pkgs: {
       host-basic = pkgs.testers.runNixOSTest (import ./nix/nixosTests/host-basic.nix {
         inherit (inputs.self) nixosModules;
+        inherit pkgs;
       });
     });
     devShells = eachSystem (pkgs: import ./nix/devshells.nix pkgs);

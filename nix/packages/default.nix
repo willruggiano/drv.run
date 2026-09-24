@@ -17,6 +17,7 @@
   store-paths = pkgs.writeTextDir "share/nix-store-paths.txt" ''
     Nix store paths:
     drv.run source -> ${inputs.self.outPath}
+    impermanence -> ${inputs.impermanence.outPath}
     jail.nix -> ${inputs.jail.outPath}
     microvm.nix -> ${inputs.microvm.outPath}
     nixpkgs -> ${inputs.nixpkgs.outPath}
