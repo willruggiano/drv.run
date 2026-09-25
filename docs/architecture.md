@@ -5,40 +5,46 @@
 ## Connection and activation
 
 ```text
-Client: ssh drv.run <reference>
+Client: ssh -t <user>@drv.run <reference>
   |
   v
-Host: launcher -> systemctl --user start drv.run@ID.service
-  |                +-- ExecStartPre:  initialize once; prepare boot credentials
-  |                +-- ExecStart:     pinned QEMU runner
-  |                `-- ExecStartPost: wait for SSH; copy and root Flake closure
-  |                                  publish client.conf
+Host: sshd authenticates an enabled isNormalUser account
+  |
+  v
+Host: launcher (user UID) -> user's systemd manager: drv.run@ID.service
+  |                           +-- ExecStartPre:  initialize; prepare credentials
+  |                           +-- ExecStart:     pinned QEMU runner
+  |                           `-- ExecStartPost: provision; publish client.conf
   |
   `-- exec ssh drv.run.ID -> Guest: /workspace
                                    nix develop -- /run/environment
 
-Client: ssh drv.run    -> Host: list durable Instance SSH targets
-Host:   ssh drv.run.ID -> Guest: reconnect to running Instance
+Client: ssh <user>@drv.run -> Host: list that user's durable Instance SSH targets
+Host:   ssh drv.run.ID     -> /run/user/<UID>/drv.run.ID/client.conf
+                           -> Guest: reconnect as root
+
+Host: enabled isNormalUser accounts -> lingering + kvm group + SSH launcher
+      system accounts               -> existing SSH policy
 ```
 
 ## State lifetime
 
 ```text
-Host: owning Unix account                       Guest
-StateDirectory: drv.run/ID
+Host: authenticated Unix account                  Guest
+StateDirectory: drv.run/ID [owner-only]
   +-- Flake closure (GC root) --- SSH copy ----> /run/environment
   +-- runner (GC root) ---------- block image -> read-only store
   +-- SSH host key -------------- fw_cfg ------> sshd identity
   `-- state.img ----------------- block disk --> /persist
-                                                  |
-                                             impermanence
-                                                  |
-                                             declared retained paths
-                                             (/nix, /workspace, ...)
+                                                     |
+                                                impermanence
+                                                     |
+                                                declared retained paths
+                                                (/nix, /workspace, ...)
 
-RuntimeDirectory: drv.run.ID                     tmpfs /
-  bootstrap credentials, sockets, client.conf      undeclared files
-  [removed on stop]                               [lost on fresh boot]
+RuntimeDirectory: drv.run.ID [owner-only]       tmpfs /
+  bootstrap credentials, sockets, client.conf   undeclared files
+  [removed on stop]                             [lost on fresh boot]
 ```
 
 ## Lifecycle
