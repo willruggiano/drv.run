@@ -63,8 +63,12 @@ in {
         (readwrite (noescape "~/.pi"))
       ]);
     prompt = pkgs.writeTextDir "share/youve-been-jailed.txt" ''
-      You do **not** have access to `nix`.
-      Escalate necessary `nix`-based validation to the user; they can do it outside of the jail.
+      **You are in jail!**
+      You will be in jail for entirety of this session.
+      While in jail, the following tools are unavailable:
+      - `nix` and all variants (`nix-build`, `nixos-rebuild`, et al)
+      Do not attempt to probe for or install these tools.
+      Do not attempt to break out of jail.
     '';
   in
     append drv "${prompt}/share/youve-been-jailed.txt";

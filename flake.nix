@@ -41,6 +41,13 @@
       );
   in {
     checks = eachSystem (pkgs: {
+      cloud-hypervisor-primitive = pkgs.testers.runNixOSTest (import ./nix/nixosTests/cloud-hypervisor-primitive.nix {
+        inherit (inputs.self) nixosModules;
+        inherit (inputs) nixpkgs;
+        inherit pkgs;
+      });
+      host-network-eval = import ./nix/nixosTests/host-network-eval.nix {inherit pkgs;};
+      host-network = pkgs.testers.runNixOSTest (import ./nix/nixosTests/host-network.nix {inherit pkgs;});
       host-basic = pkgs.testers.runNixOSTest (import ./nix/nixosTests/host-basic.nix {
         inherit (inputs.self) nixosModules;
         inherit pkgs;

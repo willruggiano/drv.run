@@ -2,10 +2,15 @@
 
 - `nix flake check` is the authoritative test suite and required for all changes
   (except markdown-only ones). It is quite slow so save it for the end.
-- `make check` and `make test` are the "fast" checks: linters, formatters, unit
-  tests, etc.
+- `just check` runs the Nix-free formatters, linters and type checks.
+- `just test` runs Node tests and Nix evaluation; `just pre-commit` also runs
+  full Nix validation. See `justfile` for the commands.
+- In the coding jail, run `just check` and `node --test "**/*.test.ts"`
+  directly. Leave Nix-dependent recipes and validation to the operator outside
+  the jail.
 - Fix failures caused by the change. If execution is blocked, report the exact
-  command and failure and leave verification explicitly blocked.
+  deferred command and reason; distinguish checks passed from verification
+  pending. Do not attempt a known-unavailable tool just to obtain an error.
 - All checks run in CI.
 - Do NOT write tests that assert stdout/stderr or attempt to string match in any
   other way. Write tests against interfaces, assert on state.

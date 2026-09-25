@@ -96,6 +96,8 @@
       builtins.readFile ./launch.sh;
   };
 in {
+  imports = [./network.nix];
+
   options.users.users = lib.mkOption {
     type = with lib.types;
       attrsOf (submodule ({config, ...}: {

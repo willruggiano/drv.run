@@ -35,6 +35,20 @@ in {
     };
     host = {
       imports = [nixosModules.host];
+      services.drv-run.network = {
+        uplink = "eth1";
+        dnsServers = ["9.9.9.9"];
+        slots = {
+          drv-op0 = {
+            owner = "operator";
+            subnet = "10.231.0.0/30";
+          };
+          drv-other0 = {
+            owner = "other";
+            subnet = "10.231.0.4/30";
+          };
+        };
+      };
       virtualisation = {
         memorySize = 6144;
         cores = 2;

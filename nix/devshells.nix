@@ -16,6 +16,7 @@ pkgs: let
     hunk
     jq
     jujutsu
+    just
     less
     libnotify
     man
@@ -33,7 +34,6 @@ pkgs: let
     unzip
     wget
     which
-    gnumake
     vtsls
     scc
     tsgolint
