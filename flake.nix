@@ -41,6 +41,15 @@
       );
   in {
     checks = eachSystem (pkgs: {
+      cloud-hypervisor-vsock = pkgs.testers.runNixOSTest (import ./nix/nixosTests/cloud-hypervisor-vsock.nix {
+        inherit (inputs.self) nixosModules;
+        inherit (inputs) nixpkgs;
+        inherit pkgs;
+      });
+      vmspawn-tap = pkgs.testers.runNixOSTest (import ./nix/nixosTests/vmspawn-tap.nix {
+        inherit (inputs) nixpkgs;
+        inherit pkgs;
+      });
       cloud-hypervisor-primitive = pkgs.testers.runNixOSTest (import ./nix/nixosTests/cloud-hypervisor-primitive.nix {
         inherit (inputs.self) nixosModules;
         inherit (inputs) nixpkgs;

@@ -30,7 +30,7 @@ pre-commit: check test
             'Run outside the jail: nix flake check' >&2
         exit 1
     fi
-    nix flake check
+    nix flake check -L
 
 # Run Node tests and Nix evaluation (requires nix)
 test:
