@@ -13,6 +13,7 @@
 - [ ] pi-notify should not notify on "Operation aborted", if possible
 - [ ] Decouple `pi` bind mounts from nixosModule in
       nix/nixosModules/guest/default.nix
+- [ ] Link node_modules for local development (nix/devshells.nix)
 - [ ] Keep an eye on the early unmount warnings:
 
   ```text

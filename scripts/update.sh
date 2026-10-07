@@ -4,7 +4,6 @@ set -euo pipefail
 old_head=$(git rev-parse HEAD)
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-nix-update pi-unwrapped --commit --flake --custom-dep modelData
 nix-update pi-ask --commit --flake
 nix-update pi-autoresearch --commit --flake
 nix-update pi-parallel-web --commit --flake '--version-regex=^pi-extension-v([0-9]+\.[0-9]+\.[0-9]+)$'

@@ -42,12 +42,12 @@ pkgs: let
 in {
   default = pkgs.mkShell {
     nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook];
-    npmDeps = pkgs.pi-unwrapped.dev;
+    npmDeps = pkgs.pi-node-modules;
     packages = tools ++ [pkgs.pi-with-store-paths];
   };
   jail = pkgs.mkShell {
     nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook];
-    npmDeps = pkgs.pi-unwrapped.dev;
+    npmDeps = pkgs.pi-node-modules;
     packages = tools ++ [pkgs.pi-jailed];
   };
 }

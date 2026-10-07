@@ -22,6 +22,7 @@ stdenv.mkDerivation (finalAttrs: {
     pnpm_11
     pnpmConfigHook
   ];
+  patches = [./peer-deps-github-64.patch];
   pnpmWorkspaces = [
     "@parallel-web/monorepo"
     "@parallel-web/pi-extension..."

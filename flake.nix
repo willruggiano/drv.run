@@ -24,6 +24,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixpkgs.url = "github:NixOS/nixpkgs?ref=nixpkgs-unstable";
+    pi = {
+      url = "github:earendil-works/pi/stable";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        nixpkgs-darwin-x64.follows = "";
+      };
+    };
   };
 
   outputs = inputs: let
@@ -66,6 +73,6 @@
     formatter = eachSystem (pkgs: pkgs.treefmt-wrapped);
     nixosModules = import ./nix/nixosModules inputs;
     overlays = import ./nix/overlays inputs;
-    packages = eachSystem (pkgs: import ./nix/packages {inherit inputs pkgs;});
+    packages = eachSystem (pkgs: import ./nix/packages {inherit inputs lib pkgs;});
   };
 }
