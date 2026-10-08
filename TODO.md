@@ -4,16 +4,15 @@
 
 - [~] [[security.md]]
 - [~] Generic guest-from-devshell machinery?
-- [ ] Host resource limits <-> bounded vm creation (ie. "run as many as can
-      fit")
+- [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
 - [~] Ssh key architecture -> [[security.md]]
-- [ ] Custom `wait` command/pi extension for monitoring background processes?
+- [ ] Add `nq` and `zmx` to the default toolchain, for sync and parallel
+      background dispatch (great for sub-agents, long-running commands,
+      monitoring)
 - [ ] Expose operator services _in the host_ eg. agentsview
-- [ ] Refactor the queued compact extension to support arbitrary commands
 - [ ] pi-notify should not notify on "Operation aborted", if possible
 - [ ] Decouple `pi` bind mounts from nixosModule in
       nix/nixosModules/guest/default.nix
-- [ ] Link node_modules for local development (nix/devshells.nix)
 - [ ] Keep an eye on the early unmount warnings:
 
   ```text

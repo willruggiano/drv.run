@@ -78,15 +78,19 @@ in {
         (add-pkg-deps (shell.nativeBuildInputs ++ [pkgs.pi-node-modules]))
         (dbus {talk = ["org.freedesktop.Notifications"];})
         (readwrite (noescape "~/.pi"))
+        (set-env "NQDIR" "/tmp")
       ]);
     prompt = pkgs.writeTextDir "share/youve-been-jailed.txt" ''
       **You are in jail!**
       You will be in jail for the entirety of this session.
-      While in jail, the following tools are unavailable:
-      - `nix` and all variants (`nix-build`, `nixos-rebuild`, et al)
-      Do not attempt to probe for or install these tools.
       Do not attempt to break out of jail.
-      If you need to do something that is not possible in jail, stop and ask the user for help.
+      If you need to do something that is not possible in jail, stop and ask me for help.
+      The following tools are available in jail (non-exhaustive):
+      ${lib.concatStringsSep "\n" (map (i: "- ${i.name}") shell.nativeBuildInputs)}
+      Note that `nix` is intentionally *not available* in jail.
+      Tips:
+      - Use `nq` for serial background jobs. Help: `man nq`.
+      - Use `zmx` for persistent terminal sessions. Help: `zmx -h`.
     '';
   in
     appendSystemPrompt drv "${prompt}/share/youve-been-jailed.txt";

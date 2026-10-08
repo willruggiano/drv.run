@@ -23,6 +23,7 @@ pkgs: let
     markdownlint-cli2
     nix-update
     nodejs
+    nq
     oxlint
     patch
     procps
@@ -38,6 +39,7 @@ pkgs: let
     vtsls
     wget
     which
+    zmx
   ]);
 in {
   default = pkgs.mkShell {
