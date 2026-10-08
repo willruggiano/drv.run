@@ -52,6 +52,6 @@ in {
   jail = pkgs.mkShell {
     nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook pkgs.systemd.dev];
     npmDeps = pkgs.pi-node-modules;
-    packages = tools ++ [pkgs.pi-jailed];
+    packages = tools ++ [pkgs.pi-jailed pkgs.subtrace];
   };
 }

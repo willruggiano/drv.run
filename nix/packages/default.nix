@@ -42,6 +42,7 @@
     systemd -> ${pkgs.systemd.man}
   '';
 in {
+  subtrace = pkgs.callPackage ./subtrace.nix {};
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
 
   # base pi (from github:earendil-works/pi)
@@ -77,10 +78,11 @@ in {
         readonly-runtime-args
         (add-pkg-deps (shell.nativeBuildInputs ++ [pkgs.pi-node-modules]))
         (dbus {talk = ["org.freedesktop.Notifications"];})
-        (jail-to-host-channel "nix_check" ''
+        # TODO: This is temporary until we have drv.run up and running!
+        (jail-to-host-channel "nix_build" ''
           status=0
-          nix build -L --no-link ".#checks.x86_64-linux.$1" 2>&1 || status=$?
-          echo "nix_check: exit code $status"
+          nix build -L --no-link "$1" 2>&1 || status=$?
+          echo "nix_build: exit code $status"
         '')
         (readwrite (noescape "~/.pi"))
         (set-env "NQDIR" "/tmp")
@@ -94,10 +96,16 @@ in {
       ${lib.concatStringsSep "\n" (map (i: "- ${i.name}") shell.nativeBuildInputs)}
       Note that `nix` is intentionally *not available* in jail.
       Tips:
-      - Use `nq` for serial background jobs. Help: `man nq`.
-      - Use `zmx` for persistent terminal sessions. Help: `zmx -h`.
-      - `nix` is not available in jail. Use the limited `nix_check` command to build individual flake checks
-        during development, eg. `nix_check host-basic` --(on the host)-> `nix build -L --no-link .#checks.x86_64-linux.host-basic 2>&1`
+      - Use `nix_build` (note: underscore! this is **not** `nix-build`) to run one off Nix builds *on the host*:
+          nix_build .#checks.x86_64-linux.host-basic
+          nix_build .#packages.x86_64-linux.pi-extended
+      - Use `nq` for serial background jobs:
+          man nq
+          nq -c make test
+          nq -c make check && nq -c make test && nq -c nix_build .#checks.x86_64-linux.host-basic
+      - Use `zmx` for persistent terminal sessions:
+          zmx -h
+          zmx run host-basic -d nix_build .#checks.x86_64-linux.host-basic && zmx wait host-basic
     '';
   in
     appendSystemPrompt drv "${prompt}/share/youve-been-jailed.txt";
