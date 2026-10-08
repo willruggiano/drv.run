@@ -77,6 +77,7 @@ in {
         readonly-runtime-args
         (add-pkg-deps (shell.nativeBuildInputs ++ [pkgs.pi-node-modules]))
         (dbus {talk = ["org.freedesktop.Notifications"];})
+        (jail-to-host-channel "nix_check" ''nix build -L --no-link ".#checks.x86_64-linux.$1" 2>&1'')
         (readwrite (noescape "~/.pi"))
         (set-env "NQDIR" "/tmp")
       ]);
@@ -91,6 +92,8 @@ in {
       Tips:
       - Use `nq` for serial background jobs. Help: `man nq`.
       - Use `zmx` for persistent terminal sessions. Help: `zmx -h`.
+      - `nix` is not available in jail. Use the limited `nix_check` command to build individual flake checks
+        during development, eg. `nix_check host-basic` --(on the host)-> `nix build -L --no-link .#checks.x86_64-linux.host-basic 2>&1`
     '';
   in
     appendSystemPrompt drv "${prompt}/share/youve-been-jailed.txt";
