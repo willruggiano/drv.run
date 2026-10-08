@@ -14,6 +14,9 @@
 - [ ] Decouple `pi` bind mounts from nixosModule in
       nix/nixosModules/guest/default.nix
 - [ ] HTTP proxy
+- [ ] Add ast-grep and rule that .nix files must not have a comment as their
+      first line -- classic ai slop!
+- [ ] Plain `ssh drv.run` continues listing instances even after stopping
 - [ ] Keep an eye on the early unmount warnings:
 
   ```text

@@ -35,7 +35,7 @@
 
   outputs = inputs: let
     inherit (inputs.nixpkgs) lib;
-    systems = ["x86_64-linux"];
+    systems = ["x86_64-linux" "aarch64-linux"];
     eachSystem = f:
       lib.genAttrs systems (
         system: let
@@ -44,19 +44,20 @@
             overlays = [inputs.self.overlays.default];
           };
         in
-          f pkgs
+          f system pkgs
       );
   in {
-    checks = eachSystem (pkgs: {
-      host-basic = pkgs.testers.runNixOSTest (import ./nix/nixosTests/host-basic.nix {
-        inherit (inputs.self) nixosModules;
-        inherit pkgs;
+    checks = eachSystem (system: pkgs:
+      lib.optionalAttrs (system == "x86_64-linux") {
+        host-basic = pkgs.testers.runNixOSTest (import ./nix/nixosTests/host-basic.nix {
+          inherit (inputs.self) nixosModules;
+          inherit pkgs;
+        });
       });
-    });
-    devShells = eachSystem (pkgs: import ./nix/devshells.nix pkgs);
-    formatter = eachSystem (pkgs: pkgs.treefmt-wrapped);
+    devShells = eachSystem (_: pkgs: import ./nix/devshells.nix pkgs);
+    formatter = eachSystem (_: pkgs: pkgs.treefmt-wrapped);
     nixosModules = import ./nix/nixosModules inputs;
     overlays = import ./nix/overlays inputs;
-    packages = eachSystem (pkgs: import ./nix/packages {inherit inputs lib pkgs;});
+    packages = eachSystem (_: pkgs: import ./nix/packages {inherit inputs lib pkgs;});
   };
 }

@@ -159,8 +159,8 @@ in {
         message = "drv.run requires writable state.img and read-only seed.img volumes with automatic creation disabled.";
       }
       {
-        assertion = pkgs.stdenv.hostPlatform.system == "x86_64-linux";
-        message = "drv.run requires an x86_64-linux host.";
+        assertion = builtins.elem pkgs.stdenv.hostPlatform.system ["x86_64-linux" "aarch64-linux"];
+        message = "drv.run requires an x86_64-linux or aarch64-linux Host with working Cloud Hypervisor KVM support.";
       }
       {
         assertion = config.nix.enable;
