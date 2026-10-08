@@ -15,6 +15,7 @@
   imports = [
     microvm.nixosModules.microvm
     impermanence.nixosModules.impermanence
+    ./cloud-hypervisor.nix
   ];
 
   assertions = [
@@ -28,10 +29,7 @@
     }
   ];
   boot = {
-    initrd = {
-      systemd.enable = true;
-      kernelModules = ["qemu_fw_cfg"];
-    };
+    initrd.systemd.enable = true;
     tmp.useTmpfs = false;
   };
   fileSystems = {
@@ -71,36 +69,7 @@
     };
   };
   microvm = {
-    hypervisor = "qemu";
-    # FIXME: See below. We probably don't need these.
-    qemu.extraArgs = [
-      "-fw_cfg"
-      "name=opt/io.systemd.credentials/authorized-keys,file=authorized-keys"
-      "-fw_cfg"
-      "name=opt/io.systemd.credentials/host-key,file=host-key"
-      "-fw_cfg"
-      "name=opt/io.systemd.credentials/environment-path,file=environment-path"
-      "-monitor"
-      "none"
-    ];
-
-    interfaces = [
-      {
-        type = "user";
-        id = "ssh";
-        mac = "02:00:00:00:00:01";
-      }
-    ];
-    extraArgsScript = lib.getExe (
-      pkgs.writeShellApplication {
-        name = "ssh-forward";
-        text = ''
-          printf '%s\n' "-set netdev.ssh.hostfwd=unix:$PWD/ssh.sock-:22"
-        '';
-      }
-    );
     mem = 3 * 1024;
-    socket = "control.sock";
     storeOnDisk = true;
     vcpu = 2;
     volumes = [
@@ -119,7 +88,6 @@
     firewall.enable = true;
     hostName = "guest";
     useDHCP = false;
-    useNetworkd = true;
   };
   nix = {
     enable = true;
@@ -133,13 +101,9 @@
   };
   services.openssh = {
     enable = true;
-    # FIXME: We know these. We don't need these shenanigans?
-    authorizedKeysFiles = ["/run/credentials/sshd.service/authorized-keys"];
     generateHostKeys = false;
     hostKeys = [];
     settings = {
-      # FIXME: Stupid. Use the default location.
-      HostKey = "/run/credentials/sshd.service/host-key";
       PermitRootLogin = "prohibit-password";
       AuthenticationMethods = "publickey";
       PasswordAuthentication = false;
@@ -161,20 +125,4 @@
     pkgs.bashInteractive.man
   ];
   system.stateVersion = lib.trivial.release;
-  systemd = {
-    network = {
-      enable = true;
-      # TODO: Explain.
-      networks."10-uplink" = {
-        matchConfig.MACAddress = "02:00:00:00:00:01";
-        networkConfig.DHCP = "ipv4";
-      };
-    };
-    # FIXME: See above. We probably don't need these.
-    services.sshd.serviceConfig.ImportCredential = [
-      "authorized-keys"
-      "host-key"
-      "environment-path"
-    ];
-  };
 }

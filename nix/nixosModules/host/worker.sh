@@ -58,8 +58,19 @@ chmod 0600 "$RUNTIME_DIRECTORY/client-key"
 cp "$RUNTIME_DIRECTORY/client-key.pub" "$RUNTIME_DIRECTORY/authorized-keys"
 printf '%s %s\n' "$name" "$(ssh-keygen -y -f "$STATE_DIRECTORY/host-key")" \
   >"$RUNTIME_DIRECTORY/known_hosts"
+staging=$(mktemp -d "$RUNTIME_DIRECTORY/seed.XXXXXXXX")
+trap 'rm -rf "$staging"' EXIT
+cp "$RUNTIME_DIRECTORY/authorized-keys" "$staging/authorized-keys"
+cp "$STATE_DIRECTORY/host-key" "$staging/host-key"
+cp "$RUNTIME_DIRECTORY/environment-path" "$staging/environment-path"
+chmod 0600 "$staging/"*
+truncate -s 8M "$RUNTIME_DIRECTORY/seed.img"
+mke2fs -q -t ext4 -L drv-run-seed -E root_owner=0:0,root_perms=0700 \
+  -d "$staging" "$RUNTIME_DIRECTORY/seed.img"
+e2fsck -fn "$RUNTIME_DIRECTORY/seed.img"
 cat >"$RUNTIME_DIRECTORY/service-connection.conf" <<EOF
-ProxyCommand @nc@ -U $RUNTIME_DIRECTORY/ssh.sock
+ProxyCommand @proxy@ vsock-mux$RUNTIME_DIRECTORY/notify.vsock %p
+ProxyUseFdpass yes
 IdentityFile $RUNTIME_DIRECTORY/client-key
 UserKnownHostsFile $RUNTIME_DIRECTORY/known_hosts
 EOF

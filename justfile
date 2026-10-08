@@ -13,15 +13,8 @@ check:
     tsc -p nix/packages/pi/extensions/tsconfig.json
     oxlint --type-aware --format=unix
 
-# Apply the fixable variants of the check commands
-fix:
-    oxlint --type-aware --format=unix --fix
-    markdownlint-cli2 --fix >/dev/null
-    treefmt --quiet
-    just --fmt
-
-# Run all checks, including full Nix validation (requires nix)
-pre-commit: check test
+# Run the CI suite, including full Nix validation
+ci: check test
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v nix >/dev/null 2>&1; then
@@ -31,6 +24,13 @@ pre-commit: check test
         exit 1
     fi
     nix flake check -L
+
+# Apply the fixable variants of the check commands
+fix:
+    oxlint --type-aware --format=unix --fix
+    markdownlint-cli2 --fix >/dev/null
+    treefmt --quiet
+    just --fmt
 
 # Run Node tests and Nix evaluation (requires nix)
 test:

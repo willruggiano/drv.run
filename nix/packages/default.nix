@@ -77,7 +77,11 @@ in {
         readonly-runtime-args
         (add-pkg-deps (shell.nativeBuildInputs ++ [pkgs.pi-node-modules]))
         (dbus {talk = ["org.freedesktop.Notifications"];})
-        (jail-to-host-channel "nix_check" ''nix build -L --no-link ".#checks.x86_64-linux.$1" 2>&1'')
+        (jail-to-host-channel "nix_check" ''
+          status=0
+          nix build -L --no-link ".#checks.x86_64-linux.$1" 2>&1 || status=$?
+          echo "nix_check: exit code $status"
+        '')
         (readwrite (noescape "~/.pi"))
         (set-env "NQDIR" "/tmp")
       ]);

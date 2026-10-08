@@ -26,11 +26,13 @@ pkgs: let
     nq
     oxlint
     patch
+    pkg-config
     procps
     python3
     ripgrep
     scc
     sd
+    stdenv.cc
     tree
     treefmt-wrapped
     tsgolint
@@ -43,12 +45,12 @@ pkgs: let
   ]);
 in {
   default = pkgs.mkShell {
-    nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook];
+    nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook pkgs.systemd.dev];
     npmDeps = pkgs.pi-node-modules;
     packages = tools ++ [pkgs.pi-with-store-paths];
   };
   jail = pkgs.mkShell {
-    nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook];
+    nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook pkgs.systemd.dev];
     npmDeps = pkgs.pi-node-modules;
     packages = tools ++ [pkgs.pi-jailed];
   };

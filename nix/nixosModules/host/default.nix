@@ -63,19 +63,20 @@
     ];
   };
   createVolumes = (import "${microvm}/lib/volumes.nix" {inherit pkgs;}).createVolumesScript (
-    map (volume: volume // {autoCreate = true;}) guest.config.microvm.volumes
+    map (volume: volume // {autoCreate = true;}) (lib.filter (volume: !volume.readOnly) guest.config.microvm.volumes)
   );
   worker = pkgs.writeShellApplication {
     name = "worker";
     runtimeInputs = [
       pkgs.coreutils
+      pkgs.e2fsprogs
       config.nix.package
       pkgs.openssh
     ];
     text =
       lib.replaceStrings
-      ["@nc@" "@runner@" "@create-volumes@"]
-      [(lib.getExe' pkgs.netcat-openbsd "nc") (toString guest.config.microvm.declaredRunner) createVolumes]
+      ["@proxy@" "@runner@" "@create-volumes@"]
+      ["${config.systemd.package}/lib/systemd/systemd-ssh-proxy" (toString guest.config.microvm.declaredRunner) createVolumes]
       (builtins.readFile ./worker.sh);
   };
   provision = pkgs.writeShellApplication {
@@ -89,6 +90,7 @@
       builtins.readFile ./provision.sh
     );
   };
+  tap = import ./tap.nix {inherit pkgs;};
   launcher = pkgs.writeShellApplication {
     name = "drv.run";
     runtimeInputs = with pkgs; [coreutils openssh systemd];
@@ -111,6 +113,26 @@ in {
   config = {
     assertions = [
       {
+        # systemd 261.2 create_tap() calls userns_get_base_uid(..., &uid, NULL).
+        # NULL omits the separate GID output and makes the helper reject unequal
+        # Host UID/GID mappings with -EUCLEAN. TAP setup only uses TUNSETOWNER;
+        # why it requires equality here is undocumented, not a CH/Linux rule.
+        # Matching group names are our convention, not an upstream requirement.
+        # https://github.com/systemd/systemd/blob/v261.2/src/nsresourced/nsresourcework.c
+        # https://github.com/systemd/systemd/blob/v261.2/src/basic/namespace-util.c
+        assertion =
+          lib.all (
+            user:
+              user.uid
+              != null
+              && user.uid > 0
+              && user.group == user.name
+              && (config.users.groups.${user.group}.gid or null) == user.uid
+          )
+          normalUsers;
+        message = "drv.run nsresourced TAPs require each normal owner to have an explicit UID and a private primary group of the same name and numeric GID.";
+      }
+      {
         assertion = lib.all (user: user.linger == true && builtins.elem "kvm" user.extraGroups) normalUsers;
         message = "drv.run requires lingering and KVM group membership for every enabled normal Host user.";
       }
@@ -128,10 +150,13 @@ in {
           volumes = guest.config.microvm.volumes;
         in
           builtins.length volumes
-          == 1
-          && (builtins.head volumes).image == "state.img"
-          && !(builtins.head volumes).autoCreate;
-        message = "drv.run requires one state.img volume with automatic creation disabled.";
+          == 2
+          && (builtins.elemAt volumes 0).image == "state.img"
+          && !(builtins.elemAt volumes 0).readOnly
+          && (builtins.elemAt volumes 1).image == "seed.img"
+          && (builtins.elemAt volumes 1).readOnly
+          && lib.all (volume: !volume.autoCreate) volumes;
+        message = "drv.run requires writable state.img and read-only seed.img volumes with automatic creation disabled.";
       }
       {
         assertion = pkgs.stdenv.hostPlatform.system == "x86_64-linux";
@@ -183,7 +208,7 @@ in {
       serviceConfig = {
         StateDirectory = "drv.run/%i";
         StateDirectoryMode = "0700";
-        ExecStart = "%S/drv.run/%i/runner/bin/microvm-run";
+        ExecStart = "${tap}/bin/drv-run-tap %S/drv.run/%i/runner/bin/microvm-run";
         ExecStartPost = lib.getExe provision;
         ExecStartPre = lib.getExe worker;
         ExecStop = "%S/drv.run/%i/runner/bin/microvm-shutdown";
@@ -197,7 +222,8 @@ in {
         StandardOutput = "journal";
         TimeoutStartSec = "infinity";
         TimeoutStopSec = 30;
-        Type = "exec";
+        Type = "notify";
+        NotifyAccess = "all";
         UMask = "0077";
         WorkingDirectory = "%t/drv.run.%i";
       };

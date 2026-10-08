@@ -6,7 +6,7 @@ case ${SSH_ORIGINAL_COMMAND:-} in
   exec nix-daemon --stdio
   ;;
 root-environment)
-  IFS= read -r environment </run/credentials/sshd.service/environment-path
+  IFS= read -r environment </run/drv-run-seed/environment-path
   if [[ $environment != /nix/store/*-env || $environment == *[[:space:]]* ]]; then
     echo 'Error: invalid prepared environment path' >&2
     exit 1

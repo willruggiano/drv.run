@@ -2,15 +2,5 @@
 
 # Security
 
-- Use Linux users and groups as much as possible.
+- Use Linux users and groups as much as possible
 - Passwordless ssh by default
-
----
-
-Todo list:
-
-- [ ] Block guest access to host-local HTTP services. Unrestricted SLiRP permits
-      guest -> `10.0.2.2` -> host loopback access. Host-side flake fetching also
-      has access to the host network. Destination filtering must cover resolved
-      addresses and redirects; enforcement inside the root-controlled guest is
-      insufficient.
