@@ -53,7 +53,7 @@ class QueuedCompactEditor extends CustomEditor {
     enqueue: (text: string, mode: DeliveryMode) => boolean,
     dequeue: () => DequeuedActions,
   ) {
-    super(tui, theme, keybindings);
+    super(tui, theme, keybindings, { embedWorkingStatus: true });
     this.#keybindings = keybindings;
     this.#dequeue = dequeue;
     this.#enqueue = enqueue;

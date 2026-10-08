@@ -11,6 +11,7 @@ type Keybindings = {
   getKeys(binding: string): string[];
 };
 type TestEditor = {
+  readonly embedWorkingStatus: boolean;
   readonly actionHandlers: Map<string, ActionHandler>;
   onSubmit?: (text: string) => void;
   getText(): string;
@@ -149,6 +150,11 @@ function submit(editor: TestEditor, text: string, key = "alt+enter"): void {
 }
 
 void describe("queued compact extension", async () => {
+  await test("opts into Pi's inline working status", () => {
+    const instance = harness();
+    assert.equal(instance.editor.embedWorkingStatus, true);
+  });
+
   await test("passes idle compact commands to Pi", () => {
     const instance = harness();
     submit(instance.editor, "/compact", "\r");
