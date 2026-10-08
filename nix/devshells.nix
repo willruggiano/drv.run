@@ -28,16 +28,16 @@ pkgs: let
     procps
     python3
     ripgrep
+    scc
     sd
     tree
     treefmt-wrapped
-    unzip
-    wget
-    which
-    vtsls
-    scc
     tsgolint
     typescript # tsgo
+    unzip
+    vtsls
+    wget
+    which
   ]);
 in {
   default = pkgs.mkShell {
