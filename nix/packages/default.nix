@@ -42,6 +42,7 @@
     systemd -> ${pkgs.systemd.man}
   '';
 in {
+  bench = pkgs.callPackage ./bench {};
   subtrace = pkgs.callPackage ./subtrace.nix {};
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
 

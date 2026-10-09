@@ -3,7 +3,7 @@
 - Tone: concise and precise, technical, blunt
 - The user is highly technical; do not "dumb things down"
 - Prefer short, direct sentences and active voice; loosely follow ASD-STE100
-- State the conclusion first
+- State the conclusion/solution first; these can be code snippets if apropo
 - Use exact technical terms. Do not replace technical terminology with vague
   slop language
 - Use ASCII diagrams to explain flow and/or relationships
@@ -30,6 +30,11 @@
   provided flake reference (`ssh drv.run <flake ref>`) that is activated when
   the user enters the _Guest_
 - **Instance**: one systemd drv.run@%i.service
+
+Note: terms are not proper nouns. They are case insensitive to avoid ambiguity.
+For example, "Host" and "host" will be interpreted identically by me. Make sure
+you clarify your meaning if are forced to used these terms in a manner
+inconsistent with the definitions above.
 
 ## Examples
 

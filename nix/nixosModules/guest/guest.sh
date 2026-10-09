@@ -13,17 +13,16 @@ root-environment)
   fi
   nix print-dev-env --json -- "$environment" >/dev/null
   nix-store --realise --add-root /run/environment --indirect "$environment" >/dev/null
-  ;;
-'')
-  if [[ ! -L /run/environment ]]; then
-    echo 'Error: a prepared environment is required' >&2
-    exit 1
-  fi
-  cd /workspace
-  exec nix develop -- /run/environment
-  ;;
-*)
-  echo 'Error: unsupported guest protocol command' >&2
-  exit 2
+  exit 0
   ;;
 esac
+
+if [[ ! -L /run/environment ]]; then
+  echo 'Error: a prepared environment is required' >&2
+  exit 1
+fi
+cd /workspace
+if [[ -z ${SSH_ORIGINAL_COMMAND:-} ]]; then
+  exec nix develop -- /run/environment
+fi
+exec nix develop /run/environment --command @bash@ -c "$SSH_ORIGINAL_COMMAND"

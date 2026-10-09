@@ -2,6 +2,7 @@ pkgs: let
   tools = map pkgs.lib.getBin (with pkgs; [
     ast-grep
     bash
+    basedpyright
     coreutils
     curl
     diffutils
@@ -25,12 +26,14 @@ pkgs: let
     nix-update
     nodejs
     nq
+    openssh
     oxlint
     patch
     pkg-config
     procps
     python3
     ripgrep
+    ruff
     scc
     sd
     stdenv.cc

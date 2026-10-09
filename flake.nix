@@ -48,7 +48,18 @@
       );
   in {
     checks = eachSystem (system: pkgs:
-      lib.optionalAttrs (system == "x86_64-linux") {
+      {
+        bench-test =
+          pkgs.runCommand "bench-tests" {
+            src = inputs.self;
+            nativeBuildInputs = [pkgs.python3];
+          } ''
+            cd $src
+            python3 -B -m unittest discover -s nix.packages.bench.tests -p '*_test.py'
+            touch $out
+          '';
+      }
+      // lib.optionalAttrs (system == "x86_64-linux") {
         host-basic = pkgs.testers.runNixOSTest (import ./nix/nixosTests/host-basic.nix {
           inherit (inputs.self) nixosModules;
           inherit pkgs;

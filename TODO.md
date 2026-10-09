@@ -15,6 +15,16 @@
       nix/nixosModules/guest/default.nix
 - [ ] HTTP proxy
 - [ ] Plain `ssh drv.run` continues listing instances even after stopping
+- [ ] Play with Pi's codemode + decision models. The former is clearly OP. The
+      latter _might_ be a great companion if we can run a local decision model.
+      At least until the Decisions API is part of my ChatGPT sub :P
+- [ ] Implement a [headlong] inspired RLM using pi-durable and codemode. There
+      are two primary things to determine here: (1) the model-code-model loop
+      (the core RLM machinery), and (2) trajectory projection (ie. context). The
+      latter will be quite interesting as both a context/fork problem (to
+      implement "context as a projection of trajectory") and a compaction
+      problem (to implement "tiered context compaction").
+- [ ] Make the host-basic check work on aarch64
 - [ ] Client requires ssh config:
   ```sshconfig
   Match originalhost drv.run command ""
@@ -28,6 +38,23 @@
       User root
       RequestTTY force
       RemoteCommand su --login $ME --command 'exec ssh -t %n'
+  ```
+- [ ] Great practical test (and also something I want badly!):
+  ```sh
+  ssh drv.run github:willruggiano/neovim.drv -c \
+    pi '
+      Implement a simple review plugin for neovim: `nvim +Review`.
+      The plugin should add all staged and unstaged changes to the quickfix
+      list. Each quickfix list entry is one hunk. It should present with a
+      scratch buffer that lists all of the changes, output straight from a
+      suitable git command, not editable, ensure the output contains enough of
+      the filenames such that `gf` works. Visiting a file should display it in
+      readonly, diff mode. One window with inline diffs. Lastly, it should be
+      possible to comment on files/buffers (hijack the builtin op-pending `gc`
+      to add a comment, use vim.ui.input to collect) as marks/virtual-text,
+      delete comments, and yank a comment/buffer's comments/all comments across
+      all buffers to clipboard. These are the only features. Write tests.
+    '
   ```
 - [ ] Keep an eye on the early unmount warnings:
   ```text
@@ -65,7 +92,9 @@ We can likely learn from;
 
 - <https://github.com/fzakaria/seenix> (eval optimization)
 - <https://github.com/tomberek/fastpkgs> (eval optimization)
-- <https://github.com/laude-institute/headlong> (rlm)
+- <https://github.com/NixOS/nixpkgs/pull/401751>
+- <https://github.com/NixOS/nixpkgs/blob/master/nixos/doc/manual/development/modular-services.md>
+- <https://github.com/arianvp/server-optimised-nixos/tree/master>
 
 These seem useful on the inside;
 
@@ -91,3 +120,5 @@ Others;
 - <https://github.com/pungggi/pi-continual-harness>
 - <https://github.com/tuneloop/tuneloop>
 - <https://gitlab.com/jarkkojs/goosedump>
+
+[headlong]: https://github.com/laude-institute/headlong

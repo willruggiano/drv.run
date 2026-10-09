@@ -1,0 +1,14 @@
+id: no-future-annotations
+language: Python
+severity: error
+message: "do not use `import annotations from __future__`"
+rule:
+  kind: future_import_statement
+  has:
+    any:
+      - kind: dotted_name
+        regex: "^annotations$"
+      - kind: aliased_import
+        has:
+          field: name
+          regex: "^annotations$"

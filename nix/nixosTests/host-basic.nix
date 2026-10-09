@@ -3,7 +3,10 @@
   pkgs,
 }: let
   tap = import ../nixosModules/host/tap.nix {inherit pkgs;};
-  shell = pkgs.mkShell {packages = [pkgs.curl pkgs.python3 pkgs.iproute2];};
+  shell = pkgs.mkShell {
+    packages = [pkgs.curl pkgs.python3 pkgs.iproute2];
+    shellHook = "export DRV_RUN_TEST_READY=1";
+  };
   payload = pkgs.writeText "egress-payload" "offline Guest egress\n";
   webroot = pkgs.runCommand "egress-webroot" {} ''
     mkdir -p $out
@@ -14,7 +17,10 @@
     {
       inputs.nixpkgs.url = "path:${pkgs.path}";
       outputs = { nixpkgs, ... }: {
-        devShells.x86_64-linux.default = let pkgs = nixpkgs.legacyPackages.x86_64-linux; in pkgs.mkShell { packages = [pkgs.curl pkgs.python3 pkgs.iproute2]; };
+        devShells.x86_64-linux.default = let pkgs = nixpkgs.legacyPackages.x86_64-linux; in pkgs.mkShell {
+          packages = [pkgs.curl pkgs.python3 pkgs.iproute2];
+          shellHook = "export DRV_RUN_TEST_READY=1";
+        };
       };
     }
   '';
@@ -102,7 +108,7 @@ in {
         cores = 2;
         diskSize = 20480;
         qemu.options = ["-cpu" "host"];
-        additionalPaths = [shell shell.drvPath pkgs.path];
+        additionalPaths = [shell pkgs.path];
       };
       users.users = {
         operator = {
@@ -155,6 +161,7 @@ in {
     import ipaddress
     import json
     import shlex
+    from datetime import timedelta
 
     def as_user(user: str, command: str):
         return "su --login " + shlex.quote(user) + " --command " + shlex.quote(command)
@@ -174,6 +181,11 @@ in {
             for diagnostic in ["ip -j addr; ip route", "nft list ruleset", "journalctl -b -u systemd-networkd -u systemd-nsresourced --no-pager"]:
                 host.log(host.execute(diagnostic)[1])
             raise Exception(f"Guest command failed ({status}): {command}")
+
+    def instance_units():
+        reply = json.loads(operator("busctl --user --json=short call org.freedesktop.systemd1 "
+            "/org/freedesktop/systemd1 org.freedesktop.systemd1.Manager ListUnits"))
+        return {row[0]: row[6] for row in reply["data"][0] if row[0].startswith("drv.run@")}
 
     def links():
         return [link["ifname"] for link in json.loads(host.succeed("ip -j link")) if link["ifname"].startswith("ns-")]
@@ -248,7 +260,7 @@ in {
         operator("nix flake lock --offline path:/home/operator/flake")
         client.succeed("printf '%s\\n' " + shlex.quote(
             "set -e; test -t 0; touch /workspace/created; exit"
-        ) + " | ssh -tt host path:/home/operator/flake", timeout=900)
+        ) + " | ssh -tt host path:/home/operator/flake", timeout=timedelta(minutes=15))
 
         # Discover the ID from durable state, not launcher output.
         instances = operator("find /home/operator/.local/state/drv.run -mindepth 1 -maxdepth 1 -type d").splitlines()
@@ -295,7 +307,33 @@ in {
               'cmp /run/drv-run-seed/host-key "$(dirname "$key")/host-key"; '
               'found=true; done; "$found"')
         operator(f"systemctl --user is-active --quiet {unit}")
-        host.fail(as_user("operator", f"ssh {target} inspect </dev/null"))
+        status, _ = host.execute(as_user("operator", f"ssh {target} drv-run-command-does-not-exist </dev/null"))
+        t.assertEqual(status, 127)
+
+    with subtest("launcher forwards commands and propagates their exit status"):
+        for remote_command, expected_status in [
+            ("exit", 0),
+            ("exit 7", 7),
+            ('test "$PWD" = /workspace && test "$DRV_RUN_TEST_READY" = 1 && '
+             'curl --version >/dev/null && touch /workspace/command-file', 0),
+        ]:
+            before = set(instance_units())
+            status, _ = host.execute(as_user("operator",
+                "SSH_ORIGINAL_COMMAND=path:/home/operator/flake drv.run "
+                + shlex.quote(remote_command) + " </dev/null"), timeout=timedelta(minutes=15))
+            t.assertEqual(status, expected_status)
+            created = set(instance_units()) - before
+            t.assertEqual(len(created), 1)
+            command_unit = created.pop()
+            command_id = command_unit.removeprefix("drv.run@").removesuffix(".service")
+            command_target = "drv.run." + command_id
+            operator(f"systemctl --user is-active --quiet {command_unit}")
+            if remote_command not in ("exit", "exit 7"):
+                operator(f"ssh {command_target} 'test -f /workspace/command-file' </dev/null")
+            operator(f"systemctl --user stop {command_unit}")
+            operator(f"systemctl --user clean --what=state {command_unit}")
+        operator(f"systemctl --user is-active --quiet {unit}")
+        guest("test -f /workspace/created")
 
     with subtest("other users cannot access the owner's Instance"):
         for path in [f"{runtime}/client.conf", f"{runtime}/client-key", f"{runtime}/seed.img", f"{state}/host-key", f"{state}/state.img"]:

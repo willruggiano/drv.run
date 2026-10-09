@@ -111,7 +111,7 @@
         pkgs.writeShellApplication {
           name = "ssh-guest";
           runtimeInputs = [pkgs.nix];
-          text = builtins.readFile ./guest.sh;
+          text = lib.replaceStrings ["@bash@"] ["${pkgs.bashInteractive}/bin/bash"] (builtins.readFile ./guest.sh);
         }
       );
     };

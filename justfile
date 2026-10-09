@@ -13,6 +13,9 @@ check:
     ast-grep scan --error --report-style=short
     tsc -p nix/packages/pi/extensions/tsconfig.json
     oxlint --type-aware --format=unix
+    ruff format --quiet --check
+    ruff check --quiet
+    basedpyright --threads=4 --warnings **/*.py
 
 # Run the CI suite, including full Nix validation
 ci: check test
@@ -32,6 +35,8 @@ fix:
     markdownlint-cli2 --fix >/dev/null
     treefmt --quiet
     just --fmt
+    ruff format --quiet
+    ruff check --quiet --fix
 
 # Run Node tests and Nix evaluation (requires nix)
 test:
@@ -39,6 +44,7 @@ test:
     set -euo pipefail
     ast-grep test --skip-snapshot-tests
     node --test "**/*.test.ts"
+    python3 -B -m unittest discover -s nix.packages.bench.tests -p '*_test.py'
     if ! command -v nix >/dev/null 2>&1; then
         printf '%s\n' \
             'Nix verification not run: nix is unavailable.' \

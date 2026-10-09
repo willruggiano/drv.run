@@ -106,6 +106,11 @@ in {
   };
 
   config = {
+    environment.systemPackages = [
+      launcher
+      self.packages.${pkgs.stdenv.hostPlatform.system}.bench
+    ];
+
     assertions = [
       {
         # systemd 261.2 create_tap() calls userns_get_base_uid(..., &uid, NULL).

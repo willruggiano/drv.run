@@ -9,6 +9,7 @@ if [[ ! -S $XDG_RUNTIME_DIR/bus ]]; then
 fi
 ref=${SSH_ORIGINAL_COMMAND:-}
 if [[ -z $ref ]]; then
+  # FIXME: This is wrong. Systemd is the authority, not fs state.
   state=$(systemd-path user-state-private)
   for instance in "$state"/drv.run/*; do
     id=${instance##*/}
@@ -19,7 +20,7 @@ if [[ -z $ref ]]; then
   exit 0
 fi
 if [[ $ref == -* || $ref == *[[:space:]]* ]]; then
-  echo 'Usage: ssh -t drv.run <flake-reference> (one reference, not a shell command)' >&2
+  echo 'Usage: ssh -t drv.run <flake-reference>' >&2
   exit 2
 fi
 if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
@@ -51,4 +52,4 @@ if ((status != 0)); then
   exit "$status"
 fi
 printf '%s\n' "${runtime##*/}" >&2
-exec ssh "${runtime##*/}"
+exec ssh "${runtime##*/}" "$@"
