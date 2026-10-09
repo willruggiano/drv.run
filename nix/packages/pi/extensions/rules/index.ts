@@ -4,12 +4,12 @@ import {
   isToolCallEventType,
   parseFrontmatter,
   type ExtensionAPI,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
 const RULES_PATH = path.join(".agents", "rules");
 const MESSAGE_TYPE = "rules";
-const MUTATING_TOOLS = new Set(["edit", "write"]);
-const PATH_TOOLS = new Set(["read", "edit", "write"]);
+const ACTIVATION_TYPE = "path-rules-activation";
 
 type RuleFrontmatter = Record<string, unknown> & {
   paths?: unknown;
@@ -27,22 +27,9 @@ type Workspace = {
   rulesDirectory: string;
 };
 
-type GrepCall = {
-  searchRoot: string;
-  file?: string;
-};
-
 function isDirectory(value: string): boolean {
   try {
     return fs.statSync(value).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function isFile(value: string): boolean {
-  try {
-    return fs.statSync(value).isFile();
   } catch {
     return false;
   }
@@ -248,33 +235,6 @@ function loadRules(workspace: Workspace): {
   return { rules, warnings };
 }
 
-function textParts(content: unknown): string[] {
-  if (typeof content === "string") return [content];
-  if (!Array.isArray(content)) return [];
-
-  return content.flatMap((part) => {
-    if (!part || typeof part !== "object") return [];
-    const candidate = part as { type?: unknown; text?: unknown };
-    return candidate.type === "text" && typeof candidate.text === "string" ? [candidate.text] : [];
-  });
-}
-
-function pathsFromText(text: string): string[] {
-  const paths: string[] = [];
-  const fileTag = /<file\s+name=(['"])(.*?)\1/gs;
-  for (const match of text.matchAll(fileTag)) paths.push(match[2]);
-
-  const atReference = /(?:^|[\s([{'"`])@(?:"([^"]+)"|'([^']+)'|([^\s<>"'`]+))/g;
-  for (const match of text.matchAll(atReference)) {
-    const quoted = match[1] ?? match[2];
-    const raw = quoted ?? match[3];
-    if (!raw) continue;
-    paths.push(quoted ? raw : raw.replace(/[),.;:!?]+$/, "").replaceAll("\\ ", " "));
-  }
-
-  return paths;
-}
-
 function projectRelativePath(rawPath: string, cwd: string, root: string): string | undefined {
   let value = rawPath.trim();
   if (value.startsWith("@")) value = value.slice(1);
@@ -294,102 +254,8 @@ function projectRelativePath(rawPath: string, cwd: string, root: string): string
   return relativePath.split(path.sep).join("/");
 }
 
-function addProjectPath(paths: Set<string>, rawPath: unknown, cwd: string, root: string): void {
-  if (typeof rawPath !== "string") return;
-  const relativePath = projectRelativePath(rawPath, cwd, root);
-  if (relativePath) paths.add(relativePath);
-}
-
-function collectContextPaths(
-  messages: readonly unknown[],
-  cwd: string,
-  root: string,
-  extraPaths: readonly string[],
-): Set<string> {
-  const paths = new Set<string>();
-  const grepCalls = new Map<string, GrepCall>();
-
-  for (const rawPath of extraPaths) addProjectPath(paths, rawPath, cwd, root);
-
-  for (const message of messages) {
-    if (!message || typeof message !== "object") continue;
-    const candidate = message as {
-      role?: unknown;
-      content?: unknown;
-      toolCallId?: unknown;
-      toolName?: unknown;
-    };
-
-    if (candidate.role === "user" || candidate.role === "custom") {
-      for (const text of textParts(candidate.content)) {
-        for (const rawPath of pathsFromText(text)) addProjectPath(paths, rawPath, cwd, root);
-      }
-    }
-
-    if (candidate.role === "assistant" && Array.isArray(candidate.content)) {
-      for (const part of candidate.content) {
-        if (!part || typeof part !== "object") continue;
-        const toolCall = part as {
-          type?: unknown;
-          id?: unknown;
-          name?: unknown;
-          arguments?: unknown;
-        };
-        if (
-          toolCall.type !== "toolCall" ||
-          !toolCall.arguments ||
-          typeof toolCall.arguments !== "object"
-        ) {
-          continue;
-        }
-
-        const args = toolCall.arguments as Record<string, unknown>;
-        if (typeof toolCall.name === "string" && PATH_TOOLS.has(toolCall.name)) {
-          addProjectPath(paths, args.path, cwd, root);
-        }
-
-        if (toolCall.name === "grep" && typeof toolCall.id === "string") {
-          const searchPath = typeof args.path === "string" ? args.path : ".";
-          const absoluteSearchPath = path.resolve(cwd, searchPath);
-          const file = isFile(absoluteSearchPath) ? absoluteSearchPath : undefined;
-          if (file) addProjectPath(paths, file, cwd, root);
-          grepCalls.set(toolCall.id, {
-            searchRoot: file ? path.dirname(file) : absoluteSearchPath,
-            file,
-          });
-        }
-      }
-    }
-
-    if (
-      candidate.role === "toolResult" &&
-      candidate.toolName === "grep" &&
-      typeof candidate.toolCallId === "string"
-    ) {
-      const grepCall = grepCalls.get(candidate.toolCallId);
-      if (!grepCall || grepCall.file) continue;
-
-      for (const text of textParts(candidate.content)) {
-        for (const line of text.split("\n")) {
-          const match = line.match(/^(.+?)(?::\d+:|-\d+-)/);
-          if (match) addProjectPath(paths, path.resolve(grepCall.searchRoot, match[1]), cwd, root);
-        }
-      }
-    }
-  }
-
-  return paths;
-}
-
 function ruleMatchesPath(rule: Rule, relativePath: string): boolean {
   return rule.matchers?.some((matcher) => matcher.test(relativePath)) ?? false;
-}
-
-function applicableRules(rules: readonly Rule[], paths: ReadonlySet<string>): Rule[] {
-  return rules.filter(
-    (rule) =>
-      !rule.patterns || [...paths].some((relativePath) => ruleMatchesPath(rule, relativePath)),
-  );
 }
 
 function escapeAttribute(value: string): string {
@@ -406,20 +272,61 @@ function formatRules(rules: readonly Rule[]): string {
     return `<project_rule source="${escapeAttribute(rule.id)}"${patterns}>\n${rule.body}\n</project_rule>`;
   });
 
-  return `<project_rules>\nThe following project rules apply to files currently in context. Follow them while continuing the user's task.\n\n${blocks.join("\n\n")}\n</project_rules>`;
+  return `<project_rules>\nThe following project rules are active on this session branch. Follow them while continuing the user's task.\n\n${blocks.join("\n\n")}\n</project_rules>`;
 }
 
 export default function pathRulesExtension(pi: ExtensionAPI) {
   let workspace: Workspace | undefined;
   let rules: Rule[] = [];
-  let promptPaths: string[] = [];
-  let visibleRuleIds = new Set<string>();
+  const activatedRuleIds = new Set<string>();
+  const suppliedRuleIds = new Set<string>();
 
-  pi.on("session_start", (_event, ctx) => {
+  function restoreActivations(ctx: ExtensionContext): void {
+    activatedRuleIds.clear();
+    suppliedRuleIds.clear();
+    if (!workspace) return;
+
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || entry.customType !== ACTIVATION_TYPE) continue;
+      const data = entry.data;
+      if (
+        !data ||
+        typeof data !== "object" ||
+        !("root" in data) ||
+        data.root !== workspace.root ||
+        !("ruleIds" in data) ||
+        !Array.isArray(data.ruleIds)
+      ) {
+        continue;
+      }
+      for (const id of data.ruleIds) {
+        if (typeof id === "string") activatedRuleIds.add(id);
+      }
+    }
+  }
+
+  function activatePath(rawPath: string, ctx: ExtensionContext): Rule[] {
+    if (!workspace) return [];
+    const root = workspace.root;
+    const relativePath = projectRelativePath(rawPath, ctx.cwd, root);
+    if (!relativePath) return [];
+    const matching = rules.filter((rule) => rule.patterns && ruleMatchesPath(rule, relativePath));
+    const newlyActivated = matching.filter((rule) => !activatedRuleIds.has(rule.id));
+    if (newlyActivated.length > 0) {
+      // Persist discovery, not delivery. Nested calls may all precede the next model request.
+      pi.appendEntry(ACTIVATION_TYPE, {
+        root,
+        ruleIds: newlyActivated.map((rule) => rule.id),
+      });
+      for (const rule of newlyActivated) activatedRuleIds.add(rule.id);
+    }
+    return matching;
+  }
+
+  pi.on("session_start", (_, ctx) => {
     workspace = findWorkspace(ctx.cwd);
     rules = [];
-    promptPaths = [];
-    visibleRuleIds = new Set();
+    restoreActivations(ctx);
     if (!workspace) return;
 
     const loaded = loadRules(workspace);
@@ -440,23 +347,16 @@ export default function pathRulesExtension(pi: ExtensionAPI) {
     }
   });
 
-  pi.on("before_agent_start", (event) => {
-    promptPaths = pathsFromText(event.prompt);
-  });
+  pi.on("session_tree", (_, ctx) => restoreActivations(ctx));
+  pi.on("session_compact", () => suppliedRuleIds.clear());
 
-  pi.on("context", (event, ctx) => {
+  pi.on("context", (event) => {
     const baseMessages = event.messages.filter(
       (message) => !(message.role === "custom" && message.customType === MESSAGE_TYPE),
     );
-    if (!workspace || rules.length === 0) {
-      visibleRuleIds = new Set();
-      if (baseMessages.length !== event.messages.length) return { messages: baseMessages };
-      return;
-    }
-
-    const contextPaths = collectContextPaths(baseMessages, ctx.cwd, workspace.root, promptPaths);
-    const activeRules = applicableRules(rules, contextPaths);
-    visibleRuleIds = new Set(activeRules.map((rule) => rule.id));
+    const activeRules = rules.filter((rule) => !rule.patterns || activatedRuleIds.has(rule.id));
+    suppliedRuleIds.clear();
+    for (const rule of activeRules) suppliedRuleIds.add(rule.id);
     if (activeRules.length === 0) {
       if (baseMessages.length !== event.messages.length) return { messages: baseMessages };
       return;
@@ -477,21 +377,22 @@ export default function pathRulesExtension(pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", (event, ctx) => {
-    if (!workspace || !MUTATING_TOOLS.has(event.toolName)) return;
-    if (!isToolCallEventType("edit", event) && !isToolCallEventType("write", event)) return;
+    if (
+      !isToolCallEventType("read", event) &&
+      !isToolCallEventType("edit", event) &&
+      !isToolCallEventType("write", event)
+    ) {
+      return;
+    }
 
-    const relativePath = projectRelativePath(event.input.path, ctx.cwd, workspace.root);
-    if (!relativePath) return;
-
-    const newlyApplicable = rules.filter(
-      (rule) =>
-        rule.patterns && ruleMatchesPath(rule, relativePath) && !visibleRuleIds.has(rule.id),
-    );
-    if (newlyApplicable.length === 0) return;
+    const matching = activatePath(event.input.path, ctx);
+    if (event.toolName === "read") return;
+    const unseen = matching.filter((rule) => !suppliedRuleIds.has(rule.id));
+    if (unseen.length === 0) return;
 
     return {
       block: true,
-      reason: `Blocked the first mutation of ${relativePath} so newly applicable rules can enter context (${newlyApplicable.map((rule) => rule.id).join(", ")}). Review them, then retry the ${event.toolName} call.`,
+      reason: `Blocked ${event.toolName} of ${event.input.path}: activated rules have not yet been supplied to the model (${unseen.map((rule) => rule.id).join(", ")}). End this tool batch; the next model request will receive them. Review them, then retry.`,
     };
   });
 }
