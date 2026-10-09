@@ -10,6 +10,7 @@ check:
     just --fmt --check
     treefmt --quiet --fail-on-change
     markdownlint-cli2 >/dev/null
+    ast-grep scan --error --report-style=short
     tsc -p nix/packages/pi/extensions/tsconfig.json
     oxlint --type-aware --format=unix
 
@@ -36,6 +37,7 @@ fix:
 test:
     #!/usr/bin/env bash
     set -euo pipefail
+    ast-grep test --skip-snapshot-tests
     node --test "**/*.test.ts"
     if ! command -v nix >/dev/null 2>&1; then
         printf '%s\n' \

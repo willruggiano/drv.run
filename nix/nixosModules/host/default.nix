@@ -1,8 +1,3 @@
-# drv.run / nixosModules / host
-# -----------------------------------
-# Importing this module into a nixosConfiguration enables the minimum set of
-# functionality required to operate a drv.run host. A drv.run host is
-# responsible for (1) client ssh authentication, and (2) microvm lifecycle.
 {
   nixpkgs,
   microvm,

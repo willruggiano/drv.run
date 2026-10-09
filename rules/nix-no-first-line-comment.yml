@@ -1,0 +1,12 @@
+id: nix-no-first-line-comment
+language: Nix
+severity: error
+message: Do not put a comment on the first line of a Nix file.
+rule:
+  kind: comment
+  regex: "^#"
+  range:
+    start:
+      line: 0
+    end:
+      line: 0

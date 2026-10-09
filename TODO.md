@@ -14,11 +14,22 @@
 - [ ] Decouple `pi` bind mounts from nixosModule in
       nix/nixosModules/guest/default.nix
 - [ ] HTTP proxy
-- [ ] Add ast-grep and rule that .nix files must not have a comment as their
-      first line -- classic ai slop!
 - [ ] Plain `ssh drv.run` continues listing instances even after stopping
+- [ ] Client requires ssh config:
+  ```sshconfig
+  Match originalhost drv.run command ""
+      RequestTTY no
+  Host drv.run
+      HostKeyAlias drv.run
+      HostName 192.168.4.35
+  Host drv.run.*
+      HostKeyAlias drv.run
+      HostName 192.168.4.35
+      User root
+      RequestTTY force
+      RemoteCommand su --login $ME --command 'exec ssh -t %n'
+  ```
 - [ ] Keep an eye on the early unmount warnings:
-
   ```text
   vm-test-run-host-basic> host # [ 58.260810] microvm-run[1272]: [ OK ] Stopped target Local File Systems.
   vm-test-run-host-basic> host # [ 58.264038] microvm-run[1272]: Unmounting /nix/.ro-store...
@@ -59,7 +70,6 @@ We can likely learn from;
 These seem useful on the inside;
 
 - <https://github.com/ctxrs/ctx> (search session history, freemium :/)
-- <https://github.com/davebcn87/pi-autoresearch>
 - <https://github.com/kenn-io/agentsview> (could be served by the host)
 - <https://github.com/nicosuave/memex> (similar to ctx, works over ssh, nix)
 
@@ -69,7 +79,6 @@ Others;
 - <https://github.com/HenryQW/pi-harness/tree/main/extensions>
 - <https://github.com/clay-good/openlore>
 - <https://github.com/cosmtrek/mindwalk>
-- <https://github.com/eko24ive/pi-ask> (we already use this)
 - <https://github.com/haseebeqx/pi-runbooks>
 - <https://github.com/imbue-ai/latchkey>
 - <https://github.com/jo-inc/pi-mem>

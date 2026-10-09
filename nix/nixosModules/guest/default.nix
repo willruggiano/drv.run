@@ -1,6 +1,3 @@
-# drv.run / nixosModules / guest
-# -----------------------------------
-# This is the base drv.run guest configuration.
 {
   nixpkgs,
   microvm,

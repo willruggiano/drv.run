@@ -1,4 +1,3 @@
-# nsresourced allocates transient TAPs; networkd configures them; nftables filters.
 {
   config,
   lib,

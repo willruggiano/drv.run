@@ -1,4 +1,3 @@
-# Cloud Hypervisor transport, credentials and egress attachment.
 {
   config,
   lib,

@@ -1,5 +1,6 @@
 pkgs: let
   tools = map pkgs.lib.getBin (with pkgs; [
+    ast-grep
     bash
     coreutils
     curl

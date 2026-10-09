@@ -1,0 +1,24 @@
+id: nix-no-first-line-comment
+valid:
+  - '{}'
+  - |
+    {
+      # A comment after the first line is allowed.
+    }
+  - "\n# Not on the first line.\n{}"
+  - '/* A block comment is allowed. */ {}'
+  - |
+    /* # Not a hash comment.
+    */ {}
+  - '"# Not a comment"'
+  - "''# Not a comment''"
+invalid:
+  - |
+    # Header comment.
+    {}
+  - "  \t# Indented header comment.\n{}"
+  - '{} # A trailing comment on the first line.'
+  - '/* Block comment. */ # Hash comment on the first line.'
+  - '# Comment without a final newline.'
+  - '#'
+  - "# Header with CRLF.\r\n{}\r\n"
