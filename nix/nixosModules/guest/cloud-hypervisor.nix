@@ -63,6 +63,8 @@
     ];
   };
   fileSystems."/run/drv-run-seed" = {
+    # SSH readiness requires the seed; mount it during initial device discovery.
+    neededForBoot = true;
     options = ["ro" "nodev" "nosuid" "noexec"];
     noCheck = true;
   };

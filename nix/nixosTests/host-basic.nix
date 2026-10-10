@@ -451,6 +451,19 @@ in {
         host.wait_until_succeeds("test -z \"$(find /run/systemd/nsresource/registry -maxdepth 1 -name 'n1000-*.userns')\"")
         egress("other", other_target)
 
+    with subtest("failed provisioning closes its master and releases its TAP"):
+        # A valid store path that is not a prepared environment fails only after
+        # SSH authentication and nix copy have succeeded.
+        operator(f"mv {state}/environment {state}/saved-environment")
+        operator(f"ln -s ${pkgs.bash} {state}/environment")
+        host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start {unit}"))
+        operator(f"systemctl --user is-failed --quiet {unit}")
+        host.wait_until_fails(f"test -e {runtime}")
+        t.assertEqual(links(), [other_tap])
+        egress("other", other_target)
+        operator(f"rm {state}/environment; mv {state}/saved-environment {state}/environment")
+        operator(f"systemctl --user reset-failed {unit}")
+
     with subtest("crashed VMM releases its TAP without disrupting its peer"):
         operator(f"systemctl --user start {unit}")
         egress()
