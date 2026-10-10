@@ -34,6 +34,10 @@
   };
   microvm = {
     hypervisor = "cloud-hypervisor";
+    # CH 53 replies to orphan VSOCK resets, racing reuse of systemd's source port.
+    cloud-hypervisor.package = pkgs.cloud-hypervisor.overrideAttrs (old: {
+      patches = (old.patches or []) ++ [./cloud-hypervisor-vsock-reset.patch];
+    });
     interfaces = [];
     registerWithMachined = false;
     vsock = {

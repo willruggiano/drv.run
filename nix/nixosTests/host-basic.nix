@@ -312,6 +312,32 @@ in {
         status, _ = host.execute(as_user("operator", f"ssh {target} drv-run-command-does-not-exist </dev/null"))
         t.assertEqual(status, 127)
 
+    with subtest("VSOCK notifications tolerate immediate privileged source-port reuse"):
+        # sd_notify binds the highest free privileged source port. A stale reset
+        # response must not abort the next connection using that same tuple.
+        probe = """
+    import errno
+    import socket
+    for _ in range(256):
+        with socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM) as sock:
+            sock.settimeout(2)
+            for port in range(1023, 0, -1):
+                try:
+                    sock.bind((socket.VMADDR_CID_ANY, port))
+                    break
+                except OSError as error:
+                    if error.errno != errno.EADDRINUSE:
+                        raise
+            else:
+                raise RuntimeError("No privileged VSOCK source port available")
+            sock.connect((2, 8888))
+            sock.sendall(b"STATUS=port-reuse-regression")
+            sock.shutdown(socket.SHUT_WR)
+            assert sock.recv(1) == bytes()
+    """
+        guest("python3 -c " + shlex.quote(probe))
+        operator(f"systemctl --user is-active --quiet {unit}")
+
     with subtest("launcher forwards commands and propagates their exit status"):
         for remote_command, expected_status in [
             ("exit", 0),
