@@ -73,6 +73,8 @@
   microvm = {
     mem = 3 * 1024;
     storeOnDisk = true;
+    # Fresh Guests can share cached pages of the immutable Guest closure image.
+    storeDiskDirect = false;
     vcpu = 2;
     volumes = [
       {
