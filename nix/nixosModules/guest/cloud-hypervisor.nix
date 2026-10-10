@@ -20,9 +20,15 @@
   boot = {
     # CH 53 emits SMBIOS OEM credentials only on x86. On ARM, pass the
     # non-secret readiness address via the kernel command line instead.
-    kernelParams = lib.optionals pkgs.stdenv.hostPlatform.isAarch64 [
-      "systemd.set_credential=vmm.notify_socket:vsock-stream:2:8888"
-    ];
+    kernelParams =
+      [
+        # The VMM console feeds the Host journal, not an interactive terminal.
+        # Avoid systemd's unanswered ANSI terminal queries during both stages.
+        "systemd.tty.term.console=dumb"
+      ]
+      ++ lib.optionals pkgs.stdenv.hostPlatform.isAarch64 [
+        "systemd.set_credential=vmm.notify_socket:vsock-stream:2:8888"
+      ];
     initrd.kernelModules = ["vmw_vsock_virtio_transport"];
     kernelModules = ["button" "virtio_net"];
   };
