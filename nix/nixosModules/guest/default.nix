@@ -26,9 +26,14 @@
     }
   ];
   boot = {
-    initrd.systemd.enable = true;
+    initrd.systemd = {
+      enable = true;
+      # Persistence and store overlays exceed systemd's five mount events/s.
+      managerEnvironment.SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_BURST = "64";
+    };
     tmp.useTmpfs = false;
   };
+  systemd.managerEnvironment.SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_BURST = "64";
   fileSystems = {
     "/" = {
       device = "rootfs";
@@ -68,8 +73,6 @@
   microvm = {
     mem = 3 * 1024;
     storeOnDisk = true;
-    # Avoid shared fragment decompression on the boot-critical read-only store.
-    storeDiskErofsFlags = ["-zlz4hc" "-Eztailpacking"];
     vcpu = 2;
     volumes = [
       {

@@ -174,7 +174,7 @@ in {
     def guest(command: str, user: str = "operator", address = None):
         # Supply a terminal while exercising the exact reconnect command.
         status, output = host.execute(as_user(user, "printf '%s\\n' " + shlex.quote("set -e; test -t 0; " + command + "; exit")
-            + " | ${pkgs.util-linux}/bin/script --quiet --return --command "
+            + " | TERM=xterm-256color ${pkgs.util-linux}/bin/script --quiet --return --command "
             + shlex.quote("ssh " + (address or target)) + " /dev/null"))
         if status != 0:
             host.log(repr(output))
@@ -296,6 +296,7 @@ in {
         t.assertEqual(info["config"]["vsock"]["cid"], 42)
 
     with subtest("owner reconnects without sudo or connection flags"):
+        guest('test "$TERM" = xterm-256color; test "$DRV_RUN_TEST_READY" = 1')
         guest("systemctl is-system-running --wait || { journalctl -b -u 'persist-*.service' --no-pager; exit 1; }")
         guest("test $(id -u) -eq 0; test -f /workspace/created; cp /etc/hostname /workspace/retained; touch /root/discarded")
         guest("test -f /root/discarded; cmp /etc/hostname /workspace/retained")
