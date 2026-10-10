@@ -279,6 +279,7 @@ in {
         host.succeed(f'test "$(stat -c %u {state}/state.img)" -eq 1000')
         host.succeed(f'test -S {runtime}/notify.vsock && test "$(stat -c %u {runtime}/notify.vsock)" -eq 1000')
         host.fail(f"test -e {runtime}/ssh.sock || test -e /run/drv.run-network")
+        host.fail(f"test -S {runtime}/provision-ssh")
         pid = int(operator(f"systemctl --user show -p MainPID --value {unit}"))
         status = dict(line.split(":", 1) for line in host.succeed(f"cat /proc/{pid}/status").splitlines())
         t.assertEqual([int(uid) for uid in status["Uid"].split()], [1000] * 4)

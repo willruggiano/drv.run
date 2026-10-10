@@ -37,6 +37,10 @@
     Host drv.run.*
         Include /run/user/%i/%n/service-connection.conf
         ProxyCommand false
+        # Only provisioning uses this private, short-lived control socket.
+        ControlMaster auto
+        ControlPath /run/user/%i/%n/provision-ssh
+        ControlPersist 5
         ${clientPolicy}
   '';
   features = config.nix.settings.experimental-features or [];
