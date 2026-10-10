@@ -74,7 +74,7 @@
       lib.replaceStrings
       ["@proxy@" "@runner@" "@create-volumes@"]
       ["${config.systemd.package}/lib/systemd/systemd-ssh-proxy" (toString guest.config.microvm.declaredRunner) createVolumes]
-      (builtins.readFile ./worker.sh);
+      (builtins.readFile ./pre.sh);
   };
   provision = pkgs.writeShellApplication {
     name = "provision";
@@ -84,7 +84,7 @@
       pkgs.openssh
     ];
     text = lib.replaceStrings ["@service-ssh@"] [(toString serviceSSH)] (
-      builtins.readFile ./provision.sh
+      builtins.readFile ./post.sh
     );
   };
   tap = import ./tap.nix {inherit pkgs;};
@@ -92,7 +92,7 @@
     name = "drv.run";
     runtimeInputs = with pkgs; [coreutils openssh systemd];
     text =
-      builtins.readFile ./launch.sh;
+      builtins.readFile ./command.sh;
   };
 in {
   imports = [./network.nix];
@@ -210,9 +210,9 @@ in {
       serviceConfig = {
         StateDirectory = "drv.run/%i";
         StateDirectoryMode = "0700";
+        ExecStartPre = lib.getExe worker;
         ExecStart = "${tap}/bin/drv-run-tap %S/drv.run/%i/runner/bin/microvm-run";
         ExecStartPost = lib.getExe provision;
-        ExecStartPre = lib.getExe worker;
         ExecStop = "%S/drv.run/%i/runner/bin/microvm-shutdown";
         ExecStopPost = "${pkgs.coreutils}/bin/rm -f %t/drv.run.%i/client.conf";
         KillMode = "control-group";
