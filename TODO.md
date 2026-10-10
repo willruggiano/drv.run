@@ -25,6 +25,13 @@
       implement "context as a projection of trajectory") and a compaction
       problem (to implement "tiered context compaction").
 - [ ] Make the host-basic check work on aarch64
+- [ ] Time to shell (TTS) optimization. Potential inspiration:
+  - <https://github.com/fzakaria/seenix> (eval optimization)
+  - <https://github.com/tomberek/fastpkgs> (eval optimization)
+  - <https://github.com/NixOS/nixpkgs/pull/401751>
+  - <https://github.com/NixOS/nixpkgs/blob/master/nixos/doc/manual/development/modular-services.md>
+  - <https://github.com/arianvp/server-optimised-nixos/tree/master>
+- [ ] Rock5b deployment script
 - [ ] Client requires ssh config:
   ```sshconfig
   Match originalhost drv.run command ""
