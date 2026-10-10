@@ -83,6 +83,8 @@
         mountPoint = "/persist";
         fsType = "ext4";
         size = 16 * 1024;
+        # The worker only formats a new sparse file, whose unwritten bytes are zero.
+        mkfsExtraArgs = ["-E" "assume_storage_prezeroed=1"];
         autoCreate = false;
       }
     ];
