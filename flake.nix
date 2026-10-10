@@ -11,6 +11,7 @@
   };
 
   inputs = {
+    self.submodules = true;
     impermanence = {
       url = "github:nix-community/impermanence";
       inputs = {
@@ -20,7 +21,7 @@
     };
     jail.url = "sourcehut:~alexdavid/jail.nix";
     microvm = {
-      url = "github:microvm-nix/microvm.nix";
+      url = "path:microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixpkgs.url = "github:NixOS/nixpkgs?ref=nixpkgs-unstable";

@@ -1,0 +1,4 @@
+[submodule "microvm.nix"]
+	path = microvm.nix
+	url = https://github.com/willruggiano/microvm.nix.git
+	branch = main

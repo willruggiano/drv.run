@@ -10,12 +10,12 @@ check:
     just --fmt --check
     treefmt --quiet --fail-on-change
     markdownlint-cli2 >/dev/null
-    ast-grep scan --error --report-style=short
+    ast-grep scan --error --report-style=short --globs '!microvm.nix/**'
     tsc -p nix/packages/pi/extensions/tsconfig.json
     oxlint --type-aware --format=unix
-    ruff format --quiet --check
-    ruff check --quiet
-    basedpyright --threads=4 --warnings **/*.py
+    ruff format --quiet --check --extend-exclude microvm.nix
+    ruff check --quiet --extend-exclude microvm.nix
+    basedpyright --threads=4 --warnings nix
 
 # Run the CI suite, including full Nix validation
 ci: check test
@@ -35,8 +35,8 @@ fix:
     markdownlint-cli2 --fix >/dev/null
     treefmt --quiet
     just --fmt
-    ruff format --quiet
-    ruff check --quiet --fix
+    ruff format --quiet --extend-exclude microvm.nix
+    ruff check --quiet --fix --extend-exclude microvm.nix
 
 # Run Node tests and Nix evaluation (requires nix)
 test:

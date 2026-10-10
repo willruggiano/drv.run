@@ -44,18 +44,14 @@
         "spectrum": "spectrum"
       },
       "locked": {
-        "lastModified": 1789506833,
-        "narHash": "sha256-4L8SOCF84de1irB72Ka9VHcu9wrAJ9Amuey4lU9oh4Y=",
-        "owner": "microvm-nix",
-        "repo": "microvm.nix",
-        "rev": "187b0a390ee054028106a674e7b01b1cb940cbba",
-        "type": "github"
+        "path": "microvm.nix",
+        "type": "path"
       },
       "original": {
-        "owner": "microvm-nix",
-        "repo": "microvm.nix",
-        "type": "github"
-      }
+        "path": "microvm.nix",
+        "type": "path"
+      },
+      "parent": []
     },
     "nixpkgs": {
       "locked": {
