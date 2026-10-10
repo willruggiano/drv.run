@@ -683,9 +683,8 @@ def hyperfine(output: Path, batch: str, count: int, manifest: dict[str, Json]) -
             "--kill-after=5s",
             f"{integer(manifest['timeout'])}s",
             "env",
-            f"SSH_ORIGINAL_COMMAND={text(manifest['reference'])}",
+            f"SSH_ORIGINAL_COMMAND={text(manifest['reference'])} exit",
             text(manifest["launcher"]),
-            "exit",
         ]
     )
     argv = [

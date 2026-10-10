@@ -247,8 +247,15 @@ in {
             client.succeed(f"ssh {user}@host </dev/null")
             status, _ = host.systemctl("is-active --quiet 'drv.run@*.service'", user=user)
             t.assertEqual(status, 4) # no instantiated units match the pattern
-            client.fail(f"ssh {user}@host 'touch /home/{user}/not-a-launcher-command'")
+            for request in [" ", " leading-whitespace", f"-invalid; touch /home/{user}/not-a-launcher-command"]:
+                status, _ = client.execute(f"ssh -- {user}@host " + shlex.quote(request) + " </dev/null")
+                t.assertEqual(status, 2)
+            # Local callers must also supply the complete request, not positional commands.
+            status, _ = host.execute(as_user(user,
+                "SSH_ORIGINAL_COMMAND=path:/does-not-exist drv.run exit </dev/null"))
+            t.assertEqual(status, 2)
             host.fail(f"test -e /home/{user}/not-a-launcher-command")
+            host.fail(f"test -d /home/{user}/.local/state/drv.run")
 
     with subtest("system accounts retain ordinary SSH behavior"):
         client.succeed("ssh root@host 'touch /root/ordinary-ssh'")
@@ -345,25 +352,60 @@ in {
         operator(f"systemctl --user is-active --quiet {unit}")
 
     with subtest("launcher forwards commands and propagates their exit status"):
-        for remote_command, expected_status in [
-            ("exit", 0),
-            ("exit 7", 7),
-            ('test "$PWD" = /workspace && test "$DRV_RUN_TEST_READY" = 1 && '
-             'curl --version >/dev/null && touch /workspace/command-file', 0),
+        input_payload = "  stdin with spaces\nsecond line\n"
+        arguments = ["two  spaces", "", "double\" single' back\\slash", "line one\nline two",
+                     "$HOME", "$(touch /tmp/drv-run-command-literal)", "*"]
+        shell_probe = (
+            "set -e\n"
+            'test "$(touch /tmp/drv-run-command-guest; id -u)" -eq 0\n'
+            'test "$PWD" = /workspace\n'
+            'test "$DRV_RUN_TEST_READY" = 1\n'
+            "test ! -t 0\n"
+            "curl --version >/dev/null\n"
+            "python3 -c " + shlex.quote(
+                "import sys; from pathlib import Path; "
+                f"assert sys.stdin.read() == {input_payload!r}; "
+                f"assert sys.argv[1:] == {arguments!r}; "
+                "Path('/workspace/command-file').touch()"
+            ) + " " + shlex.join(arguments) + "\n"
+            "printf '%s\\n' 'one  two' | tee /workspace/command-pipe >/dev/null\n"
+            "test -s /workspace/command-pipe\n"
+            "test ! -e /tmp/drv-run-command-literal\n"
+        )
+        for transport, remote_command, expected_status in [
+            ("-T", "exit", 0),
+            ("-T", "exit 7", 7),
+            ("-T", "drv-run-command-does-not-exist", 127),
+            ("-T", shell_probe, 0),
+            ("-tt", "test -t 0 && test -t 1", 0),
+            ("-T", "-oProxyCommand=touch /tmp/drv-run-ssh-option", 2),
+            ("local", "exit", 0),
         ]:
             before = set(instance_units())
-            status, _ = host.execute(as_user("operator",
-                "SSH_ORIGINAL_COMMAND=path:/home/operator/flake drv.run "
-                + shlex.quote(remote_command) + " </dev/null"), timeout=timedelta(minutes=15))
+            # Exercise a whitespace separator without splitting or unquoting the command.
+            request = "path:/home/operator/flake" + ("\t  " if remote_command == shell_probe else " ") + remote_command
+            if transport == "local":
+                status, _ = host.execute(as_user("operator",
+                    "env " + shlex.quote("SSH_ORIGINAL_COMMAND=" + request) + " drv.run </dev/null"),
+                    timeout=timedelta(minutes=15))
+            else:
+                status, _ = client.execute(
+                    "printf '%s' " + shlex.quote(input_payload) + f" | ssh {transport} host " + shlex.quote(request),
+                    timeout=timedelta(minutes=15))
             t.assertEqual(status, expected_status)
             created = set(instance_units()) - before
             t.assertEqual(len(created), 1)
             command_unit = created.pop()
             command_id = command_unit.removeprefix("drv.run@").removesuffix(".service")
             command_target = "drv.run." + command_id
+            command_state = "/home/operator/.local/state/drv.run/" + command_id
             operator(f"systemctl --user is-active --quiet {command_unit}")
-            if remote_command not in ("exit", "exit 7"):
-                operator(f"ssh {command_target} 'test -f /workspace/command-file' </dev/null")
+            operator(f"printf '%s\\n' path:/home/operator/flake | cmp - {command_state}/reference")
+            if remote_command == shell_probe:
+                operator(f"ssh {command_target} 'test -f /workspace/command-file && test -s /workspace/command-pipe' </dev/null")
+            for marker in ["drv-run-command-guest", "drv-run-command-literal", "drv-run-ssh-option"]:
+                host.fail(f"test -e /tmp/{marker}")
+                client.fail(f"test -e /tmp/{marker}")
             operator(f"systemctl --user stop {command_unit}")
             operator(f"systemctl --user clean --what=state {command_unit}")
         operator(f"systemctl --user is-active --quiet {unit}")
@@ -372,8 +414,7 @@ in {
     with subtest("failed environment evaluation cannot publish prepared Instance state"):
         before = set(instance_units())
         prior_links = links()
-        status, _ = host.execute(as_user("operator",
-            "SSH_ORIGINAL_COMMAND=path:/does-not-exist drv.run exit </dev/null"))
+        status, _ = client.execute("ssh -T host path:/does-not-exist exit </dev/null")
         t.assertNotEqual(status, 0)
         created = set(instance_units()) - before
         t.assertEqual(len(created), 1)

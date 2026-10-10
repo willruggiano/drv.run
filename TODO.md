@@ -33,9 +33,6 @@
   - <https://github.com/arianvp/server-optimised-nixos/tree/master>
 - [ ] Rock5b deployment script
 - [ ] Design the `ssh drv.run` entrypoint
-- [ ] Allow passing commands to `ssh drv.run <flake> <args>` eg.
-      `ssh drv.run nixpkgs#hello exit` -> `nix develop <flake> -c exit` and
-      therefore immediately exit the instance (useful for testing!)
 - [ ] Eliminate (and ban) evaluation warnings in `nix flake check`
 - [ ] Client requires ssh config:
   ```sshconfig

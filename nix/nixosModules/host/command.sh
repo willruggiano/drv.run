@@ -8,6 +8,16 @@ if [[ ! -S $XDG_RUNTIME_DIR/bus ]]; then
   exit 1
 fi
 ref=${SSH_ORIGINAL_COMMAND:-}
+command=
+# Only split the reference boundary; the Guest shell interprets the command.
+if [[ $ref =~ ^([^[:space:]]+)[[:space:]]+(.*)$ ]]; then
+  ref=${BASH_REMATCH[1]}
+  command=${BASH_REMATCH[2]}
+fi
+if (($# != 0)) || [[ $ref == -* || $ref == *[[:space:]]* ]]; then
+  echo 'Usage: ssh [-t] drv.run <flake-reference> [<command>]' >&2
+  exit 2
+fi
 if [[ -z $ref ]]; then
   # Durable state identifies retained instances; systemd supplies their live state.
   state=$(systemd-path user-state-private)
@@ -29,10 +39,6 @@ if [[ -z $ref ]]; then
     fi
   done
   exit 0
-fi
-if [[ $ref == -* || $ref == *[[:space:]]* ]]; then
-  echo 'Usage: ssh -t drv.run <flake-reference>' >&2
-  exit 2
 fi
 if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
   echo 'Error: read/write access to /dev/kvm is required' >&2
@@ -63,4 +69,4 @@ if ((status != 0)); then
   exit "$status"
 fi
 printf '%s\n' "${runtime##*/}" >&2
-exec ssh "${runtime##*/}" "$@"
+exec ssh -- "${runtime##*/}" "$command"
