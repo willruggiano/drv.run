@@ -32,7 +32,6 @@
   - <https://github.com/NixOS/nixpkgs/blob/master/nixos/doc/manual/development/modular-services.md>
   - <https://github.com/arianvp/server-optimised-nixos/tree/master>
 - [ ] Rock5b deployment script
-- [ ] Make plain `ssh drv.run` more informative
 - [ ] Design the `ssh drv.run` entrypoint
 - [ ] Allow passing commands to `ssh drv.run <flake> <args>` eg.
       `ssh drv.run nixpkgs#hello exit` -> `nix develop <flake> -c exit` and

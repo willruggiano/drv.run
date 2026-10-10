@@ -295,6 +295,12 @@ in {
         t.assertEqual(info["config"]["net"][0]["num_queues"], 2)
         t.assertEqual(info["config"]["vsock"]["cid"], 42)
 
+    with subtest("listing does not restart a running Instance"):
+        client.succeed("ssh operator@host </dev/null")
+        operator(f"systemctl --user is-active --quiet {unit}")
+        operator(f'test "$(systemctl --user show -p MainPID --value {unit})" -eq {pid}')
+        guest("test -f /workspace/created")
+
     with subtest("owner reconnects without sudo or connection flags"):
         guest('test "$TERM" = xterm-256color; test "$DRV_RUN_TEST_READY" = 1')
         guest("systemctl is-system-running --wait || { journalctl -b -u 'persist-*.service' --no-pager; exit 1; }")
@@ -378,6 +384,11 @@ in {
         operator(f"test -d {failed_state}/creating; test ! -e {failed_state}/ready")
         operator(f'test "$(systemctl --user show -p MainPID --value {failed_unit})" -eq 0')
         host.wait_until_fails("test -e /run/user/1000/drv.run." + failed_id)
+        t.assertEqual(links(), prior_links)
+        # Listing a failed creation must neither retry it nor clear its failure.
+        client.succeed("ssh operator@host </dev/null")
+        operator(f"systemctl --user is-failed --quiet {failed_unit}")
+        operator(f"test -d {failed_state}/creating; test ! -e {failed_state}/ready")
         t.assertEqual(links(), prior_links)
         operator(f"systemctl --user reset-failed {failed_unit}")
         operator(f"systemctl --user clean --what=state {failed_unit}")
@@ -499,6 +510,16 @@ in {
         egress("other", other_target)
         host.fail(f"test -e {runtime}")
         host.fail(as_user("operator", f"ssh {target} </dev/null"))
+        # Wait for collection, then exercise listing an unloaded retained Instance.
+        host.wait_until_succeeds(as_user("operator",
+            "export XDG_RUNTIME_DIR=/run/user/1000; busctl --user call org.freedesktop.systemd1 "
+            "/org/freedesktop/systemd1 org.freedesktop.systemd1.Manager GetUnit s "
+            + shlex.quote(unit) + "; test $? -ne 0"))
+        client.succeed("ssh operator@host </dev/null")
+        host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
+        host.fail(f"test -e {runtime}")
+        operator(f"test -d {state}/ready; test -f {state}/state.img")
+        t.assertEqual(links(), [other_tap])
         operator(f"systemctl --user start {unit}")
         guest("systemctl is-system-running --wait || { journalctl -b -u 'persist-*.service' --no-pager; exit 1; }")
         guest("test -f /workspace/created; cmp /etc/hostname /workspace/retained; test ! -e /root/discarded")

@@ -9,12 +9,23 @@ if [[ ! -S $XDG_RUNTIME_DIR/bus ]]; then
 fi
 ref=${SSH_ORIGINAL_COMMAND:-}
 if [[ -z $ref ]]; then
-  # FIXME: This is wrong. Systemd is the authority, not fs state.
+  # Durable state identifies retained instances; systemd supplies their live state.
   state=$(systemd-path user-state-private)
   for instance in "$state"/drv.run/*; do
     id=${instance##*/}
     if [[ $id =~ ^[[:alnum:]]+$ && -f $instance/reference ]]; then
-      printf 'drv.run.%s\n' "$id"
+      IFS= read -r reference <"$instance/reference"
+      # Query exact names: stopped instances may have been unloaded by systemd.
+      unit_state=$(systemctl --user show "drv.run@$id.service" -p ActiveState,SubState,Result)
+      declare -A properties=()
+      while IFS='=' read -r property value; do
+        properties[$property]=$value
+      done <<<"$unit_state"
+      printf 'drv.run.%s %s: %s' "$id" "$reference" "${properties[SubState]}"
+      if [[ ${properties[ActiveState]} == failed ]]; then
+        printf ' (%s)' "${properties[Result]}"
+      fi
+      printf '\n'
     fi
   done
   exit 0
