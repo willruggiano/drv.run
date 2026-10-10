@@ -29,8 +29,11 @@ if [[ ! -d $STATE_DIRECTORY/ready ]]; then
   # An interrupted creation must be explicitly cleaned, never resumed or reformatted.
   mkdir "$STATE_DIRECTORY/creating"
   printf '%s\n' "$ref" >"$STATE_DIRECTORY/reference"
+  # Evaluate the Flake closure while creating independent Instance resources.
+  # systemd owns all ExecStartPre children, including on failure or interruption.
   nix print-dev-env --option accept-flake-config false --print-build-logs --json \
-    --profile "$STATE_DIRECTORY/environment" -- "$ref" </dev/null >/dev/null
+    --profile "$STATE_DIRECTORY/environment" -- "$ref" </dev/null >/dev/null &
+  environment_pid=$!
   nix-store --realise @runner@ --add-root "$STATE_DIRECTORY/runner" --indirect >/dev/null
   ssh-keygen -q -t ed25519 -N '' -f "$STATE_DIRECTORY/host-key"
   chmod 0600 "$STATE_DIRECTORY/host-key"
@@ -39,6 +42,7 @@ if [[ ! -d $STATE_DIRECTORY/ready ]]; then
     test ! -e state.img
     @create-volumes@
   )
+  wait "$environment_pid"
   mv "$STATE_DIRECTORY/creating" "$STATE_DIRECTORY/ready"
 elif [[ -e $RUNTIME_DIRECTORY/reference ]]; then
   echo 'Error: Instance identity already exists' >&2
