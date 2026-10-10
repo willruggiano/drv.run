@@ -383,23 +383,24 @@ in {
         operator(f"systemctl --user clean --what=state {failed_unit}")
         guest("test -f /workspace/created")
 
-    with subtest("failed disk creation cannot publish prepared Instance state"):
-        failed_unit = "drv.run@diskfailure.service"
-        failed_state = "/home/operator/.local/state/drv.run/diskfailure"
-        failed_runtime = "/run/user/1000/drv.run.diskfailure"
-        prior_links = links()
-        # Simulate a colliding disk object: creation must fail, never overwrite it.
-        operator(f"mkdir -p {failed_state}/state.img {failed_runtime}")
-        operator(f"printf '%s\\n' path:/home/operator/flake >{failed_runtime}/reference")
-        host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start {failed_unit}"))
-        operator(f"systemctl --user is-failed --quiet {failed_unit}")
-        operator(f"test -d {failed_state}/state.img; test -d {failed_state}/creating; test ! -e {failed_state}/ready")
-        operator(f'test "$(systemctl --user show -p MainPID --value {failed_unit})" -eq 0')
-        host.wait_until_fails(f"test -e {failed_runtime}")
-        t.assertEqual(links(), prior_links)
-        operator(f"systemctl --user reset-failed {failed_unit}")
-        operator(f"systemctl --user clean --what=state {failed_unit}")
-        guest("test -f /workspace/created")
+    for failed_id, collision in [("diskfailure", "state.img"), ("rootfailure", "runner")]:
+        with subtest(f"failed {collision} creation cannot publish prepared Instance state"):
+            failed_unit = f"drv.run@{failed_id}.service"
+            failed_state = f"/home/operator/.local/state/drv.run/{failed_id}"
+            failed_runtime = f"/run/user/1000/drv.run.{failed_id}"
+            prior_links = links()
+            # A colliding object must fail creation, never be overwritten.
+            operator(f"mkdir -p {failed_state}/{collision} {failed_runtime}")
+            operator(f"printf '%s\\n' path:/home/operator/flake >{failed_runtime}/reference")
+            host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start {failed_unit}"))
+            operator(f"systemctl --user is-failed --quiet {failed_unit}")
+            operator(f"test -d {failed_state}/{collision}; test -d {failed_state}/creating; test ! -e {failed_state}/ready")
+            operator(f'test "$(systemctl --user show -p MainPID --value {failed_unit})" -eq 0')
+            host.wait_until_fails(f"test -e {failed_runtime}")
+            t.assertEqual(links(), prior_links)
+            operator(f"systemctl --user reset-failed {failed_unit}")
+            operator(f"systemctl --user clean --what=state {failed_unit}")
+            guest("test -f /workspace/created")
 
     with subtest("other users cannot access the owner's Instance"):
         for path in [f"{runtime}/client.conf", f"{runtime}/client-key", f"{runtime}/seed.img", f"{state}/host-key", f"{state}/state.img"]:

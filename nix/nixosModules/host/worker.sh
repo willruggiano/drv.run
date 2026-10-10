@@ -34,7 +34,8 @@ if [[ ! -d $STATE_DIRECTORY/ready ]]; then
   nix print-dev-env --option accept-flake-config false --print-build-logs --json \
     --profile "$STATE_DIRECTORY/environment" -- "$ref" </dev/null >/dev/null &
   environment_pid=$!
-  nix-store --realise @runner@ --add-root "$STATE_DIRECTORY/runner" --indirect >/dev/null
+  nix-store --realise @runner@ --add-root "$STATE_DIRECTORY/runner" --indirect >/dev/null &
+  runner_pid=$!
   ssh-keygen -q -t ed25519 -N '' -f "$STATE_DIRECTORY/host-key"
   chmod 0600 "$STATE_DIRECTORY/host-key"
   (
@@ -43,6 +44,7 @@ if [[ ! -d $STATE_DIRECTORY/ready ]]; then
     @create-volumes@
   )
   wait "$environment_pid"
+  wait "$runner_pid"
   mv "$STATE_DIRECTORY/creating" "$STATE_DIRECTORY/ready"
 elif [[ -e $RUNTIME_DIRECTORY/reference ]]; then
   echo 'Error: Instance identity already exists' >&2
