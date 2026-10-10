@@ -68,6 +68,8 @@
   microvm = {
     mem = 3 * 1024;
     storeOnDisk = true;
+    # Avoid shared fragment decompression on the boot-critical read-only store.
+    storeDiskErofsFlags = ["-zlz4hc" "-Eztailpacking"];
     vcpu = 2;
     volumes = [
       {
