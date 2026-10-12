@@ -95,7 +95,7 @@
       builtins.readFile ./command.sh;
   };
 in {
-  imports = [self.nixosModules.nix ./network.nix];
+  imports = [../nix.nix ./network.nix];
 
   options.users.users = lib.mkOption {
     type = with lib.types;

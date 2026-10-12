@@ -303,11 +303,8 @@ in {
         t.assertEqual(info["config"]["vsock"]["cid"], 42)
 
     with subtest("host and guest use the configured Nix implementation"):
-        host.succeed("test -f /etc/nix/nix.conf && test -f /etc/nix/nix.custom.conf")
-        guest("test -f /etc/nix/nix.conf && test -f /etc/nix/nix.custom.conf")
-        host.succeed("test /run/current-system/sw/bin/nix -ef ${nodes.host.nix.package}/bin/nix")
-        guest("test /run/current-system/sw/bin/nix -ef ${nodes.host.nix.package}/bin/nix")
-        expected = json.loads(host.succeed("nix eval --json --expr builtins.nixVersion"))
+        expected = "${nodes.host.nix.package.version}"
+        t.assertEqual(json.loads(host.succeed("nix eval --json --expr builtins.nixVersion")), expected)
         t.assertEqual(json.loads(operator(f"ssh -T {target} nix eval --json --expr builtins.nixVersion")), expected)
         for settings in [json.loads(host.succeed("nix config show --json")),
                          json.loads(operator(f"ssh -T {target} nix config show --json"))]:
@@ -315,9 +312,6 @@ in {
             t.assertTrue(settings["sandbox"]["value"])
             t.assertTrue(settings["require-sigs"]["value"])
             t.assertTrue(settings["fsync-metadata"]["value"])
-            t.assertTrue(settings["lazy-trees"]["value"])
-            t.assertEqual(settings["eval-cores"]["value"], 0)
-            t.assertFalse(settings["lazy-locks"]["value"])
 
     with subtest("listing does not restart a running Instance"):
         client.succeed("ssh operator@host </dev/null")

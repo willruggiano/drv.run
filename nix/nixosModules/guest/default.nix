@@ -2,7 +2,6 @@
   nixpkgs,
   microvm,
   impermanence,
-  self,
   ...
 }: {
   config,
@@ -14,7 +13,7 @@
     microvm.nixosModules.microvm
     impermanence.nixosModules.impermanence
     ./cloud-hypervisor.nix
-    self.nixosModules.nix
+    ../nix.nix
   ];
 
   assertions = [

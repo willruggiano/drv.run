@@ -12,7 +12,6 @@
 
   inputs = {
     self.submodules = true;
-    determinate.url = "github:DeterminateSystems/determinate/27ba8489c5a7289c0d80e400fe813b31afca5dc2";
     impermanence = {
       url = "github:nix-community/impermanence";
       inputs = {
