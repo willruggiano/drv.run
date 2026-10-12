@@ -2,6 +2,7 @@
   nixpkgs,
   microvm,
   impermanence,
+  self,
   ...
 }: {
   config,
@@ -26,6 +27,7 @@
       message = "drv.run Guests must not share Host directories.";
     }
   ];
+
   boot = {
     initrd.systemd = {
       enable = true;
@@ -110,6 +112,7 @@
       flake-registry = "";
     };
   };
+  nixpkgs.overlays = [self.overlays.default];
   services.openssh = {
     enable = true;
     generateHostKeys = false;

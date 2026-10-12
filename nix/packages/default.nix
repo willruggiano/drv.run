@@ -43,6 +43,9 @@
   '';
 in {
   bench = pkgs.callPackage ./bench {};
+  cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {
+    inherit (inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}) cloud-hypervisor;
+  };
   subtrace = pkgs.callPackage ./subtrace.nix {};
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
 
