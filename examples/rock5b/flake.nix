@@ -2,6 +2,7 @@
   description = "An example of running drv.run on a Radxa ROCK 5B";
 
   inputs = {
+    self.submodules = true;
     drv-run.url = "path:../..";
     nixos-hardware = {
       url = "github:NixOS/nixos-hardware/4bc63156b109ee7b4103e3ec30565c8c92bde435";
@@ -28,33 +29,37 @@
       default = pkgs.mkShellNoCC {};
     });
 
-    apps = eachSystem (pkgs: let
-      toplevel = self.nixosConfigurations.rock5b.config.system.build.toplevel;
-    in {
+    apps = eachSystem (pkgs: {
       deploy = {
         type = "app";
         meta.description = "Deploy and reboot the rock5b host";
-        program = nixpkgs.lib.getExe (pkgs.writeShellApplication {
-          name = "deploy";
-          runtimeInputs = [pkgs.nix pkgs.openssh];
-          text = ''
-            if [[ $# -ne 1 || -z $1 ]]; then
-              echo 'Usage: deploy <ip-address>' >&2
-              exit 2
-            fi
+        program = nixpkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.deploy;
+      };
+    });
 
-            store_host=$1
-            if [[ $store_host == *:* ]]; then
-              store_host="[$store_host]"
-            fi
+    packages = eachSystem (pkgs: let
+      toplevel = self.nixosConfigurations.rock5b.config.system.build.toplevel;
+    in {
+      deploy = pkgs.writeShellApplication {
+        name = "deploy";
+        runtimeInputs = [pkgs.nix pkgs.openssh];
+        text = ''
+          if [[ $# -ne 1 || -z $1 ]]; then
+            echo 'Usage: deploy <ip-address>' >&2
+            exit 2
+          fi
 
-            nix copy --no-check-sigs --to "ssh-ng://root@$store_host" "${toplevel}"
-            ssh -l root -- "$1" \
-              'nix-env --profile /nix/var/nix/profiles/system --set ${toplevel} &&
-               ${toplevel}/bin/switch-to-configuration boot &&
-               systemctl reboot'
-          '';
-        });
+          store_host=$1
+          if [[ $store_host == *:* ]]; then
+            store_host="[$store_host]"
+          fi
+
+          nix copy --no-check-sigs --to "ssh-ng://root@$store_host" "${toplevel}"
+          ssh -l root -- "$1" \
+            'nix-env --profile /nix/var/nix/profiles/system --set ${toplevel} &&
+             ${toplevel}/bin/switch-to-configuration boot &&
+             systemctl reboot'
+        '';
       };
     });
 
