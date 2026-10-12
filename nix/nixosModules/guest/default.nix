@@ -2,6 +2,7 @@
   nixpkgs,
   microvm,
   impermanence,
+  self,
   ...
 }: {
   config,
@@ -13,6 +14,7 @@
     microvm.nixosModules.microvm
     impermanence.nixosModules.impermanence
     ./cloud-hypervisor.nix
+    self.nixosModules.nix
   ];
 
   assertions = [
@@ -123,7 +125,7 @@
       ForceCommand = lib.getExe (
         pkgs.writeShellApplication {
           name = "ssh-guest";
-          runtimeInputs = [pkgs.nix];
+          runtimeInputs = [config.nix.package];
           text = lib.replaceStrings ["@bash@"] ["${pkgs.bashInteractive}/bin/bash"] (builtins.readFile ./guest.sh);
         }
       );

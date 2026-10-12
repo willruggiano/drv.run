@@ -95,7 +95,7 @@
       builtins.readFile ./command.sh;
   };
 in {
-  imports = [./network.nix];
+  imports = [self.nixosModules.nix ./network.nix];
 
   options.users.users = lib.mkOption {
     type = with lib.types;
@@ -110,7 +110,9 @@ in {
   config = {
     environment.systemPackages = [
       launcher
-      self.packages.${pkgs.stdenv.hostPlatform.system}.bench
+      (self.packages.${pkgs.stdenv.hostPlatform.system}.bench.override {
+        nix = config.nix.package;
+      })
     ];
 
     assertions = [
