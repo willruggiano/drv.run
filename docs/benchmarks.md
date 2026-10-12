@@ -23,3 +23,13 @@ launch.sh
         |
         `-- conclude hook: collect systemd properties -> stop -> clean
 ```
+
+## Time to Shell
+
+<!-- time-to-shell:start -->
+
+| Configuration | Nix              | Runs | Shell (s) | Worker (s) | Boot wait (s) | Provision (s) | Manager gaps (s) |
+| ------------- | ---------------- | ---: | --------: | ---------: | ------------: | ------------: | ---------------: |
+| baseline      | nix (Nix) 2.34.8 |    1 |     8.424 |      0.400 |         5.654 |         1.275 |            0.000 |
+
+<!-- time-to-shell:end -->
