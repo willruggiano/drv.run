@@ -1,11 +1,13 @@
 {
-  writeShellApplication,
-  python3,
   bash,
-  hyperfine,
   coreutils,
-  systemd,
+  hyperfine,
+  lib,
   nix,
+  python3,
+  systemd,
+  writeShellApplication,
+  ...
 }:
 writeShellApplication {
   name = "bench";
@@ -23,7 +25,7 @@ writeShellApplication {
     fi
     exec python3 ${./benchmark.py} run \
       --launcher /run/current-system/sw/bin/drv.run \
-      --bash ${bash}/bin/bash "$@"
+      --bash ${lib.getExe bash} "$@"
   '';
   meta.description = ''
     The drv.run benchmark runner.

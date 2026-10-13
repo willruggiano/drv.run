@@ -225,7 +225,7 @@ in {
         ExecStart = "${tap}/bin/drv-run-tap %S/drv.run/%i/runner/bin/microvm-run";
         ExecStartPost = lib.getExe provision;
         ExecStop = "%S/drv.run/%i/runner/bin/microvm-shutdown";
-        ExecStopPost = "${pkgs.coreutils}/bin/rm -f %t/drv.run.%i/client.conf";
+        ExecStopPost = "${lib.getExe' pkgs.coreutils "rm"} -f %t/drv.run.%i/client.conf";
         KillMode = "control-group";
         Restart = "no";
         RuntimeDirectory = "drv.run.%i";

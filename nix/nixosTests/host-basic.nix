@@ -337,7 +337,7 @@ in {
         guest("systemctl is-system-running --wait || { journalctl -b -u 'persist-*.service' --no-pager; exit 1; }")
         guest("test $(id -u) -eq 0; test -f /workspace/created; cp /etc/hostname /workspace/retained; touch /root/discarded")
         guest("test -f /root/discarded; cmp /etc/hostname /workspace/retained")
-        guest("systemctl is-active --quiet sshd-vsock.socket; test $(ss -H -ltn 'sport = :22' | wc -l) -eq 0")
+        guest("systemctl is-active --quiet sshd-vsock.socket; systemctl is-active --quiet 'sshd-vsock@*.service'; test $(ss -H -ltn 'sport = :22' | wc -l) -eq 0")
         guest("test $(find /sys/class/net -mindepth 1 -maxdepth 1 | wc -l) -eq 2; test -d /sys/class/net/lo")
         guest('test -r /run/drv-run-seed/environment-path; '
               'findmnt -n -O ro,nodev,nosuid,noexec /run/drv-run-seed >/dev/null; '

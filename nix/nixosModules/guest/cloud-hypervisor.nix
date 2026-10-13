@@ -107,7 +107,7 @@
           "authorized-keys:/run/drv-run-seed/authorized-keys"
           "host-key:/run/drv-run-seed/host-key"
         ];
-        ExecStart = lib.mkForce "-${pkgs.openssh}/bin/sshd -i -D -f /etc/ssh/sshd_config -h %d/host-key -o AuthorizedKeysFile=%d/authorized-keys";
+        ExecStart = lib.mkForce "-${lib.getExe' pkgs.openssh "sshd"} -i -D -f /etc/ssh/sshd_config -h %d/host-key -o AuthorizedKeysFile=%d/authorized-keys";
       };
     };
   };
