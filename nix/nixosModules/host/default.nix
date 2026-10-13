@@ -94,6 +94,15 @@
     text =
       builtins.readFile ./command.sh;
   };
+  manager = pkgs.writeShellApplication {
+    name = "drv.run";
+    runtimeInputs = [pkgs.coreutils pkgs.util-linux config.systemd.package];
+    text =
+      lib.replaceStrings
+      ["@launcher@" "@owners@"]
+      [(lib.getExe launcher) (lib.escapeShellArgs (map (user: user.name) normalUsers))]
+      (builtins.readFile ./cli.sh);
+  };
 in {
   imports = [../nix.nix ./network.nix];
 
@@ -109,7 +118,7 @@ in {
 
   config = {
     environment.systemPackages = [
-      launcher
+      manager
       (self.packages.${pkgs.stdenv.hostPlatform.system}.bench.override {
         nix = config.nix.package;
       })

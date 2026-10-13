@@ -261,6 +261,19 @@ in {
         client.succeed("ssh root@host 'touch /root/ordinary-ssh'")
         host.succeed("test -f /root/ordinary-ssh")
 
+    with subtest("root management validates requests without creating instances"):
+        for request in ["", "kill --all", "stop", "clean", "list extra", "list -u", "stop --all extra", "stop '*'", "stop ../bad", "clean --all extra", "clean '*'", "clean ../bad"]:
+            status, _ = host.execute("drv.run " + request)
+            t.assertEqual(status, 2)
+        for request in ["list -u disabled", "list -u root", "stop -u missing --all", "stop nonexistent", "clean -u missing --all", "clean nonexistent"]:
+            status, _ = host.execute("drv.run " + request)
+            t.assertEqual(status, 1)
+        client.succeed("ssh root@host drv.run list")
+        host.succeed("drv.run list -u operator; drv.run stop -u operator --all; drv.run stop --all")
+        host.succeed("drv.run clean -u operator --all; drv.run clean --all")
+        for user in ["operator", "other"]:
+            host.fail(f"test -d /home/{user}/.local/state/drv.run")
+
     with subtest("SSH creation runs as the authenticated owner"):
         operator("mkdir /home/operator/flake")
         operator("cp ${fixture} /home/operator/flake/flake.nix")
@@ -418,7 +431,8 @@ in {
                 host.fail(f"test -e /tmp/{marker}")
                 client.fail(f"test -e /tmp/{marker}")
             operator(f"systemctl --user stop {command_unit}")
-            operator(f"systemctl --user clean --what=state {command_unit}")
+            host.succeed(f"drv.run clean {command_id}")
+            host.wait_until_fails(f"test -e {command_state}")
         operator(f"systemctl --user is-active --quiet {unit}")
         guest("test -f /workspace/created")
 
@@ -443,7 +457,8 @@ in {
         operator(f"test -d {failed_state}/creating; test ! -e {failed_state}/ready")
         t.assertEqual(links(), prior_links)
         operator(f"systemctl --user reset-failed {failed_unit}")
-        operator(f"systemctl --user clean --what=state {failed_unit}")
+        host.succeed(f"drv.run clean -u operator drv.run.{failed_id}")
+        host.wait_until_fails(f"test -e {failed_state}")
         guest("test -f /workspace/created")
 
     for failed_id, collision in [("diskfailure", "state.img"), ("rootfailure", "runner")]:
@@ -545,6 +560,24 @@ in {
         probe += "\ntry: fcntl.ioctl(fd,0x400454ca,struct.pack('16sH'," + repr(tap_name.encode()) + ",0x5002))\nexcept PermissionError: pass\nelse: raise AssertionError('foreign TAP attachment')"
         host.succeed(as_user("other", "python3 -c " + shlex.quote(probe)))
 
+    with subtest("root management lists and restricts operations to the selected owner"):
+        # An inherited SSH request must never create an Instance during listing.
+        host.succeed("SSH_ORIGINAL_COMMAND=path:/does-not-exist drv.run list")
+        host.succeed("drv.run list -u operator; drv.run list -u other")
+        host.fail(f"drv.run stop -u other {target}")
+        host.fail(f"drv.run clean -u other {target}")
+        # Propagate systemd failure without stopping or deleting a running instance.
+        expected_status, _ = host.execute(f"systemctl --user --machine=operator@.host clean --what=state {unit}")
+        t.assertNotEqual(expected_status, 0)
+        for selection in [target, "--all"]:
+            status, _ = host.execute(f"drv.run clean -u operator {selection}")
+            t.assertEqual(status, expected_status)
+        operator(f"systemctl --user is-active --quiet {unit}")
+        host.succeed(f"test -f {state}/state.img; test -f {state}/reference")
+        host.succeed(as_user("other", f"XDG_RUNTIME_DIR=/run/user/1001 systemctl --user is-active --quiet {other_unit}"))
+        host.fail(as_user("other", f"drv.run stop -u operator {target}"))
+        host.fail(as_user("other", f"drv.run clean -u operator {target}"))
+
     with subtest("wrong host and client keys fail closed"):
         operator(f"ssh-keygen -q -t ed25519 -N \"\" -f {runtime}/unrelated-key")
         operator(f"printf '{target} %s\\n' \"$(ssh-keygen -y -f {runtime}/unrelated-key)\" > {runtime}/wrong-known-hosts")
@@ -555,7 +588,7 @@ in {
     with subtest("declared state survives a fresh Guest boot"):
         operator(f"cp {runtime}/client-key {state}/old-client-key")
         operator(f"cp {state}/host-key {state}/old-host-key")
-        operator(f"systemctl --user stop {unit}")
+        client.succeed(f"ssh root@host drv.run stop -u operator {target}")
         operator(f"${pkgs.e2fsprogs}/bin/e2fsck -fn {state}/state.img")
         host.wait_until_fails(f"test -e /sys/class/net/{tap_name}")
         t.assertEqual(links(), [other_tap])
@@ -568,6 +601,7 @@ in {
             "/org/freedesktop/systemd1 org.freedesktop.systemd1.Manager GetUnit s "
             + shlex.quote(unit) + "; test $? -ne 0"))
         client.succeed("ssh operator@host </dev/null")
+        host.succeed(f"drv.run list; drv.run stop {instance_id}")
         host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
         host.fail(f"test -e {runtime}")
         operator(f"test -d {state}/ready; test -f {state}/state.img")
@@ -580,7 +614,8 @@ in {
         host.fail(as_user("operator", service_ssh(f"{state}/old-client-key", f"{runtime}/known_hosts")))
         operator(service_ssh(f"{runtime}/client-key", f"{runtime}/known_hosts"))
         operator(f"rm {state}/old-client-key {state}/old-host-key")
-        operator(f"systemctl --user stop {unit}")
+        host.succeed("drv.run stop -u operator --all")
+        host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
         operator(f"${pkgs.e2fsprogs}/bin/e2fsck -fn {state}/state.img")
 
     with subtest("failed exec releases allocated resources without disrupting its peer"):
@@ -614,10 +649,24 @@ in {
         operator(f"systemctl --user reset-failed {unit}")
         operator(f"systemctl --user start {unit}")
         egress()
-        operator(f"systemctl --user stop {unit}")
-        host.succeed(as_user("other", f"XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop {other_unit}"))
+        host.succeed("drv.run stop --all")
+        for user, uid, stopped_unit, retained_state in [("operator", 1000, unit, state), ("other", 1001, other_unit, other_state)]:
+            host.fail(as_user(user, f"XDG_RUNTIME_DIR=/run/user/{uid} systemctl --user is-active --quiet {stopped_unit}"))
+            host.succeed(f"test -f {retained_state}/state.img; test -f {retained_state}/reference")
         host.succeed(f"e2fsck -fn {other_state}/state.img")
         host.wait_until_succeeds("test -z \"$(find /sys/class/net -name 'ns-*')\"")
         host.wait_until_succeeds("test -z \"$(find /run/systemd/nsresource/registry -maxdepth 1 -name 'i*.userns')\"")
+
+    with subtest("clean removes retained state, including unloaded instances"):
+        host.wait_until_succeeds(as_user("operator",
+            "export XDG_RUNTIME_DIR=/run/user/1000; busctl --user call org.freedesktop.systemd1 "
+            "/org/freedesktop/systemd1 org.freedesktop.systemd1.Manager GetUnit s "
+            + shlex.quote(unit) + "; test $? -ne 0"))
+        host.succeed("drv.run clean -u operator --all")
+        host.wait_until_fails(f"test -e {state}")
+        host.succeed(f"test -f {other_state}/state.img; test -f {other_state}/reference")
+        host.succeed("drv.run clean --all")
+        host.wait_until_fails(f"test -e {other_state}")
+        host.succeed("drv.run clean --all; drv.run list")
   '';
 }
