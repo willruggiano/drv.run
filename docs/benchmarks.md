@@ -6,7 +6,7 @@
 ```text
 Host: hyperfine
   |
-  | timed: SSH_ORIGINAL_COMMAND=<reference> drv.run exit
+  |
   v
 launch.sh
   +-- validate request; create runtime directory
@@ -28,10 +28,8 @@ launch.sh
 
 <!-- time-to-shell:start -->
 
-| Configuration | Nix                                 | Runs | Shell (s) | Worker (s) | Boot wait (s) | Provision (s) | Manager gaps (s) |
-| ------------- | ----------------------------------- | ---: | --------: | ---------: | ------------: | ------------: | ---------------: |
-| baseline      | nix (Nix) 2.34.8                    |    1 |     8.424 |      0.400 |         5.654 |         1.275 |            0.000 |
-| nix-2-35      | nix (Nix) 2.35.2                    |    1 |     8.233 |      0.393 |         5.464 |         1.273 |            0.000 |
-| determinate   | nix (Determinate Nix 3.23.1) 2.35.2 |    1 |     8.760 |      0.409 |         5.931 |         1.460 |            0.000 |
+| Configuration | Nix              | Runs | Shell (s) | Worker (s) | Boot wait (s) | Provision (s) | Manager gaps (s) |
+| ------------- | ---------------- | ---: | --------: | ---------: | ------------: | ------------: | ---------------: |
+| baseline      | nix (Nix) 2.35.2 |   20 |     8.307 |      0.398 |         5.542 |         1.285 |         0.000466 |
 
 <!-- time-to-shell:end -->
