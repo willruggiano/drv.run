@@ -35,7 +35,9 @@ stdenv.mkDerivation (finalAttrs: {
     hash = "sha256-Ug85lUiNxj1S/H6mbTJpypvSqXOj18uGUntxeF7JEcY=";
     pnpm = pnpm_10;
   };
+
   dontBuild = true;
+  doCheck = true;
 
   installPhase = ''
     runHook preInstall

@@ -22,10 +22,6 @@
       assertion = config.boot.initrd.systemd.enable;
       message = "drv.run persistence requires systemd initrd mount ordering.";
     }
-    {
-      assertion = config.microvm.shares == [];
-      message = "drv.run Guests must not share Host directories.";
-    }
   ];
 
   boot = {
@@ -67,12 +63,6 @@
         {
           directory = ".local/state/nix";
           mode = "0700";
-        }
-      ];
-      files = [
-        {
-          file = ".pi/agent/auth.json";
-          parentDirectory.mode = "0700";
         }
       ];
     };

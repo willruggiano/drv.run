@@ -2,37 +2,24 @@
 
 # Todos
 
-- [~] [[security.md]]
-- [~] Generic guest-from-devshell machinery?
+- Practical usability improvements:
+  - [ ] Add an owner-scoped host command that obtains the guest connection FD
+        from systemd-ssh-proxy
+        (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
+        bytes bidirectionally between that FD and the SSH exec channel’s
+        stdin/stdout.
+- [ ] [[security.md]]
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
-- [~] Ssh key architecture -> [[security.md]]
-- [ ] Add `nq` and `zmx` to the default toolchain, for sync and parallel
-      background dispatch (great for sub-agents, long-running commands,
-      monitoring)
-- [ ] Expose operator services _in the host_ eg. agentsview
-- [ ] pi-notify should not notify on "Operation aborted", if possible
-- [ ] Decouple `pi` bind mounts from nixosModule in
-      nix/nixosModules/guest/default.nix
 - [ ] HTTP proxy
-- [ ] Plain `ssh drv.run` continues listing instances even after stopping
-- [ ] Play with Pi's codemode + decision models. The former is clearly OP. The
-      latter _might_ be a great companion if we can run a local decision model.
-      At least until the Decisions API is part of my ChatGPT sub :P
-- [ ] Implement a [headlong] inspired RLM using pi-durable and codemode. There
-      are two primary things to determine here: (1) the model-code-model loop
-      (the core RLM machinery), and (2) trajectory projection (ie. context). The
-      latter will be quite interesting as both a context/fork problem (to
-      implement "context as a projection of trajectory") and a compaction
-      problem (to implement "tiered context compaction").
 - [ ] Make the host-basic check work on aarch64
 - [ ] Time to shell (TTS) optimization. Potential inspiration:
+  - Switch to determinate Nix for OTEL + otel-desktop-viewer + otel-cli for
+    tracing individual scripts (if necessary)
   - <https://github.com/fzakaria/seenix> (eval optimization)
   - <https://github.com/tomberek/fastpkgs> (eval optimization)
   - <https://github.com/NixOS/nixpkgs/pull/401751>
   - <https://github.com/NixOS/nixpkgs/blob/master/nixos/doc/manual/development/modular-services.md>
   - <https://github.com/arianvp/server-optimised-nixos/tree/master>
-- [ ] Rock5b deployment script
-- [ ] Design the `ssh drv.run` entrypoint
 - [ ] Eliminate (and ban) evaluation warnings in `nix flake check`
 - [ ] Client requires ssh config:
   ```sshconfig
@@ -94,6 +81,15 @@
   vm-test-run-host-basic> host # [ 58.329048] microvm-run[1272]: Unmounting /persist...
   vm-test-run-host-basic> host # [ 58.334465] microvm-run[1272]: [ OK ] Unmounted /persist.
   ```
+
+## Low priority ideas
+
+- [ ] Implement a [headlong] inspired RLM using pi-durable and codemode. There
+      are two primary things to determine here: (1) the model-code-model loop
+      (the core RLM machinery), and (2) trajectory projection (ie. context). The
+      latter will be quite interesting as both a context/fork problem (to
+      implement "context as a projection of trajectory") and a compaction
+      problem (to implement "tiered context compaction").
 
 ## Stuff to look into
 

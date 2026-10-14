@@ -26,7 +26,9 @@ buildNpmPackage (finalAttrs: {
     "--legacy-peer-deps"
     "--ignore-scripts"
   ];
+
   dontNpmBuild = true;
+  doCheck = true;
 
   installPhase = ''
     runHook preInstall
