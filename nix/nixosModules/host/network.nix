@@ -113,6 +113,7 @@ in {
       };
     };
     networking = {
+      useNetworkd = lib.mkDefault true;
       dhcpcd.denyInterfaces = ["ns-*"];
       networkmanager.unmanaged = ["interface-name:ns-*"];
       nftables = {

@@ -111,7 +111,6 @@
           networking = {
             hostName = "rock5b";
             useDHCP = false;
-            useNetworkd = true;
             firewall.enable = true;
           };
           systemd.network.networks."10-ethernet" = {

@@ -54,8 +54,9 @@
     volumes = lib.mkAfter [
       {
         image = "seed.img";
-        label = "drv-run-seed";
-        mountPoint = "/run/drv-run-seed";
+        # The worker labels this disk; declare its mount explicitly below.
+        label = null;
+        mountPoint = null;
         fsType = "ext4";
         size = 8;
         autoCreate = false;
@@ -64,6 +65,8 @@
     ];
   };
   fileSystems."/run/drv-run-seed" = {
+    device = "/dev/disk/by-label/drv-run-seed";
+    fsType = "ext4";
     # SSH readiness requires the seed; mount it during initial device discovery.
     neededForBoot = true;
     options = ["ro" "nodev" "nosuid" "noexec"];

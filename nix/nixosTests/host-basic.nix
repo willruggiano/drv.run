@@ -229,6 +229,8 @@ in {
     start_all()
     host.wait_for_unit("default.target")
     host.wait_for_unit("sshd.service")
+    host.wait_for_unit("systemd-networkd.service")
+    host.fail("systemctl is-active --quiet dhcpcd.service")
     client.wait_for_unit("default.target")
     client.wait_for_unit("nginx.service")
     client.wait_for_unit("dnsmasq.service")
@@ -344,7 +346,8 @@ in {
         guest("systemctl is-active --quiet sshd-vsock.socket; systemctl is-active --quiet 'sshd-vsock@*.service'; test $(ss -H -ltn 'sport = :22' | wc -l) -eq 0")
         guest("test $(find /sys/class/net -mindepth 1 -maxdepth 1 | wc -l) -eq 2; test -d /sys/class/net/lo")
         guest('test ! -e /run/drv-run-seed/environment-path; '
-              'findmnt -n -O ro,nodev,nosuid,noexec /run/drv-run-seed >/dev/null; '
+              'findmnt -n --evaluate --source LABEL=drv-run-seed --types ext4 '
+              '-O ro,nodev,nosuid,noexec --mountpoint /run/drv-run-seed >/dev/null; '
               'found=false; for key in /run/credentials/*/authorized-keys; do '
               'test -f "$key" || continue; cmp /run/drv-run-seed/authorized-keys "$key"; '
               'cmp /run/drv-run-seed/host-key "$(dirname "$key")/host-key"; '
