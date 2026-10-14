@@ -1,28 +1,28 @@
 # shellcheck shell=bash
 set -euo pipefail
 
+profile=/nix/var/nix/profiles/project
+
 case ${SSH_ORIGINAL_COMMAND:-} in
 'nix-daemon --stdio')
   exec nix-daemon --stdio
   ;;
 root-environment)
-  IFS= read -r environment </run/drv-run-seed/environment-path
+  IFS= read -r environment
   if [[ $environment != /nix/store/*-env || $environment == *[[:space:]]* ]]; then
     echo 'Error: invalid prepared environment path' >&2
     exit 1
   fi
-  nix print-dev-env --json -- "$environment" >/dev/null
-  nix-store --realise --add-root /run/environment --indirect "$environment" >/dev/null
-  exit 0
+  exec nix print-dev-env --json --profile "$profile" -- "$environment" >/dev/null
   ;;
 esac
 
-if [[ ! -L /run/environment ]]; then
+if [[ ! -L $profile ]]; then
   echo 'Error: a prepared environment is required' >&2
   exit 1
 fi
 cd /workspace
 if [[ -z ${SSH_ORIGINAL_COMMAND:-} ]]; then
-  exec nix develop -- /run/environment
+  exec nix develop -- "$profile"
 fi
-exec nix develop /run/environment --command @bash@ -c "$SSH_ORIGINAL_COMMAND"
+exec nix develop "$profile" --command @bash@ -c "$SSH_ORIGINAL_COMMAND"

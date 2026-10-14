@@ -5,6 +5,7 @@
   tap = import ../nixosModules/host/tap.nix {inherit pkgs;};
   shell = pkgs.mkShell {
     packages = [pkgs.curl pkgs.python3 pkgs.iproute2];
+    DRV_RUN_TEST_VALUE = "captured";
     shellHook = "export DRV_RUN_TEST_READY=1";
   };
   payload = pkgs.writeText "egress-payload" "offline Guest egress\n";
@@ -19,6 +20,7 @@
       outputs = { nixpkgs, ... }: {
         devShells.x86_64-linux.default = let pkgs = nixpkgs.legacyPackages.x86_64-linux; in pkgs.mkShell {
           packages = [pkgs.curl pkgs.python3 pkgs.iproute2];
+          DRV_RUN_TEST_VALUE = "captured";
           shellHook = "export DRV_RUN_TEST_READY=1";
         };
       };
@@ -220,7 +222,7 @@ in {
             "-o", "UserKnownHostsFile=" + known_hosts,
             "-o", "ProxyUseFdpass=yes", "-o", "ConnectTimeout=2",
             "-o", "ProxyCommand=${nodes.host.systemd.package}/lib/systemd/systemd-ssh-proxy vsock-mux" + runtime + "/notify.vsock %p",
-            "root@" + target, "root-environment",
+            "root@" + target, "true",
         ]
         return shlex.join(options)
 
@@ -290,6 +292,8 @@ in {
         target = "drv.run." + instance_id
         runtime = "/run/user/1000/" + target
         unit = "drv.run@" + instance_id + ".service"
+        profile = "/nix/var/nix/profiles/project"
+        environment = operator(f"readlink -e {state}/environment").strip()
         operator(f"systemctl --user is-active --quiet {unit}")
         operator(f'test "$(stat -c %u /proc/$(systemctl --user show -p MainPID --value {unit}))" -eq 1000')
         for path in [state, runtime]:
@@ -339,7 +343,7 @@ in {
         guest("test -f /root/discarded; cmp /etc/hostname /workspace/retained")
         guest("systemctl is-active --quiet sshd-vsock.socket; systemctl is-active --quiet 'sshd-vsock@*.service'; test $(ss -H -ltn 'sport = :22' | wc -l) -eq 0")
         guest("test $(find /sys/class/net -mindepth 1 -maxdepth 1 | wc -l) -eq 2; test -d /sys/class/net/lo")
-        guest('test -r /run/drv-run-seed/environment-path; '
+        guest('test ! -e /run/drv-run-seed/environment-path; '
               'findmnt -n -O ro,nodev,nosuid,noexec /run/drv-run-seed >/dev/null; '
               'found=false; for key in /run/credentials/*/authorized-keys; do '
               'test -f "$key" || continue; cmp /run/drv-run-seed/authorized-keys "$key"; '
@@ -348,6 +352,22 @@ in {
         operator(f"systemctl --user is-active --quiet {unit}")
         status, _ = host.execute(as_user("operator", f"ssh {target} drv-run-command-does-not-exist </dev/null"))
         t.assertEqual(status, 127)
+
+    with subtest("the project profile retains the captured environment through garbage collection"):
+        host.fail(f"test -e {runtime}/environment-path")
+        guest(f"test ! -e /run/environment; test -L {profile}; test -L {profile}-1-link")
+        guest(f"test {profile} -ef {shlex.quote(environment)}")
+        guest('test "$DRV_RUN_TEST_READY" = 1; test "$DRV_RUN_TEST_VALUE" = captured; curl --version >/dev/null')
+        # Reject invalid registration requests without disturbing the profile.
+        for invalid in ["", "/tmp/not-an-env", environment + " extra"]:
+            host.fail(as_user("operator",
+                "printf '%s\\n' " + shlex.quote(invalid) + f" | ssh -T {target} root-environment"))
+        guest(f"test {profile} -ef {shlex.quote(environment)}; test ! -e {profile}-2-link")
+        # Collect through the daemon transport, outside any nix develop session.
+        guest("printf '%s' unrooted > /workspace/unrooted; nix-store --add /workspace/unrooted > /workspace/unrooted-path")
+        operator(f"nix store gc --store ssh-ng://{target}")
+        guest(f"test -r {profile}; test ! -e \"$(< /workspace/unrooted-path)\"; "
+              'test "$DRV_RUN_TEST_READY" = 1; test "$DRV_RUN_TEST_VALUE" = captured; curl --version >/dev/null')
 
     with subtest("VSOCK notifications tolerate immediate privileged source-port reuse"):
         # sd_notify binds the highest free privileged source port. A stale reset
@@ -590,6 +610,10 @@ in {
         operator(f"cp {state}/host-key {state}/old-host-key")
         client.succeed(f"ssh root@host drv.run stop -u operator {target}")
         operator(f"${pkgs.e2fsprogs}/bin/e2fsck -fn {state}/state.img")
+        # Inspect the stopped disk before provisioning can recreate any links.
+        host.succeed(f"modprobe loop && mkdir -p /mnt/retained-state && mount -o loop,ro,noload {state}/state.img /mnt/retained-state")
+        host.succeed(f"test -L /mnt/retained-state{profile} && test -L /mnt/retained-state{profile}-1-link")
+        host.succeed("umount /mnt/retained-state && rmdir /mnt/retained-state")
         host.wait_until_fails(f"test -e /sys/class/net/{tap_name}")
         t.assertEqual(links(), [other_tap])
         egress("other", other_target)
@@ -606,9 +630,13 @@ in {
         host.fail(f"test -e {runtime}")
         operator(f"test -d {state}/ready; test -f {state}/state.img")
         t.assertEqual(links(), [other_tap])
+        operator("mv /home/operator/flake /home/operator/saved-flake")
         operator(f"systemctl --user start {unit}")
         guest("systemctl is-system-running --wait || { journalctl -b -u 'persist-*.service' --no-pager; exit 1; }")
         guest("test -f /workspace/created; cmp /etc/hostname /workspace/retained; test ! -e /root/discarded")
+        guest(f"test {profile} -ef {shlex.quote(environment)}; test ! -e {profile}-2-link")
+        guest('test "$DRV_RUN_TEST_READY" = 1; test "$DRV_RUN_TEST_VALUE" = captured; curl --version >/dev/null')
+        operator("mv /home/operator/saved-flake /home/operator/flake")
         egress()
         operator(f"cmp {state}/host-key {state}/old-host-key")
         host.fail(as_user("operator", service_ssh(f"{state}/old-client-key", f"{runtime}/known_hosts")))

@@ -12,10 +12,10 @@ until ssh -F @service-ssh@ -fMN "$name" </dev/null; do
   sleep 1
 done
 printf 'Copying the prepared closure into the guest...\n'
-IFS= read -r environment <"$RUNTIME_DIRECTORY/environment-path"
+environment=$(readlink -e "$STATE_DIRECTORY/environment")
 # Use our master rather than asking Nix to start another connection pool.
 nix copy --no-check-sigs --to "ssh-ng://$name?max-connections=1" "$environment"
-ssh -F @service-ssh@ "$name" root-environment </dev/null
+printf '%s\n' "$environment" | ssh -F @service-ssh@ "$name" root-environment
 ssh -F @service-ssh@ -O exit "$name" </dev/null
 printf 'Provisioned the environment.\n'
 cp "$RUNTIME_DIRECTORY/service-connection.conf" "$RUNTIME_DIRECTORY/.client.conf"

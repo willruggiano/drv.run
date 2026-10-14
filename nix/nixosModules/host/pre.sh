@@ -56,7 +56,7 @@ test -f "$STATE_DIRECTORY/state.img"
 test ! -L "$STATE_DIRECTORY/state.img"
 test -f "$STATE_DIRECTORY/reference"
 test -x "$STATE_DIRECTORY/runner/bin/microvm-run"
-readlink -e "$STATE_DIRECTORY/environment" >"$RUNTIME_DIRECTORY/environment-path"
+test -e "$STATE_DIRECTORY/environment"
 ln -s "$STATE_DIRECTORY/state.img" "$RUNTIME_DIRECTORY/state.img"
 ln -s "$STATE_DIRECTORY/host-key" "$RUNTIME_DIRECTORY/host-key"
 ssh-keygen -q -t ed25519 -N '' -f "$RUNTIME_DIRECTORY/client-key"
@@ -68,7 +68,6 @@ staging=$(mktemp -d "$RUNTIME_DIRECTORY/seed.XXXXXXXX")
 trap 'rm -rf "$staging"' EXIT
 cp "$RUNTIME_DIRECTORY/authorized-keys" "$staging/authorized-keys"
 cp "$STATE_DIRECTORY/host-key" "$staging/host-key"
-cp "$RUNTIME_DIRECTORY/environment-path" "$staging/environment-path"
 chmod 0600 "$staging/"*
 truncate -s 8M "$RUNTIME_DIRECTORY/seed.img"
 mke2fs -q -t ext4 -L drv-run-seed -E root_owner=0:0,root_perms=0700 \
