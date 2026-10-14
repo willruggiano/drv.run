@@ -7,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import override
 
-from .. import benchmark as b
+from .. import main as b
 
 NAME = "drv.run@Test123.service"
 PEER = "drv.run@Peer456.service"

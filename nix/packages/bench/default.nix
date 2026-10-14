@@ -21,13 +21,11 @@ writeShellApplication {
   text = ''
     if [[ ''${1:-} == recover ]]; then
       shift
-      exec python3 ${./benchmark.py} recover "$@"
+      exec python3 ${./main.py} recover "$@"
     fi
-    exec python3 ${./benchmark.py} run \
+    exec python3 ${./main.py} run \
       --launcher /run/current-system/sw/bin/drv.run \
       --bash ${lib.getExe bash} "$@"
   '';
-  meta.description = ''
-    The drv.run benchmark runner.
-  '';
+  meta.description = "drv.run benchmark runner";
 }

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from typing import override
 
-from .. import benchmark as b
+from .. import main as b
 from .. import report
 from .benchmark_test import export, fixture, phase
 

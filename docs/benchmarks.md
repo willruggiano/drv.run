@@ -13,8 +13,7 @@ launch.sh
   +-- systemctl --user start drv.run@ID.service
   |     +-- ExecStartPre: worker
   |     +-- ExecStart: TAP -> runner -> Cloud Hypervisor -> Guest READY=1
-  |     +-- ExecStartPost: SSH store probe -> copy -> root Flake closure
-  |     |                 -> publish client.conf
+  |     +-- ExecStartPost: SSH store probe -> copy -> root Flake closure -> publish client.conf
   |     `-- active
   `-- exec ssh -T drv.run.ID exit
         `-- Guest ForceCommand -> nix develop -> bash -c exit
@@ -28,8 +27,9 @@ launch.sh
 
 <!-- time-to-shell:start -->
 
-| Configuration | Nix              | Runs | Shell (s) | Worker (s) | Boot wait (s) | Provision (s) | Manager gaps (s) |
-| ------------- | ---------------- | ---: | --------: | ---------: | ------------: | ------------: | ---------------: |
-| baseline      | nix (Nix) 2.35.2 |   20 |     8.307 |      0.398 |         5.542 |         1.285 |         0.000466 |
+| Commit   |     Shell (s) |    Worker (s) | Boot wait (s) | Provision (s) | Manager gaps (s) |
+| -------- | ------------: | ------------: | ------------: | ------------: | ---------------: |
+| 98ffde97 | 8.132 (-2.1%) | 0.383 (-3.6%) | 5.480 (-1.1%) | 1.203 (-6.4%) | 0.000478 (+2.5%) |
+| baseline |         8.307 |         0.398 |         5.542 |         1.285 |         0.000466 |
 
 <!-- time-to-shell:end -->

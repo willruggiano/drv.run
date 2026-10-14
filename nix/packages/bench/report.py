@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
-from . import benchmark as b
+from . import main as b
 
 START = "<!-- time-to-shell:start -->"
 END = "<!-- time-to-shell:end -->"
