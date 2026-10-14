@@ -36,6 +36,9 @@
     nixpkgs -> ${inputs.nixpkgs.outPath}
                `-- docs -> /doc
                `-- nixos manual -> /nixos/doc/manual
+    nix -> ${pkgs.nix.doc}
+    deploy-rs -> ${inputs.deploy-rs.outPath}
+    sops-nix -> ${inputs.sops-nix.outPath}
 
     Man pages (read with `man -l`, ignore locale warnings):
     openssh -> ${pkgs.openssh.man}

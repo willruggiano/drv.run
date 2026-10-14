@@ -100,6 +100,7 @@ These seem useful on the inside;
 - <https://github.com/ctxrs/ctx> (search session history, freemium :/)
 - <https://github.com/kenn-io/agentsview> (could be served by the host)
 - <https://github.com/nicosuave/memex> (similar to ctx, works over ssh, nix)
+- <https://docs.openhands.dev/openhands/usage/agent-canvas/overview>
 
 Others;
 

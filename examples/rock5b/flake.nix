@@ -4,18 +4,28 @@
   inputs = {
     self.submodules = true;
     drv-run.url = "path:../..";
+    deploy-rs = {
+      url = "github:serokell/deploy-rs/45ba3f8c5cb28396fff71671806e2550b464ac86";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    sops-nix = {
+      url = "github:Mic92/sops-nix/ee48786c6f9160d2c1a084aac841f68195b8420c";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixos-hardware = {
       url = "github:NixOS/nixos-hardware/4bc63156b109ee7b4103e3ec30565c8c92bde435";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nixpkgs.follows = "drv-run/nixpkgs";
+    nixpkgs.url = "github:NixOS/nixpkgs/a32edd7654519351e48e80372a928df336394670";
   };
 
   outputs = {
     self,
     drv-run,
+    deploy-rs,
     nixos-hardware,
     nixpkgs,
+    sops-nix,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-linux"];
@@ -26,47 +36,79 @@
         f pkgs);
   in {
     devShells = eachSystem (pkgs: {
-      default = pkgs.mkShellNoCC {};
+      default = pkgs.mkShellNoCC {
+        packages = [pkgs.age pkgs.sops pkgs.ssh-to-age];
+      };
     });
 
     apps = eachSystem (pkgs: {
       deploy = {
         type = "app";
-        meta.description = "Deploy and reboot the rock5b host";
-        program = nixpkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.deploy;
+        program = nixpkgs.lib.getExe (pkgs.writeShellApplication {
+          name = "deploy";
+          runtimeInputs = [
+            pkgs.nix
+            pkgs.openssh
+            deploy-rs.packages.${pkgs.stdenv.hostPlatform.system}.default
+          ];
+          text = ''
+            exec deploy --skip-checks ./examples/rock5b "$@"
+          '';
+        });
       };
     });
 
-    packages = eachSystem (pkgs: let
-      toplevel = self.nixosConfigurations.rock5b.config.system.build.toplevel;
-    in {
-      deploy = pkgs.writeShellApplication {
-        name = "deploy";
-        runtimeInputs = [pkgs.nix pkgs.openssh];
-        text = ''
-          if [[ $# -ne 1 || -z $1 ]]; then
-            echo 'Usage: deploy <ip-address>' >&2
-            exit 2
-          fi
-
-          store_host=$1
-          if [[ $store_host == *:* ]]; then
-            store_host="[$store_host]"
-          fi
-
-          nix copy --no-check-sigs --to "ssh-ng://root@$store_host" "${toplevel}"
-          ssh -l root -- "$1" \
-            'nix-env --profile /nix/var/nix/profiles/system --set ${toplevel} &&
-             ${toplevel}/bin/switch-to-configuration boot &&
-             systemctl reboot'
-        '';
+    deploy.nodes.rock5b = {
+      hostname = "192.168.4.38";
+      sshUser = "root";
+      remoteBuild = true;
+      # Runtime paths relative to the repository root, not Nix path literals.
+      # Connecting to the IP does not match .ssh/config's Host rock5b block.
+      sshOpts = [
+        "-F"
+        "/dev/null"
+        "-i"
+        "examples/rock5b/.ssh/id_ed25519"
+        "-o"
+        "IdentitiesOnly=yes"
+        "-o"
+        "IdentityAgent=none"
+        "-o"
+        "UserKnownHostsFile=examples/rock5b/.ssh/known_hosts"
+        "-o"
+        "GlobalKnownHostsFile=/dev/null"
+        "-o"
+        "StrictHostKeyChecking=yes"
+        "-o"
+        "BatchMode=yes"
+        "-o"
+        "ForwardAgent=no"
+        "-o"
+        "ForwardX11=no"
+        "-o"
+        "ClearAllForwardings=yes"
+        "-o"
+        "ConnectTimeout=10"
+        "-o"
+        "ServerAliveInterval=15"
+        "-o"
+        "ServerAliveCountMax=3"
+      ];
+      profiles.system = {
+        user = "root";
+        path = deploy-rs.lib.aarch64-linux.activate.nixos self.nixosConfigurations.rock5b;
       };
-    });
+    };
+
+    checks =
+      eachSystem (pkgs:
+        deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy);
 
     nixosConfigurations.rock5b = nixpkgs.lib.nixosSystem {
       modules = [
         nixos-hardware.nixosModules.rock-5b
         drv-run.nixosModules.host
+        sops-nix.nixosModules.sops
         ({
           config,
           lib,
@@ -78,6 +120,9 @@
         in {
           imports = [(modulesPath + "/installer/sd-card/sd-image.nix")];
           nixpkgs.hostPlatform = "aarch64-linux";
+
+          sops.age.sshKeyPaths = ["/etc/ssh/ssh_host_ed25519_key"];
+          sops.gnupg.sshKeyPaths = [];
 
           assertions = [
             {

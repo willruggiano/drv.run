@@ -12,6 +12,10 @@
 
   inputs = {
     self.submodules = true;
+    deploy-rs = {
+      url = "github:serokell/deploy-rs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     impermanence = {
       url = "github:nix-community/impermanence";
       inputs = {
@@ -31,6 +35,10 @@
         nixpkgs.follows = "nixpkgs";
         nixpkgs-darwin-x64.follows = "";
       };
+    };
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
