@@ -12,15 +12,9 @@
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
 - [ ] HTTP proxy
 - [ ] Make the host-basic check work on aarch64
-- [ ] Time to shell (TTS) optimization. Potential inspiration:
-  - Switch to determinate Nix for OTEL + otel-desktop-viewer + otel-cli for
-    tracing individual scripts (if necessary)
-  - <https://github.com/fzakaria/seenix> (eval optimization)
-  - <https://github.com/tomberek/fastpkgs> (eval optimization)
-  - <https://github.com/NixOS/nixpkgs/pull/401751>
-  - <https://github.com/NixOS/nixpkgs/blob/master/nixos/doc/manual/development/modular-services.md>
-  - <https://github.com/arianvp/server-optimised-nixos/tree/master>
-- [ ] Eliminate (and ban) evaluation warnings in `nix flake check`
+- [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
+      insight into pre/start/post activation timing, including cold and warm
+      boots on flake's of varying (closure) size
 - [ ] Client requires ssh config:
   ```sshconfig
   Match originalhost drv.run command ""
