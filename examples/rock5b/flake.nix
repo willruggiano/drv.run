@@ -52,14 +52,14 @@
             deploy-rs.packages.${pkgs.stdenv.hostPlatform.system}.default
           ];
           text = ''
-            exec deploy --skip-checks ./examples/rock5b "$@"
+            exec deploy --fast-connection=true --hostname=192.168.4.38 --skip-checks ./examples/rock5b "$@"
           '';
         });
       };
     });
 
     deploy.nodes.rock5b = {
-      hostname = "192.168.4.38";
+      hostname = "rock5b";
       sshUser = "root";
       remoteBuild = true;
       # Runtime paths relative to the repository root, not Nix path literals.

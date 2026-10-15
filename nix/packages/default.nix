@@ -84,12 +84,35 @@ in {
         readonly-runtime-args
         (add-pkg-deps (shell.nativeBuildInputs ++ [pkgs.pi-node-modules]))
         (dbus {talk = ["org.freedesktop.Notifications"];})
-        # TODO: This is temporary until we have drv.run up and running!
-        (jail-to-host-channel "nix_build" ''
-          status=0
-          nix build -L --no-link "$1" 2>&1 || status=$?
-          echo "nix_build: exit code $status"
-        '')
+        (let
+          rockctl = pkgs.writeShellApplication {
+            name = "rockctl";
+            meta.description = "Basic control over the ROCK 5B, including triggering deployment via the canonical deploy-rs app.";
+            runtimeInputs = [pkgs.nix];
+            text = ''
+              if [[ $PWD != $HOME/dev/drv.run ]]; then
+                echo 'Error: rockctl should only run from the drv.run repository root' >&2
+                exit 1
+              fi
+              case "$1" in
+              deploy)
+                mkdir -p .scratch
+                exec nix run ./examples/rock5b#deploy 2>&1 | tee .scratch/rock5b-deploy.log
+                exit $?
+                ;;
+              *)
+                echo "Error: unknown argument $1" >&2
+                exit 1
+                ;;
+              esac
+            '';
+          };
+        in
+          jail-to-host-channel "rockctl" ''
+            status=0
+            ${lib.getExe rockctl} "$@" || status=$?
+            echo "rockctl $*: exit code $status"
+          '')
         (readwrite (noescape "~/.pi"))
         (set-env "NQDIR" "/tmp")
       ]);
@@ -100,18 +123,17 @@ in {
       If you need to do something that is not possible in jail, stop and ask me for help.
       The following tools are available in jail (non-exhaustive):
       ${lib.concatStringsSep "\n" (map (i: "- ${i.name}") shell.nativeBuildInputs)}
-      Note that `nix` is intentionally *not available* in jail.
+      Note that `nix` is intentionally *not available* in jail. If you need to run `nix`, stop and give me the exact command.
       Tips:
-      - Use `nix_build` (note: underscore! this is **not** `nix-build`) to run one off Nix builds *on the host*:
-          nix_build .#checks.x86_64-linux.host-basic
-          nix_build .#packages.x86_64-linux.pi-extended
+      - Use `rockctl` to interact with the ROCK 5B (examples/rock5b/flake.nix):
+          rockctl deploy
       - Use `nq` for serial background jobs:
           man nq
-          nq -c make test
-          nq -c make check && nq -c make test && nq -c nix_build .#checks.x86_64-linux.host-basic
+          nq -c just test
+          nq -c just check && nq -c just test && nq -c just test
       - Use `zmx` for persistent terminal sessions:
           zmx -h
-          zmx run host-basic -d nix_build .#checks.x86_64-linux.host-basic && zmx wait host-basic
+          zmx run check-test -d 'make check && make test'
     '';
   in
     appendSystemPrompt drv "${prompt}/share/youve-been-jailed.txt";
