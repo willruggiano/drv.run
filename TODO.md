@@ -3,6 +3,12 @@
 # Todos
 
 - Practical usability improvements:
+  - [ ] Pi PWA! To start:
+    - Pi running on the _host_ and served over HTTP as a PWA
+    - Execution (ie. tools) in the _guest_
+    - Relevant upstream docs: https://github.com/earendil-works/pi/tree/stable/packages/env
+    - I am not married to the host/guest split, but exposing the PWA from the
+      host certainly seems simpler at the moment.
   - [ ] Add an owner-scoped host command that obtains the guest connection FD
         from systemd-ssh-proxy
         (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
@@ -10,7 +16,7 @@
         stdin/stdout.
 - [ ] [[security.md]]
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
-- [ ] HTTP proxy
+- [ ] HTTP proxy / expose guest services over HTTP
 - [ ] Make the host-basic check work on aarch64
 - [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
       insight into pre/start/post activation timing, including cold and warm
