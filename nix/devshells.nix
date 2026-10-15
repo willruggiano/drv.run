@@ -4,6 +4,7 @@ pkgs: let
     bash
     basedpyright
     coreutils
+    chromium
     curl
     diffutils
     fd

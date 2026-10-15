@@ -89,6 +89,11 @@
 in {
   imports = [../nix.nix ./network.nix];
 
+  options.services.drv-run.pi-pwa.enable = lib.mkEnableOption ''
+    the experimental, unauthenticated LAN Pi web application.
+    Installs pi with a serve command; does not open firewall ports or start it
+  '';
+
   options.services.drv-run.guest.extraModules = lib.mkOption {
     type = lib.types.listOf lib.types.deferredModule;
     default = [];
@@ -190,10 +195,12 @@ in {
           [(lib.getExe launcher) (lib.escapeShellArgs (map (user: user.name) normalUsers))]
           (builtins.readFile ./cli.sh);
       };
-    in [
-      bench
-      drvrun
-    ];
+    in
+      [
+        bench
+        drvrun
+      ]
+      ++ lib.optional config.services.drv-run.pi-pwa.enable (lib.hiPrio self.packages.${pkgs.stdenv.hostPlatform.system}.pi-pwa);
 
     programs.ssh.extraConfig = lib.mkBefore ''
       Host drv.run.*

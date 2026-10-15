@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101217">
+  <title>Pi · drv.run</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <style>
+    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; color: #e5e8ee; background: #101217; }
+    * { box-sizing: border-box; }
+    body { margin: 0; height: 100dvh; display: flex; flex-direction: column; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+    button, select, textarea { font: inherit; color: inherit; border: 1px solid #414958; border-radius: .5rem; background: #1b2029; }
+    button, select { min-height: 44px; padding: .5rem .75rem; }
+    button { cursor: pointer; }
+    button:hover { border-color: #9dd5ae; }
+    button:disabled { opacity: .45; cursor: default; }
+    :focus-visible { outline: 2px solid #9dd5ae; outline-offset: 2px; }
+    header.bar { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .65rem 1rem; border-bottom: 1px solid #303744; }
+    h1 { font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
+    #status { white-space: nowrap; color: #9dd5ae; font-size: .85rem; }
+    #picker { padding: .6rem 1rem; border-bottom: 1px solid #303744; overflow-y: auto; max-height: 55dvh; flex-shrink: 0; }
+    summary { cursor: pointer; min-height: 32px; }
+    .pickers { display: grid; grid-template-columns: 1fr 1fr auto; gap: .5rem; margin: .5rem 0; }
+    label { min-width: 0; }
+    label span { display: block; font-size: .8rem; color: #aeb8c8; }
+    select { width: 100%; }
+    #sessions { display: flex; flex-wrap: wrap; gap: .4rem; }
+    .session { text-align: left; font-size: .8rem; }
+    .session[aria-current=true] { border-color: #9dd5ae; }
+    .warning { color: #e0bb85; font-size: .8rem; margin: .4rem 0; }
+    #transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; padding: .5rem max(1rem, calc((100% - 900px)/2)); }
+    article { padding: .8rem 0; border-bottom: 1px solid #252d38; }
+    article > header { color: #9dd5ae; font-size: .8rem; margin-bottom: .4rem; }
+    .text { white-space: pre-wrap; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #191e26; padding: .6rem; border-radius: .4rem; font-size: .85rem; }
+    img { max-width: 100%; height: auto; }
+    article details { font-size: .85rem; color: #bcc6d5; }
+    #notice, #recovery { padding: .5rem 1rem; background: #27372e; font-size: .9rem; }
+    #recovery { background: #3a3020; }
+    .error { color: #ffadad; }
+    #composer { padding: .6rem max(1rem, calc((100% - 900px)/2)); border-top: 1px solid #303744; background: #101217; }
+    textarea { display: block; width: 100%; resize: vertical; padding: .65rem; max-height: 35dvh; }
+    .actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem; }
+    #send { background: #2c4938; }
+    [hidden] { display: none !important; }
+    @media (max-width: 650px) { .pickers { grid-template-columns: 1fr; } #picker[open] { max-height: 45dvh; } }
+    @media (prefers-reduced-motion: no-preference) { button { transition: border-color .15s; } }
+  </style>
+</head>
+<body>
+  <header class="bar"><h1 id="title">Pi · drv.run</h1><span id="status" role="status">Select an instance</span></header>
+  <details id="picker" open>
+    <summary>Instances &amp; sessions</summary>
+    <p class="warning">Unauthenticated LAN experiment. Anyone with network access can control these agents. Tools run in the selected guest.</p>
+    <div class="pickers">
+      <label><span>Instance</span><select id="instances" aria-label="Instance"></select></label>
+      <label><span>Model</span><select id="models" aria-label="Model"></select></label>
+      <button id="create" type="button" disabled>New session</button>
+    </div>
+    <button id="refresh" type="button">Refresh</button>
+    <div id="sessions" aria-label="Sessions"></div>
+  </details>
+  <div id="notice" role="status" hidden></div>
+  <div id="recovery" hidden>Work was interrupted. Resume explicitly; an interrupted command may already have had side effects. <button id="resume" type="button">Resume</button></div>
+  <div id="transcript" aria-label="Conversation" tabindex="0"></div>
+  <form id="composer">
+    <label for="prompt"><span>Message</span></label>
+    <textarea id="prompt" rows="3" placeholder="Ask Pi to work in /workspace…" maxlength="100000"></textarea>
+    <div class="actions"><button id="stop" type="button" disabled>Stop</button><button id="send" type="submit" disabled>Send</button></div>
+  </form>
+  <script type="module" src="/client.js"></script>
+</body>
+</html>

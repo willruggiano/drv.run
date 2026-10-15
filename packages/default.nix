@@ -46,6 +46,7 @@
   '';
 in {
   bench = pkgs.callPackage ./bench {};
+  pi-pwa = pkgs.callPackage ./pi-pwa {};
   # TODO: Remove once https://github.com/NixOS/nixpkgs/pull/574147 is merged.
   cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {};
   subtrace = pkgs.callPackage ./subtrace.nix {};
@@ -55,7 +56,7 @@ in {
   pi-unwrapped = inputs.pi.packages.${pkgs.stdenv.hostPlatform.system}.default;
   pi-node-modules = pkgs.runCommandLocal "pi-node-modules" {} ''
     mkdir -p "$out/node_modules"
-    for module in ${pkgs.pi-unwrapped}/lib/pi/node_modules/*; do
+    for module in ${pkgs.pi-pwa}/lib/pi-pwa/node_modules/*; do
       ln -s "$module" "$out/node_modules/$(basename "$module")"
     done
   '';

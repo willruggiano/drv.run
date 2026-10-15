@@ -58,6 +58,7 @@
   in {
     checks = eachSystem (system: pkgs:
       {
+        pi-pwa = pkgs.pi-pwa;
         bench-test =
           pkgs.runCommand "bench-tests" {
             src = self;
