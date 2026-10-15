@@ -1,0 +1,461 @@
+import assert from "node:assert/strict";
+import { mkdir, readdir, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Models, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import {
+  createRegistry,
+  defineDoc,
+  defineExtension,
+  Harness,
+  section,
+  type Conversation,
+  type ConversationView,
+  type EntryRecord,
+  type Extension,
+  type ModelRef,
+} from "@earendil-works/pi-durable";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { CodingTools } from "@earendil-works/pi-durable/tools";
+
+const context = BACKGROUND_CONTEXT;
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export class SessionError extends Error {
+  readonly code: "invalid" | "not_found" | "unavailable" | "conflict" | "closing";
+  constructor(code: SessionError["code"], message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+/** Persisted identity, never a connection or a fallback preference. */
+export type ExecutionBinding = { provider: string; target: string; cwd: string };
+export type ExecutionTarget = ExecutionBinding & { label: string; available: boolean };
+export type EnvironmentLease = { env: ExecutionEnv; close(): void | Promise<void> };
+
+/** Application integration, not the coding-agent ExtensionAPI. Factories do no I/O. */
+export interface Integration {
+  readonly id: string;
+  readonly extensions?: readonly Extension[];
+  targets(): Promise<ExecutionTarget[]>;
+  /** Check every execution, including already-open leases. Throw to fail closed. */
+  validate(binding: ExecutionBinding): Promise<void>;
+  /** Acquired lazily, once per session; close after the harness has stopped. */
+  open(binding: ExecutionBinding): EnvironmentLease | Promise<EnvironmentLease>;
+}
+export type IntegrationFactory = () => Integration | Promise<Integration>;
+
+export async function loadIntegrations(paths: readonly string[]): Promise<Integration[]> {
+  const integrations: Integration[] = [];
+  for (const path of paths) {
+    const module: { default?: unknown } = await import(pathToFileURL(resolve(path)).href);
+    assert(typeof module.default === "function", `Integration ${path} must export a factory.`);
+    const integration: Integration = await module.default();
+    assertIntegration(integration);
+    integrations.push(integration);
+  }
+  return integrations;
+}
+
+function assertIntegration(integration: Integration): void {
+  assert(
+    integration && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(integration.id),
+    "Invalid integration ID.",
+  );
+  for (const method of ["targets", "validate", "open"] as const)
+    assert(typeof integration[method] === "function", `Integration requires ${method}().`);
+}
+
+export function stateDirectory(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
+  return env.XDG_STATE_HOME && isAbsolute(env.XDG_STATE_HOME)
+    ? env.XDG_STATE_HOME
+    : join(home, ".local", "state");
+}
+
+export function localIntegration(directory: string): Integration {
+  const cwd = resolve(directory);
+  return {
+    id: "local",
+    async targets() {
+      let available = false;
+      try {
+        available = (await stat(cwd)).isDirectory();
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      }
+      return [{ provider: "local", target: cwd, cwd, label: `Local · ${cwd}`, available }];
+    },
+    async validate(binding) {
+      if (
+        binding.provider !== "local" ||
+        !isAbsolute(binding.cwd) ||
+        binding.target !== binding.cwd
+      )
+        throw new SessionError("invalid", "Invalid local directory binding.");
+      try {
+        if (!(await stat(binding.cwd)).isDirectory()) throw new Error("Not a directory.");
+      } catch {
+        throw new SessionError("unavailable", `Local directory is unavailable: ${binding.cwd}`);
+      }
+    },
+    open(binding) {
+      const env = new NodeExecutionEnv({ cwd: binding.cwd });
+      return { env, close: () => env.cleanup(context) };
+    },
+  };
+}
+
+export type SessionInfo = {
+  id: string;
+  binding: ExecutionBinding;
+  created: number;
+  model: ModelRef;
+  needsResume: boolean;
+};
+export type Snapshot = {
+  session: SessionInfo;
+  view: ConversationView;
+  history?: readonly EntryRecord[];
+};
+export type Catalog = {
+  targets: ExecutionTarget[];
+  sessions: SessionInfo[];
+  models: { provider: string; modelId: string; name: string }[];
+  defaultModel?: ModelRef;
+};
+export type SessionOptions = {
+  directory: string;
+  models: Models;
+  integrations: readonly Integration[];
+  defaultModel?: ModelRef;
+  thinkingLevel?: ModelThinkingLevel;
+  onReport?: (error: unknown) => void;
+};
+
+const Metadata = defineDoc<{ binding: ExecutionBinding | null; created: number }>({
+  kind: "app.session",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "current",
+  initial: () => ({ binding: null, created: 0 }),
+});
+
+function validBinding(binding: ExecutionBinding): boolean {
+  return [binding.provider, binding.target, binding.cwd].every(
+    (value) =>
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      value.length <= 4096 &&
+      !value.includes("\0"),
+  );
+}
+function sameBinding(a: ExecutionBinding, b: ExecutionBinding): boolean {
+  return a.provider === b.provider && a.target === b.target && a.cwd === b.cwd;
+}
+
+export class Sessions {
+  readonly options: SessionOptions;
+  readonly opened = new Map<string, Promise<ManagedSession>>();
+  private readonly integrations = new Map<string, Integration>();
+  private closing = false;
+  private closed?: Promise<void>;
+
+  private constructor(options: SessionOptions) {
+    this.options = options;
+    for (const integration of options.integrations) {
+      assertIntegration(integration);
+      assert(!this.integrations.has(integration.id), `Duplicate integration: ${integration.id}`);
+      this.integrations.set(integration.id, integration);
+    }
+  }
+
+  static async open(options: SessionOptions): Promise<Sessions> {
+    const sessions = new Sessions(options);
+    await mkdir(options.directory, { recursive: true, mode: 0o700 });
+    return sessions;
+  }
+
+  integration(id: string): Integration | undefined {
+    return this.integrations.get(id);
+  }
+
+  async requireTarget(binding: ExecutionBinding): Promise<Integration> {
+    const integration = this.integrations.get(binding.provider);
+    if (!integration)
+      throw new SessionError("unavailable", `Integration is not installed: ${binding.provider}`);
+    await integration.validate(binding);
+    return integration;
+  }
+
+  async catalog(): Promise<Catalog> {
+    const names = await readdir(this.options.directory);
+    const sessions = await Promise.all(
+      names
+        .filter((name) => name.endsWith(".sqlite") && uuid.test(name.slice(0, -7)))
+        .map(async (name) => (await this.get(name.slice(0, -7))).info()),
+    );
+    const targets = (
+      await Promise.all(
+        [...this.integrations.values()].map(async (integration) => {
+          const targets = await integration.targets();
+          for (const target of targets)
+            assert(
+              target.provider === integration.id && validBinding(target),
+              "Invalid execution target.",
+            );
+          return targets;
+        }),
+      )
+    ).flat();
+    return {
+      targets,
+      sessions: sessions.sort((a, b) => b.created - a.created),
+      models: (await this.options.models.getAvailable()).map((model) => ({
+        provider: model.provider,
+        modelId: model.id,
+        name: model.name,
+      })),
+      defaultModel: this.options.defaultModel,
+    };
+  }
+
+  async get(id: string): Promise<ManagedSession> {
+    if (!uuid.test(id)) throw new SessionError("not_found", "Session not found.");
+    if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
+    const existing = this.opened.get(id);
+    if (existing) return existing;
+    try {
+      await stat(join(this.options.directory, `${id}.sqlite`));
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        throw new SessionError("not_found", "Session not found.");
+      throw error;
+    }
+    return this.opened.get(id) ?? this.open(id);
+  }
+
+  private open(
+    id: string,
+    create?: { binding: ExecutionBinding; model: ModelRef },
+  ): Promise<ManagedSession> {
+    if (this.closing) return Promise.reject(new SessionError("closing", "Runtime is stopping."));
+    const opened = ManagedSession.open(this, id, create);
+    this.opened.set(id, opened);
+    void opened.catch(() => this.opened.delete(id));
+    return opened;
+  }
+
+  async create(id: string, binding: ExecutionBinding, model: ModelRef): Promise<ManagedSession> {
+    if (!uuid.test(id) || !validBinding(binding))
+      throw new SessionError("invalid", "Invalid session or execution binding.");
+    if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
+    // Snapshot caller-owned values before yielding.
+    binding = { ...binding };
+    model = { ...model };
+    await this.requireTarget(binding);
+    const available = await this.options.models.getAvailable();
+    if (!available.some((item) => item.provider === model.provider && item.id === model.modelId))
+      throw new SessionError(
+        "invalid",
+        "Select an available model. Configure credentials with pi /login.",
+      );
+    let found: ManagedSession | undefined;
+    try {
+      found = await this.get(id);
+    } catch (error) {
+      if (!(error instanceof SessionError && error.code === "not_found")) throw error;
+    }
+    const session = found ?? (await (this.opened.get(id) ?? this.open(id, { binding, model })));
+    const info = await session.info();
+    if (
+      !sameBinding(info.binding, binding) ||
+      info.model.provider !== model.provider ||
+      info.model.modelId !== model.modelId
+    )
+      throw new SessionError("conflict", "Session ID already belongs to a different session.");
+    return session;
+  }
+
+  close(): Promise<void> {
+    this.closing = true;
+    return (this.closed ??= (async () => {
+      const results = await Promise.allSettled(
+        [...this.opened.values()].map(async (session) => (await session).close()),
+      );
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    })());
+  }
+}
+
+export class ManagedSession {
+  needsResume = false;
+  private lease?: Promise<EnvironmentLease>;
+  private closed?: Promise<void>;
+  readonly owner: Sessions;
+  readonly id: string;
+  readonly harness: Harness;
+  readonly root: Conversation;
+  readonly binding: Readonly<ExecutionBinding>;
+  readonly created: number;
+
+  private constructor(
+    owner: Sessions,
+    id: string,
+    harness: Harness,
+    root: Conversation,
+    binding: ExecutionBinding,
+    created: number,
+  ) {
+    this.owner = owner;
+    this.id = id;
+    this.harness = harness;
+    this.root = root;
+    this.binding = Object.freeze({ ...binding });
+    this.created = created;
+  }
+
+  static async open(
+    owner: Sessions,
+    id: string,
+    create?: { binding: ExecutionBinding; model: ModelRef },
+  ): Promise<ManagedSession> {
+    const registry = createRegistry();
+    registry.install(CodingTools);
+    registry.install(
+      defineExtension({
+        name: "coding",
+        sections: [
+          section(
+            "preamble",
+            () =>
+              "You are Pi, a coding agent. Inspect the project and its AGENTS.md instructions before changing files. Never claim an operation succeeded without checking its result.",
+            { tag: false },
+          ),
+          section("cwd", (input) => input.env?.cwd),
+        ],
+      }),
+    );
+    let managed: ManagedSession | undefined;
+    const harness = await Harness.open(
+      await openNodeSqliteStorage(join(owner.options.directory, `${id}.sqlite`)),
+      {
+        models: owner.options.models,
+        registry,
+        env: async () => {
+          assert(managed, "Session initialization must finish before tools run.");
+          const integration = await owner.requireTarget(managed.binding);
+          // Promise caching matters: Durable can run sibling tools concurrently.
+          const binding = managed.binding;
+          managed.lease ??= Promise.resolve().then(() => integration.open(binding));
+          try {
+            return (await managed.lease).env;
+          } catch (error) {
+            managed.lease = undefined;
+            throw error;
+          }
+        },
+        onReport: owner.options.onReport,
+      },
+      context,
+    );
+    try {
+      const root = await harness.root(
+        context,
+        create
+          ? {
+              agent: {
+                model: create.model,
+                cwd: create.binding.cwd,
+                thinkingLevel: owner.options.thinkingLevel ?? "off",
+              },
+              init: async (tx, conversationId) => {
+                const metadata = await tx.doc(Metadata, conversationId);
+                metadata.binding = create.binding;
+                metadata.created = Date.now();
+              },
+            }
+          : undefined,
+      );
+      const metadata = await harness.snapshot(Metadata, root.id, context);
+      assert(
+        metadata?.binding && validBinding(metadata.binding),
+        "Session has no execution binding.",
+      );
+      // Install only this session's integration, never another provider's prompt or tools.
+      for (const extension of owner.integration(metadata.binding.provider)?.extensions ?? [])
+        registry.install(extension);
+      managed = new ManagedSession(owner, id, harness, root, metadata.binding, metadata.created);
+      const inspection = await harness.inspect(context);
+      managed.needsResume = inspection.tasks.length > 0 || inspection.submissions.length > 0;
+      return managed;
+    } catch (error) {
+      await harness.close(context);
+      throw error;
+    }
+  }
+
+  async info(): Promise<SessionInfo> {
+    const agent = await this.root.agent(context);
+    assert(agent.model, "Session has no model.");
+    return {
+      id: this.id,
+      binding: { ...this.binding },
+      created: this.created,
+      model: agent.model,
+      needsResume: this.needsResume,
+    };
+  }
+
+  async history(): Promise<EntryRecord[]> {
+    const entries: EntryRecord[] = [];
+    let cursor;
+    do {
+      const page = await this.root.entries({ order: "ascending" }, 256, cursor, context);
+      entries.push(...page.items);
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return entries;
+  }
+
+  async prompt(text: string, requestId: string): Promise<void> {
+    if (!uuid.test(requestId) || !text.trim())
+      throw new SessionError("invalid", "Invalid prompt or request ID.");
+    if (this.needsResume)
+      throw new SessionError("conflict", "Resume interrupted work before sending a new prompt.");
+    await this.owner.requireTarget(this.binding);
+    await this.root.submit(
+      { type: "input", content: text, requestId, whenBusy: "reject" },
+      context,
+    );
+  }
+
+  async resume(): Promise<void> {
+    await this.owner.requireTarget(this.binding);
+    this.harness.resume();
+    this.needsResume = false;
+  }
+
+  async stop(): Promise<void> {
+    // abort() starts Durable's scheduler. Never execute pending work via this path.
+    if (this.needsResume)
+      throw new SessionError("conflict", "Resume interrupted work before stopping it.");
+    await this.root.abort(context);
+  }
+
+  close(): Promise<void> {
+    return (this.closed ??= (async () => {
+      try {
+        await this.harness.close(context);
+      } finally {
+        await (await this.lease)?.close();
+      }
+    })());
+  }
+}

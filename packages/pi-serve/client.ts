@@ -1,13 +1,13 @@
 import type { Message } from "@earendil-works/pi-ai";
 import type { EntryRecord, LiveState } from "@earendil-works/pi-durable";
-import type { Catalog, SessionInfo, Snapshot } from "./server.ts";
+import type { Catalog, ExecutionBinding, SessionInfo, Snapshot } from "../pi-runtime/index.ts";
 
 function element<T extends HTMLElement>(id: string, type: { new (): T }): T {
   const found = document.getElementById(id);
   if (!(found instanceof type)) throw new Error(`Missing ${id}`);
   return found;
 }
-const instances = element("instances", HTMLSelectElement);
+const targets = element("targets", HTMLSelectElement);
 const models = element("models", HTMLSelectElement);
 const sessions = element("sessions", HTMLDivElement);
 const transcript = element("transcript", HTMLDivElement);
@@ -75,7 +75,7 @@ function controls(): void {
   resume.disabled = !active || !connected || !recovering;
   recovery.hidden = !recovering;
   status.textContent = !active
-    ? "Select an instance"
+    ? "Select a target"
     : !connected
       ? "Reconnecting…"
       : recovering
@@ -83,6 +83,9 @@ function controls(): void {
         : busy
           ? "Working"
           : "Ready";
+}
+function targetKey(binding: ExecutionBinding): string {
+  return JSON.stringify([binding.provider, binding.target, binding.cwd]);
 }
 function chooseOption(
   select: HTMLSelectElement,
@@ -95,22 +98,24 @@ function chooseOption(
   select.add(option);
 }
 async function refresh(): Promise<void> {
-  const previousInstance = instances.value;
+  const previousTarget = targets.value;
   const previousModel = models.value ? catalog?.models[Number(models.value)] : undefined;
   const next = await api<Catalog>("/api/catalog");
   catalog = next;
-  instances.replaceChildren();
-  chooseOption(instances, "", "Select a running instance");
-  for (const instance of catalog.instances) {
+  targets.replaceChildren();
+  chooseOption(targets, "", "Select an execution target");
+  for (const target of catalog.targets) {
     chooseOption(
-      instances,
-      instance.id,
-      `${instance.id} · ${instance.reference}${instance.running ? "" : " (stopped)"}`,
-      !instance.running,
+      targets,
+      targetKey(target),
+      target.label + (target.available ? "" : " (unavailable)"),
+      !target.available,
     );
   }
-  if (catalog.instances.some((item) => item.id === previousInstance && item.running))
-    instances.value = previousInstance;
+  if (catalog.targets.some((target) => targetKey(target) === previousTarget && target.available))
+    targets.value = previousTarget;
+  else if (catalog.targets.length === 1 && catalog.targets[0].available)
+    targets.value = targetKey(catalog.targets[0]);
   models.replaceChildren();
   chooseOption(
     models,
@@ -138,16 +143,14 @@ async function refresh(): Promise<void> {
     button.type = "button";
     button.className = "session";
     button.setAttribute("aria-current", String(session.id === active));
-    const available = catalog.instances.some(
-      (item) => item.id === session.instance && item.running,
-    );
-    button.textContent = `${session.instance} · ${new Date(session.created).toLocaleString()}${available ? "" : " · unavailable"}`;
+    const target = catalog.targets.find((item) => targetKey(item) === targetKey(session.binding));
+    button.textContent = `${target?.label ?? session.binding.target} · ${new Date(session.created).toLocaleString()}${target?.available ? "" : " · unavailable"}`;
     button.onclick = () => {
       attach(session.id);
     };
     sessions.append(button);
   }
-  create.disabled = !instances.value || !models.value;
+  create.disabled = !targets.value || !models.value;
 }
 
 function content(node: HTMLElement, message: Message): void {
@@ -204,11 +207,11 @@ function render(snapshot: Snapshot): void {
   const wasBusy = busy;
   busy = !!live?.run;
   recovering = snapshot.session.needsResume;
-  title.textContent = `${snapshot.session.instance} · ${snapshot.session.model.modelId}`;
+  title.textContent = `${snapshot.session.binding.provider} · ${snapshot.session.binding.cwd} · ${snapshot.session.model.modelId}`;
   if (wasBusy && !busy) {
     notice.textContent = "Run finished. Ready for input.";
     notice.hidden = false;
-    document.title = "✓ Pi · drv.run";
+    document.title = "✓ Pi";
   } else if (busy) document.title = "Working · Pi";
   const wanted = new Set<string>();
   const item = (key: string, value: unknown, build: (node: HTMLElement) => void) => {
@@ -296,15 +299,15 @@ function attach(id: string): void {
   controls();
 }
 
-instances.onchange = models.onchange = () => {
-  create.disabled = !instances.value || !models.value;
+targets.onchange = models.onchange = () => {
+  create.disabled = !targets.value || !models.value;
 };
 create.onclick = () => {
   create.disabled = true;
   const id = requestId();
   void api<SessionInfo>("/api/sessions", {
     id,
-    instance: instances.value,
+    binding: catalog.targets.find((target) => targetKey(target) === targets.value),
     model: catalog.models[Number(models.value)],
   })
     .then((session) => {
@@ -313,7 +316,7 @@ create.onclick = () => {
     })
     .catch(report)
     .finally(() => {
-      create.disabled = !instances.value || !models.value;
+      create.disabled = !targets.value || !models.value;
     });
 };
 composer.onsubmit = (event) => {

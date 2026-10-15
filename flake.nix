@@ -53,12 +53,20 @@
             overlays = [self.overlays.default];
           };
         in
-          f system pkgs
+          f pkgs
       );
   in {
-    checks = eachSystem (system: pkgs:
+    nixosModules = import ./nixosModules inputs;
+    overlays.default = final: prev: let
+      inherit (prev.stdenv.hostPlatform) system;
+    in
+      self.packages.${system};
+
+    # per-system outputs
+    checks = eachSystem (pkgs:
       {
-        pi-pwa = pkgs.pi-pwa;
+        inherit (pkgs) pi-serve pi-drv-run;
+        # FIXME: this should live with the bench package, not here.
         bench-test =
           pkgs.runCommand "bench-tests" {
             src = self;
@@ -69,19 +77,17 @@
             touch $out
           '';
       }
-      // lib.optionalAttrs (system == "x86_64-linux") {
-        host-basic = pkgs.testers.runNixOSTest (import ./tests/nixos/host-basic.nix {
-          inherit (self) nixosModules;
-          inherit pkgs;
-        });
-      });
-    devShells = eachSystem (_: pkgs: import ./nix/devshells.nix pkgs);
-    formatter = eachSystem (_: pkgs: pkgs.treefmt-wrapped);
-    nixosModules = import ./nixosModules inputs;
-    overlays.default = final: prev: let
-      inherit (prev.stdenv.hostPlatform) system;
-    in
-      self.packages.${system};
-    packages = eachSystem (_: pkgs: import ./packages {inherit inputs lib pkgs;});
+      // (
+        lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+          nixos-pi-serve = pkgs.pi-serve.tests.nixos;
+          nixos-host-basic = pkgs.testers.runNixOSTest (import ./tests/nixos/host-basic.nix {
+            inherit (self) nixosModules;
+            inherit pkgs;
+          });
+        }
+      ));
+    devShells = eachSystem (pkgs: import ./nix/devshells.nix pkgs);
+    formatter = eachSystem (pkgs: pkgs.treefmt-wrapped);
+    packages = eachSystem (pkgs: import ./packages {inherit inputs lib pkgs;});
   };
 }

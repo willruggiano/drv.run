@@ -1,0 +1,20 @@
+{
+  "name": "pi-serve",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "node --test '*.test.ts'"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-durable": "*"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "playwright": "1.64.1"
+  }
+}

@@ -11,8 +11,9 @@ check:
     treefmt --quiet --fail-on-change
     markdownlint-cli2 >/dev/null
     ast-grep scan --error --report-style=short --globs '!microvm.nix/**'
-    tsc -p packages/pi/extensions/tsconfig.json
-    tsc -p packages/pi-pwa/tsconfig.json
+    tsc -p packages/pi-extensions/tsconfig.json
+    tsc -p packages/pi-runtime/tsconfig.json
+    tsc -p packages/pi-serve/tsconfig.json
     oxlint --type-aware --format=unix
     ruff format --quiet --check --extend-exclude microvm.nix
     ruff check --quiet --extend-exclude microvm.nix

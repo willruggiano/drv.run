@@ -124,7 +124,6 @@ in {
           environment.systemPackages = [pkgs.hello];
         })
       ];
-      services.drv-run.pi-pwa.enable = true;
       services.drv-run.network = {
         uplink = "eth1";
         dnsServers = ["192.168.1.1"];
@@ -355,8 +354,6 @@ in {
         t.assertEqual(len(info["config"]["net"]), 1)
         t.assertEqual(info["config"]["net"][0]["num_queues"], 2)
         t.assertEqual(info["config"]["vsock"]["cid"], 42)
-
-    ${import ../../nix/nixosTests/pi-pwa.nix pkgs}
 
     with subtest("host and guest use the configured Nix implementation"):
         expected = "${nodes.host.nix.package.version}"

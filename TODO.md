@@ -18,24 +18,14 @@
 - [ ] [[security.md]]
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
 - [ ] HTTP proxy / expose guest services over HTTP
-- [ ] Make the host-basic check work on aarch64
+- [ ] Make the host-basic check work on aarch64? (note: it does, it just doesn't
+      work on the rock5b because it lacks nested kvm)
 - [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
       insight into pre/start/post activation timing, including cold and warm
       boots on flake's of varying (closure) size
-- [ ] Client requires ssh config:
-  ```sshconfig
-  Match originalhost drv.run command ""
-      RequestTTY no
-  Host drv.run
-      HostKeyAlias drv.run
-      HostName 192.168.4.35
-  Host drv.run.*
-      HostKeyAlias drv.run
-      HostName 192.168.4.35
-      User root
-      RequestTTY force
-      RemoteCommand su --login $ME --command 'exec ssh -t %n'
-  ```
+- [ ] Clean up pi-serve nixos test, module, align with "modular services" idiom?
+- [ ] Clients should not need such an elaborate ssh client config? eg.
+      `RemoteCommand`
 - [ ] Great practical test (and also something I want badly!):
   ```sh
   ssh drv.run github:willruggiano/neovim.drv -c \

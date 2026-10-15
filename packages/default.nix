@@ -46,20 +46,20 @@
   '';
 in {
   bench = pkgs.callPackage ./bench {};
-  pi-pwa = pkgs.callPackage ./pi-pwa {};
   # TODO: Remove once https://github.com/NixOS/nixpkgs/pull/574147 is merged.
   cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {};
   subtrace = pkgs.callPackage ./subtrace.nix {};
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
 
+  pi-runtime = pkgs.callPackage ./pi-runtime {};
+  pi-drv-run = pkgs.callPackage ./pi-extensions/drv-run {};
+  pi-serve = pkgs.callPackage ./pi-serve {inherit (inputs.self) nixosModules;};
+
+  # pi packages and wrapped harnesses
+
   # base pi (from github:earendil-works/pi)
   pi-unwrapped = inputs.pi.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  pi-node-modules = pkgs.runCommandLocal "pi-node-modules" {} ''
-    mkdir -p "$out/node_modules"
-    for module in ${pkgs.pi-pwa}/lib/pi-pwa/node_modules/*; do
-      ln -s "$module" "$out/node_modules/$(basename "$module")"
-    done
-  '';
+  pi-node-modules = pkgs.callPackage ./pi-node-modules {src = inputs.pi;};
   # base pi + some core extensions
   pi-with-extensions = withExtensions pkgs.pi-unwrapped (
     with pkgs; [
@@ -83,7 +83,7 @@ in {
         mount-cwd
         network
         readonly-runtime-args
-        (add-pkg-deps (shell.nativeBuildInputs ++ [pkgs.pi-node-modules]))
+        (add-pkg-deps (shell.nativeBuildInputs ++ [shell.npmDeps]))
         (dbus {talk = ["org.freedesktop.Notifications"];})
         (let
           rockctl = pkgs.writeShellApplication {
@@ -139,18 +139,20 @@ in {
   in
     appendSystemPrompt drv "${prompt}/share/youve-been-jailed.txt";
 
-  # extensions:
-  pi-ask = pkgs.callPackage ./pi/extensions/pi-ask {};
-  pi-autoresearch = pkgs.callPackage ./pi/extensions/pi-autoresearch {};
-  pi-notify = pkgs.callPackage ./pi/extensions/pi-notify {};
-  pi-parallel-web = pkgs.callPackage ./pi/extensions/pi-parallel {};
+  # extensions/packages:
+  pi-ask = pkgs.callPackage ./pi-extensions/pi-ask {};
+  pi-autoresearch = pkgs.callPackage ./pi-extensions/pi-autoresearch {};
+  pi-durable = pkgs.callPackage ./pi-durable {};
+  pi-env = pkgs.callPackage ./pi-env {};
+  pi-notify = pkgs.callPackage ./pi-extensions/pi-notify {};
+  pi-parallel-web = pkgs.callPackage ./pi-extensions/pi-parallel {};
   pi-path-rules = pkgs.runCommandLocal "path-rules" {} ''
     mkdir -p "$out/extensions"
-    cp -r ${./pi/extensions/rules} "$out/extensions/path-rules"
+    cp -r ${./pi-extensions/rules} "$out/extensions/path-rules"
   '';
   pi-queued-compact = pkgs.runCommandLocal "queued-compact" {} ''
     mkdir -p "$out/extensions"
-    cp -r ${./pi/extensions/queue} "$out/extensions/queue"
+    cp -r ${./pi-extensions/queue} "$out/extensions/queue"
   '';
-  pi-review = pkgs.callPackage ./pi/extensions/pi-review {};
+  pi-review = pkgs.callPackage ./pi-extensions/pi-review {};
 }
