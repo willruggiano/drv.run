@@ -42,7 +42,7 @@
     };
   };
 
-  outputs = inputs: let
+  outputs = {self, ...} @ inputs: let
     inherit (inputs.nixpkgs) lib;
     systems = ["x86_64-linux" "aarch64-linux"];
     eachSystem = f:
@@ -50,7 +50,7 @@
         system: let
           pkgs = import inputs.nixpkgs {
             inherit system;
-            overlays = [inputs.self.overlays.default];
+            overlays = [self.overlays.default];
           };
         in
           f system pkgs
@@ -60,24 +60,27 @@
       {
         bench-test =
           pkgs.runCommand "bench-tests" {
-            src = inputs.self;
+            src = self;
             nativeBuildInputs = [pkgs.python3];
           } ''
             cd $src
-            python3 -B -m unittest discover -s nix.packages.bench.tests -p '*_test.py'
+            python3 -B -m unittest discover -s packages.bench.tests -p '*_test.py'
             touch $out
           '';
       }
       // lib.optionalAttrs (system == "x86_64-linux") {
-        host-basic = pkgs.testers.runNixOSTest (import ./nix/nixosTests/host-basic.nix {
-          inherit (inputs.self) nixosModules;
+        host-basic = pkgs.testers.runNixOSTest (import ./tests/nixos/host-basic.nix {
+          inherit (self) nixosModules;
           inherit pkgs;
         });
       });
     devShells = eachSystem (_: pkgs: import ./nix/devshells.nix pkgs);
     formatter = eachSystem (_: pkgs: pkgs.treefmt-wrapped);
-    nixosModules = import ./nix/nixosModules inputs;
-    overlays = import ./nix/overlays inputs;
-    packages = eachSystem (_: pkgs: import ./nix/packages {inherit inputs lib pkgs;});
+    nixosModules = import ./nixosModules inputs;
+    overlays.default = final: prev: let
+      inherit (prev.stdenv.hostPlatform) system;
+    in
+      self.packages.${system};
+    packages = eachSystem (_: pkgs: import ./packages {inherit inputs lib pkgs;});
   };
 }

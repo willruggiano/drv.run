@@ -11,11 +11,11 @@ check:
     treefmt --quiet --fail-on-change
     markdownlint-cli2 >/dev/null
     ast-grep scan --error --report-style=short --globs '!microvm.nix/**'
-    tsc -p nix/packages/pi/extensions/tsconfig.json
+    tsc -p packages/pi/extensions/tsconfig.json
     oxlint --type-aware --format=unix
     ruff format --quiet --check --extend-exclude microvm.nix
     ruff check --quiet --extend-exclude microvm.nix
-    basedpyright --threads=4 --warnings nix
+    basedpyright --threads=4 --warnings packages
 
 # Run the CI suite, including full Nix validation
 ci: check test
@@ -44,7 +44,7 @@ test:
     set -euo pipefail
     ast-grep test --skip-snapshot-tests
     node --test "**/*.test.ts"
-    python3 -B -m unittest discover -s nix.packages.bench.tests -p '*_test.py'
+    python3 -B -m unittest discover -s packages.bench.tests -p '*_test.py'
     if ! command -v nix >/dev/null 2>&1; then
         printf '%s\n' \
             'Nix verification not run: nix is unavailable.' \

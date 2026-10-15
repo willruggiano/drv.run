@@ -1,5 +1,5 @@
 {
-  "globs": ["*.md", ".agents/**/*.md", "docs/**/*.md", "nix/**/*.md"],
+  "globs": ["*.md", ".agents/**/*.md", "docs/**/*.md", "packages/**/*.md"],
 
   // documentation.md: internal references must use [[file.md]] wiki-links.
   "customRules": ["./scripts/markdownlint-wiki-links.cjs"],

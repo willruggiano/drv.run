@@ -6,7 +6,8 @@
   - [ ] Pi PWA! To start:
     - Pi running on the _host_ and served over HTTP as a PWA
     - Execution (ie. tools) in the _guest_
-    - Relevant upstream docs: https://github.com/earendil-works/pi/tree/stable/packages/env
+    - Relevant upstream docs:
+      <https://github.com/earendil-works/pi/tree/stable/packages/env>
     - I am not married to the host/guest split, but exposing the PWA from the
       host certainly seems simpler at the moment.
   - [ ] Add an owner-scoped host command that obtains the guest connection FD

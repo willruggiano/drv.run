@@ -2,7 +2,7 @@
   nixosModules,
   pkgs,
 }: let
-  tap = import ../nixosModules/host/tap.nix {inherit pkgs;};
+  tap = import ../../nixosModules/host/tap.nix {inherit pkgs;};
   shell = pkgs.mkShell {
     packages = [pkgs.curl pkgs.python3 pkgs.iproute2];
     DRV_RUN_TEST_VALUE = "captured";
