@@ -64,11 +64,12 @@
   );
   worker = pkgs.writeShellApplication {
     name = "worker";
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.e2fsprogs
+    runtimeInputs = with pkgs; [
       config.nix.package
-      pkgs.openssh
+      coreutils
+      git # we might want to use `programs.git` host-wide instead
+      e2fsprogs
+      openssh
     ];
     text =
       lib.replaceStrings
@@ -94,15 +95,6 @@
     text =
       builtins.readFile ./command.sh;
   };
-  manager = pkgs.writeShellApplication {
-    name = "drv.run";
-    runtimeInputs = [pkgs.coreutils pkgs.util-linux config.systemd.package];
-    text =
-      lib.replaceStrings
-      ["@launcher@" "@owners@"]
-      [(lib.getExe launcher) (lib.escapeShellArgs (map (user: user.name) normalUsers))]
-      (builtins.readFile ./cli.sh);
-  };
 in {
   imports = [../nix.nix ./network.nix];
 
@@ -117,13 +109,6 @@ in {
   };
 
   config = {
-    environment.systemPackages = [
-      manager
-      (self.packages.${pkgs.stdenv.hostPlatform.system}.bench.override {
-        nix = config.nix.package;
-      })
-    ];
-
     assertions = [
       {
         # systemd 261.2 create_tap() calls userns_get_base_uid(..., &uid, NULL).
@@ -190,6 +175,24 @@ in {
         assertion = config.nix.settings.sandbox == true;
         message = "drv.run requires nix.settings.sandbox = true.";
       }
+    ];
+
+    environment.systemPackages = let
+      bench = self.packages.${pkgs.stdenv.hostPlatform.system}.bench.override {
+        nix = config.nix.package;
+      };
+      drvrun = pkgs.writeShellApplication {
+        name = "drv.run";
+        runtimeInputs = [pkgs.coreutils pkgs.util-linux config.systemd.package];
+        text =
+          lib.replaceStrings
+          ["@launcher@" "@owners@"]
+          [(lib.getExe launcher) (lib.escapeShellArgs (map (user: user.name) normalUsers))]
+          (builtins.readFile ./cli.sh);
+      };
+    in [
+      bench
+      drvrun
     ];
 
     programs.ssh.extraConfig = lib.mkBefore ''

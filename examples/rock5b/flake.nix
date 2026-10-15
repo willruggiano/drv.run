@@ -121,9 +121,6 @@
           imports = [(modulesPath + "/installer/sd-card/sd-image.nix")];
           nixpkgs.hostPlatform = "aarch64-linux";
 
-          sops.age.sshKeyPaths = ["/etc/ssh/ssh_host_ed25519_key"];
-          sops.gnupg.sshKeyPaths = [];
-
           assertions = [
             {
               assertion = pkgs.stdenv.hostPlatform.system == "aarch64-linux";
@@ -134,6 +131,9 @@
               message = "ROCK 5B SPL/U-Boot require at least 16 MiB before the first partition.";
             }
           ];
+
+          sops.age.sshKeyPaths = ["/etc/ssh/ssh_host_ed25519_key"];
+          sops.gnupg.sshKeyPaths = [];
 
           boot = {
             loader = {
@@ -200,6 +200,17 @@
               pi.gid = 1001;
             };
           };
+
+          environment.systemPackages = with pkgs; [
+            kitty.terminfo
+            sysz
+          ];
+
+          programs.htop = {
+            enable = true;
+            package = pkgs.htop-vim;
+          };
+
           services.openssh = {
             enable = true;
             openFirewall = true;
@@ -210,6 +221,7 @@
               KbdInteractiveAuthentication = false;
             };
           };
+
           nix.settings = {
             experimental-features = ["nix-command" "flakes"];
             sandbox = true;
