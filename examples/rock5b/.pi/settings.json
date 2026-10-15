@@ -1,0 +1,26 @@
+{
+  "defaultTools": ["+codemode"],
+  "theme": "system",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-6-astra",
+  "defaultThinkingLevel": "high",
+  "defaultProjectTrust": "always",
+  "doubleEscapeAction": "tree",
+  "treeFilterMode": "all",
+  "hideThinkingBlock": true,
+  "enabledModels": [
+    "openai-codex/gpt-6-astra",
+    "openai-codex/gpt-6.1-sol",
+    "openai-codex/gpt-6-luna"
+  ],
+  "showHardwareCursor": false,
+  "steeringMode": "all",
+  "quietStartup": true,
+  "packages": [],
+  "modelThinkingLevels": {
+    "openai-codex/gpt-6-astra": "high",
+    "openai-codex/gpt-6.1-sol": "high",
+    "openai-codex/gpt-6-luna": "high"
+  },
+  "tuiMode": "regular"
+}

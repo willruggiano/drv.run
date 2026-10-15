@@ -100,6 +100,8 @@
       accept-flake-config = true;
       experimental-features = ["nix-command" "flakes"];
       flake-registry = "";
+      substituters = ["https://microvm.cachix.org"];
+      trusted-public-keys = ["microvm.cachix.org-1:oXnBc6hRE3eX5rSYdRyMYXnfzcCxC7yKPTbZXALsqys="];
     };
   };
   nixpkgs.overlays = [self.overlays.default];

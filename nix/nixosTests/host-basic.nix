@@ -89,7 +89,41 @@ in {
       };
     };
     host = {
-      imports = [nixosModules.host];
+      imports = [
+        nixosModules.host
+        {
+          services.drv-run.guest.extraModules = [
+            ({pkgs, ...}: let
+              seed = pkgs.writeText "drv-run-test-seed" "initial value\n";
+            in {
+              environment.etc."drv-run-test-seed".source = seed;
+              environment.persistence."/persist".directories = [
+                {
+                  directory = "/var/lib/drv-run-test";
+                  user = "root";
+                  group = "root";
+                  mode = "0700";
+                }
+              ];
+              systemd.tmpfiles.rules = [
+                "d /var/lib/drv-run-test 0700 root root - -"
+                "C /var/lib/drv-run-test/value 0600 root root - ${seed}"
+              ];
+            })
+          ];
+        }
+      ];
+      # Separate definitions must compose; function arguments belong to the guest.
+      services.drv-run.guest.extraModules = [
+        ({
+          config,
+          pkgs,
+          ...
+        }: {
+          environment.etc."drv-run-guest-hostname".text = "${config.networking.hostName}\n";
+          environment.systemPackages = [pkgs.hello];
+        })
+      ];
       services.drv-run.network = {
         uplink = "eth1";
         dnsServers = ["192.168.1.1"];
@@ -356,6 +390,27 @@ in {
         status, _ = host.execute(as_user("operator", f"ssh {target} drv-run-command-does-not-exist </dev/null"))
         t.assertEqual(status, 127)
 
+    with subtest("guest extra modules compose and seed private writable state"):
+        host.succeed("test ! -e /etc/drv-run-guest-hostname; test ! -e /etc/drv-run-test-seed; "
+                     "test ! -e /var/lib/drv-run-test; test ! -e /run/current-system/sw/bin/hello")
+        guest("cmp /etc/hostname /etc/drv-run-guest-hostname; /run/current-system/sw/bin/hello >/dev/null")
+        guest("cmp /var/lib/drv-run-test/value /etc/drv-run-test-seed")
+        probe = """
+    import stat
+    from pathlib import Path
+    directory = Path("/var/lib/drv-run-test")
+    for path, mode in [(directory, 0o700), (directory / "value", 0o600)]:
+        info = path.stat()
+        assert not path.is_symlink()
+        assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (0, 0, mode)
+    (directory / "value").write_text("guest edit")
+    (directory / "retained").touch()
+    """
+        guest("python3 -c " + shlex.quote(probe))
+        guest("cp /var/lib/drv-run-test/value /workspace/guest-extra-value; "
+              "systemd-tmpfiles --create --prefix=/var/lib/drv-run-test; "
+              "cmp /var/lib/drv-run-test/value /workspace/guest-extra-value")
+
     with subtest("the project profile retains the captured environment through garbage collection"):
         host.fail(f"test -e {runtime}/environment-path")
         guest(f"test ! -e /run/environment; test -L {profile}; test -L {profile}-1-link")
@@ -568,6 +623,8 @@ in {
         other_id = other_state.rsplit("/", 1)[1]
         other_target = "drv.run." + other_id
         other_unit = "drv.run@" + other_id + ".service"
+        guest("cmp /var/lib/drv-run-test/value /etc/drv-run-test-seed; "
+              "test ! -e /var/lib/drv-run-test/retained", "other", other_target)
         egress("other", other_target)
         t.assertEqual(len(links()), 2)
         other_tap = next(link for link in links() if link != tap_name)
@@ -637,6 +694,7 @@ in {
         operator(f"systemctl --user start {unit}")
         guest("systemctl is-system-running --wait || { journalctl -b -u 'persist-*.service' --no-pager; exit 1; }")
         guest("test -f /workspace/created; cmp /etc/hostname /workspace/retained; test ! -e /root/discarded")
+        guest("cmp /var/lib/drv-run-test/value /workspace/guest-extra-value; test -f /var/lib/drv-run-test/retained")
         guest(f"test {profile} -ef {shlex.quote(environment)}; test ! -e {profile}-2-link")
         guest('test "$DRV_RUN_TEST_READY" = 1; test "$DRV_RUN_TEST_VALUE" = captured; curl --version >/dev/null')
         operator("mv /home/operator/saved-flake /home/operator/flake")

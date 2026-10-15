@@ -162,9 +162,32 @@
             matchConfig.Name = "en* eth*";
             networkConfig.DHCP = "ipv4";
           };
-          services.drv-run.network = {
-            uplink = "enP4p65s0";
-            dnsServers = ["192.168.4.1"];
+          services.drv-run = {
+            guest.extraModules = [
+              {
+                environment.systemPackages = with pkgs; [
+                  kitty.terminfo
+                ];
+              }
+              {
+                environment.persistence."/persist".users.root.directories = [
+                  {
+                    directory = ".pi/agent";
+                    mode = "0700";
+                  }
+                ];
+                systemd.tmpfiles.rules = [
+                  "d /root/.pi 0700 root root - -"
+                  "d /root/.pi/agent 0700 root root - -"
+                  "C /root/.pi/agent/settings.json 0600 root root - ${./.pi/settings.json}"
+                  "C /root/.pi/agent/keybindings.json 0600 root root - ${./.pi/keybindings.json}"
+                ];
+              }
+            ];
+            network = {
+              uplink = "enP4p65s0";
+              dnsServers = ["192.168.4.1"];
+            };
           };
 
           users = {

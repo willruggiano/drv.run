@@ -48,16 +48,7 @@
     else features;
   guest = nixpkgs.lib.nixosSystem {
     inherit (pkgs.stdenv.hostPlatform) system;
-    modules = [
-      self.nixosModules.guest
-      {
-        # TODO: Seems we should put more here (eg. authorized keys). See
-        # comments in guest.nix for more detail.
-        nix.settings = {
-          inherit (config.nix.settings) substituters trusted-public-keys;
-        };
-      }
-    ];
+    modules = [self.nixosModules.guest] ++ config.services.drv-run.guest.extraModules;
   };
   createVolumes = (import "${microvm}/lib/volumes.nix" {inherit pkgs;}).createVolumesScript (
     map (volume: volume // {autoCreate = true;}) (lib.filter (volume: !volume.readOnly) guest.config.microvm.volumes)
@@ -97,6 +88,15 @@
   };
 in {
   imports = [../nix.nix ./network.nix];
+
+  options.services.drv-run.guest.extraModules = lib.mkOption {
+    type = lib.types.listOf lib.types.deferredModule;
+    default = [];
+    example = lib.literalExpression "[ ./guest.nix ]";
+    description = ''
+      Additional NixOS modules to include in the guest nixosConfiguration.
+    '';
+  };
 
   options.users.users = lib.mkOption {
     type = with lib.types;
