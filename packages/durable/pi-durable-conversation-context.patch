@@ -1,0 +1,59 @@
+--- a/dist/harness/harness.js
++++ b/dist/harness/harness.js
+@@ -137,7 +137,7 @@
+             withdrawInputs: withdrawQueuedInputs,
+             conversation: async (id, binding, callContext) => {
+                 const record = await this.readOnLine((line) => line.conversation(id, callContext));
+-                return record === undefined ? undefined : boundConversation(id, binding, this.#submissions, this.#tasks);
++                return record === undefined ? undefined : boundConversation(new ConversationImpl(id, this.#host), binding, this.#submissions, this.#tasks);
+             },
+             context: withoutAbortSignal(context),
+             readOnly: options.readOnly === true,
+@@ -362,7 +362,8 @@
+  * Invocation-bound handle for tasks and tools. Every operation, and every operation of a submission it returns, first
+  * checks the invocation and runs under its signal, so it rejects once the invocation ends; admitted work stays durable.
+  */
+-function boundConversation(id, binding, submissions, tasks) {
++function boundConversation(conversation, binding, submissions, tasks) {
++    const { id } = conversation;
+     const bind = (context) => withAbortSignal(binding.signal, context);
+     const bound = (operation) => {
+         return async (context) => {
+@@ -388,6 +389,15 @@
+     }
+     return {
+         id,
++        context: async (context, options) => {
++            binding.check();
++            const callContext = bind(context);
++            callContext.abortSignal?.throwIfAborted();
++            const view = await conversation.context(callContext, options);
++            binding.check();
++            callContext.abortSignal?.throwIfAborted();
++            return view;
++        },
+         submit,
+         abort: async (context, options) => {
+             binding.check();
+@@ -419,4 +429,3 @@
+         return harness;
+     },
+ };
+-//# sourceMappingURL=harness.js.map
+\ No newline at end of file
+--- a/dist/harness/types.d.ts
++++ b/dist/harness/types.d.ts
+@@ -112,6 +112,7 @@
+  */
+ export interface ConversationHandle {
+     readonly id: ConversationId;
++    context: Conversation["context"];
+     submit(submission: SubmissionDraft, context: Context): Promise<Submission>;
+     submit(tx: Tx, submission: SubmissionDraft): Promise<SubmissionId>;
+     /** `Conversation.abort()`: withdraw queued inputs, abort the ordinary ownership scope, and wait until it is idle. */
+@@ -1008,4 +1009,3 @@
+     }>;
+ }
+ export {};
+-//# sourceMappingURL=types.d.ts.map
+\ No newline at end of file

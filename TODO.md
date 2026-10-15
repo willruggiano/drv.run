@@ -2,57 +2,72 @@
 
 # Todos
 
-- Practical usability improvements:
-  - [ ] Pi PWA! To start:
-    - Pi running on the _host_ and served over HTTP as a PWA
-    - Execution (ie. tools) in the _guest_
-    - Relevant upstream docs:
-      <https://github.com/earendil-works/pi/tree/stable/packages/env>
-    - I am not married to the host/guest split, but exposing the PWA from the
-      host certainly seems simpler at the moment.
-  - [ ] Add an owner-scoped host command that obtains the guest connection FD
-        from systemd-ssh-proxy
-        (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
-        bytes bidirectionally between that FD and the SSH exec channel’s
-        stdin/stdout.
+## Security
+
 - [ ] [[security.md]]
+- [ ] Reject host-local addresses in the proxy’s existing pre-connect policy
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
-- [ ] HTTP proxy / expose guest services over HTTP
-- [ ] Make the host-basic check work on aarch64
-- [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
-      insight into pre/start/post activation timing, including cold and warm
-      boots on flake's of varying (closure) size
-- [ ] Client requires ssh config:
-  ```sshconfig
-  Match originalhost drv.run command ""
-      RequestTTY no
-  Host drv.run
-      HostKeyAlias drv.run
-      HostName 192.168.4.35
-  Host drv.run.*
-      HostKeyAlias drv.run
-      HostName 192.168.4.35
-      User root
-      RequestTTY force
-      RemoteCommand su --login $ME --command 'exec ssh -t %n'
-  ```
-- [ ] Great practical test (and also something I want badly!):
-  ```sh
-  ssh drv.run github:willruggiano/neovim.drv -c \
-    pi '
-      Implement a simple review plugin for neovim: `nvim +Review`.
-      The plugin should add all staged and unstaged changes to the quickfix
-      list. Each quickfix list entry is one hunk. It should present with a
-      scratch buffer that lists all of the changes, output straight from a
-      suitable git command, not editable, ensure the output contains enough of
-      the filenames such that `gf` works. Visiting a file should display it in
-      readonly, diff mode. One window with inline diffs. Lastly, it should be
-      possible to comment on files/buffers (hijack the builtin op-pending `gc`
-      to add a comment, use vim.ui.input to collect) as marks/virtual-text,
-      delete comments, and yank a comment/buffer's comments/all comments across
-      all buffers to clipboard. These are the only features. Write tests.
-    '
-  ```
+- [ ] HTTP proxy/egress control (ie. http proxy on the host controls network
+      accesss from the guest)
+- [ ] Add an owner-scoped host command that obtains the guest connection FD from
+      systemd-ssh-proxy
+      (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
+      bytes bidirectionally between that FD and the SSH exec channel’s
+      stdin/stdout.
+- [ ] <https://github.com/cloud-hypervisor/cloud-hypervisor/pull/9041> and
+      <https://pwn.ai/blog/pwnescape>
+
+## Usability
+
+- [ ] Automate the host deployment
+- [ ] Scratchpad off to the side on desktop (maybe use tldraw?)
+- [ ] Executable specs / RLM
+- [ ] Project management features, or integrate Linear (via mcp?)
+- [ ] Automate/declarative guest port exposure / service publishing (proof of
+      concept nixos test in tests/nixos/port-forwarding.nix)
+- [ ] Potentially configure [pueue](https://github.com/Nukesor/pueue) as a
+      standalone service? This would replace zmx.
+- [ ] Modal browser UX: esc -> "normal", j/k navigate the transcript, space ->
+      expand/collapse transcript item, gf -> fork, i (anywhere) -> return to
+      "insert" and focus the input
+
+## SDLC
+
+- [ ] Move everything in the justfile to nix, delete justfile
+- [ ] Use legit telemetry tooling (otel-cli, otel-desktop-viewer) instead of
+      homegrown slop, eg. [`timings.sh`](nixosModules/timing.sh)
+- [ ] Integrate review conversations with `@oxide/skepsis` to provide a
+      code-review frontend. Skepsis opens on an available port, which the api
+      should _proxy_ behind a conversation specific route, eg.
+      `/api/review?externalId=xxx&conversationId=yyy`.
+
+## Codebase architecture
+
+- [ ] Delete packages/app and packages/www
+- [ ] Formalize project package definition (run unit tests in checkPhase, export
+      benchmarks, integration tests, and nixos vm tests via
+      passthru.{bench,tests}) -> generate the flake `checks` as function of its
+      `packages`.
+
+Additional references:
+
+- <https://github.com/mattpocock/skills/tree/main/skills/engineering/improve-codebase-architecture>
+- <https://github.com/sverweij/dependency-cruiser>
+
+## Performance
+
+- [ ] Build a minimal guest system. IWYU.
+  - Step 1: **measure**. We need to inspect our guest system closure and
+    identify everything in it that we do not need.
+  - Step 2: figure out how to eliminate everything that we don't need.
+  - Might need a explicitly "modular"/not-nixos-modules approach through
+    targetted `imports`;
+  - <https://github.com/NixOS/nixpkgs/blob/master/nixos/doc/manual/development/modular-services.md>
+  - <https://github.com/NixOS/nixpkgs/pull/401751>
+  - <https://github.com/arianvp/server-optimised-nixos/tree/master>
+
+## Watchlist
+
 - [ ] Keep an eye on the early unmount warnings:
   ```text
   vm-test-run-host-basic> host # [ 58.260810] microvm-run[1272]: [ OK ] Stopped target Local File Systems.
@@ -83,15 +98,6 @@
   vm-test-run-host-basic> host # [ 58.334465] microvm-run[1272]: [ OK ] Unmounted /persist.
   ```
 
-## Low priority ideas
-
-- [ ] Implement a [headlong] inspired RLM using pi-durable and codemode. There
-      are two primary things to determine here: (1) the model-code-model loop
-      (the core RLM machinery), and (2) trajectory projection (ie. context). The
-      latter will be quite interesting as both a context/fork problem (to
-      implement "context as a projection of trajectory") and a compaction
-      problem (to implement "tiered context compaction").
-
 ## Stuff to look into
 
 We can likely learn from;
@@ -111,6 +117,10 @@ These seem useful on the inside;
 
 Others;
 
+- <https://github.com/kitknox/rootshell>
+- <https://github.com/trzsz/trzsz-ssh>
+- <https://github.com/jetkvm/kvm>
+- <https://github.com/baptiste0928/jj-mesh>
 - <https://github.com/Gurpartap/pi-mermaid> (ascii is fine lmao)
 - <https://github.com/HenryQW/pi-harness/tree/main/extensions>
 - <https://github.com/clay-good/openlore>
@@ -127,5 +137,3 @@ Others;
 - <https://github.com/pungggi/pi-continual-harness>
 - <https://github.com/tuneloop/tuneloop>
 - <https://gitlab.com/jarkkojs/goosedump>
-
-[headlong]: https://github.com/laude-institute/headlong

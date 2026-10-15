@@ -1,8 +1,16 @@
 {
+  # WARNING: this nixos test is a resource hog! Be frugal about building it in
+  # constrained systems (eg. the ROCK 5B aarch64 guest). You probably don't need
+  # this test anyways; generally speaking you should compose the smaller, more
+  # targetted, and (preferably) # nixos/vm free tests instead.
   nixosModules,
   pkgs,
 }: let
-  tap = import ../../nixosModules/host/tap.nix {inherit pkgs;};
+  # Nix's path fetcher reuses registered store paths only when named "source".
+  nixpkgs = builtins.path {
+    name = "source";
+    path = pkgs.path;
+  };
   shell = pkgs.mkShell {
     packages = [pkgs.curl pkgs.python3 pkgs.iproute2];
     DRV_RUN_TEST_VALUE = "captured";
@@ -16,9 +24,9 @@
   keys = import (pkgs.path + "/nixos/tests/ssh-keys.nix") pkgs;
   fixture = pkgs.writeText "flake.nix" ''
     {
-      inputs.nixpkgs.url = "path:${pkgs.path}";
+      inputs.nixpkgs.url = "path:${nixpkgs}";
       outputs = { nixpkgs, ... }: {
-        devShells.x86_64-linux.default = let pkgs = nixpkgs.legacyPackages.x86_64-linux; in pkgs.mkShell {
+        devShells.${pkgs.stdenv.hostPlatform.system}.default = let pkgs = nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}; in pkgs.mkShell {
           packages = [pkgs.curl pkgs.python3 pkgs.iproute2];
           DRV_RUN_TEST_VALUE = "captured";
           shellHook = "export DRV_RUN_TEST_READY=1";
@@ -28,7 +36,7 @@
   '';
 in {
   name = "host-basic";
-  qemu.forceAccel = true;
+  imports = [./common.nix];
   nodes = {
     client = {
       # Public/sensitive destinations on an isolated VLAN, never the Internet.
@@ -139,13 +147,7 @@ in {
         wantedBy = ["multi-user.target"];
         serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 -m http.server 8080 --bind 0.0.0.0";
       };
-      virtualisation = {
-        memorySize = 10240;
-        cores = 2;
-        diskSize = 20480;
-        qemu.options = ["-cpu" "host"];
-        additionalPaths = [shell pkgs.path];
-      };
+      virtualisation.additionalPaths = [shell nixpkgs];
       users.users = {
         operator = {
           isNormalUser = true;
@@ -260,7 +262,6 @@ in {
         ]
         return shlex.join(options)
 
-    start_all()
     host.wait_for_unit("default.target")
     host.wait_for_unit("sshd.service")
     host.wait_for_unit("systemd-networkd.service")
@@ -382,9 +383,10 @@ in {
         guest('test ! -e /run/drv-run-seed/environment-path; '
               'findmnt -n --evaluate --source LABEL=drv-run-seed --types ext4 '
               '-O ro,nodev,nosuid,noexec --mountpoint /run/drv-run-seed >/dev/null; '
-              'found=false; for key in /run/credentials/*/authorized-keys; do '
-              'test -f "$key" || continue; cmp /run/drv-run-seed/authorized-keys "$key"; '
-              'cmp /run/drv-run-seed/host-key "$(dirname "$key")/host-key"; '
+              'cmp /run/drv-run-seed/root/authorized_keys /run/drv-run-ssh/root/authorized_keys; '
+              'test $(stat -c %u /run/drv-run-ssh/root/authorized_keys) -eq 0; '
+              'found=false; for key in /run/credentials/*/host-key; do '
+              'test -f "$key" || continue; cmp /run/drv-run-seed/host-key "$key"; '
               'found=true; done; "$found"')
         operator(f"systemctl --user is-active --quiet {unit}")
         status, _ = host.execute(as_user("operator", f"ssh {target} drv-run-command-does-not-exist </dev/null"))
@@ -416,12 +418,8 @@ in {
         guest(f"test ! -e /run/environment; test -L {profile}; test -L {profile}-1-link")
         guest(f"test {profile} -ef {shlex.quote(environment)}")
         guest('test "$DRV_RUN_TEST_READY" = 1; test "$DRV_RUN_TEST_VALUE" = captured; curl --version >/dev/null')
-        # Reject invalid registration requests without disturbing the profile.
-        for invalid in ["", "/tmp/not-an-env", environment + " extra"]:
-            host.fail(as_user("operator",
-                "printf '%s\\n' " + shlex.quote(invalid) + f" | ssh -T {target} root-environment"))
         guest(f"test {profile} -ef {shlex.quote(environment)}; test ! -e {profile}-2-link")
-        # Collect through the daemon transport, outside any nix develop session.
+        # Collect through ordinary SSH execution of nix-daemon --stdio.
         guest("printf '%s' unrooted > /workspace/unrooted; nix-store --add /workspace/unrooted > /workspace/unrooted-path")
         operator(f"nix store gc --store ssh-ng://{target}")
         guest(f"test -r {profile}; test ! -e \"$(< /workspace/unrooted-path)\"; "
@@ -460,7 +458,7 @@ in {
         shell_probe = (
             "set -e\n"
             'test "$(touch /tmp/drv-run-command-guest; id -u)" -eq 0\n'
-            'test "$PWD" = /workspace\n'
+            'test "$PWD" = "$HOME"\n'
             'test "$DRV_RUN_TEST_READY" = 1\n'
             "test ! -t 0\n"
             "curl --version >/dev/null\n"
@@ -708,14 +706,14 @@ in {
         operator(f"${pkgs.e2fsprogs}/bin/e2fsck -fn {state}/state.img")
 
     with subtest("failed exec releases allocated resources without disrupting its peer"):
-        host.fail(as_user("operator", "${tap}/bin/drv-run-tap /does-not-exist"))
+        host.fail(as_user("operator", "${pkgs.lib.getExe pkgs.drvr.tap} /does-not-exist"))
         t.assertEqual(links(), [other_tap])
         host.wait_until_succeeds("test -z \"$(find /run/systemd/nsresource/registry -maxdepth 1 -name 'n1000-*.userns')\"")
         egress("other", other_target)
 
     with subtest("failed provisioning closes its master and releases its TAP"):
-        # A valid store path that is not a prepared environment fails only after
-        # SSH authentication and nix copy have succeeded.
+        # The pinned image must reject a host expectation that names a different
+        # store path, without publishing client readiness.
         operator(f"mv {state}/environment {state}/saved-environment")
         operator(f"ln -s ${pkgs.bash} {state}/environment")
         host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start {unit}"))

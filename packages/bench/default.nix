@@ -4,6 +4,7 @@
   hyperfine,
   lib,
   nix,
+  openssh,
   python3,
   systemd,
   writeShellApplication,
@@ -15,6 +16,7 @@ writeShellApplication {
     coreutils
     hyperfine
     nix
+    openssh
     python3
     systemd
   ];
@@ -28,4 +30,10 @@ writeShellApplication {
       --bash ${lib.getExe bash} "$@"
   '';
   meta.description = "drv.run benchmark runner";
+  derivationArgs.postCheck = ''
+    PYTHONPATH=${lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [./main.py ./tests];
+    }} ${lib.getExe python3} -B -m unittest discover -s bench.tests -p '*_test.py'
+  '';
 }

@@ -1,0 +1,585 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { test } from "node:test";
+import { chromium, type Page } from "playwright";
+import {
+  fauxAssistantMessage,
+  fauxThinking,
+  fauxText,
+  fauxToolCall,
+} from "@earendil-works/pi-ai/providers/faux";
+import { AgentDoc, LiveDoc } from "@earendil-works/pi-durable";
+import { context } from "../src/application.ts";
+import { serve } from "../src/server.ts";
+import { fixture, form } from "./fixtures.ts";
+
+const idle = (page: Page) =>
+  page.waitForFunction(() => document.getElementById("status")?.dataset.state === "idle");
+
+await test(
+  "home → selections → uploads → streaming → tools → compaction → /new → persisted session",
+  { timeout: 60_000 },
+  async (t) => {
+    const { app, faux, directory } = await fixture(t);
+    const server = await serve(app, { port: 0 });
+    t.after(() => server.close());
+    const browser = await chromium.launch({
+      executablePath:
+        process.env.CHROMIUM_BINARY ??
+        execFileSync("which", ["chromium"], { encoding: "utf8" }).trim(),
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    try {
+      const page = await browser.newPage();
+      const errors: Error[] = [];
+      page.on("pageerror", (error) => errors.push(error));
+      await page.goto(server.origin);
+      await page.locator("#thinking").selectOption("high");
+      await page.getByRole("button", { name: "Create session", exact: true }).click();
+      await page.waitForURL((url) => url.pathname.startsWith("/sessions/"));
+      const firstURL = page.url();
+      const session = await app.conversation(new URL(firstURL).pathname.split("/")[2]!);
+      assert(session);
+      assert.equal((await session.agent(context)).thinkingLevel, "high");
+      await idle(page);
+
+      const changed = join(directory, "other");
+      await mkdir(changed);
+      await writeFile(join(changed, "check.txt"), "selected directory");
+      const answer =
+        "# Answer\n\n**Rendered markdown**\n\n```ts\nconst answer = 42;\n```\n\n<script>window.pdsInjected = true</script>\n\n" +
+        "Streaming text. ".repeat(200);
+      faux.setResponses([
+        (input, options, _state, model) => {
+          assert.equal(model.id, "first");
+          assert.equal(options?.reasoning, "high");
+          const user = input.messages.find((message) => message.role === "user");
+          assert(user && Array.isArray(user.content));
+          assert(user.content.some((part) => part.type === "image"));
+          assert(
+            user.content.some(
+              (part) =>
+                part.type === "text" && part.text === "Attachment: source.ts\n\nconst source = 1;",
+            ),
+          );
+          return fauxAssistantMessage([
+            fauxThinking("Consider the attachments."),
+            fauxText(answer),
+          ]);
+        },
+        (_input, _options, _state, model) => {
+          assert.equal(model.id, "second");
+          return fauxAssistantMessage(fauxToolCall("read", { path: "check.txt" }), {
+            stopReason: "toolUse",
+          });
+        },
+        (input) => {
+          const result = input.messages.findLast((message) => message.role === "toolResult");
+          assert(result?.role === "toolResult" && !result.isError);
+          return fauxAssistantMessage("The tool read the selected directory.");
+        },
+        fauxAssistantMessage(
+          "The user supplied attachments. The tool read check.txt. Preserve these decisions.",
+        ),
+      ]);
+      await page.locator("#message").fill("Review these files");
+      await page.locator("#attachments").setInputFiles([
+        {
+          name: "tiny.png",
+          mimeType: "image/png",
+          buffer: Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+            "base64",
+          ),
+        },
+        { name: "source.ts", mimeType: "text/plain", buffer: Buffer.from("const source = 1;") },
+      ]);
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.locator("#partial").waitFor();
+      assert.equal(await page.locator("#message").inputValue(), "");
+      assert.equal(
+        await page
+          .locator("#attachments")
+          .evaluate((input: HTMLInputElement) => input.files?.length),
+        0,
+      );
+      // Draft/configuration controls are not part of the streamed transcript morph.
+      await page.locator("#message").fill("Read check.txt");
+      await page.locator("#cwd").fill("unfinished directory draft");
+      const partial = await page.locator("#partial").textContent();
+      await page.waitForFunction(
+        (before) => document.querySelector("#partial")?.textContent !== before,
+        partial,
+      );
+      assert.equal(await page.locator("#cwd").inputValue(), "unfinished directory draft");
+      await page.locator("#cwd").fill("");
+      await page.locator("#cwd").press("Enter");
+      await page.locator("#notice").waitFor({ state: "visible" });
+      assert.equal((await session.agent(context)).cwd, directory);
+      await page.locator("#cwd").fill(changed);
+      await page.locator("#cwd").press("Enter");
+      await page.waitForFunction(
+        (value) => document.querySelector("#cwd")?.getAttribute("value") === value,
+        changed,
+      );
+      await page.locator("#model").selectOption("faux/second");
+      await page.waitForFunction(() => document.querySelectorAll("#thinking option").length === 1);
+      assert.equal(await page.locator("#message").inputValue(), "Read check.txt");
+      // Queue while the first response is still streaming.
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.locator("#queue article").waitFor();
+      await idle(page);
+      assert.equal((await session.agent(context)).cwd, changed);
+      assert.equal(await page.locator("#transcript .hljs-keyword").count(), 1);
+      assert.equal(
+        await page.locator("#transcript strong").first().textContent(),
+        "Rendered markdown",
+      );
+      assert.equal(await page.locator("#transcript .thinking").count(), 1);
+      assert.equal(await page.locator("#transcript script").count(), 0);
+      assert.equal(await page.evaluate(() => Object.hasOwn(window, "pdsInjected")), false);
+      assert.equal(await page.locator("#transcript img").count(), 1);
+      assert.equal(await page.locator(".tool-call[data-state=completed]").count(), 1);
+      assert.equal(
+        (await app.harness.snapshot(LiveDoc, session.id, context))?.runFailure,
+        undefined,
+      );
+
+      await page.locator("#message").fill("/compact keep the file decisions");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.locator('[data-kind="pi.compaction"]').waitFor();
+      await idle(page);
+      assert.equal((await session.context(context)).head?.kind, "pi.compaction");
+      await page.reload();
+      await page.locator('[data-kind="pi.compaction"]').waitFor();
+      assert.equal(await page.locator("#cwd").inputValue(), changed);
+
+      // Environment changes are durable and inherited by /new, without starting SSH on selection.
+      await page.locator("#environment").selectOption("test-guest");
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLSelectElement>("#environment")?.selectedOptions[0]
+            ?.defaultSelected,
+      );
+      await page.locator("#message").fill("/new");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.waitForURL((url) => url.href !== firstURL);
+      await idle(page);
+      assert.equal(await page.locator("#environment").inputValue(), "test-guest");
+      assert.equal(await page.locator("#cwd").inputValue(), changed);
+      assert.equal(await page.locator("#transcript article").count(), 0);
+      assert.equal((await app.list()).length, 2);
+      await page.getByRole("link", { name: "Sessions", exact: true }).first().click();
+      assert.equal(await page.locator("#session-list .session-row").count(), 2);
+      await page.getByRole("link", { name: "Review these files", exact: true }).click();
+      await page.locator('[data-kind="pi.compaction"]').waitFor();
+      assert.equal(page.url(), firstURL);
+      assert.equal(
+        (await app.harness.snapshot(AgentDoc, session.id, context))?.model?.modelId,
+        "second",
+      );
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+await test(
+  "disconnects do not cancel runs; reconnect, stop, errors, and rejected commands keep usable state",
+  { timeout: 60_000 },
+  async (t) => {
+    const { app, faux } = await fixture(t);
+    const server = await serve(app, { port: 0 });
+    t.after(() => server.close());
+    const browser = await chromium.launch({
+      executablePath:
+        process.env.CHROMIUM_BINARY ??
+        execFileSync("which", ["chromium"], { encoding: "utf8" }).trim(),
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    try {
+      const page = await browser.newPage();
+      const errors: Error[] = [];
+      page.on("pageerror", (error) => errors.push(error));
+      await page.goto(server.origin);
+      await page.getByRole("button", { name: "Create session", exact: true }).click();
+      await page.waitForURL((url) => url.pathname.startsWith("/sessions/"));
+      const url = page.url();
+      const session = await app.conversation(new URL(url).pathname.split("/")[2]!);
+      assert(session);
+      await idle(page);
+      await page.locator("#message").fill("/not-a-command");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.waitForFunction(() => !!document.getElementById("notice")?.textContent);
+      assert.equal(await page.locator("#message").inputValue(), "/not-a-command");
+      assert.equal((await session.context(context)).entries.length, 0);
+
+      faux.setResponses([
+        fauxAssistantMessage("Long running response. ".repeat(2000)),
+        fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider unavailable" }),
+        fauxAssistantMessage("", { stopReason: "error", errorMessage: "Summary unavailable" }),
+      ]);
+      await page.locator("#message").fill("Start work");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.locator("#partial").waitFor();
+      await page.goto(server.origin);
+      assert((await app.harness.snapshot(LiveDoc, session.id, context))?.run);
+      await page.goto(url);
+      await page.locator("#partial").waitFor();
+      assert.equal(await page.locator("#connection").textContent(), "Connected");
+      const other = await browser.newPage();
+      await other.goto(url);
+      await other.locator("#partial").waitFor();
+      await page.getByRole("button", { name: "Stop", exact: true }).click();
+      await idle(page);
+      await idle(other);
+      assert.equal(
+        (await app.harness.snapshot(LiveDoc, session.id, context))?.runFailure?.reason,
+        "aborted",
+      );
+      assert.equal(await page.locator("#partial").count(), 0);
+      await other.close();
+      await page.locator("#message").fill("Try again");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.waitForFunction(() =>
+        [...document.querySelectorAll("#conversation .error")].some(
+          (element) => element.textContent === "model_error: Provider unavailable",
+        ),
+      );
+      assert.equal(
+        (await app.harness.snapshot(LiveDoc, session.id, context))?.runFailure?.reason,
+        "model_error",
+      );
+      await page.locator("#message").fill("/compact");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.waitForFunction(() =>
+        [...document.querySelectorAll("#conversation .error")].some(
+          (element) =>
+            element.textContent === "Compaction failed: Summarization failed: Summary unavailable",
+        ),
+      );
+      assert((await app.harness.snapshot(LiveDoc, session.id, context))?.compactionFailure);
+      assert.equal(await page.locator("#message").inputValue(), "");
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+await test(
+  "mobile creation sends attachments; streaming preserves scroll and collapsed composer",
+  { timeout: 60_000 },
+  async (t) => {
+    const { app, faux } = await fixture(t);
+    const server = await serve(app, { port: 0 });
+    t.after(() => server.close());
+    const browser = await chromium.launch({
+      executablePath:
+        process.env.CHROMIUM_BINARY ??
+        execFileSync("which", ["chromium"], { encoding: "utf8" }).trim(),
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    try {
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      const errors: Error[] = [];
+      page.on("pageerror", (error) => errors.push(error));
+      faux.setResponses([
+        fauxAssistantMessage("A mobile answer.\n\n" + "Line of streamed text.\n\n".repeat(200)),
+      ]);
+      await page.goto(server.origin);
+      await page.locator("#message").fill("Hello from mobile");
+      await page
+        .locator("#attachments")
+        .setInputFiles([
+          { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Mobile attachment") },
+        ]);
+      await page.getByRole("button", { name: "Remove notes.txt", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Create session", exact: true }).click();
+      await page.waitForURL((url) => url.pathname.startsWith("/sessions/"));
+      await page.locator("#partial").waitFor();
+      const session = await app.conversation(new URL(page.url()).pathname.split("/")[2]!);
+      assert(session);
+      const user = (await session.context(context)).messages.find(
+        (message) => message.role === "user",
+      );
+      assert.deepEqual(user?.content, [
+        { type: "text", text: "Hello from mobile" },
+        { type: "text", text: "Attachment: notes.txt\n\nMobile attachment" },
+      ]);
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      assert.equal(
+        await page.locator("#composer-shell").evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          return box.top >= 0 && box.bottom <= innerHeight;
+        }),
+        true,
+      );
+      await page.locator("#footer-collapse").click();
+      await page.locator("#composer-shell").waitFor({ state: "hidden" });
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#stream")!.scrollHeight >
+          document.querySelector("#stream")!.clientHeight + 100,
+      );
+      assert.equal(
+        await page
+          .locator("#stream")
+          .evaluate(
+            (element) => element.scrollHeight - element.clientHeight - element.scrollTop < 32,
+          ),
+        true,
+      );
+      await page.locator("#stream").evaluate((element) => {
+        element.scrollTop = 0;
+      });
+      const previous = await page.locator("#partial").textContent();
+      await page.waitForFunction(
+        (before) => document.querySelector("#partial")?.textContent !== before,
+        previous,
+      );
+      assert.equal(await page.locator("#footer-collapse").getAttribute("aria-expanded"), "false");
+      assert.equal(await page.locator("#stream").evaluate((element) => element.scrollTop), 0);
+      await page.locator("#footer-collapse").click();
+      await page.locator("#composer-shell").waitFor({ state: "visible" });
+      await page.getByRole("button", { name: "Latest", exact: true }).click();
+      assert.equal(
+        await page
+          .locator("#stream")
+          .evaluate(
+            (element) => element.scrollHeight - element.clientHeight - element.scrollTop < 32,
+          ),
+        true,
+      );
+      await page.getByRole("button", { name: "Stop", exact: true }).click();
+      await idle(page);
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+await test(
+  "stealth footer controls on desktop and mobile; /cd is not a model turn",
+  { timeout: 60_000 },
+  async (t) => {
+    const { app, faux, selection, directory } = await fixture(t);
+    const server = await serve(app, { port: 0 });
+    t.after(() => server.close());
+    const browser = await chromium.launch({
+      executablePath:
+        process.env.CHROMIUM_BINARY ??
+        execFileSync("which", ["chromium"], { encoding: "utf8" }).trim(),
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    try {
+      for (const width of [1280, 390]) {
+        const page = await browser.newPage({ viewport: { width, height: 844 } });
+        const errors: Error[] = [];
+        page.on("pageerror", (error) => errors.push(error));
+        await page.goto(server.origin);
+        assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+        assert.equal(await page.locator("#environment").isVisible(), true);
+        assert.equal(await page.locator("#cwd").isVisible(), true);
+        const conversation = await app.create(form(selection));
+        await page.goto(`${server.origin}/sessions/${conversation.id}`);
+        await idle(page);
+        assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+        assert.equal(await page.locator("dialog").count(), 0);
+        assert.equal(await page.locator("#environment").isVisible(), width > 650);
+        assert.equal(await page.locator("#cwd").isVisible(), width > 650);
+        for (const id of width > 650
+          ? ["model", "thinking", "environment", "cwd"]
+          : ["model", "thinking"]) {
+          const control = page.locator(`#${id}`);
+          await control.focus();
+          assert.deepEqual(
+            await control.evaluate((element) => {
+              const style = getComputedStyle(element);
+              return [style.outlineStyle, style.borderTopWidth, style.boxShadow];
+            }),
+            ["none", "0px", "none"],
+          );
+          assert.equal(
+            await control
+              .locator("..")
+              .evaluate((element) => getComputedStyle(element).outlineStyle),
+            "none",
+          );
+        }
+        await page.locator("#thinking").selectOption("high");
+        await page.waitForFunction(
+          () =>
+            document.querySelector<HTMLSelectElement>("#thinking")?.selectedOptions[0]
+              ?.defaultSelected,
+        );
+        assert.equal((await conversation.agent(context)).thinkingLevel, "high");
+        await page.locator("#model").selectOption("faux/second");
+        await page.waitForFunction(
+          () => document.querySelectorAll("#thinking option").length === 1,
+        );
+        assert.equal((await conversation.agent(context)).model?.modelId, "second");
+        assert.equal((await conversation.agent(context)).thinkingLevel, "off");
+        const url = page.url();
+        await page.locator("#footer-context").click();
+        if (width > 650) await page.locator("#footer-stats").click();
+        assert.equal(page.url(), url);
+        assert.equal(await page.locator("dialog").count(), 0);
+        await page.locator("#message").fill("/cd nested directory");
+        assert.notEqual(
+          await page
+            .locator(".compose-box")
+            .evaluate((element) => getComputedStyle(element).borderTopColor),
+          await page
+            .locator("#message")
+            .evaluate((element) => getComputedStyle(element).borderTopColor),
+        );
+        await page.getByRole("button", { name: "Send", exact: true }).click();
+        await page.waitForFunction(
+          (value) => document.querySelector<HTMLInputElement>("#cwd")?.value === value,
+          join(directory, "nested directory"),
+        );
+        assert.equal((await conversation.agent(context)).cwd, join(directory, "nested directory"));
+        assert.equal((await conversation.context(context)).entries.length, 0);
+        assert.equal(faux.state.callCount, 0);
+        await page.reload();
+        await idle(page);
+        assert.equal(await page.locator("#cwd").inputValue(), join(directory, "nested directory"));
+        assert.deepEqual(errors, []);
+        await page.close();
+      }
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+await test(
+  "bounded HTML history, native forms, and incremental patches preserve committed DOM",
+  { timeout: 30_000 },
+  async (t) => {
+    const { app, selection, faux } = await fixture(t);
+    const conversation = await app.create(form(selection));
+    await conversation.commit(async (tx) => {
+      for (let index = 0; index < 120; index++)
+        await tx.appendEntry(conversation.id, {
+          kind: "test.message",
+          model: [
+            fauxAssistantMessage(
+              `Committed ${index}.\n\n\`\`\`ts\nconst value = ${index};\n\`\`\``,
+            ),
+          ],
+        });
+    }, context);
+    const server = await serve(app, { port: 0 });
+    t.after(() => server.close());
+    const browser = await chromium.launch({
+      executablePath:
+        process.env.CHROMIUM_BINARY ??
+        execFileSync("which", ["chromium"], { encoding: "utf8" }).trim(),
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    try {
+      const native = await browser.newPage({ javaScriptEnabled: false });
+      await native.goto(`${server.origin}/sessions/${conversation.id}`);
+      assert.equal(await native.locator("#entries > article").count(), 50);
+      assert.equal(await native.locator("#model").inputValue(), "faux/first");
+      await native.locator("#cwd").fill("/native-directory");
+      await native.locator("#configuration-cwd button").click();
+      assert.equal((await conversation.agent(context)).cwd, "/native-directory");
+      await native.close();
+
+      const page = await browser.newPage();
+      await page.goto(`${server.origin}/sessions/${conversation.id}`);
+      await idle(page);
+      assert.equal(await page.locator("#entries > article").count(), 50);
+      await page.getByRole("link", { name: "Earlier messages", exact: true }).click();
+      await page.waitForFunction(
+        () => document.querySelectorAll("#conversation article").length === 100,
+      );
+      await page.getByRole("link", { name: "Earlier messages", exact: true }).click();
+      await page.waitForFunction(
+        () => document.querySelectorAll("#conversation article").length === 120,
+      );
+      assert.equal(
+        await page.getByRole("link", { name: "Earlier messages", exact: true }).count(),
+        0,
+      );
+      await page
+        .locator("#entries > article")
+        .first()
+        .evaluate((entry) => {
+          entry.setAttribute("data-sentinel", "preserved");
+          const changed: string[] = [];
+          document.addEventListener("datastar-fetch", (event) => {
+            const detail = (event as CustomEvent<{ type: string; argsRaw: { elements?: string } }>)
+              .detail;
+            if (detail.type !== "datastar-patch-elements" || !detail.argsRaw.elements) return;
+            const fragment = document
+              .createRange()
+              .createContextualFragment(detail.argsRaw.elements);
+            changed.push(...Array.from(fragment.children, (child) => child.id));
+            entry.setAttribute("data-patched-roots", JSON.stringify(changed));
+          });
+        });
+      faux.setResponses([fauxAssistantMessage("An incremental response. ".repeat(20))]);
+      await page.locator("#message").fill("Continue");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.locator("#partial").waitFor();
+      await conversation.waitForIdle(context);
+      await idle(page);
+      const kept = page.locator("[data-sentinel=preserved]");
+      assert.equal(await kept.count(), 1);
+      const roots: string[] = JSON.parse((await kept.getAttribute("data-patched-roots"))!);
+      assert(roots.length > 0);
+      assert.equal(roots.includes("conversation"), false);
+      assert.equal(roots.includes((await kept.getAttribute("id"))!), false);
+      assert.equal(await page.locator("#conversation article[data-role]").count(), 122);
+      assert.equal(await page.locator("#partial").count(), 0);
+      assert(
+        Number.isSafeInteger(
+          Number(await page.locator("#admission").getAttribute("data-submission-id")),
+        ),
+      );
+      await page.reload();
+      await idle(page);
+      assert.equal(await page.locator("#entries > article").count(), 50);
+      await conversation.commit(async (tx) => {
+        for (let index = 0; index < 150; index++)
+          await tx.appendEntry(conversation.id, {
+            kind: "test.message",
+            model: [fauxAssistantMessage(`Burst ${index}`)],
+          });
+      }, context);
+      await page.waitForFunction(
+        () => document.querySelectorAll("#entries > article").length === 100,
+      );
+      assert.equal(await page.locator("#entries article").count(), 100);
+      await page.getByRole("link", { name: "Load missing messages", exact: true }).click();
+      await page.waitForFunction(
+        () => document.querySelectorAll("#entries article").length === 150,
+      );
+      await page.getByRole("link", { name: "Load missing messages", exact: true }).click();
+      await page.waitForFunction(
+        () => document.querySelectorAll("#entries article").length === 200,
+      );
+      assert.equal(
+        await page.getByRole("link", { name: "Load missing messages", exact: true }).count(),
+        0,
+      );
+    } finally {
+      await browser.close();
+    }
+  },
+);

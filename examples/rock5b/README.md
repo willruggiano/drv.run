@@ -11,17 +11,17 @@ nix run .#deploy
 For drv.run access, use the following client configuration:
 
 ```sshconfig
+# suppress the "Connection to x.x.x.x closed" message under plain `ssh drv.run`
 Match originalhost drv.run command ""
     RequestTTY no
+
 Host drv.run
-    HostKeyAlias drv.run
-    HostName <ip address>
+    HostName <ip address of the rock 5b>
+    User me
+
 Host drv.run.*
-    HostKeyAlias drv.run
-    HostName <ip address>
+    ProxyCommand ssh -T drv.run connect %n
     User root
-    RequestTTY force
-    RemoteCommand su --login <user> --command 'exec ssh -t %n'
 ```
 
 (note: this is temporary!)

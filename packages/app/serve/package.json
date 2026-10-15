@@ -1,0 +1,31 @@
+{
+  "name": "serve",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node build.ts dist",
+    "check": "tsc -p tsconfig.json && cd elm && elm-format src tests --validate && elm make src/Main.elm src/Site.elm src/FileView.elm --optimize --output=/dev/null",
+    "test:elm": "cd elm && elm-test --seed 1"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/pi-env": "1.4.0",
+    "@speed-highlight/core": "2.1.0",
+    "dbus-next": "0.10.2",
+    "harness": "0.1.0",
+    "push-policy": "file:../../push-policy"
+  },
+  "exports": {
+    "./*": {
+      "development": "./*.ts",
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  }
+}

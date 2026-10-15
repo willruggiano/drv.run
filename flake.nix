@@ -3,19 +3,17 @@
 
   nixConfig = {
     extra-substituters = [
-      "https://willruggiano.cachix.org"
+      "https://drv-run.cachix.org"
+      "https://jj-gh.cachix.org"
     ];
     extra-trusted-public-keys = [
-      "willruggiano.cachix.org-1:rz00ME8/uQfWe+tN3njwK5vc7P8GLWu9qbAjjJbLoSw="
+      "drv-run.cachix.org-1:WPTiRxMwsLWdwH7RqpbLzjXy/282xH6G4Qq/+igHVx0="
+      "jj-gh.cachix.org-1:N1uFBMDd9znlhDa68BRqLSXYzXXJ2+WHVuwxpGxCtDo="
     ];
   };
 
   inputs = {
     self.submodules = true;
-    deploy-rs = {
-      url = "github:serokell/deploy-rs";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     impermanence = {
       url = "github:nix-community/impermanence";
       inputs = {
@@ -23,23 +21,14 @@
         nixpkgs.follows = "nixpkgs";
       };
     };
-    jail.url = "sourcehut:~alexdavid/jail.nix";
+    jj-gh.url = "github:mrjones2014/jj-gh/stable";
+    # jj-gh.inputs.nixpkgs.follows = "nixpkgs";  TODO: probably just use our
+    # binary cache instead of relying on jj-gh's?
     microvm = {
       url = "path:microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nixpkgs.url = "github:NixOS/nixpkgs?ref=nixpkgs-unstable";
-    pi = {
-      url = "github:earendil-works/pi/stable";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        nixpkgs-darwin-x64.follows = "";
-      };
-    };
-    sops-nix = {
-      url = "github:Mic92/sops-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
   };
 
   outputs = {self, ...} @ inputs: let
@@ -50,37 +39,294 @@
         system: let
           pkgs = import inputs.nixpkgs {
             inherit system;
-            overlays = [self.overlays.default];
+            overlays = [
+              self.overlays.default
+              inputs.jj-gh.overlays.default
+            ];
           };
         in
-          f system pkgs
+          f pkgs
       );
   in {
-    checks = eachSystem (system: pkgs:
-      {
-        bench-test =
-          pkgs.runCommand "bench-tests" {
-            src = self;
-            nativeBuildInputs = [pkgs.python3];
-          } ''
-            cd $src
-            python3 -B -m unittest discover -s packages.bench.tests -p '*_test.py'
-            touch $out
-          '';
-      }
-      // lib.optionalAttrs (system == "x86_64-linux") {
-        host-basic = pkgs.testers.runNixOSTest (import ./tests/nixos/host-basic.nix {
+    nixosModules = import ./nixosModules inputs;
+    overlays = {
+      default = final: prev: {
+        inherit
+          (self.packages.${prev.stdenv.hostPlatform.system})
+          app
+          bench
+          durable-harness
+          mitm-proxy
+          subtrace
+          systemd-with-vmlinux-btf
+          ;
+        # Keeping the above intact so I don't have to refactor a bunch of shit,
+        # but I think this is what we should do from now on:
+        drvr = with self.packages.${prev.stdenv.hostPlatform.system}; {
+          inherit sshx tap;
+          mitm = mitm-proxy;
+        };
+      };
+      # n.b. this is for packages only necessary for development and should not
+      # be a dependency of the host, guest, nor rock5b components.
+      dev = final: prev: {
+        inherit
+          (self.packages.${prev.stdenv.hostPlatform.system})
+          treefmt-wrapped
+          ;
+      };
+    };
+
+    checks = eachSystem (pkgs: let
+      environmentImage = import ./nix/nixosTests/environment-image.nix {inherit pkgs;};
+    in {
+      app-tests = pkgs.app;
+      bench-tests = pkgs.bench;
+      www-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.www;
+      pds-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.pds;
+      pds-visual-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.pds.tests.visual;
+      durable-api-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.durable-api;
+      durable-harness-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.durable-harness;
+      environment-image-tests = environmentImage.artifact;
+      environment-image-nixos = environmentImage.integration;
+      llms-tests = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
+      mitm-tests = pkgs.drvr.mitm;
+      mitm-nixos = pkgs.drvr.mitm.tests;
+      sshx-tests = pkgs.drvr.sshx.override {doCheck = true;};
+      ssh-policy = import ./nix/tests/ssh.nix {
+        inherit pkgs;
+        inherit (self) nixosModules;
+        inherit (inputs.nixpkgs.lib) nixosSystem;
+      };
+      tap-tests = pkgs.drvr.tap;
+      tape-tests = pkgs.app.tape;
+      nixos-notifications = import ./tests/nixos/notifications.nix {
+        inherit pkgs;
+        piModule = self.nixosModules.pi;
+        inherit (inputs) impermanence;
+      };
+    });
+
+    devShells = eachSystem (pkgs: let
+      inherit (self.devShells.${pkgs.stdenv.hostPlatform.system}) toolchain;
+      llms = pkgs.writeTextFile {
+        name = "llms.txt";
+        destination = "/llms.txt";
+        text = ''
+          # drv.run development context
+
+          ## Using these references
+
+          - Read only the references relevant to the current task; do not preload every document.
+          - Use the working tree for drv.run code. Store paths are immutable dependency references, not the current checkout.
+          - Verify dependency behavior against these pinned sources before consulting online documentation.
+
+          ## Tools and preferences
+
+          - Prefer jj over git for repository operations. Inspect the current change and parents before committing; do not assume a linear history.
+          - Prefer rg over grep, fd over find, and eza over ls for interactive inspection, not as mandatory replacements in scripts.
+          - Use jq for JSON and ast-grep for structural code searches.
+          - Use project formatters and checks rather than introducing alternative tooling.
+
+          ## Commands
+
+          Run project commands from the repository root. Use PATH-resolved tools; store paths below select pinned sources and manuals.
+
+          Inspect the working copy and select changes deliberately:
+          ```sh
+          jj status
+          jj log -r '@ | @-'
+          jj diff --stat
+          jj diff --git -- flake.nix
+          jj help -k revsets
+          jj help commit
+          ```
+
+          Enter the development environment, verify changes, and inspect generated context:
+          ```sh
+          nix develop .#default
+          just check
+          just test
+          just chromium
+          NODE_OPTIONS=--conditions=development node --test --test-name-pattern='XDG context' packages/app/harness/tests/context.test.ts
+          system=$(nix eval --impure --raw --expr builtins.currentSystem)
+          nix build ".#checks.$system.llms-snapshot" --no-link -L
+          nix eval --raw ".#checks.$system.llms-snapshot.text"
+          ```
+
+          Keep long checks in a task-specific zmx session. Inspect existing sessions before reusing a name; wait for completion and check the exit status, not just the last log lines.
+          ```sh
+          zmx list
+          zmx run drv-run-checks -d nix flake check -L
+          zmx history drv-run-checks | tail -100
+          zmx wait drv-run-checks
+          ```
+
+          Find NixOS option definitions, then read their types, defaults and surrounding module code. Options may be nested rather than written as a dotted name.
+          ```sh
+          rg -n -F 'services.openssh' ${inputs.nixpkgs}/nixos/modules
+          rg -n -C 6 'PasswordAuthentication =|PermitRootLogin =' ${inputs.nixpkgs}/nixos/modules/services/networking/ssh/sshd.nix
+          rg -n 'mkOption|mkEnableOption' nixosModules
+          man -M ${pkgs.systemd.man}/share/man systemd.service
+          man -M ${pkgs.openssh.man}/share/man sshd_config
+          ```
+
+          ## Pinned dependency references
+
+          Harness, conversations and extensions:
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-durable/README.md
+          Durable API:
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-durable/dist/index.d.ts
+          Remote execution semantics:
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-env/docs/semantics.md
+          Remote execution protocol:
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-env/docs/protocol.md
+          Cancellation and context propagation:
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/chord/dist/context/index.js
+          Telemetry contracts:
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-telemetry/README.md
+
+          Nix command and language reference:
+            ${pkgs.nixVersions.latest.doc}/share/doc/nix/manual/
+          Nix shell applications and trivial builders:
+            ${inputs.nixpkgs}/pkgs/build-support/trivial-builders/default.nix
+          Nix build phases:
+            ${inputs.nixpkgs}/doc/stdenv/stdenv.chapter.md
+          Nix module semantics:
+            ${inputs.nixpkgs}/doc/module-system/module-system.chapter.md
+          NixOS modules and options:
+            ${inputs.nixpkgs}/nixos/modules/
+          Elm dependency APIs:
+            ${pkgs.app.elmHome}/${(lib.importJSON ./packages/app/serve/elm/elm.json).elm-version}/packages/elm/
+
+          MicroVM configuration:
+            ${inputs.microvm}/README.md
+          Persistence:
+            ${inputs.impermanence}/README.org
+        '';
+        checkPhase = ''
+          runHook preCheck
+          ${lib.getExe pkgs.gnused} -E 's@/nix/store/[0-9a-z]{32}-@/nix/store/HASH-@g' "$target" > actual.txt
+          ${lib.getExe' pkgs.diffutils "diff"} -u ${./tests/llms.txt} actual.txt
+          runHook postCheck
+        '';
+      };
+      pkgs' = pkgs.extend self.overlays.dev;
+    in {
+      default = pkgs.mkShell {
+        inherit (toolchain) npmDeps npmRoot;
+        inputsFrom = [toolchain];
+      };
+      local = pkgs.mkShell {
+        inherit (toolchain) npmDeps npmRoot;
+        inputsFrom = [toolchain];
+        packages = [pkgs'.treefmt-wrapped];
+      };
+      toolchain = pkgs.mkShell {
+        nativeBuildInputs = [pkgs.systemd.dev pkgs.importNpmLock.hooks.linkNodeModulesHook];
+        npmDeps = pkgs.app.nodeModules;
+        npmRoot = "packages/app";
+        packages = with pkgs; (map lib.getBin [
+          ast-grep
+          bash
+          basedpyright
+          cachix
+          coreutils
+          chromium
+          curl
+          dbus
+          diffutils
+          esbuild
+          elmPackages.elm
+          elmPackages.elm-format
+          elmPackages.elm-test
+          eza
+          fd
+          file
+          findutils
+          gawk
+          gh
+          git
+          gnugrep
+          gnused
+          gnutar
+          gzip
+          hunk
+          jq
+          jj-gh
+          jujutsu
+          just
+          less
+          libnotify
+          man
+          markdownlint-cli2
+          nix-eval-jobs
+          nix-fast-build
+          nix-update
+          nodejs
+          nq
+          openssh
+          oxlint
+          patch
+          pkg-config
+          procps
+          pueue
+          (python3.withPackages (ps: [ps.mitmproxy ps.tornado]))
+          ripgrep
+          ruff
+          scc
+          sd
+          stdenv.cc
+          tree
+          tsgolint
+          typescript # tsgo
+          unzip
+          vtsls
+          wget
+          which
+          zmx
+        ]);
+        passthru = {inherit llms;};
+        shellHook = ''
+          export XDG_CONFIG_DIRS="${llms}:''${XDG_CONFIG_DIRS:-/etc/xdg}"
+          if cmp --silent flake.nix ${./flake.nix}; then
+            linkNodeModulesHook
+            for workspace in ${lib.concatStringsSep " " (lib.importJSON ./packages/app/package.json).workspaces}; do
+              ln -sfn "../$workspace" "$npmRoot/node_modules/$workspace"
+            done
+            export ELM_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/drv-run-${builtins.baseNameOf pkgs.app.elmHome}"
+            mkdir -p "$ELM_HOME"
+            cp -R ${pkgs.app.elmHome}/. "$ELM_HOME/"
+            chmod -R u+w "$ELM_HOME"
+          fi
+        '';
+      };
+    });
+
+    # Preserve the package-oriented CLI path: nix run .#packages.pds.bench.
+    legacyPackages = eachSystem (pkgs: {
+      packages.pds = self.packages.${pkgs.stdenv.hostPlatform.system}.pds;
+    });
+
+    formatter = eachSystem (pkgs: self.packages.${pkgs.stdenv.hostPlatform.system}.treefmt-wrapped);
+    packages = eachSystem (pkgs: let
+      runTest = path:
+        pkgs.testers.runNixOSTest (import path {
           inherit (self) nixosModules;
           inherit pkgs;
         });
-      });
-    devShells = eachSystem (_: pkgs: import ./nix/devshells.nix pkgs);
-    formatter = eachSystem (_: pkgs: pkgs.treefmt-wrapped);
-    nixosModules = import ./nixosModules inputs;
-    overlays.default = final: prev: let
-      inherit (prev.stdenv.hostPlatform) system;
     in
-      self.packages.${system};
-    packages = eachSystem (_: pkgs: import ./packages {inherit inputs lib pkgs;});
+      lib.attrsets.unionOfDisjoint
+      (import ./packages {inherit inputs lib pkgs;})
+      {
+        # FIXME: these tests require a sizable chunk of compute and memory. They
+        # are not included in `nix flake check` for that reason. On the aarch64
+        # ROCK 5B, these tests are INCREDIBLY slow. My personal desktop is an
+        # x86 system and is capable of running these checks. They are listed
+        # here for all systems just in case we want to run them on the
+        # (relatively constrained) ROCK 5B aarch64 system.
+        nixos-host-basic = runTest ./tests/nixos/host-basic.nix;
+        nixos-experimental-port-forwarding = runTest ./tests/nixos/port-forwarding.nix;
+      });
   };
 }

@@ -1,0 +1,741 @@
+// Measures the production page and SSE delivery.
+// Run with --help for CLI usage. Stdout is one versioned JSON object.
+import assert from "node:assert/strict";
+import type { ServerResponse } from "node:http";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import type { AddressInfo, Socket } from "node:net";
+import { availableParallelism, cpus, tmpdir } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import {
+  ROOT_CONVERSATION_ID,
+  LiveDoc,
+  type ConversationView,
+  type EntryRecord,
+  type LiveState,
+  type TaskId,
+} from "@earendil-works/pi-durable";
+import type { CDPSession, Page } from "playwright";
+import { conversationURL } from "./presentation.ts";
+import { Sessions } from "./sessions.ts";
+import { httpServer } from "./server.ts";
+import { buildAssets } from "./build.ts";
+
+const usage = `Usage: node packages/app/serve/benchmark.ts [options]
+  --runs N       Fresh browser launches (default 3, maximum 100)
+  --turns N      History turns, each with a user, assistant and tool result (default 200)
+  --entries N    Exact history size (mutually exclusive with --turns)
+                 Remainder entries form a final text-only turn
+  --memory       Separate fresh-browser runs with forced-GC heap and DOM measurements
+                 Memory-run timings are excluded from timing samples
+  --cpu-rate N   Chromium CPU slowdown factor, >= 1 (default 1)
+  --profile      Extra fresh-browser run with CPU profiles and browser traces
+  --profile-dir DIR
+                 Parent directory for unique artifact folder (default cwd; requires --profile)
+  --assets DIR   Frontend sources or compiled assets (default: alongside this script)
+  --chromium FILE
+                 Chromium executable (otherwise found on PATH)
+  --help         Show this help on stderr
+Outputs one JSON object with raw millisecond samples, workload and environment.
+Each run measures initial history, 40 streaming updates and 10 busy/idle transitions.
+Page mode includes HTTP delivery, commit and browser-control transport; byte counts
+include all HTTP response headers, bodies and chunk framing, not TCP/IP overhead.
+Timing runs never enable CPU profiling or traces. --profile adds a separate diagnostic run,
+saving per-phase .cpuprofile and .trace.json files with paths in the JSON report.
+Traces include style invalidations and paint; profiled timings are not benchmark samples.
+Mobile layout emulation is not phone hardware emulation.`;
+
+export function benchmarkOptions(args: string[]) {
+  const { values } = parseArgs({
+    args,
+    options: {
+      runs: { type: "string", default: "3" },
+      turns: { type: "string" },
+      entries: { type: "string" },
+      memory: { type: "boolean", default: false },
+      "cpu-rate": { type: "string", default: "1" },
+      profile: { type: "boolean", default: false },
+      "profile-dir": { type: "string" },
+      assets: { type: "string" },
+      chromium: { type: "string" },
+      help: { type: "boolean", default: false },
+    },
+  });
+  assert(values.profile || values["profile-dir"] === undefined, "--profile-dir requires --profile");
+  const number = (value: string, name: string, max: number, integer = true) => {
+    const result = Number(value);
+    assert(
+      Number.isFinite(result) &&
+        result >= 1 &&
+        result <= max &&
+        (!integer || Number.isInteger(result)),
+      `${name} must be ${integer ? "an integer" : "a number"} between 1 and ${max}`,
+    );
+    return result;
+  };
+  assert(
+    values.entries === undefined || values.turns === undefined,
+    "Use --entries or --turns, not both",
+  );
+  const entries =
+    values.entries === undefined
+      ? number(values.turns ?? "200", "--turns", 10_000) * 3
+      : number(values.entries, "--entries", 30_000);
+  return {
+    entries,
+    memory: values.memory,
+    runs: number(values.runs, "--runs", 100),
+    turns: Math.ceil(entries / 3),
+    cpuRate: number(values["cpu-rate"], "--cpu-rate", 100, false),
+    profile: values.profile,
+    profileDir: resolve(values["profile-dir"] ?? "."),
+    assets: resolve(values.assets ?? dirname(fileURLToPath(import.meta.url))),
+    executablePath:
+      values.chromium ??
+      (process.env.PATH ?? "")
+        .split(delimiter)
+        .map((path) => join(path, "chromium"))
+        .find(existsSync),
+    help: values.help,
+  } as const;
+}
+
+const timestamp = 1_700_000_000_000;
+const streamUpdates = 40;
+const transitions = 10;
+
+export function benchmarkFixture(
+  turns: number,
+  entryCount = turns * 3,
+): { view: ConversationView } {
+  assert(Number.isSafeInteger(turns) && turns > 0);
+  assert(
+    Number.isSafeInteger(entryCount) && entryCount > (turns - 1) * 3 && entryCount <= turns * 3,
+  );
+  const entries: EntryRecord[] = [];
+  for (let i = 0; i < turns; i++) {
+    entries.push(
+      {
+        id: (3 * i + 1) as EntryRecord["id"],
+        conversationId: ROOT_CONVERSATION_ID,
+        kind: "message",
+        model: [{ role: "user", content: `Inspect module ${i}`, timestamp }],
+      },
+      {
+        id: (3 * i + 2) as EntryRecord["id"],
+        conversationId: ROOT_CONVERSATION_ID,
+        kind: "message",
+        model: [
+          fauxAssistantMessage(
+            [
+              { type: "text", text: "Checking the module and its test results." },
+              fauxToolCall("bash", { command: `npm test -- module${i}` }, { id: `call${i}` }),
+            ],
+            { timestamp: timestamp + 1, stopReason: "toolUse" },
+          ),
+        ],
+      },
+      {
+        id: (3 * i + 3) as EntryRecord["id"],
+        conversationId: ROOT_CONVERSATION_ID,
+        kind: "message",
+        model: [
+          {
+            role: "toolResult",
+            toolCallId: `call${i}`,
+            toolName: "bash",
+            content: [{ type: "text", text: "Test passed\n".repeat(100) }],
+            details: {
+              exitCode: 0,
+              tests: Array.from({ length: 20 }, (_, j) => ({ name: `case${j}`, passed: true })),
+            },
+            isError: false,
+            timestamp: timestamp + 2,
+          },
+        ],
+      },
+    );
+  }
+  entries.length = entryCount;
+  // Preserve all complete tool pairs. A final partial turn contains only text.
+  if (entryCount % 3 === 2) {
+    const last = entries.length - 1;
+    entries[last] = {
+      ...entries[last],
+      model: [
+        fauxAssistantMessage("Checking the module and its test results.", {
+          timestamp: timestamp + 1,
+        }),
+      ],
+    };
+  }
+  return {
+    view: { conversation: { id: ROOT_CONVERSATION_ID }, entries, docs: { "pi.live": {} } },
+  };
+}
+
+declare global {
+  interface Window {
+    __piBenchmarkCommit(live: LiveState): Promise<void>;
+    __piBenchmarkDisconnect(): Promise<void>;
+    __piBenchmarkObserve(expected: { text?: string; busy?: boolean }): Promise<number>;
+    __piBenchmarkComplete: Promise<number>;
+    __piBenchmarkStreamReady: number | undefined;
+  }
+}
+
+type ProfilePhase = "initial" | "streaming" | "transitions";
+type ProfileArtifact = {
+  phase: ProfilePhase;
+  cpuProfile: string;
+  trace: string;
+  traceDataLoss: boolean;
+};
+const traceCategories = [
+  "devtools.timeline",
+  "v8.execute",
+  "blink.user_timing",
+  "disabled-by-default-devtools.timeline.invalidationTracking",
+];
+const samplingIntervalUs = 1000;
+
+async function profilePhase<T>(
+  cdp: CDPSession,
+  page: Page,
+  directory: string,
+  phase: ProfilePhase,
+  action: () => Promise<T>,
+): Promise<{ value: T; artifact: ProfileArtifact }> {
+  await cdp.send("Profiler.start");
+  await cdp.send("Tracing.start", {
+    categories: traceCategories.join(","),
+    options: "record-as-much-as-possible",
+    transferMode: "ReturnAsStream",
+    streamFormat: "json",
+    streamCompression: "none",
+  });
+  await page.evaluate((phase) => performance.mark(`pi-bench:${phase}:start`), phase);
+  const value = await action();
+  // Diagnostic traces include the resulting paint, unlike the synchronous
+  // benchmark timer. These waits and profiler overhead never enter runs[].
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await page.evaluate((phase) => performance.mark(`pi-bench:${phase}:end`), phase);
+  const { profile } = await cdp.send("Profiler.stop");
+  const completed = Promise.withResolvers<{ stream?: string; dataLossOccurred: boolean }>();
+  const onComplete = (event: { stream?: string; dataLossOccurred: boolean }) =>
+    completed.resolve(event);
+  cdp.once("Tracing.tracingComplete", onComplete);
+  const timeout = setTimeout(() => completed.reject(new Error("Trace flush timed out")), 30_000);
+  try {
+    const [result] = await Promise.all([completed.promise, cdp.send("Tracing.end")]);
+    assert(result.stream, "Chromium did not return a trace stream");
+    const artifact = {
+      phase,
+      cpuProfile: join(directory, `${phase}.cpuprofile`),
+      trace: join(directory, `${phase}.trace.json`),
+      traceDataLoss: result.dataLossOccurred,
+    };
+    try {
+      await writeFile(artifact.cpuProfile, JSON.stringify(profile), { flag: "wx" });
+      const file = await open(artifact.trace, "wx");
+      try {
+        // Stream large invalidation traces to disk instead of retaining them
+        // in Node's heap or embedding them in the stdout report.
+        for (;;) {
+          const chunk = await cdp.send("IO.read", { handle: result.stream, size: 64 * 1024 });
+          await file.writeFile(Buffer.from(chunk.data, chunk.base64Encoded ? "base64" : "utf8"));
+          if (chunk.eof) break;
+        }
+      } finally {
+        await file.close();
+      }
+    } finally {
+      await cdp.send("IO.close", { handle: result.stream });
+    }
+    return { value, artifact };
+  } finally {
+    clearTimeout(timeout);
+    cdp.off("Tracing.tracingComplete", onComplete);
+  }
+}
+
+// These diagnostics run in separate browsers, never during timing samples.
+// CDP reports isolate-wide heaps, not renderer/browser RSS or server memory.
+async function measureMemory(cdp: CDPSession, page: Page) {
+  await cdp.send("HeapProfiler.collectGarbage");
+  return {
+    ...(await cdp.send("Runtime.getHeapUsage")),
+    ...(await cdp.send("Memory.getDOMCounters")),
+    transcriptElements: await page.locator("#transcript *").count(),
+  };
+}
+type MemorySample = Awaited<ReturnType<typeof measureMemory>> & {
+  phase: "empty" | "initial" | "settled";
+};
+
+// Use the actual HTTP handlers and browser event stream. Durable commits supply
+// deterministic observations without starting a provider or changing its semantics.
+async function pageWorkload(
+  page: Page,
+  sessions: Sessions,
+  base: string,
+  entries: number,
+  disconnect: () => void,
+  bytesWritten: () => number,
+  stage: <T>(phase: ProfilePhase, action: () => Promise<T>) => Promise<T>,
+) {
+  const session = await sessions.create(randomUUID());
+  const context = BACKGROUND_CONTEXT;
+  await session.root.commit(async (tx) => {
+    for (const { kind, model } of benchmarkFixture(Math.ceil(entries / 3), entries).view.entries)
+      await tx.appendEntry(session.root.id, { kind, model });
+  }, context);
+  await page.exposeFunction("__piBenchmarkDisconnect", disconnect);
+  await page.exposeFunction("__piBenchmarkCommit", (value: LiveState) =>
+    session.root.commit(async (tx) => {
+      const live = await tx.doc(LiveDoc, session.root.id);
+      delete live.run;
+      delete live.generation;
+      Object.assign(live, value);
+    }, context),
+  );
+  await page.addInitScript(
+    ({ entries }) => {
+      window.__piBenchmarkObserve = (expected) =>
+        new Promise<number>((resolve, reject) => {
+          const start = expected.busy === undefined ? 0 : performance.now();
+          const check = () => {
+            const transcript = document.querySelector("#transcript");
+            if (!transcript) return;
+            if (expected.busy === undefined) {
+              if (
+                transcript.querySelectorAll("article").length !== entries ||
+                transcript.querySelectorAll(".tool-call").length !== Math.floor(entries / 3)
+              )
+                return;
+            } else {
+              const status = document.querySelector("#controls");
+              if (status?.getAttribute("data-state") !== (expected.busy ? "working" : "ready"))
+                return;
+              if (
+                expected.text !== undefined &&
+                document.querySelector("#live .text")?.textContent?.trimEnd() !==
+                  expected.text.trimEnd()
+              )
+                return;
+            }
+            transcript.getBoundingClientRect();
+            observer.disconnect();
+            clearTimeout(timeout);
+            resolve(performance.now() - start);
+          };
+          const observer = new MutationObserver(check);
+          const timeout = setTimeout(() => {
+            observer.disconnect();
+            reject(
+              new Error(
+                `Page benchmark timed out: ${JSON.stringify({
+                  expected,
+                  articles: document.querySelectorAll("#transcript article").length,
+                  tools: document.querySelectorAll("#transcript .tool-call").length,
+                  status: document.querySelector("#controls")?.getAttribute("data-state"),
+                  text: document.querySelector("#transcript > article:last-child .text")
+                    ?.textContent,
+                })}`,
+              ),
+            );
+          }, 30_000);
+          observer.observe(document, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+            attributes: true,
+          });
+          check();
+        });
+      window.__piBenchmarkComplete = window.__piBenchmarkObserve({});
+      window.__piBenchmarkStreamReady = undefined;
+      document.addEventListener(
+        "elm:rendered",
+        () => {
+          window.__piBenchmarkStreamReady = performance.now();
+        },
+        { once: true },
+      );
+    },
+    { entries },
+  );
+  const initialBefore = bytesWritten();
+  const initialMs = await stage("initial", async () => {
+    await page.goto(base + conversationURL(session));
+    await page.waitForFunction(() => window.__piBenchmarkStreamReady !== undefined);
+    const elapsed = await page.evaluate(() => window.__piBenchmarkComplete);
+    // Drain the initial event handler and resulting layout before token timing.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    return elapsed;
+  });
+  const firstUpdateMs = await page.evaluate(() => window.__piBenchmarkStreamReady);
+  assert(firstUpdateMs !== undefined);
+  const initialBytes = bytesWritten() - initialBefore;
+  const initialDomElements = await page.locator("#transcript *").count();
+  const assistant = fauxAssistantMessage("", { timestamp: timestamp + 3 });
+  const partial = {
+    role: assistant.role,
+    content: [{ type: "text" as const, text: "" }],
+    api: assistant.api,
+    provider: assistant.provider,
+    model: assistant.model,
+    usage: assistant.usage,
+    stopReason: assistant.stopReason,
+    timestamp: assistant.timestamp,
+  };
+  const run = { taskId: 1 as TaskId, inputs: [] };
+  const measure = async (live: LiveState, text?: string) => {
+    const before = bytesWritten();
+    const ms = await page.evaluate(
+      async ({ data, text }) => {
+        const live = JSON.parse(data) as LiveState;
+        const completed = window.__piBenchmarkObserve({ busy: !!live.run, text });
+        await window.__piBenchmarkCommit(live);
+        return completed;
+      },
+      { data: JSON.stringify(live), text },
+    );
+    return { ms, bytes: bytesWritten() - before };
+  };
+  const { startMs, startBytes, streamingMs, streamingBytes } = await stage(
+    "streaming",
+    async () => {
+      const live: LiveState = { run, generation: { attempt: 1, message: partial } };
+      const start = await measure(live);
+      const streamingMs: number[] = [],
+        streamingBytes: number[] = [];
+      for (let update = 1; update <= streamUpdates; update++) {
+        partial.content[0].text = "An incremental update. ".repeat(update);
+        const sample = await measure(live, partial.content[0].text);
+        streamingMs.push(sample.ms);
+        streamingBytes.push(sample.bytes);
+      }
+      return { startMs: start.ms, startBytes: start.bytes, streamingMs, streamingBytes };
+    },
+  );
+  const { transitionsMs, transitionsBytes } = await stage("transitions", async () => {
+    const transitionsMs: number[] = [],
+      transitionsBytes: number[] = [];
+    for (let transition = 0; transition < transitions; transition++) {
+      const sample = await measure(transition % 2 ? { run } : {});
+      transitionsMs.push(sample.ms);
+      transitionsBytes.push(sample.bytes);
+    }
+    return { transitionsMs, transitionsBytes };
+  });
+  // Drain adapter notifications from the final transition before measuring a new subscription.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  const reconnectBefore = bytesWritten();
+  const reconnectMs = await page.evaluate(async () => {
+    const start = performance.now();
+    const completed = new Promise<number>((resolve) => {
+      document.addEventListener(
+        "elm:rendered",
+        () => {
+          document.getElementById("transcript")!.getBoundingClientRect();
+          resolve(performance.now() - start);
+        },
+        { once: true },
+      );
+    });
+    await window.__piBenchmarkDisconnect();
+    return completed;
+  });
+  const reconnectBytes = bytesWritten() - reconnectBefore;
+  const archives = [];
+  for (const kind of ["pi.reset", "pi.compaction"]) {
+    const before = bytesWritten();
+    const start = performance.now();
+    const record = await session.root.commit(
+      (tx) =>
+        tx.appendEntry(session.root.id, {
+          kind,
+          head: "self",
+          ...(kind === "pi.compaction"
+            ? { model: [fauxAssistantMessage("Synthetic compaction summary.", { timestamp })] }
+            : {}),
+        }),
+      context,
+    );
+    await page.locator(`#entry-${record.id}`).waitFor();
+    await page.locator(`#entry-${record.id}`).evaluate((node) => node.getBoundingClientRect());
+    archives.push({ kind, ms: performance.now() - start, bytes: bytesWritten() - before });
+  }
+  return {
+    reconnectMs,
+    reconnectBytes,
+    archives,
+    initialMs,
+    firstUpdateMs,
+    initialBytes,
+    initialDomElements,
+    startMs,
+    startBytes,
+    streamingMs,
+    streamingBytes,
+    transitionsMs,
+    transitionsBytes,
+  };
+}
+
+export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
+  const { chromium } = await import("playwright");
+  assert(
+    options.executablePath,
+    "Chromium is required; set --chromium or use nix run .#app.bench.render",
+  );
+  const directory = await mkdtemp(join(tmpdir(), "serve-bench-"));
+  let sessions: Sessions | undefined;
+  let server: ReturnType<typeof httpServer> | undefined;
+  try {
+    if (existsSync(join(options.assets, "elm/client.ts")))
+      await buildAssets(options.assets, directory);
+    else
+      for (const file of [
+        "main.js",
+        "client.js",
+        "site.js",
+        "file.js",
+        "sw.js",
+        "highlight.js",
+        "styles.css",
+        "icon-192.png",
+        "icon-512.png",
+      ])
+        await copyFile(join(options.assets, file), join(directory, file));
+    const client = await readFile(join(directory, "main.js"), "utf8");
+    const css = await readFile(join(directory, "styles.css"), "utf8");
+    const highlighter = await readFile(join(directory, "highlight.js"), "utf8");
+    const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+    // No provider, credentials or tools. Commit synthetic history/live documents.
+    sessions = await Sessions.open({
+      directory: join(directory, "state"),
+      models: createModels(),
+    });
+    server = httpServer(sessions, "127.0.0.1", directory);
+    const streams = new Set<ServerResponse>();
+    server.on("request", (request, response) => {
+      if (new URL(request.url!, "http://localhost").pathname.endsWith("/events")) {
+        streams.add(response);
+        response.once("close", () => streams.delete(response));
+      }
+    });
+    const sockets: Socket[] = [];
+    server.on("connection", (socket) => sockets.push(socket));
+    const bytesWritten = () => sockets.reduce((sum, socket) => sum + socket.bytesWritten, 0);
+    await new Promise<void>((resolve, reject) => {
+      server!.once("error", reject);
+      server!.listen(0, "127.0.0.1", resolve);
+    });
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const viewport = { width: 390, height: 844 };
+    const runs: (Awaited<ReturnType<typeof pageWorkload>> & { run: number })[] = [];
+    const profile = options.profile
+      ? {
+          separateRun: true,
+          timingsIncludedInRuns: false,
+          includesPaint: true,
+          samplingIntervalUs,
+          traceCategories,
+          directory: "",
+          artifacts: [] as ProfileArtifact[],
+        }
+      : null;
+    if (profile) {
+      await mkdir(options.profileDir, { recursive: true });
+      profile.directory = await mkdtemp(join(options.profileDir, "serve-profile-"));
+    }
+    const memory = options.memory
+      ? {
+          separateRuns: true,
+          timingsIncludedInRuns: false,
+          forcedGC: true,
+          byteFields: ["usedSize", "totalSize", "embedderHeapUsedSize", "backingStorageSize"],
+          scope:
+            "CDP target isolate heaps and DOM counters; excludes process RSS and server memory",
+          runs: [] as { run: number; samples: MemorySample[] }[],
+        }
+      : null;
+    const memoryStart = options.runs + (profile ? 1 : 0);
+    let browserVersion = "";
+    for (let run = 1; run <= memoryStart + (memory ? options.runs : 0); run++) {
+      const profiling = !!profile && run === options.runs + 1;
+      const memoryRun =
+        memory && run > memoryStart
+          ? { run: run - memoryStart, samples: [] as MemorySample[] }
+          : undefined;
+      const browser = await chromium.launch({ executablePath: options.executablePath });
+      try {
+        browserVersion = browser.version();
+        const page = await browser.newPage({
+          viewport,
+          isMobile: true,
+          hasTouch: true,
+          locale: "en-US",
+          timezoneId: "UTC",
+          serviceWorkers: "block",
+        });
+        page.setDefaultTimeout(30_000);
+        const errors: Error[] = [];
+        page.on("pageerror", (error) => errors.push(error));
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: options.cpuRate });
+        if (profiling) {
+          await cdp.send("Profiler.enable");
+          await cdp.send("Profiler.setSamplingInterval", { interval: samplingIntervalUs });
+        }
+        if (memoryRun)
+          memoryRun.samples.push({ phase: "empty", ...(await measureMemory(cdp, page)) });
+        const stage = async <T>(phase: ProfilePhase, action: () => Promise<T>): Promise<T> => {
+          if (!profiling || !profile) {
+            const result = await action();
+            if (memoryRun && (phase === "initial" || phase === "transitions"))
+              memoryRun.samples.push({
+                phase: phase === "initial" ? "initial" : "settled",
+                ...(await measureMemory(cdp, page)),
+              });
+            return result;
+          }
+          const result = await profilePhase(cdp, page, profile.directory, phase, action);
+          profile.artifacts.push(result.artifact);
+          return result.value;
+        };
+        const sample = await pageWorkload(
+          page,
+          sessions,
+          base,
+          options.entries,
+          () => {
+            for (const stream of streams) stream.destroy();
+          },
+          bytesWritten,
+          stage,
+        );
+        assert.deepEqual(errors, []);
+        if (memoryRun && memory) {
+          memory.runs.push(memoryRun);
+        } else if (!profiling) runs.push({ run, ...sample });
+      } finally {
+        await browser.close();
+      }
+    }
+    return {
+      schemaVersion: 2,
+      benchmark: "serve.render",
+      units: "ms",
+      measurement: {
+        initial:
+          "Navigation start to first transcript layout; excludes later client initialization",
+        firstUpdate: "Navigation start to the first SSE update applied by the frontend",
+        includes: [
+          "page-loading",
+          "commit",
+          "http",
+          "sse-dispatch",
+          "render",
+          "synchronous-layout",
+          "browser-control-transport",
+        ],
+        excludes: ["completed-paint"],
+        bytes: "HTTP response headers, bodies and chunk framing; excludes TCP/IP overhead",
+        reconnect: "Disconnect to first resynchronized layout; includes transport retry delay",
+        archives: "Commit to boundary layout; synthetic reset and compaction, excludes inference",
+        profiling: false,
+        freshBrowserPerRun: true,
+      },
+      environment: {
+        node: process.version,
+        chromium: browserVersion,
+        platform: process.platform,
+        arch: process.arch,
+        cpu: cpus()[0]?.model ?? "unknown",
+        availableParallelism: availableParallelism(),
+        cpuRate: options.cpuRate,
+        viewport,
+        mobile: true,
+        headless: true,
+        locale: "en-US",
+        timezone: "UTC",
+      },
+      assets: Object.fromEntries(
+        await Promise.all(
+          ["main.js", "client.js", "site.js", "file.js", "styles.css", "highlight.js"].map(
+            async (file) => [file, { bytes: (await readFile(join(directory, file))).byteLength }],
+          ),
+        ),
+      ),
+      source: {
+        clientSha256: hash(client),
+        cssSha256: hash(css),
+        highlighterSha256: hash(highlighter),
+      },
+      workload: {
+        version: 1,
+        turns: options.turns,
+        entries: options.entries,
+        completeToolTurns: Math.floor(options.entries / 3),
+        trailingEntries: options.entries % 3,
+        toolOutputLines: 100,
+        metadataTests: 20,
+        streamUpdates,
+        transitions,
+      },
+      runs,
+      profile,
+      memory,
+    };
+  } finally {
+    try {
+      if (server?.listening) {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          server!.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    } finally {
+      try {
+        await sessions?.close();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const options = benchmarkOptions(process.argv.slice(2));
+    if (options.help) console.error(usage);
+    else console.log(JSON.stringify(await benchmark(options)));
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
+}

@@ -5,6 +5,8 @@
   ...
 }: let
   cfg = config.services.drv-run.network;
+  proxy = config.services.drv-run.mitm-proxy;
+  proxyInput = lib.optionalString (proxy.owners != {}) ''iifname "ns-*" tcp dport ${toString proxy.port} accept'';
   ipv4 = address: let
     parts = lib.splitString "." address;
   in
@@ -19,15 +21,6 @@
     in
       first > 0 && first < 224 && first != 127 && !(first == 169 && builtins.elemAt parts 1 == 254));
   dnsSet = lib.concatStringsSep ", " cfg.dnsServers;
-  kernel = config.boot.kernelPackages.kernel;
-  vmlinuxHeader =
-    pkgs.runCommand "nsresourced-vmlinux.h-${kernel.version}" {
-      nativeBuildInputs = [pkgs.bpftools];
-    } ''
-      mkdir -p "$out"
-      bpftool btf dump file ${kernel.dev}/vmlinux format c > "$out/vmlinux.h"
-      test -s "$out/vmlinux.h"
-    '';
 in {
   options.services.drv-run.network = {
     uplink = lib.mkOption {
@@ -54,6 +47,10 @@ in {
         message = "drv.run requires networkd and table-scoped nftables updates with forward filtering.";
       }
       {
+        assertion = config.systemd.package.withNsresourced;
+        message = "drv.run requires systemd with nsresourced BPF support.";
+      }
+      {
         assertion = builtins.elem "bpf" config.security.lsm;
         message = "drv.run nsresourced requires BPF LSM.";
       }
@@ -70,16 +67,9 @@ in {
     };
     security.polkit.enable = true;
     systemd = {
-      # nsresourced needs HAVE_VMLINUX_H in addition to generic BPF support.
-      # Keep this override Host-local, not in the kernel's package set.
-      package = (pkgs.systemd.override {withLibBPF = true;}).overrideAttrs (old: {
-        mesonFlags =
-          old.mesonFlags
-          ++ [
-            (lib.mesonOption "vmlinux-h" "provided")
-            (lib.mesonOption "vmlinux-h-path" "${vmlinuxHeader}/vmlinux.h")
-          ];
-      });
+      package = pkgs.systemd-with-vmlinux-btf.override {
+        vmlinux-btf = config.boot.kernelPackages.ebpf-headers;
+      };
       additionalUpstreamSystemUnits = ["systemd-nsresourced.service" "systemd-nsresourced.socket"];
       sockets.systemd-nsresourced = {
         overrideStrategy = "asDropin";
@@ -141,6 +131,8 @@ in {
               type filter hook input priority filter - 10; policy accept;
               iifname "ns-*" udp sport 68 udp dport 67 accept
               iifname "ns-*" ct state { established, related } accept
+              ${proxyInput}
+              ${lib.optionalString (proxy.owners != {}) ''iifname != "lo" tcp dport ${toString proxy.port} counter drop''}
               iifname "ns-*" counter drop
             }
             chain forward {
@@ -166,7 +158,10 @@ in {
       firewall = {
         enable = lib.mkDefault true;
         filterForward = lib.mkDefault true;
-        extraInputRules = ''iifname "ns-*" udp sport 68 udp dport 67 accept'';
+        extraInputRules = ''
+          iifname "ns-*" udp sport 68 udp dport 67 accept
+          ${proxyInput}
+        '';
         extraForwardRules = ''iifname "ns-*" oifname "${cfg.uplink}" accept'';
       };
     };

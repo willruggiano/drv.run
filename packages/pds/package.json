@@ -1,0 +1,28 @@
+{
+  "name": "pds",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json",
+    "start": "node src/index.ts",
+    "test": "node --test tests/*.test.ts",
+    "test:browser": "node --test tests/*.chromium.ts",
+    "prestart": "npm run build",
+    "pretest:browser": "npm run build"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-durable": "1.5.2",
+    "durable-harness": "file:../durable/harness",
+    "highlight.js": "11.12.0",
+    "markdown-it": "15.0.3"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "14.1.2",
+    "@types/node": "24.19.2",
+    "playwright": "1.64.1"
+  }
+}

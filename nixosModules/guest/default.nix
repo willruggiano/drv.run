@@ -4,7 +4,7 @@
   impermanence,
   self,
   ...
-}: {
+} @ inputs: {
   config,
   lib,
   pkgs,
@@ -14,19 +14,20 @@
     microvm.nixosModules.microvm
     impermanence.nixosModules.impermanence
     ./cloud-hypervisor.nix
+    ./environment.nix
+    ./notifications.nix
     ../nix.nix
   ];
 
   assertions = [
     {
-      assertion = config.boot.initrd.systemd.enable;
-      message = "drv.run persistence requires systemd initrd mount ordering.";
+      assertion = config.microvm.storeOnDisk && config.microvm.registerClosure && config.nix.enable && config.microvm.writableStoreOverlay != null;
+      message = "drv.run environment images require a registered generic store and a private writable overlay.";
     }
   ];
 
   boot = {
     initrd.systemd = {
-      enable = true;
       # Persistence and store overlays exceed systemd's five mount events/s.
       managerEnvironment.SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_BURST = "64";
     };
@@ -46,6 +47,22 @@
   environment.etc."udev/udev.conf.d/10-drv-run.conf".text = ''
     children_max=${toString (2 * config.microvm.vcpu)}
   '';
+  environment.etc."xdg/llms.txt".text = ''
+    drv.run core dependencies:
+    drv.run -> ${inputs.self.outPath}
+    impermanence -> ${inputs.impermanence.outPath}
+    microvm.nix -> ${inputs.microvm.outPath}
+    nix -> ${config.nix.package.doc}
+    nixpkgs -> ${inputs.nixpkgs.outPath}
+               `-- docs -> /doc
+               `-- nixos manual -> /nixos/doc/manual
+    openssh -> use `man` (${pkgs.openssh.man})
+    pi -> ${pkgs.app}/lib/app/node_modules/@earendil-works
+          `-- durable -> /pi-durable/{dist/,README.md}
+          `-- env -> /pi-env/{docs/,README.md}
+          `-- telemetry -> /pi-telemetry/
+    systemd -> use `man` (${pkgs.systemd.man})
+  '';
   environment.persistence."/persist" = {
     directories = [
       # /nix is mounted in the initrd, before its nested store mounts.
@@ -59,6 +76,7 @@
       }
     ];
     users.root = {
+      # FIXME: Do we actually *depend* on this or is it slop?
       directories = [
         {
           directory = ".local/state/nix";
@@ -68,61 +86,85 @@
     };
   };
   microvm = {
-    mem = 3 * 1024;
+    # 8G x 4vCPU seems like a reasonable default
+    mem = lib.mkDefault (8 * 1024); # MiB
+    vcpu = lib.mkDefault 4;
+
+    # Fresh guests can share cached pages of the immutable guest closure image.
     storeOnDisk = true;
-    # Fresh Guests can share cached pages of the immutable Guest closure image.
     storeDiskDirect = false;
-    vcpu = 2;
+
     volumes = [
       {
         image = "state.img";
-        label = null;
+        label = "drv-run-state";
         mountPoint = "/persist";
-        fsType = "ext4";
-        size = 16 * 1024;
-        # The worker only formats a new sparse file, whose unwritten bytes are zero.
-        mkfsExtraArgs = ["-E" "assume_storage_prezeroed=1"];
         autoCreate = false;
+        fsType = "ext4";
+        mkfsExtraArgs = ["-E" "assume_storage_prezeroed=1"];
+        size = lib.mkDefault (50 * 1024); # MiB
+      }
+      {
+        # TODO: Explain the weird looking settings please!
+        image = "environment.erofs";
+        label = null;
+        fsType = "erofs";
+        autoCreate = false;
+        direct = false;
+        mountPoint = null;
+        readOnly = true;
+        size = 0;
       }
     ];
+
+    # drv.run employs a readable lower and writable upper as the guest
+    # /nix/store, which... I'm not sold on but it's fine for now.
     writableStoreOverlay = lib.mkDefault "/nix/.rw-store";
   };
+
   networking = {
     firewall.enable = true;
+    # TODO: it'd be nice if this could be the instance ID instead?
     hostName = "guest";
     useDHCP = false;
   };
+
+  # n.b. also see the common options declared in nixosModules/nix.nix
   nix = {
     enable = true;
     registry.nixpkgs.flake = nixpkgs;
     settings = {
-      # TODO: This may or may not be a security risk:
       accept-flake-config = true;
       experimental-features = ["nix-command" "flakes"];
       flake-registry = "";
-      substituters = ["https://microvm.cachix.org"];
-      trusted-public-keys = ["microvm.cachix.org-1:oXnBc6hRE3eX5rSYdRyMYXnfzcCxC7yKPTbZXALsqys="];
     };
   };
   nixpkgs.overlays = [self.overlays.default];
+
+  programs.git = {
+    enable = true;
+    # Address your git repos the same as your flakes!
+    # nix flake show tangled:willruggiano.tngl.sh/drv.run
+    # jj git clone tangled:willruggiano.tngl.sh/drv.run
+    config.url = {
+      "https://codeberg.org/".insteadOf = "codeberg:";
+      "https://git.sr.ht/".insteadOf = "sourcehut:";
+      "https://github.com/".insteadOf = "github:";
+      "https://gitlab.com/".insteadOf = "gitlab:";
+      "https://tangled.org/".insteadOf = "tangled:";
+    };
+  };
+
+  # ssh is one of drv.run's **core dependencies**, so much so in fact that one
+  # of our mottos is "ssh all the way down" :)
   services.openssh = {
     enable = true;
     generateHostKeys = false;
     hostKeys = [];
     settings = {
-      PermitRootLogin = "prohibit-password";
-      AuthenticationMethods = "publickey";
-      PasswordAuthentication = false;
-      KbdInteractiveAuthentication = false;
-      DisableForwarding = true;
-      PermitUserRC = false;
-      ForceCommand = lib.getExe (
-        pkgs.writeShellApplication {
-          name = "ssh-guest";
-          runtimeInputs = [config.nix.package];
-          text = lib.replaceStrings ["@bash@"] [(lib.getExe pkgs.bashInteractive)] (builtins.readFile ./guest.sh);
-        }
-      );
+      PermitRootLogin = lib.mkDefault "prohibit-password";
+      PasswordAuthentication = lib.mkDefault false;
+      KbdInteractiveAuthentication = lib.mkDefault false;
     };
   };
   # TODO: Why are these "extraDependencies"?

@@ -10,36 +10,32 @@
   ...
 }: let
   normalUsers = lib.filter (user: user.enable && user.isNormalUser) (lib.attrValues config.users.users);
-  # Include must precede fallbacks: OpenSSH uses the first obtained value.
-  # IdentityFile is additive; 'none' suppresses default identity discovery.
-  clientPolicy = ''
-    User root
-    IdentityAgent none
-    IdentitiesOnly yes
-    IdentityFile none
-    CertificateFile none
-    BatchMode yes
-    PreferredAuthentications publickey
-    StrictHostKeyChecking yes
-    UserKnownHostsFile /dev/null
-    GlobalKnownHostsFile /dev/null
-    KnownHostsCommand none
-    VerifyHostKeyDNS no
-    UpdateHostKeys no
-    ForwardAgent no
-    ForwardX11 no
-    ClearAllForwardings yes
-    ControlMaster no
-    ControlPath none
-    ControlPersist no
-  '';
+  connector = pkgs.drvr.sshx.override {systemd = config.systemd.package;};
+  # Management traffic has its own credentials and connection policy. Human
+  # sessions use ordinary SSH options, including PTYs and forwarding.
   serviceSSH = pkgs.writeText "drv.run-service-ssh.conf" ''
     Host drv.run.*
         Include /run/user/%i/%n/service-connection.conf
         ProxyCommand false
-        # Only provisioning uses this private control socket.
         ControlPath /run/user/%i/%n/provision-ssh
-        ${clientPolicy}
+        User root
+        IdentityAgent none
+        IdentitiesOnly yes
+        IdentityFile none
+        CertificateFile none
+        BatchMode yes
+        PreferredAuthentications publickey
+        StrictHostKeyChecking yes
+        UserKnownHostsFile /dev/null
+        GlobalKnownHostsFile /dev/null
+        KnownHostsCommand none
+        VerifyHostKeyDNS no
+        UpdateHostKeys no
+        ForwardAgent no
+        ForwardX11 no
+        ClearAllForwardings yes
+        ControlMaster no
+        ControlPersist no
   '';
   features = config.nix.settings.experimental-features or [];
   enabledFeatures =
@@ -53,6 +49,19 @@
   createVolumes = (import "${microvm}/lib/volumes.nix" {inherit pkgs;}).createVolumesScript (
     map (volume: volume // {autoCreate = true;}) (lib.filter (volume: !volume.readOnly) guest.config.microvm.volumes)
   );
+  # The expression and builder are individual store files, not the drv.run
+  # source tree. E enters as data with store context; no user flake is reevaluated.
+  imageExpression = pkgs.writeText "drv-run-environment-image.nix" ''
+    { environment }:
+    let pkgs = import ${nixpkgs} {
+      system = ${builtins.toJSON pkgs.stdenv.hostPlatform.system};
+      config = {};
+      overlays = [];
+    };
+    in import ${../../nix/mkEnvironmentImage.nix} { inherit pkgs; } {
+      environment = builtins.storePath environment;
+    }
+  '';
   worker = pkgs.writeShellApplication {
     name = "worker";
     runtimeInputs = with pkgs; [
@@ -60,34 +69,69 @@
       coreutils
       git # we might want to use `programs.git` host-wide instead
       e2fsprogs
+      jq
       openssh
     ];
     text =
       lib.replaceStrings
-      ["@proxy@" "@runner@" "@create-volumes@"]
-      ["${config.systemd.package}/lib/systemd/systemd-ssh-proxy" (toString guest.config.microvm.declaredRunner) createVolumes]
+      ["@proxy@" "@runner@" "@create-volumes@" "@mitm-proxy-seed@" "@image-expression@" "@timing@" "@notification-seed@" "@owner-keys@"]
+      [
+        "${config.systemd.package}/lib/systemd/systemd-ssh-proxy"
+        (toString guest.config.microvm.declaredRunner)
+        createVolumes
+        (lib.optionalString (config.services.drv-run.mitm-proxy.owners != {}) ''
+          case $(id -un) in
+            ${lib.concatStringsSep "|" (builtins.attrNames config.services.drv-run.mitm-proxy.owners)})
+              install -d -m 0700 "$staging/mitm-proxy" "$staging/mitm-proxy/gh"
+              install -m 0600 "/run/mitm-proxy/$(id -un)/"{config,hosts}.yml "$staging/mitm-proxy/gh/"
+              ;;
+          esac
+        '')
+        (toString imageExpression)
+        (builtins.readFile ../timing.sh)
+        (lib.optionalString config.services.drv-run.notifications.enable ''
+          if [[ $(id -un) == ${lib.escapeShellArg config.services.pi.user} ]]; then
+            cat /proc/sys/kernel/random/uuid > "$RUNTIME_DIRECTORY/notification-incarnation"
+            cp "$RUNTIME_DIRECTORY/notification-incarnation" "$staging/notification-incarnation"
+          fi
+        '')
+        ''
+          case $(id -u) in
+            ${lib.concatMapStringsSep "\n" (user: let
+            keys = pkgs.writeText "drv-run-ssh-${user.name}-keys" (lib.concatStringsSep "\n" (
+                user.openssh.authorizedKeys.keys ++ map builtins.readFile user.openssh.authorizedKeys.keyFiles
+              )
+              + "\n");
+          in "${toString user.uid}) cat ${keys} >> \"$RUNTIME_DIRECTORY/authorized-keys\" ;;")
+          normalUsers}
+          esac
+        ''
+      ]
       (builtins.readFile ./pre.sh);
   };
   provision = pkgs.writeShellApplication {
     name = "provision";
     runtimeInputs = [
       pkgs.coreutils
-      config.nix.package
+      pkgs.jq
       pkgs.openssh
     ];
-    text = lib.replaceStrings ["@service-ssh@"] [(toString serviceSSH)] (
+    text = lib.replaceStrings ["@service-ssh@" "@timing@"] [(toString serviceSSH) (builtins.readFile ../timing.sh)] (
       builtins.readFile ./post.sh
     );
   };
-  tap = import ./tap.nix {inherit pkgs;};
   launcher = pkgs.writeShellApplication {
     name = "drv.run";
-    runtimeInputs = with pkgs; [coreutils openssh systemd];
-    text =
-      builtins.readFile ./command.sh;
+    runtimeInputs = with pkgs; [coreutils jq openssh systemd];
+    text = lib.replaceStrings ["@timing@" "@connect@"] [
+      (builtins.readFile ../timing.sh)
+      (lib.getExe connector)
+    ] (builtins.readFile ./command.sh);
   };
 in {
-  imports = [../nix.nix ./network.nix];
+  imports = [../nix.nix ./network.nix ./mitm-proxy.nix self.nixosModules.pi];
+
+  options.services.drv-run.notifications.enable = lib.mkEnableOption "instance-bound guest D-Bus notifications for services.pi.user";
 
   options.services.drv-run.guest.extraModules = lib.mkOption {
     type = lib.types.listOf lib.types.deferredModule;
@@ -109,7 +153,25 @@ in {
   };
 
   config = {
+    services.drv-run.guest.extraModules = lib.mkIf config.services.drv-run.notifications.enable [
+      {
+        services.drv-run.notifications.enable = true;
+        services.drv-run.notifications.active = lib.mkDefault config.services.pi.notifications.limits.records;
+      }
+    ];
+    services.pi.notifications.guests = lib.mkIf config.services.drv-run.notifications.enable {
+      enable = true;
+      sshConfigFile = toString serviceSSH;
+    };
     assertions = [
+      {
+        assertion = !config.services.drv-run.notifications.enable || (config.services.pi.enable && config.services.pi.notifications.enable);
+        message = "Guest notifications require services.pi.enable and services.pi.notifications.enable; services.pi.user selects their owner.";
+      }
+      {
+        assertion = !config.services.drv-run.notifications.enable || (guest.config.services.drv-run.notifications.enable && guest.config.services.drv-run.notifications.active <= config.services.pi.notifications.limits.records);
+        message = "Guest notifications must be enabled in the guest closure and fit the host's active-record quota.";
+      }
       {
         # systemd 261.2 create_tap() calls userns_get_base_uid(..., &uid, NULL).
         # NULL omits the separate GID output and makes the helper reject unequal
@@ -119,7 +181,9 @@ in {
         # https://github.com/systemd/systemd/blob/v261.2/src/nsresourced/nsresourcework.c
         # https://github.com/systemd/systemd/blob/v261.2/src/basic/namespace-util.c
         assertion =
-          lib.all (
+          builtins.length (lib.unique (map (user: user.uid) normalUsers))
+          == builtins.length normalUsers
+          && lib.all (
             user:
               user.uid
               != null
@@ -128,7 +192,7 @@ in {
               && (config.users.groups.${user.group}.gid or null) == user.uid
           )
           normalUsers;
-        message = "drv.run nsresourced TAPs require each normal owner to have an explicit UID and a private primary group of the same name and numeric GID.";
+        message = "drv.run nsresourced TAPs require each normal owner to have a distinct explicit UID and a private primary group of the same name and numeric GID.";
       }
       {
         assertion = lib.all (user: user.linger == true && builtins.elem "kvm" user.extraGroups) normalUsers;
@@ -148,13 +212,12 @@ in {
           volumes = guest.config.microvm.volumes;
         in
           builtins.length volumes
-          == 2
-          && (builtins.elemAt volumes 0).image == "state.img"
-          && !(builtins.elemAt volumes 0).readOnly
-          && (builtins.elemAt volumes 1).image == "seed.img"
-          && (builtins.elemAt volumes 1).readOnly
+          == 3
+          && lib.count (volume: volume.image == "state.img" && !volume.readOnly && volume.label == "drv-run-state") volumes == 1
+          && lib.count (volume: volume.image == "seed.img" && volume.readOnly) volumes == 1
+          && lib.count (volume: volume.image == "environment.erofs" && volume.readOnly && !volume.direct) volumes == 1
           && lib.all (volume: !volume.autoCreate) volumes;
-        message = "drv.run requires writable state.img and read-only seed.img volumes with automatic creation disabled.";
+        message = "drv.run requires labeled writable state.img, read-only seed.img and cached read-only environment.erofs, with automatic creation disabled.";
       }
       {
         assertion = builtins.elem pkgs.stdenv.hostPlatform.system ["x86_64-linux" "aarch64-linux"];
@@ -183,7 +246,12 @@ in {
       };
       drvrun = pkgs.writeShellApplication {
         name = "drv.run";
-        runtimeInputs = [pkgs.coreutils pkgs.util-linux config.systemd.package];
+        runtimeInputs = with pkgs; [
+          config.systemd.package
+          coreutils
+          e2fsprogs
+          util-linux
+        ];
         text =
           lib.replaceStrings
           ["@launcher@" "@owners@"]
@@ -192,6 +260,7 @@ in {
       };
     in [
       bench
+      connector
       drvrun
     ];
 
@@ -199,8 +268,8 @@ in {
       Host drv.run.*
           Include /run/user/%i/%n/client.conf
           ProxyCommand false
-          RequestTTY yes
-          ${clientPolicy}
+          User root
+          StrictHostKeyChecking yes
       Host *
     '';
 
@@ -209,11 +278,7 @@ in {
       # Normal accounts are Instance owners; their SSH sessions enter the launcher.
       extraConfig = lib.optionalString (normalUsers != []) ''
         Match User ${lib.concatMapStringsSep "," (user: user.name) normalUsers}
-          AuthenticationMethods publickey
-          DisableForwarding yes
           ForceCommand ${lib.getExe launcher}
-          PermitTTY yes
-          PermitUserRC no
 
         Match all
       '';
@@ -225,11 +290,13 @@ in {
         StateDirectory = "drv.run/%i";
         StateDirectoryMode = "0700";
         ExecStartPre = lib.getExe worker;
-        ExecStart = "${tap}/bin/drv-run-tap %S/drv.run/%i/runner/bin/microvm-run";
+        ExecStart = "${lib.getExe pkgs.drvr.tap} %S/drv.run/%i/runner/bin/microvm-run";
         ExecStartPost = lib.getExe provision;
         ExecStop = "%S/drv.run/%i/runner/bin/microvm-shutdown";
         ExecStopPost = "${lib.getExe' pkgs.coreutils "rm"} -f %t/drv.run.%i/client.conf";
         KillMode = "control-group";
+        CPUAccounting = true;
+        IOAccounting = true;
         Restart = "no";
         RuntimeDirectory = "drv.run.%i";
         RuntimeDirectoryMode = "0700";

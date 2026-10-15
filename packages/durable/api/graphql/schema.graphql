@@ -1,0 +1,1563 @@
+# Generated from src/graphql.ts by Grats. Do not edit.
+# Regenerate with: npm --prefix packages/durable/api run build:graphql
+
+"""
+Upstream ConversationId: a nonnegative safe-integer JSON number in
+0..9007199254740991, not a 32-bit GraphQL Int or global Node ID.
+"""
+scalar ConversationId
+
+"""
+Backend-owned JSON continuation state. Round-trip it unchanged to the same
+list or scan; its owning service validates scope. Null means no continuation.
+"""
+scalar Cursor
+
+"""
+Upstream EntryDraft.head: a native EntryId or the literal string "self".
+"""
+scalar EntryHead
+
+"""
+Upstream EntryId; the same numeric range and representation as ConversationId.
+"""
+scalar EntryId
+
+"""Native Durable queue policy string."""
+scalar HarnessQueueMode
+
+"""Native provider transport string."""
+scalar HarnessTransport
+
+"""
+Upstream JsonObject: a JSON object with string keys and JsonValue values.
+"""
+scalar JsonObject
+
+"""
+A finite JSON value, including null; object keys and payloads are preserved.
+"""
+scalar JsonValue
+
+"""
+Upstream SubmissionId; the same numeric range and representation as ConversationId.
+"""
+scalar SubmissionId
+
+"""
+Upstream TaskId; the same numeric range and representation as ConversationId.
+"""
+scalar TaskId
+
+"""
+Upstream TelemetryCarrier: a JSON object with string keys and string values.
+"""
+scalar TelemetryCarrier
+
+enum AccountStatus {
+  reauthorizationRequired
+  temporarilyUnavailable
+  usable
+}
+
+enum App {
+  harness
+  web
+}
+
+enum AuthorizationStatus {
+  cancelled
+  completed
+  failed
+  pending
+}
+
+enum BlockedReason {
+  migration_failed
+  missing_task
+  task_too_old
+}
+
+enum ContentType {
+  image
+  text
+  thinking
+  toolCall
+}
+
+"""GraphQL name for ContextEdit["action"]."""
+enum ContextEditAction {
+  omit
+  replace
+}
+
+enum ConversationOwnershipKind {
+  ownerless
+  task
+}
+
+enum DocumentFork {
+  asOf
+  current
+  initial
+}
+
+enum DocumentHistory {
+  latest
+  rewindable
+}
+
+enum DocumentScopeKind {
+  conversation
+  session
+  task
+}
+
+enum ExecutionEnvType {
+  ssh
+}
+
+"""GraphQL name for Awaited<ReturnType<Harness["abortSubmission"]>>."""
+enum HarnessAbortSubmissionResult {
+  aborted
+  already_placed
+  """
+  Unknown submission or one belonging to another conversation; not an error.
+  """
+  not_found
+  settled
+}
+
+"""GraphQL name for HarnessInspection["scheduling"]."""
+enum HarnessInspectionScheduling {
+  closing
+  paused
+  running
+}
+
+"""GraphQL name for NonNullable<InputSubmissionDraft["whenBusy"]>."""
+enum InputSubmissionDraftWhenBusy {
+  followUp
+  reject
+  steer
+}
+
+enum JoinPolicy {
+  allSettled
+  failFast
+}
+
+enum MessageRole {
+  assistant
+  system
+  toolResult
+  user
+}
+
+"""Upstream ModelInputModality."""
+enum ModelInputModality {
+  image
+  text
+}
+
+enum ModelThinkingLevel {
+  high
+  low
+  max
+  medium
+  minimal
+  off
+  xhigh
+}
+
+enum NestedToolCallStatus {
+  error
+  ok
+  unfinished
+}
+
+enum ScanOrder {
+  ascending
+  descending
+}
+
+enum StopReason {
+  aborted
+  deferred
+  error
+  length
+  pending
+  stop
+  toolUse
+}
+
+"""GraphQL name for SubmissionRecord["status"]."""
+enum SubmissionRecordStatus {
+  done
+  placed
+  queued
+  unanswered
+}
+
+"""GraphQL name for SubmissionRecord["type"]."""
+enum SubmissionRecordType {
+  continue
+  input
+  write
+}
+
+"""GraphQL name for TaskInspection["state"]["kind"]."""
+enum TaskInspectionStateKind {
+  blocked
+  completing
+  pending
+  running
+  sleeping
+  waiting
+}
+
+"""GraphQL name for TaskOutcome["status"]."""
+enum TaskOutcomeStatus {
+  aborted
+  completed
+  failed
+  faulted
+  orphaned
+}
+
+"""GraphQL name for NonNullable<TaskRecord["abortReason"]>."""
+enum TaskRecordAbortReason {
+  restart
+}
+
+"""GraphQL name for TaskState["status"]."""
+enum TaskStateStatus {
+  completing
+  pending
+  running
+  sleeping
+  terminal
+  waiting
+}
+
+enum WwwDeliveryMode {
+  followUp
+  steer
+}
+
+union AssistantContent = TextContent | ThinkingContent | ToolCall
+
+"""
+Upstream pi-ai message variants. String/array content stays distinct through
+typed wrappers; JSON maps and application payloads remain JSON.
+"""
+union Message = AssistantMessage | SystemMessage | ToolResultMessage | UserMessage
+
+union Settings = HarnessSettings | WebSettings
+
+union SystemMessageContent = StringContent | TextContentList
+
+union UserContent = ImageContent | TextContent
+
+union UserMessageContent = StringContent | UserContentList
+
+"""
+Globally refetchable identity. IDs encode object type and an authorized service
+namespace/resource key, or persisted session identity and a durable ID. Durable IDs
+survive Harness reopen and are never reused for replacement storage. An inherited
+entry has the same ID in every conversation. Clients must not decode IDs.
+
+Each resolver reads independently. Repeated IDs do not imply a shared snapshot
+across node(), connections, or inspection while the Harness is mutating.
+"""
+interface Node {
+  id: ID!
+}
+
+input AbortInput {
+  conversationId: ID!
+}
+
+input AbortSubmissionInput {
+  """
+  Global ConversationRecord ID; upstream abort is constrained to this conversation.
+  """
+  conversationId: ID!
+  id: SubmissionId!
+}
+
+"""
+Pick<AgentChange, "model" | "thinkingLevel" | "cwd">; no other overrides are exposed.
+"""
+input AgentChange {
+  """
+  Omitted: unchanged. Explicit null: clear override. Value: replace override.
+  """
+  cwd: String
+  """
+  Omitted: unchanged. Explicit null: clear override. Value: replace override.
+  """
+  model: ModelRefInput
+  """
+  Omitted: unchanged. Explicit null: clear override. Value: replace override.
+  """
+  thinkingLevel: ModelThinkingLevel
+}
+
+input AssistantContentInput @oneOf {
+  text: TextContentInput
+  thinking: ThinkingContentInput
+  toolCall: ToolCallInput
+}
+
+input AssistantMessageInput {
+  api: String!
+  content: [AssistantContentInput!]!
+  deferred: DeferredHandleInput
+  diagnostics: [MessageDiagnosticInput!]
+  durationMs: Float
+  endTurn: Boolean
+  errorMessage: String
+  model: String!
+  provider: String!
+  providerThinkingLevel: String
+  rawStopReason: String
+  responseId: String
+  responseModel: String
+  stopReason: StopReason!
+  thinkingLevel: ModelThinkingLevel
+  timestamp: Float!
+  usage: UsageInput!
+}
+
+input AuthorizeInput {
+  accountId: ID
+  serverId: ID!
+}
+
+input CancelAuthorizationInput {
+  authorizationId: ID!
+}
+
+input CompactInput {
+  conversationId: ID!
+  instructions: String
+}
+
+input ConfigureInput {
+  change: AgentChange!
+  conversationId: ID!
+  env: SshTargetInput
+}
+
+input ContextEditInput @oneOf {
+  omit: EntryId
+  replace: ContextReplacementInput
+}
+
+input ContextReplacementInput {
+  messages: [MessageInput!]!
+  target: EntryId!
+}
+
+input ConversationCreateOptionsInput {
+  agent: AgentChange
+  env: SshTargetInput
+  ownership: ConversationOwnershipInput!
+}
+
+input ConversationOwnershipInput {
+  kind: ConversationOwnershipKind!
+  taskId: TaskId
+}
+
+input ConversationQuery {
+  order: ScanOrder
+  ownerConversationId: ConversationId
+  ownerTaskId: TaskId
+}
+
+input CreateConversationInput {
+  harnessId: ID!
+  options: ConversationCreateOptionsInput!
+}
+
+input DeferredHandleInput {
+  api: String!
+  """Optional JSON payload; explicit null is allowed."""
+  data: JsonValue
+  expiresAt: Float
+  id: String!
+  modelId: String!
+  pollAfterMs: Float
+  provider: String!
+}
+
+input DeviceAuthorizationInput {
+  accountId: ID
+  serverId: ID!
+}
+
+input DiagnosticErrorInput {
+  """Upstream string or number code; omit when absent."""
+  code: JsonValue
+  message: String!
+  name: String
+  stack: String
+}
+
+input DisconnectInput {
+  accountId: ID!
+}
+
+input DocumentAddressInput {
+  key: String
+  kind: String!
+  scope: DocumentScopeInput!
+}
+
+input DocumentScopeInput {
+  conversationId: ConversationId
+  kind: DocumentScopeKind!
+  taskId: TaskId
+}
+
+input EntryDraft {
+  """Optional JSON payload; explicit null is allowed."""
+  data: JsonValue
+  edits: [ContextEditInput!]
+  head: EntryHead
+  kind: String!
+  """
+  Omit for display-only data; even an empty array is a context-affecting write.
+  """
+  model: [MessageInput!]
+}
+
+"""
+Omit<EntryQuery, "conversationId">, as accepted by Conversation.entries().
+The addressed conversation supplies conversationId.
+"""
+input EntryQuery {
+  """Inclusive upper ID bound."""
+  maxEntryId: EntryId
+  """Inclusive lower ID bound; includes inherited history."""
+  minEntryId: EntryId
+  order: ScanOrder
+}
+
+input HarnessCompactionSettingsInput {
+  backgroundTokens: Int!
+  enabled: Boolean!
+  keepRecentTokens: Int!
+  reserveTokens: Int!
+}
+
+input HarnessRetrySettingsInput {
+  baseDelayMs: Int!
+  enabled: Boolean!
+  maxAgentDelayMs: Int!
+  maxRetries: Int!
+}
+
+input HarnessSettingsInput {
+  compaction: HarnessCompactionSettingsInput!
+  followUpMode: HarnessQueueMode!
+  retry: HarnessRetrySettingsInput!
+  steeringMode: HarnessQueueMode!
+  stream: HarnessStreamSettingsInput!
+}
+
+input HarnessStreamSettingsInput {
+  transport: HarnessTransport!
+}
+
+input ImageContentInput {
+  """Base64-encoded image bytes."""
+  data: String!
+  mimeType: String!
+}
+
+input InputEntry {
+  """Optional JSON payload; explicit null is allowed."""
+  data: JsonValue
+  """Application kind; nonempty and outside the reserved pi. prefix."""
+  kind: String!
+}
+
+input InputSubmissionDraft {
+  content: UserInput!
+  entry: InputEntry
+  requestId: String
+  whenBusy: InputSubmissionDraftWhenBusy
+}
+
+input MessageDiagnosticInput {
+  details: JsonObject
+  error: DiagnosticErrorInput
+  timestamp: Float!
+  type: String!
+}
+
+input MessageInput @oneOf {
+  assistant: AssistantMessageInput
+  system: SystemMessageInput
+  toolResult: ToolResultMessageInput
+  user: UserMessageInput
+}
+
+input ModelRefInput {
+  modelId: String!
+  provider: String!
+}
+
+input NestedToolCallRecordInput {
+  arguments: JsonObject
+  argumentsBytes: Float
+  durationMs: Float
+  error: String
+  id: String!
+  name: String!
+  status: NestedToolCallStatus!
+}
+
+input NestedToolCallsInput {
+  calls: [NestedToolCallRecordInput!]!
+  complete: Boolean!
+}
+
+input OpenInput {
+  externalId: String!
+}
+
+input PushSubscriptionKeysInput {
+  auth: String!
+  p256dh: String!
+}
+
+input RegisterPushSubscriptionInput {
+  endpoint: String!
+  keys: PushSubscriptionKeysInput!
+}
+
+input RemovePushSubscriptionInput {
+  endpoint: String!
+}
+
+input ReplaceDocumentInput {
+  address: DocumentAddressInput!
+  content: JsonObject!
+  harnessId: ID!
+}
+
+input ResetInput {
+  conversationId: ID!
+  """
+  Omit for no handoff; preserve a supplied string, including the empty string.
+  """
+  handoff: String
+}
+
+input ResumeInput {
+  """Global Harness ID, not its externalId key."""
+  harnessId: ID!
+}
+
+input RevokeInput {
+  accountId: ID!
+  token_type_hint: String
+}
+
+input RootInput {
+  harnessId: ID!
+  options: RootOptionsInput
+}
+
+input RootOptionsInput {
+  agent: AgentChange
+  env: SshTargetInput
+}
+
+input SaveHarnessSettingsInput {
+  settings: HarnessSettingsInput!
+}
+
+input SaveSettingsInput @oneOf {
+  harness: SaveHarnessSettingsInput
+  web: SaveWwwSettingsInput
+}
+
+input SaveWwwSettingsInput {
+  settings: WwwSettingsInput!
+}
+
+"""Optional target fields accept null as omission."""
+input SshTargetInput {
+  configFile: String
+  host: String!
+  hostKeyAlias: String!
+  identityFile: String
+  knownHostsFile: String!
+  port: Int
+  type: ExecutionEnvType!
+  user: String
+}
+
+"""
+Exactly one upstream SubmissionDraft variant; the selection supplies type.
+"""
+input SubmissionDraft @oneOf {
+  input: InputSubmissionDraft
+  write: WriteSubmissionDraft
+}
+
+input SubmitInput {
+  """Global ConversationRecord ID, not its numeric durableId."""
+  conversationId: ID!
+  submission: SubmissionDraft!
+}
+
+input SystemMessageContentInput @oneOf {
+  blocks: [TextContentInput!]
+  text: String
+}
+
+input SystemMessageInput {
+  content: SystemMessageContentInput!
+  """Named prompt sections; each value must be a string or null."""
+  sections: JsonObject
+  timestamp: Float!
+  toolsAdded: [ToolInput!]
+  toolsRemoved: [ToolReferenceInput!]
+}
+
+input TaskQuery {
+  abortRequested: Boolean
+  background: Boolean
+  conversationId: ConversationId
+  kind: String
+  order: ScanOrder
+  status: TaskStateStatus
+}
+
+input TextContentInput {
+  text: String!
+  """Omit when absent; explicit null is invalid."""
+  textSignature: String
+}
+
+input ThinkingContentInput {
+  redacted: Boolean
+  thinking: String!
+  thinkingSignature: String
+}
+
+input ToolCallInput {
+  arguments: JsonObject!
+  argumentsError: String
+  id: String!
+  name: String!
+  namespace: String
+  thoughtSignature: String
+}
+
+input ToolInput {
+  """Upstream false or ConstrainedSamplingConfig; omit when absent."""
+  constrainedSampling: JsonValue
+  description: String!
+  name: String!
+  parameters: JsonObject!
+}
+
+input ToolReferenceInput {
+  name: String!
+}
+
+input ToolResultMessageInput {
+  content: [UserInputBlock!]!
+  """Optional JSON payload; explicit null is allowed."""
+  details: JsonValue
+  durationMs: Float
+  isError: Boolean!
+  nestedCalls: NestedToolCallsInput
+  timestamp: Float!
+  toolCallId: String!
+  toolName: String!
+  usage: UsageInput
+}
+
+input UsageCostInput {
+  cacheRead: Float!
+  cacheWrite: Float!
+  input: Float!
+  output: Float!
+  total: Float!
+}
+
+input UsageInput {
+  cacheRead: Float!
+  cacheWrite: Float!
+  cacheWrite1h: Float
+  cost: UsageCostInput!
+  input: Float!
+  output: Float!
+  reasoning: Float
+  totalTokens: Float!
+}
+
+"""Exactly one representation: plain text or ordered text/image blocks."""
+input UserInput @oneOf {
+  blocks: [UserInputBlock!]
+  text: String
+}
+
+input UserInputBlock @oneOf {
+  image: ImageContentInput
+  text: TextContentInput
+}
+
+input UserMessageInput {
+  content: UserInput!
+  timestamp: Float!
+}
+
+input WriteSubmissionDraft {
+  entry: EntryDraft!
+  requestId: String
+}
+
+input WwwSettingsInput {
+  bottomAlign: Boolean!
+  defaultDeliveryMode: WwwDeliveryMode!
+  hideThinkingBlock: Boolean!
+  showImages: Boolean!
+  wrapCode: Boolean!
+}
+
+type AbortSubmissionPayload {
+  result: HarnessAbortSubmissionResult!
+}
+
+type Account implements Node {
+  displayName: String
+  id: ID!
+  identifier: String
+  scope: String
+  server: AuthorizationServer!
+  status: AccountStatus!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type AccountConnection {
+  nodes: [Account!]!
+  pageInfo: PageInfo!
+}
+
+"""
+Readable settings from upstream Agent. Runtime extensions, tools, and prompt
+section callbacks remain server-side.
+"""
+type Agent {
+  """Directory within the environment's file system; null when unset."""
+  cwd: String
+  """Additional instructions, not the rendered extension prompt sections."""
+  instructions: String
+  model: ModelRef
+  thinkingLevel: ModelThinkingLevel!
+}
+
+type AssistantMessage {
+  api: String!
+  content: [AssistantContent!]!
+  deferred: DeferredHandle
+  diagnostics: [MessageDiagnostic!]
+  durationMs: Float
+  endTurn: Boolean
+  errorMessage: String
+  model: String!
+  provider: String!
+  providerThinkingLevel: String
+  rawStopReason: String
+  responseId: String
+  responseModel: String
+  role: MessageRole!
+  stopReason: StopReason!
+  thinkingLevel: ModelThinkingLevel
+  timestamp: Float!
+  usage: Usage!
+}
+
+type Authorization implements Node {
+  account: Account
+  createdAt: Float!
+  deviceAuthorizationResponse: DeviceAuthorizationResponse
+  error: AuthorizationErrorResponse
+  id: ID!
+  request: AuthorizationRequest
+  server: AuthorizationServer!
+  status: AuthorizationStatus!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type AuthorizationConnection {
+  nodes: [Authorization!]!
+  pageInfo: PageInfo!
+}
+
+type AuthorizationErrorResponse {
+  error: String!
+  error_description: String
+  error_uri: String
+}
+
+type AuthorizationRequest {
+  client_id: String!
+  code_challenge: String!
+  code_challenge_method: String!
+  redirect_uri: String!
+  response_type: String!
+  scope: String
+  state: String!
+  url: String!
+}
+
+type AuthorizationServer implements Node {
+  accounts(cursor: Cursor, limit: Int!): AccountConnection
+  authorization_endpoint: String
+  authorizations(cursor: Cursor, limit: Int!): AuthorizationConnection
+  device_authorization_endpoint: String
+  grant_types_supported: [String!]
+  id: ID!
+  label: String!
+  revocation_endpoint: String
+  token_endpoint: String
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type AuthorizationServerConnection {
+  nodes: [AuthorizationServer!]!
+  pageInfo: PageInfo!
+}
+
+type CompactPayload {
+  """
+  Global TaskRecord ID corresponding to compact()'s admitted upstream TaskId.
+  """
+  taskId: ID!
+}
+
+type ContextEdit {
+  action: ContextEditAction!
+  """
+  Present exactly when action is replace; omitted model content is not pre-rendered.
+  """
+  messages: [Message!]
+  target: EntryId!
+}
+
+type ContextView {
+  """
+  One message array per entry, before tool-result ordering; preserve empty arrays.
+  """
+  contributions: [[Message!]!]!
+  entries: [EntryRecord!]!
+  head: EntryRecord
+  messages: [Message!]!
+}
+
+"""
+ConversationRecord, augmented with scoped Conversation operations, the read-only
+Tx.submissionByRequest lookup, and Submission.status. Handles stay server-side.
+"""
+type ConversationRecord implements Node {
+  """
+  Conversation.agent(): settings resolved against the current registry and host
+  settings, not just stored overrides. Does not enable scheduling.
+  """
+  agent: Agent!
+  """
+  Current context when at is omitted; otherwise context through that visible entry.
+  """
+  context(at: EntryId): ContextView!
+  durableId: ConversationId!
+  """
+  Fork-aware history, including inherited entries. Default order is descending.
+  """
+  entries(cursor: Cursor, limit: Int!, query: EntryQuery! = {}): EntryRecordConnection!
+  """
+  Persisted selection only. Reading it does not acquire an execution environment.
+  """
+  env: SshTarget
+  harness: Harness!
+  id: ID!
+  owner: ConversationRecordOwner
+  parent: ConversationRecordParent
+  """
+  Reacquire Harness.submission(id), then read Submission.status(). Null for an
+  absent submission or one belonging to another conversation; never waits.
+  """
+  status(id: SubmissionId!): SubmissionRecord
+  """
+  Conversation-scoped Tx.submissionByRequest(). Null means absent at observation,
+  not that a concurrent or disconnected submission failed to commit.
+  """
+  submissionByRequest(requestId: String!): SubmissionRecord
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type ConversationRecordConnection {
+  nodes: [ConversationRecord!]!
+  pageInfo: PageInfo!
+}
+
+"""GraphQL name for NonNullable<ConversationRecord["owner"]>."""
+type ConversationRecordOwner {
+  conversationId: ConversationId!
+  taskId: TaskId!
+}
+
+"""GraphQL name for NonNullable<ConversationRecord["parent"]>."""
+type ConversationRecordParent {
+  at: EntryId!
+  conversationId: ConversationId!
+}
+
+type CreateConversationPayload {
+  conversation: ConversationRecord!
+}
+
+type DeferredHandle {
+  api: String!
+  data: JsonValue
+  expiresAt: Float
+  id: String!
+  modelId: String!
+  pollAfterMs: Float
+  provider: String!
+}
+
+type DeviceAuthorizationResponse {
+  expires_in: Int!
+  interval: Int
+  user_code: String!
+  verification_uri: String!
+  verification_uri_complete: String
+}
+
+type DiagnosticError {
+  """Upstream string or number code."""
+  code: JsonValue
+  message: String!
+  name: String
+  stack: String
+}
+
+type DocumentDefinition {
+  family: Boolean
+  fork: DocumentFork
+  history: DocumentHistory
+  kind: String!
+  scope: DocumentScopeKind!
+  version: Int!
+}
+
+type EntryRecord implements Node {
+  byTaskId: TaskId
+  conversationId: ConversationId!
+  """Unmodified application payload; explicit JSON null is retained."""
+  data: JsonValue
+  durableId: EntryId!
+  edits: [ContextEdit!]
+  harness: Harness!
+  head: EntryId
+  id: ID!
+  kind: String!
+  model: [Message!]
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type EntryRecordConnection {
+  nodes: [EntryRecord!]!
+  pageInfo: PageInfo!
+}
+
+type Harness implements Node {
+  """
+  Resolve Harness.conversation(id); expose its record instead of a live handle.
+  """
+  conversation(id: ConversationId!): ConversationRecord
+  """
+  Authorized definition metadata for one owner, sorted by kind. Does not enumerate members or initialize documents.
+  """
+  documentDefinitions(scope: DocumentScopeInput!): [DocumentDefinition!]
+  externalId: String!
+  id: ID!
+  """
+  Harness.inspect(): live work and scheduling state, without enabling scheduling.
+  """
+  inspect: HarnessInspection!
+  """
+  Read the reserved root without creating a conversation or enabling scheduling.
+  """
+  root: ConversationRecord
+  """
+  Tx.scanConversations(); default order is ascending, or the cursor's order.
+  """
+  scanConversations(cursor: Cursor, limit: Int!, query: ConversationQuery! = {}): ConversationRecordConnection!
+  """Tx.scanTasks(); default order is ascending, or the cursor's order."""
+  scanTasks(cursor: Cursor, limit: Int!, query: TaskQuery! = {}): TaskRecordConnection!
+  snapshot(address: DocumentAddressInput!): JsonObject
+}
+
+type HarnessCompactionSettings {
+  backgroundTokens: Int!
+  enabled: Boolean!
+  keepRecentTokens: Int!
+  reserveTokens: Int!
+}
+
+type HarnessInspection {
+  scheduling: HarnessInspectionScheduling!
+  """Queued and placed submissions, in upstream ID order."""
+  submissions: [SubmissionRecord!]!
+  tasks: [TaskInspection!]!
+}
+
+type HarnessRetrySettings {
+  baseDelayMs: Int!
+  enabled: Boolean!
+  maxAgentDelayMs: Int!
+  maxRetries: Int!
+}
+
+type HarnessSettings {
+  compaction: HarnessCompactionSettings!
+  followUpMode: HarnessQueueMode!
+  retry: HarnessRetrySettings!
+  steeringMode: HarnessQueueMode!
+  stream: HarnessStreamSettings!
+}
+
+type HarnessStreamSettings {
+  transport: HarnessTransport!
+}
+
+type ImageContent {
+  data: String!
+  mimeType: String!
+  type: ContentType!
+}
+
+type Instance implements Node {
+  """SSH connection data only; does not connect or start the instance."""
+  connect: SshTarget
+  """
+  Unavailable metadata is null; observation errors do not erase membership.
+  """
+  flakeReference: String
+  id: ID!
+  """Observed systemd strings, without conversion to a closed enum."""
+  state: InstanceState
+  """
+  Durations are microseconds; phase samples retain their clock and seconds.
+  The service validates invocation coherence and activation success. No clocks are combined here.
+  """
+  timings: InstanceTimings
+  unit: String!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type InstanceConnection {
+  nodes: [Instance!]!
+  pageInfo: PageInfo!
+}
+
+type InstanceState {
+  activeState: String!
+  result: String
+  subState: String!
+}
+
+type InstanceTimingPhase {
+  clock: String!
+  monotonicSeconds: Float!
+  phase: String!
+  resolutionSeconds: Float!
+}
+
+type InstanceTimings {
+  activationUs: Float
+  bootWaitUs: Float
+  guestPhases: [InstanceTimingPhase!]
+  hostPhases: [InstanceTimingPhase!]
+  invocationId: String!
+  managerGapsUs: Float
+  provisionUs: Float
+  workerUs: Float
+}
+
+type MessageDiagnostic {
+  details: JsonObject
+  error: DiagnosticError
+  timestamp: Float!
+  type: String!
+}
+
+"""
+Public Pi AI chat-model metadata, not a persisted Node or selected default.
+"""
+type Model {
+  contextWindow: Float!
+  """Catalog prices, not accumulated message usage."""
+  cost: ModelCost!
+  """Native model ID; pair with provider. Becomes modelId in ModelRefInput."""
+  id: String!
+  input: [ModelInputModality!]!
+  maxTokens: Float!
+  name: String!
+  provider: String!
+  reasoning: Boolean!
+  """Pi AI getSupportedThinkingLevels(), not a default selection."""
+  thinkingLevels: [ModelThinkingLevel!]!
+}
+
+type ModelCost {
+  cacheRead: Float!
+  cacheWrite: Float!
+  input: Float!
+  output: Float!
+  tiers: [ModelCostTier!]
+}
+
+type ModelCostTier {
+  cacheRead: Float!
+  cacheWrite: Float!
+  input: Float!
+  inputTokensAbove: Float!
+  output: Float!
+}
+
+"""
+Output representation of upstream ModelRef; ModelRefInput is the mutation input type.
+"""
+type ModelRef {
+  modelId: String!
+  provider: String!
+}
+
+type Mutation {
+  """
+  Withdraw queued inputs and abort ordinary owned work; preserve background work
+  and queued writes. Resolves after upstream abort completes. No background flag.
+  """
+  abort(input: AbortInput!): Boolean
+  """
+  Withdraw a queued submission; already_placed never becomes an execution abort.
+  """
+  abortSubmission(input: AbortSubmissionInput!): AbortSubmissionPayload
+  """
+  Create a service-owned authorization-code flow. Never replay initiation.
+  """
+  authorize(input: AuthorizeInput!): Authorization
+  """Cancel local processing, not provider credentials."""
+  cancelAuthorization(input: CancelAuthorizationInput!): Boolean
+  """
+  Admit compaction; task completion and summary placement remain separate.
+  """
+  compact(input: CompactInput!): CompactPayload
+  """
+  Change agent overrides and env selection atomically, including during active work.
+  Read resolved agent settings through agent and persisted selection through env.
+  """
+  configure(input: ConfigureInput!): Boolean
+  """
+  Create another conversation with explicit ownership and initial agent settings.
+  Each call creates a new conversation; no submission, scheduling, or automatic replay.
+  """
+  createConversation(input: CreateConversationInput!): CreateConversationPayload
+  """
+  Create a device flow; the service, not browser reads, owns token polling.
+  """
+  deviceAuthorization(input: DeviceAuthorizationInput!): Authorization
+  """
+  Remove local credential use/storage independently of provider revocation.
+  """
+  disconnect(input: DisconnectInput!): Boolean
+  """
+  Find or create authorized persisted storage through the shared Harness owner.
+  Does not create a root, change an existing Harness, or enable scheduling.
+  """
+  open(input: OpenInput!): OpenPayload
+  """
+  Persist the full browser subscription. No delivery is triggered by the adapter.
+  """
+  registerPushSubscription(input: RegisterPushSubscriptionInput!): Boolean
+  """
+  Remove the authorized user's endpoint registration, including with delivery disabled.
+  """
+  removePushSubscription(input: RemovePushSubscriptionInput!): Boolean
+  """
+  Replace one exposed application document in one commit. No merge, compare-and-swap, or automatic replay.
+  """
+  replaceDocument(input: ReplaceDocumentInput!): JsonObject
+  """
+  Return true after reset admission, not necessarily placement. No idempotency key.
+  """
+  reset(input: ResetInput!): Boolean
+  """
+  Return true after enabling Harness scheduling, not after work completes.
+  """
+  resume(input: ResumeInput!): Boolean
+  """
+  Revoke stored credentials; an acknowledgment does not mean local removal.
+  """
+  revoke(input: RevokeInput!): Boolean
+  """
+  Get or create the reserved root. Initial agent and env changes apply only at creation.
+  Does not submit input or enable scheduling.
+  """
+  root(input: RootInput!): RootPayload
+  """
+  Replace the application settings file.
+  Saves affect later Harness opens, not current execution. Never replay after a lost response.
+  """
+  saveSettings(input: SaveSettingsInput!): Settings
+  """
+  Admit input or a passive entry write, not necessarily placement or completion.
+  Same requestId and type recover the prior submission without comparing content.
+  A key used for another type retains the untyped-error fallback. ConversationBusy means not admitted.
+  """
+  submit(input: SubmitInput!): SubmitPayload
+}
+
+type NestedToolCallRecord {
+  arguments: JsonObject
+  argumentsBytes: Float
+  durationMs: Float
+  error: String
+  id: String!
+  name: String!
+  status: NestedToolCallStatus!
+}
+
+type NestedToolCalls {
+  calls: [NestedToolCallRecord!]!
+  complete: Boolean!
+}
+
+type OpenPayload {
+  harness: Harness!
+}
+
+"""
+Upstream page continuation. Null means the backend returned no next cursor.
+"""
+type PageInfo {
+  next: Cursor
+}
+
+type PushService {
+  """A null public key means delivery is disabled."""
+  applicationServerKey: String
+  """
+  Registration does not prove matching browser keys, permission, or successful delivery.
+  """
+  registered(endpoint: String!): Boolean
+}
+
+type Query {
+  accounts(cursor: Cursor, limit: Int!): AccountConnection
+  authorizationServers(cursor: Cursor, limit: Int!): AuthorizationServerConnection
+  """
+  Resolve a persisted Harness by its external session key; does not create one.
+  """
+  harness(externalId: String!): Harness
+  """
+  List accessible persisted sessions from the deployment's catalog, not the cache
+  of open Harness instances. Durable does not provide a cross-session catalog.
+  Order by ascending externalId; listing does not create sessions or enable scheduling.
+  """
+  harnesses: [Harness!]!
+  """
+  Read one inventory page without acquiring a Harness or connecting to guests.
+  Membership and ordering belong to the inventory service, not the Harness catalog.
+  """
+  instances(cursor: Cursor, limit: Int!): InstanceConnection
+  """
+  Service-scoped available chat models in upstream order, without pagination.
+  Reads the deployment's current model source per call; never acquires a Harness,
+  refreshes the catalog, or starts generation. Availability does not guarantee
+  that a subsequent model request succeeds. An empty catalog is an empty list.
+  """
+  models: [Model!]!
+  """
+  Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
+  """
+  node(id: ID!): Node
+  """
+  Public push configuration and the authorized user's registrations, not browser permission.
+  """
+  push: PushService
+  """
+  Read resolved application configuration without acquiring a Harness or creating files.
+  """
+  settings(app: App!): Settings
+}
+
+type RootPayload {
+  conversation: ConversationRecord!
+}
+
+"""
+Connection data, not an executable environment or SSH binary configuration.
+"""
+type SshTarget {
+  configFile: String
+  host: String!
+  hostKeyAlias: String!
+  identityFile: String
+  knownHostsFile: String!
+  port: Int
+  type: ExecutionEnvType!
+  user: String
+}
+
+type StringContent {
+  text: String!
+}
+
+"""
+Complete SubmissionRecord. Status-dependent fields follow upstream invariants:
+input done has entry and answer; write done has entry only; continue done has
+answer only. Placed applies to input and continue. Unanswered has reason and
+optional detail, with optional entry only for input.
+Queued records have none of entry, answer, reason, or detail.
+"""
+type SubmissionRecord implements Node {
+  answer: EntryId
+  conversationId: ConversationId!
+  detail: JsonValue
+  durableId: SubmissionId!
+  entry: EntryId
+  harness: Harness!
+  id: ID!
+  reason: String
+  requestId: String
+  status: SubmissionRecordStatus!
+  trace: TelemetryCarrier
+  type: SubmissionRecordType!
+}
+
+type SubmitPayload {
+  """
+  Transport reference to Submission.id as a global SubmissionRecord ID.
+  node(id) reads its receipt; this payload is not itself the submission Node.
+  """
+  submissionId: ID!
+}
+
+type SystemMessage {
+  content: SystemMessageContent!
+  role: MessageRole!
+  """Named prompt sections; null values remove a section."""
+  sections: JsonObject
+  """Upstream wall-clock milliseconds."""
+  timestamp: Float!
+  toolsAdded: [Tool!]
+  toolsRemoved: [ToolReference!]
+}
+
+type TaskInspection {
+  record: TaskRecord!
+  state: TaskInspectionState!
+}
+
+"""
+GraphQL name for TaskInspection["state"].
+Every upstream inspection discriminant is retained. pending carries migrates;
+waiting carries on; sleeping carries until; blocked carries reason and optional
+error. running/completing carry only kind. Other fields return null.
+"""
+type TaskInspectionState {
+  """
+  Upstream unknown/Error serialized with JSON.stringify, not a GraphQL error.
+  """
+  error: JsonValue
+  kind: TaskInspectionStateKind!
+  migrates: Boolean
+  on: [TaskId!]
+  reason: BlockedReason
+  until: Float
+}
+
+"""
+completed carries result; failed carries error and optional result; aborted
+carries optional reason/result; orphaned carries reason; faulted carries error.
+No other variant-specific fields are populated. A JSON null result is valid.
+"""
+type TaskOutcome {
+  error: TaskOutcomeError
+  reason: String
+  result: JsonValue
+  status: TaskOutcomeStatus!
+}
+
+type TaskOutcomeError {
+  detail: JsonValue
+  message: String!
+}
+
+"""
+Complete TaskRecord; task input, checkpoints, memos, traces, and outcomes remain JSON.
+"""
+type TaskRecord implements Node {
+  abandonOnRestart: Boolean
+  abortReason: TaskRecordAbortReason
+  abortRequested: Boolean!
+  background: Boolean!
+  conversationId: ConversationId!
+  durableId: TaskId!
+  endedAt: Float
+  harness: Harness!
+  id: ID!
+  input: JsonValue
+  kind: String!
+  links: [TelemetryCarrier!]
+  """Absent for completing and terminal tasks."""
+  memos: JsonObject
+  owner: TaskId
+  restarts: Float
+  """Upstream wall-clock milliseconds, not seconds or an ISO string."""
+  startedAt: Float
+  state: TaskState!
+  trace: TelemetryCarrier
+  version: Float!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type TaskRecordConnection {
+  nodes: [TaskRecord!]!
+  pageInfo: PageInfo!
+}
+
+"""
+Status-discriminated upstream state. pending/running/waiting/sleeping carry
+checkpoint; waiting also carries on and policy; sleeping carries until.
+completing/terminal carry outcome instead of checkpoint. JSON null checkpoints
+are valid. Fields not belonging to the status return null.
+"""
+type TaskState {
+  checkpoint: JsonValue
+  on: [TaskId!]
+  outcome: TaskOutcome
+  policy: JoinPolicy
+  status: TaskStateStatus!
+  until: Float
+}
+
+type TextContent {
+  text: String!
+  textSignature: String
+  type: ContentType!
+}
+
+type TextContentList {
+  blocks: [TextContent!]!
+}
+
+type ThinkingContent {
+  redacted: Boolean
+  thinking: String!
+  thinkingSignature: String
+  type: ContentType!
+}
+
+type Tool {
+  """
+  Upstream false or provider-specific constrained-sampling configuration.
+  """
+  constrainedSampling: JsonValue
+  description: String!
+  name: String!
+  """JSON Schema for tool arguments."""
+  parameters: JsonObject!
+}
+
+type ToolCall {
+  arguments: JsonObject!
+  argumentsError: String
+  id: String!
+  name: String!
+  namespace: String
+  thoughtSignature: String
+  type: ContentType!
+}
+
+type ToolReference {
+  name: String!
+}
+
+type ToolResultMessage {
+  content: [UserContent!]!
+  """Unmodified application payload."""
+  details: JsonValue
+  durationMs: Float
+  isError: Boolean!
+  nestedCalls: NestedToolCalls
+  role: MessageRole!
+  timestamp: Float!
+  toolCallId: String!
+  toolName: String!
+  usage: Usage
+}
+
+type Usage {
+  cacheRead: Float!
+  cacheWrite: Float!
+  cacheWrite1h: Float
+  cost: UsageCost!
+  input: Float!
+  output: Float!
+  reasoning: Float
+  totalTokens: Float!
+}
+
+type UsageCost {
+  cacheRead: Float!
+  cacheWrite: Float!
+  input: Float!
+  output: Float!
+  total: Float!
+}
+
+type UserContentList {
+  blocks: [UserContent!]!
+}
+
+type UserMessage {
+  content: UserMessageContent!
+  role: MessageRole!
+  timestamp: Float!
+}
+
+type WebSettings {
+  bottomAlign: Boolean!
+  defaultDeliveryMode: WwwDeliveryMode!
+  hideThinkingBlock: Boolean!
+  showImages: Boolean!
+  wrapCode: Boolean!
+}

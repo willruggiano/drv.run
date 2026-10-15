@@ -1,0 +1,21 @@
+{
+  "name": "app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "harness",
+    "serve",
+    "tape"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "check": "npm run check --workspaces",
+    "test": "npm run test:elm --workspace=serve && NODE_OPTIONS=--conditions=development node --test 'harness/tests/*.test.ts' 'serve/**/tests/*.test.ts' 'tape/tests/*.test.ts'",
+    "test:browser": "NODE_OPTIONS=--conditions=development node --test 'serve/**/tests/*.chromium.ts' 'tape/tests/*.chromium.ts'"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "playwright": "1.64.1"
+  }
+}
