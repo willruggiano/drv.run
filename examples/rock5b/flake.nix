@@ -185,6 +185,7 @@
       };
 
       dev = {
+        config,
         lib,
         pkgs,
         ...
@@ -194,7 +195,23 @@
           drv-run.nixosModules.pi
         ];
 
+        sops.secrets.tailscale-auth-key = {
+          sopsFile = ./secrets/tailscale-auth-key;
+          format = "binary";
+          restartUnits = ["tailscaled-autoconnect.service"];
+        };
+
+        networking.firewall.interfaces.${config.services.tailscale.interfaceName}.allowedTCPPorts = [config.services.pi.port];
+
         services = {
+          tailscale = {
+            enable = true;
+            openFirewall = true;
+            authKeyFile = config.sops.secrets.tailscale-auth-key.path;
+            # Keep the host's LAN DNS and routing; only join the tailnet.
+            extraUpFlags = ["--accept-dns=false" "--accept-routes=false"];
+          };
+
           drv-run = {
             guest.extraModules = [
               {

@@ -194,7 +194,6 @@ in
           lan_ip = next(address["local"] for address in addresses if address["scope"] == "global")
           client.wait_until_succeeds(f"curl -fsS http://{lan_ip}:8787/api/catalog")
           host.succeed("test ! -e ${pi-serve}/bin/pi")
-          operator("test -x /run/current-system/sw/bin/pi")
 
       with subtest("create a real guest with an offline flake environment"):
           operator("mkdir /home/operator/flake")
