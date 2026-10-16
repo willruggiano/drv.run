@@ -34,9 +34,19 @@ export class SessionError extends Error {
 }
 
 /** Persisted identity, never a connection or a fallback preference. */
-export type ExecutionBinding = { provider: string; target: string; cwd: string };
-export type ExecutionTarget = ExecutionBinding & { label: string; available: boolean };
-export type EnvironmentLease = { env: ExecutionEnv; close(): void | Promise<void> };
+export type ExecutionBinding = {
+  provider: string;
+  target: string;
+  cwd: string;
+};
+export type ExecutionTarget = ExecutionBinding & {
+  label: string;
+  available: boolean;
+};
+export type EnvironmentLease = {
+  env: ExecutionEnv;
+  close(): void | Promise<void>;
+};
 
 /** Application integration, not the coding-agent ExtensionAPI. Factories do no I/O. */
 export interface Integration {
@@ -88,7 +98,15 @@ export function localIntegration(directory: string): Integration {
       } catch (error) {
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
       }
-      return [{ provider: "local", target: cwd, cwd, label: `Local · ${cwd}`, available }];
+      return [
+        {
+          provider: "local",
+          target: cwd,
+          cwd,
+          label: `Local · ${cwd}`,
+          available,
+        },
+      ];
     },
     async validate(binding) {
       if (
@@ -137,7 +155,10 @@ export type SessionOptions = {
   onReport?: (error: unknown) => void;
 };
 
-const Metadata = defineDoc<{ binding: ExecutionBinding | null; created: number }>({
+const Metadata = defineDoc<{
+  binding: ExecutionBinding | null;
+  created: number;
+}>({
   kind: "app.session",
   version: 1,
   scope: "conversation",
@@ -332,6 +353,7 @@ export class ManagedSession {
       defineExtension({
         name: "coding",
         sections: [
+          // FIXME: this is so fucking stupid LMAO
           section(
             "preamble",
             () =>

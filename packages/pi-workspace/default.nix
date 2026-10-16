@@ -7,6 +7,7 @@
   importNpmLock,
   lib,
   libxcb,
+  pkgsStatic,
   stdenv,
   writeText,
 }: let
@@ -16,6 +17,19 @@
     // {
       workspaces = ["packages/*"];
     };
+  # Uploaded into the guest: no host dynamic linker or shared libraries.
+  daemon = pkgsStatic.rustPlatform.buildRustPackage {
+    pname = "pi-env-daemon";
+    inherit src;
+    version = (lib.importJSON (src + "/packages/env/package.json")).version;
+    # Keep ../package.json available to build.rs.
+    sourceRoot = "source/packages/env/daemon";
+    cargoLock.lockFile = src + "/packages/env/daemon/Cargo.lock";
+  };
+  daemonArch =
+    if stdenv.hostPlatform.isAarch64
+    then "arm64"
+    else "x64";
   catalog = let
     inherit (lib.importJSON (src + "/nix/model-catalog.json")) revision;
   in
@@ -26,7 +40,7 @@
     };
 in
   buildNpmPackage {
-    pname = "pi-node-modules";
+    pname = "pi-workspace";
     inherit (package) version;
     inherit src;
     npmBuildScript = "build:offline";
@@ -56,6 +70,10 @@ in
       npm prune --omit=dev --ignore-scripts --offline --no-audit --no-fund
       mkdir -p "$out"
       cp -r . "$out/"
+      # localDaemon() resolves relative to the real env module, not its symlink.
+      mkdir -p "$out/packages/env/bin/pi-env-linux-${daemonArch}" "$out/bin"
+      ln -s ${daemon}/bin/pi-env "$out/packages/env/bin/pi-env-linux-${daemonArch}/pi-env"
+      ln -s ${daemon}/bin/pi-env "$out/bin/pi-env"
       runHook postInstall
     '';
 
@@ -67,7 +85,15 @@ in
         import "@earendil-works/chord/context";
         import "@earendil-works/pi-coding-agent";
         import "@earendil-works/pi-durable";
-        import "@earendil-works/pi-env";
+        import assert from "node:assert/strict";
+        import { accessSync, constants, realpathSync } from "node:fs";
+        import { localDaemon } from "@earendil-works/pi-env";
+        accessSync(localDaemon(), constants.X_OK);
+        assert.equal(realpathSync(localDaemon()), realpathSync("${daemon}/bin/pi-env"));
+        assert.equal(
+          realpathSync("node_modules/@earendil-works/pi-durable"),
+          realpathSync("packages/durable"),
+        );
       '
       runHook postInstallCheck
     '';

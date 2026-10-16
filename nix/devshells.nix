@@ -48,20 +48,15 @@ pkgs: let
     which
     zmx
   ]);
-  nodeModules = pkgs.buildEnv {
-    name = "drv-run-development-node-modules";
-    pathsToLink = ["/node_modules"];
-    paths = [pkgs.pi-serve.nodeModules (pkgs.lib.hiPrio pkgs.pi-drv-run.nodeModules)];
-  };
 in {
   default = pkgs.mkShell {
     nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook pkgs.systemd.dev];
-    npmDeps = nodeModules;
+    npmDeps = pkgs.pi-development-node-modules;
     packages = tools ++ [pkgs.pi-with-store-paths];
   };
   jail = pkgs.mkShell {
     nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook pkgs.systemd.dev];
-    npmDeps = nodeModules;
+    npmDeps = pkgs.pi-development-node-modules;
     packages = tools ++ [pkgs.pi-jailed pkgs.subtrace];
   };
 }

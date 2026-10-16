@@ -59,7 +59,8 @@ in {
 
   # base pi (from github:earendil-works/pi)
   pi-unwrapped = inputs.pi.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  pi-node-modules = pkgs.callPackage ./pi-node-modules {src = inputs.pi;};
+  pi-workspace = pkgs.callPackage ./pi-workspace {src = inputs.pi;};
+  pi-development-node-modules = pkgs.callPackage ./pi-workspace/development.nix {};
   # base pi + some core extensions
   pi-with-extensions = withExtensions pkgs.pi-unwrapped (
     with pkgs; [
@@ -142,8 +143,6 @@ in {
   # extensions/packages:
   pi-ask = pkgs.callPackage ./pi-extensions/pi-ask {};
   pi-autoresearch = pkgs.callPackage ./pi-extensions/pi-autoresearch {};
-  pi-durable = pkgs.callPackage ./pi-durable {};
-  pi-env = pkgs.callPackage ./pi-env {};
   pi-notify = pkgs.callPackage ./pi-extensions/pi-notify {};
   pi-parallel-web = pkgs.callPackage ./pi-extensions/pi-parallel {};
   pi-path-rules = pkgs.runCommandLocal "path-rules" {} ''

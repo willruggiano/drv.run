@@ -25,12 +25,20 @@
   probe = pkgs.writeText "pi-serve-guest-probe.mjs" ''
     import assert from "node:assert/strict";
     import { randomUUID } from "node:crypto";
-    import { mkdtemp, rm } from "node:fs/promises";
+    import { access, constants, mkdtemp, realpath, rm } from "node:fs/promises";
     import { BACKGROUND_CONTEXT } from "${app}/node_modules/@earendil-works/chord/dist/context/index.js";
     import { createModels } from "${app}/node_modules/@earendil-works/pi-ai/dist/models.js";
     import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "${app}/node_modules/@earendil-works/pi-ai/dist/providers/faux.js";
     import { Sessions } from "${app}/../pi-runtime/index.js";
     import drvRun from "${pi-drv-run}/lib/pi-extensions/drv-run/index.js";
+    import { localDaemon } from "${app}/node_modules/@earendil-works/pi-env/dist/index.js";
+
+    // Installed consumers share the production workspace, not the test tree.
+    const modules = await realpath("${app}/node_modules");
+    assert.equal(await realpath("${app}/../pi-runtime/node_modules"), modules);
+    assert.equal(await realpath("${pi-drv-run}/lib/pi-extensions/drv-run/node_modules"), modules);
+    await access(localDaemon(), constants.X_OK);
+    await assert.rejects(access(modules + "/playwright"), { code: "ENOENT" });
 
     const instance = process.argv[2];
     const untrusted = process.argv[3] === "untrusted";
