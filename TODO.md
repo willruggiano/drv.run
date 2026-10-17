@@ -2,14 +2,18 @@
 
 # Todos
 
-- Practical usability improvements:
-  - [ ] Pi PWA! To start:
-    - Pi running on the _host_ and served over HTTP as a PWA
-    - Execution (ie. tools) in the _guest_
-    - Relevant upstream docs:
-      <https://github.com/earendil-works/pi/tree/stable/packages/env>
-    - I am not married to the host/guest split, but exposing the PWA from the
-      host certainly seems simpler at the moment.
+- Usability improvements:
+  - Key mapping
+    - [ ] (ctrl+k menu) `t` opens the target picker, `m` opens the model picker,
+          `n` open a new session
+    - [ ] (ctrl+k menu) `/` focuses the filter sessions form
+    - [ ] (ctrl+k menu) `ctrl+j/k` (which should be "globals" for move/select
+          next/previous) select next/previous session
+  - [ ] Automate the host deployment
+  - [ ] (pi-serve) web worker?
+  - [ ] (pi-serve) @ mentions and / commands
+  - [ ] git push
+  - [ ] Automate post exposure (see below "HTTP proxy")
   - [ ] Add an owner-scoped host command that obtains the guest connection FD
         from systemd-ssh-proxy
         (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
