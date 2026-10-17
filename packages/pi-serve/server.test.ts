@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,6 +14,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { fixture, model, waitFor } from "../pi-runtime/testing.ts";
 import { browserFlow, serve, snapshot, post } from "./testing.ts";
 import { parseOptions } from "./server.ts";
+import { benchmark, benchmarkFixture, benchmarkOptions } from "./benchmark.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -254,6 +255,120 @@ await test("CLI defaults to local execution and accepts explicit integration com
     ["--unknown", "x"],
   ])
     assert.throws(() => parseOptions(args), Error);
+});
+
+await test("renderer benchmark validates options and builds deterministic paired history", () => {
+  const options = benchmarkOptions([]);
+  assert.equal(options.runs, 3);
+  assert.equal(options.turns, 200);
+  assert.equal(options.cpuRate, 1);
+  assert.equal(options.profile, false);
+  assert.equal(benchmarkOptions(["--profile"]).profile, true);
+  assert.equal(
+    benchmarkOptions(["--profile", "--profile-dir", "profiles"]).profileDir,
+    resolve("profiles"),
+  );
+  assert.equal(benchmarkOptions(["--cpu-rate", "2.5"]).cpuRate, 2.5);
+  for (const args of [
+    ["--runs", "0"],
+    ["--runs", "1.5"],
+    ["--runs", "101"],
+    ["--turns", "-1"],
+    ["--turns", "10001"],
+    ["--turns", "NaN"],
+    ["--cpu-rate", "0.5"],
+    ["--cpu-rate", "Infinity"],
+    ["--profile-dir", "profiles"],
+    ["--profile", "--profile-dir"],
+    ["--runs"],
+    ["--unknown"],
+    ["unexpected"],
+  ])
+    assert.throws(() => benchmarkOptions(args));
+  const fixture = benchmarkFixture(2);
+  assert.deepEqual(fixture, benchmarkFixture(2));
+  assert.deepEqual(
+    fixture.view.entries.map((entry) => entry.id),
+    [1, 2, 3, 4, 5, 6],
+  );
+  for (let i = 0; i < 2; i++) {
+    const assistant = fixture.view.entries[3 * i + 1].model?.[0];
+    const result = fixture.view.entries[3 * i + 2].model?.[0];
+    assert(assistant?.role === "assistant");
+    assert(result?.role === "toolResult");
+    const call = assistant.content.find((block) => block.type === "toolCall");
+    assert(call);
+    assert.equal(result.toolCallId, call.id);
+  }
+});
+
+await test("mobile browser renderer benchmark returns complete JSON-compatible samples", async () => {
+  const report = await benchmark(benchmarkOptions(["--runs", "2", "--turns", "2"]));
+  assert.equal(report.schemaVersion, 1);
+  assert.equal(report.benchmark, "pi-serve.render");
+  assert.equal(report.measurement.profiling, false);
+  assert.equal(report.measurement.freshBrowserPerRun, true);
+  assert.equal(report.workload.entries, 6);
+  assert.equal(report.environment.cpuRate, 1);
+  assert.equal(report.source.clientSha256.length, 64);
+  assert.equal(report.runs.length, 2);
+  assert.equal(report.profile, null);
+  for (const run of report.runs) {
+    assert(run.initialDomElements > 0);
+    assert.equal(run.streamingMs.length, report.workload.streamUpdates);
+    assert.equal(run.transitionsMs.length, report.workload.transitions);
+    for (const value of [run.initialMs, run.startMs, ...run.streamingMs, ...run.transitionsMs])
+      assert(Number.isFinite(value) && value >= 0);
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(report)), report);
+});
+
+await test("mobile browser renderer profiling saves separate per-phase CPU and timeline data", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-serve-profile-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const report = await benchmark(
+    benchmarkOptions(["--runs", "1", "--turns", "2", "--profile", "--profile-dir", directory]),
+  );
+  assert.equal(report.runs.length, 1);
+  assert.equal(report.runs[0].streamingMs.length, 40);
+  assert.equal(report.runs[0].transitionsMs.length, 10);
+  assert.equal(report.measurement.profiling, false);
+  assert(report.profile);
+  assert.equal(report.profile.separateRun, true);
+  assert.equal(report.profile.timingsIncludedInRuns, false);
+  assert.equal(report.profile.includesPaint, true);
+  assert.equal(report.profile.samplingIntervalUs, 1000);
+  assert.deepEqual(
+    report.profile.artifacts.map((artifact) => artifact.phase),
+    ["initial", "streaming", "transitions"],
+  );
+  for (const artifact of report.profile.artifacts) {
+    assert.equal(artifact.traceDataLoss, false);
+    const cpu: {
+      nodes: { id: number }[];
+      samples: number[];
+      timeDeltas: number[];
+      startTime: number;
+      endTime: number;
+    } = JSON.parse(await readFile(artifact.cpuProfile, "utf8"));
+    assert(cpu.endTime > cpu.startTime);
+    assert(cpu.samples.length > 0);
+    assert.equal(cpu.timeDeltas.length, cpu.samples.length);
+    const ids = new Set(cpu.nodes.map((node) => node.id));
+    assert(cpu.samples.every((id) => ids.has(id)));
+    const trace: { traceEvents: { name: string }[] } = JSON.parse(
+      await readFile(artifact.trace, "utf8"),
+    );
+    const events = new Set(trace.traceEvents.map((event) => event.name));
+    assert(events.has(`pi-bench:${artifact.phase}:start`));
+    assert(events.has(`pi-bench:${artifact.phase}:end`));
+    if (artifact.phase === "initial") {
+      assert(events.has("Layout"));
+      assert(events.has("Paint"));
+      assert(events.has("StyleRecalcInvalidationTracking"));
+    }
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(report)), report);
 });
 
 await test("mobile browser runs local tools, reconnects and renders untrusted content safely", async (t) => {

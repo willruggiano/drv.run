@@ -1,6 +1,7 @@
 {
   importNpmLock,
   callPackage,
+  chromium,
   lib,
   stdenv,
   nodejs,
@@ -20,6 +21,7 @@
       ./tsconfig.json
       ./server.ts
       ./client.ts
+      ./benchmark.ts
       ./server.test.ts
       ./testing.ts
       ./index.html
@@ -62,6 +64,29 @@ in
       runHook postInstall
     '';
     passthru = {
+      bench.render = stdenv.mkDerivation {
+        pname = "pi-serve-bench-render";
+        inherit (finalAttrs) version src npmDeps nativeBuildInputs buildPhase;
+        installPhase = ''
+          runHook preInstall
+          mkdir -p "$out/lib/pi-serve" "$out/bin"
+          cp dist/pi-serve/benchmark.js pi-serve/package.json "$out/lib/pi-serve/"
+          for file in server.js client.js index.html styles.css; do
+            ln -s ${finalAttrs.finalPackage}/lib/pi-serve/"$file" "$out/lib/pi-serve/$file"
+          done
+          ln -s ${pi-runtime}/lib/pi-runtime "$out/lib/pi-runtime"
+          ln -s ${pi-development-node-modules}/node_modules "$out/lib/pi-serve/node_modules"
+          makeWrapper ${nodejs}/bin/node "$out/bin/pi-serve-bench-render" \
+            --set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ${lib.getExe chromium} \
+            --add-flags "$out/lib/pi-serve/benchmark.js"
+          runHook postInstall
+        '';
+        meta = {
+          description = "Synthetic pi-serve renderer benchmark (JSON output)";
+          mainProgram = "pi-serve-bench-render";
+          platforms = ["x86_64-linux" "aarch64-linux"];
+        };
+      };
       tests.nixos = callPackage ../../tests/nixos/pi-serve.nix {
         inherit nixosModules;
         pi-serve = finalAttrs.finalPackage;
