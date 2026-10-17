@@ -566,6 +566,28 @@ function toolCopies(
   return copies;
 }
 
+let touchMenuAnchor: { x: number; y: number } | undefined;
+function positionTouchMenu(point: { x: number; y: number }): void {
+  const viewport = visualViewport;
+  const style = getComputedStyle(messageMenu);
+  const inset = (side: string) => parseFloat(style.getPropertyValue(`--menu-safe-${side}`)) || 0;
+  const left = (viewport?.offsetLeft ?? 0) + inset("left") + 8;
+  const top = (viewport?.offsetTop ?? 0) + inset("top") + 8;
+  const right = (viewport?.offsetLeft ?? 0) + (viewport?.width ?? innerWidth) - inset("right") - 8;
+  const bottom =
+    (viewport?.offsetTop ?? 0) + (viewport?.height ?? innerHeight) - inset("bottom") - 8;
+  messageMenu.style.maxWidth = `${Math.max(0, right - left)}px`;
+  messageMenu.style.maxHeight = `${Math.max(0, bottom - top)}px`;
+  const { width, height } = messageMenu.getBoundingClientRect();
+  const gap = 12;
+  const x = point.x + gap + width <= right ? point.x + gap : point.x - gap - width;
+  const y = point.y - gap - height >= top ? point.y - gap - height : point.y + gap;
+  messageMenu.style.left = `${Math.max(left, Math.min(x, right - width))}px`;
+  messageMenu.style.top = `${Math.max(top, Math.min(y, bottom - height))}px`;
+  messageMenu.style.right = "auto";
+  messageMenu.style.bottom = "auto";
+}
+
 function messageActions(
   entry: number | undefined,
   message: Message | undefined,
@@ -607,14 +629,26 @@ function messageActions(
     const fork = element("fork-message", HTMLButtonElement);
     fork.hidden = entry === undefined;
     fork.disabled = !connected || recovering;
+    // Clear the last anchor when switching between touch and mouse/keyboard.
+    for (const property of ["top", "right", "bottom", "left", "max-width", "max-height"])
+      messageMenu.style.removeProperty(property);
     messageMenu.showPopover();
     actions.setAttribute("aria-expanded", "true");
-    if (matchMedia("(min-width: 651px) and (hover: hover) and (pointer: fine)").matches) {
+    if (touchMenuAnchor || matchMedia("(hover: none), (pointer: coarse)").matches) {
+      const owner =
+        actions.closest(".tool-call")?.querySelector(":scope > summary") ??
+        actions.closest("article") ??
+        actions;
+      const rect = owner.getBoundingClientRect();
+      positionTouchMenu(touchMenuAnchor ?? { x: rect.left + 16, y: rect.top + 16 });
+    } else if (matchMedia("(min-width: 651px)").matches) {
       const rect = actions.getBoundingClientRect();
       messageMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - messageMenu.offsetHeight - 8))}px`;
       messageMenu.style.right = `${Math.max(8, Math.min(innerWidth - rect.right, innerWidth - messageMenu.offsetWidth - 8))}px`;
     }
-    messageMenu.querySelector<HTMLButtonElement>("button:not([hidden]):not(:disabled)")?.focus();
+    messageMenu
+      .querySelector<HTMLButtonElement>("button:not([hidden]):not(:disabled)")
+      ?.focus({ preventScroll: true });
   };
   return actions;
 }
@@ -649,10 +683,16 @@ function cancelLongPress(): void {
   longPress = undefined;
 }
 function openHeldActions(actions: HTMLButtonElement): void {
+  const point = longPress && { x: longPress.x, y: longPress.y };
   cancelLongPress();
   if (!actions.isConnected || !transcript.contains(actions)) return;
   heldActions = actions;
-  actions.click();
+  touchMenuAnchor = point;
+  try {
+    actions.click();
+  } finally {
+    touchMenuAnchor = undefined;
+  }
 }
 transcript.addEventListener("pointerdown", (event) => {
   cancelLongPress();
@@ -681,7 +721,13 @@ for (const event of ["pointerup", "pointercancel"])
 document.addEventListener("pointerdown", (event) => {
   if (!event.isPrimary) cancelLongPress();
 });
-transcript.addEventListener("scroll", cancelLongPress, { passive: true });
+function dismissTouchMenu(): void {
+  cancelLongPress();
+  messageMenu.hidePopover();
+}
+transcript.addEventListener("scroll", dismissTouchMenu, { passive: true });
+visualViewport?.addEventListener("resize", dismissTouchMenu);
+visualViewport?.addEventListener("scroll", dismissTouchMenu);
 window.addEventListener("blur", cancelLongPress);
 document.addEventListener("visibilitychange", cancelLongPress);
 transcript.addEventListener("contextmenu", (event) => {
@@ -1738,7 +1784,7 @@ document.addEventListener("keydown", (event) => {
       const summary = trigger
         ?.closest(".tool-call")
         ?.querySelector<HTMLElement>(":scope > summary");
-      (summary ?? transcript).focus();
+      (summary ?? transcript).focus({ preventScroll: true });
     }
   }
 });

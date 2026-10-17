@@ -66,6 +66,52 @@ export function post(url: string, data: unknown) {
   });
 }
 
+async function assertTouchMenuPosition(page: Page, point: { x: number; y: number }): Promise<void> {
+  const layout = await page.locator("#message-menu").evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    const inset = (side: string) => parseFloat(style.getPropertyValue(`--menu-safe-${side}`)) || 0;
+    return {
+      x: rect.x,
+      y: rect.y,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
+      leftLimit: (visualViewport?.offsetLeft ?? 0) + inset("left") + 8,
+      topLimit: (visualViewport?.offsetTop ?? 0) + inset("top") + 8,
+      rightLimit:
+        (visualViewport?.offsetLeft ?? 0) +
+        (visualViewport?.width ?? innerWidth) -
+        inset("right") -
+        8,
+      bottomLimit:
+        (visualViewport?.offsetTop ?? 0) +
+        (visualViewport?.height ?? innerHeight) -
+        inset("bottom") -
+        8,
+      targets: Array.from(node.querySelectorAll("button"))
+        .filter((button) => button.checkVisibility())
+        .map((button) => button.getBoundingClientRect().height),
+    };
+  });
+  assert(layout.x >= layout.leftLimit - 1);
+  assert(layout.y >= layout.topLimit - 1);
+  assert(layout.right <= layout.rightLimit + 1);
+  assert(layout.bottom <= layout.bottomLimit + 1);
+  assert(layout.width <= 260);
+  for (const height of layout.targets) assert(height >= 44);
+  // Prefer above the finger; flip below when there's insufficient space above.
+  if (point.y - 12 - layout.height >= layout.topLimit)
+    assert(Math.abs(layout.bottom - (point.y - 12)) <= 1);
+  else if (point.y + 12 + layout.height <= layout.bottomLimit)
+    assert(Math.abs(layout.y - (point.y + 12)) <= 1);
+  if (point.x + 12 + layout.width <= layout.rightLimit)
+    assert(Math.abs(layout.x - (point.x + 12)) <= 1);
+  else if (point.x - 12 - layout.width >= layout.leftLimit)
+    assert(Math.abs(layout.right - (point.x - 12)) <= 1);
+}
+
 async function openMessageActions(page: Page, actions: Locator): Promise<void> {
   const desktop = await page.evaluate(
     () => matchMedia("(hover: hover) and (pointer: fine)").matches,
@@ -96,6 +142,7 @@ async function openMessageActions(page: Page, actions: Locator): Promise<void> {
     await page.waitForSelector("#message-menu:popover-open");
     await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     assert.equal(await page.locator("#message-menu").isVisible(), true);
+    await assertTouchMenuPosition(page, point);
   } finally {
     await touch.detach();
   }
@@ -342,6 +389,60 @@ export async function browserFlow(
     true,
   );
   await code.dispatchEvent("pointerup", { pointerId: 9, pointerType: "touch", isPrimary: true });
+  // Boundary placements use the same pointer interface as a real hold, with
+  // coordinates at each screen edge. The smaller viewport models keyboard space.
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 320, height: 220 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.locator("#message-menu").evaluate((node) => {
+      node.style.setProperty("--menu-safe-top", "24px");
+      node.style.setProperty("--menu-safe-right", "12px");
+      node.style.setProperty("--menu-safe-bottom", "20px");
+      node.style.setProperty("--menu-safe-left", "12px");
+    });
+    for (const point of [
+      { x: 24, y: 36 },
+      { x: viewport.width - 24, y: 36 },
+      { x: 24, y: viewport.height - 32 },
+      { x: viewport.width - 24, y: viewport.height - 32 },
+      { x: viewport.width / 2, y: viewport.height / 2 },
+    ]) {
+      await touchSummary.dispatchEvent("pointerdown", {
+        pointerId: 10,
+        pointerType: "touch",
+        isPrimary: true,
+        clientX: point.x,
+        clientY: point.y,
+      });
+      await page.clock.runFor(600);
+      assert.equal(
+        await page.locator("#message-menu").isVisible(),
+        true,
+        JSON.stringify({ viewport, point }),
+      );
+      await touchSummary.dispatchEvent("pointerup", {
+        pointerId: 10,
+        pointerType: "touch",
+        isPrimary: true,
+      });
+      await assertTouchMenuPosition(page, point);
+      if (viewport.height === 220)
+        assert.equal(
+          await page
+            .locator("#message-menu")
+            .evaluate((node) => node.scrollHeight > node.clientHeight),
+          true,
+        );
+      await page.keyboard.press("Escape");
+    }
+  }
+  await page.locator("#message-menu").evaluate((node) => {
+    for (const side of ["top", "right", "bottom", "left"])
+      node.style.removeProperty(`--menu-safe-${side}`);
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.clock.resume();
   await browserContext.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
   await openMessageActions(page, page.locator(".tool-call > .message-actions"));
@@ -363,6 +464,12 @@ export async function browserFlow(
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("#message-menu").isVisible(), false);
   assert.equal(await touchSummary.evaluate((node) => node === document.activeElement), true);
+  await openMessageActions(page, page.locator(".tool-call > .message-actions"));
+  await page.locator("#transcript").dispatchEvent("scroll");
+  assert.equal(await page.locator("#message-menu").isVisible(), false);
+  await openMessageActions(page, page.locator(".tool-call > .message-actions"));
+  await page.evaluate(() => visualViewport?.dispatchEvent(new Event("resize")));
+  assert.equal(await page.locator("#message-menu").isVisible(), false);
   await page.locator("#notice").click();
   assert.equal(await page.locator(".tool-call > details").count(), 0);
   assert.equal(await page.locator("#transcript img").count(), 0);
@@ -903,6 +1010,13 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await page.waitForFunction(() =>
       document.querySelector("#conversation-menu")?.matches(":popover-open"),
     );
+    if (size === "mobile") {
+      const menuBox = await page.locator("#conversation-menu").boundingBox();
+      assert(menuBox);
+      assert.equal(menuBox.x, 10);
+      assert.equal(menuBox.width, page.viewportSize()!.width - 20);
+      assert.equal(menuBox.y + menuBox.height, page.viewportSize()!.height - 10);
+    }
     await shot(page, `${size}-menu`);
     await page.keyboard.press("End");
     assert.equal(

@@ -127,6 +127,7 @@ input { padding: 7px 10px; width: 100%; min-width: 0; }
 #sessions-empty { color: var(--muted); font-size: 12px; text-align: center; margin: 16px 0 4px; }
 [popover] { color: inherit; background: var(--popover-bg); border: 1px solid var(--border-overlay); box-shadow: 0 8px 36px var(--shadow); border-radius: 9px; padding: 6px; width: 230px; max-height: 70dvh; overflow: auto; position: fixed; inset: 52px 14px auto auto; margin: 0; }
 [popover] > button { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; border: none; background: transparent; padding: 7px 10px; font-size: 13px; } [popover] > button:hover { background: var(--menu-hover); } [popover] label { display: block; margin: 8px; } [popover] label > span { margin-bottom: 6px; } [popover] kbd { font: 11px var(--font-ui); color: var(--muted); }
+#message-menu { --menu-safe-top: env(safe-area-inset-top, 0px); --menu-safe-right: env(safe-area-inset-right, 0px); --menu-safe-bottom: env(safe-area-inset-bottom, 0px); --menu-safe-left: env(safe-area-inset-left, 0px); }
 #input-menu { inset: auto auto 110px max(20px, calc((100% - 820px)/2)); }
 #bottom-line { padding: 0 max(20px, calc((100% - 820px)/2)) 8px; color: var(--muted); font: 12px/1.7 var(--font-mono); font-variant-numeric: tabular-nums; }
 .footer-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
@@ -163,7 +164,7 @@ a { color: var(--link); } [hidden] { display: none !important; }
   article.same-speaker:has(> header > .message-actions) { padding-right: 0; }
   #transcript article { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   #transcript :is(pre, code, a, img, input, textarea, select, [contenteditable]) { -webkit-touch-callout: default; -webkit-user-select: text; user-select: text; }
-  #message-menu { inset: auto 10px max(10px, env(safe-area-inset-bottom)) 10px; width: auto; max-height: 65dvh; padding: 8px; border-radius: 12px; }
+  #message-menu { inset: 8px auto auto 8px; width: 260px; max-width: calc(100% - 16px); max-height: calc(100dvh - 16px); padding: 8px; border-radius: 12px; }
   #message-menu > button { min-height: 44px; }
   #message-menu::backdrop { background: var(--backdrop-light); }
 }
