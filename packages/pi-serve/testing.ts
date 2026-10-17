@@ -1042,7 +1042,8 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator(".bar button").count(), 2);
     assert.equal(await page.locator(".bar .icon, .bar select, .bar svg, .bar img").count(), 0);
     assert.equal(await page.locator("#title").textContent(), "Counter cleanup");
-    assert.equal(await page.locator("#menu-toggle").textContent(), "Menu");
+    assert.equal(await page.locator("#menu-toggle").textContent(), "···");
+    assert.equal(await page.locator("#menu-toggle").getAttribute("aria-label"), "App menu");
     const originalTitle = await page.locator("#title").textContent();
     await page.locator("#title").evaluate((node) => { node.textContent = "Very long session name ".repeat(30); });
     const layout = await page.locator(".bar").evaluate((bar) => {
@@ -1054,11 +1055,13 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert(layout.left <= 16 && layout.right <= 16);
     assert.equal(layout.overlap, false);
     assert.equal(layout.overflow, false);
+    await shot(page, `${size}-header-long-name`);
     await page.locator("#title").evaluate((node, name) => { node.textContent = name; }, originalTitle);
     await page.click("#title");
     assert.equal(await page.locator("#settings").isVisible(), true);
     assert.equal(await page.locator("#branches").isVisible(), true);
     assert.equal(await page.locator("#wrap-code").isVisible(), false);
+    await shot(page, `${size}-session-menu`);
     await page.click("#workspace");
     await page.waitForSelector("#picker[open]");
     await page.keyboard.press("Escape");
