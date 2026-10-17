@@ -1,4 +1,9 @@
-import { installPickerKeyMappings } from "./key-mappings.ts";
+import {
+  installPickerKeyMappings,
+  installSelectKeyMappings,
+  navigationDirection,
+  moveFocus,
+} from "./key-mappings.ts";
 import type { ImageContent, Message } from "@earendil-works/pi-ai";
 import type {
   AgentState,
@@ -1593,6 +1598,7 @@ element("workspace", HTMLButtonElement).onclick = openPicker;
 element("close-picker", HTMLButtonElement).onclick = () => picker.close();
 sessionFilter.oninput = renderSessions;
 installPickerKeyMappings(picker);
+installSelectKeyMappings(document);
 for (const popover of [menu, inputMenu])
   popover.addEventListener("click", (event) => {
     if (
@@ -1623,8 +1629,9 @@ messageMenu.addEventListener("toggle", () => {
 });
 for (const popover of [menu, messageMenu, inputMenu])
   popover.addEventListener("keydown", (event) => {
+    const direction = navigationDirection(event);
     if (
-      !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) ||
+      (!direction && !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) ||
       event.target instanceof HTMLSelectElement
     )
       return;
@@ -1632,6 +1639,11 @@ for (const popover of [menu, messageMenu, inputMenu])
       popover.querySelectorAll<HTMLButtonElement>("button:not(:disabled):not([hidden])"),
     );
     if (!buttons.length) return;
+    if (direction) {
+      event.preventDefault();
+      moveFocus(buttons, direction);
+      return;
+    }
     const index = buttons.findIndex((button) => button === document.activeElement);
     const next =
       event.key === "Home"
@@ -1813,6 +1825,12 @@ search.oninput = () => {
   goToMatch(0);
 };
 search.onkeydown = (event) => {
+  const direction = navigationDirection(event);
+  if (direction) {
+    event.preventDefault();
+    goToMatch(direction);
+    return;
+  }
   if (event.key === "Escape") {
     event.preventDefault();
     closeSearch();
@@ -1830,7 +1848,16 @@ element("search-close", HTMLButtonElement).onclick = () => {
   prompt.focus();
 };
 document.addEventListener("keydown", (event) => {
-  if (!(event.metaKey || event.ctrlKey) || preferences.open || picker.open || usageDialog.open)
+  if (
+    event.defaultPrevented ||
+    event.isComposing ||
+    event.altKey ||
+    event.shiftKey ||
+    !(event.metaKey || event.ctrlKey) ||
+    preferences.open ||
+    picker.open ||
+    usageDialog.open
+  )
     return;
   if (event.key.toLowerCase() === "k") {
     event.preventDefault();

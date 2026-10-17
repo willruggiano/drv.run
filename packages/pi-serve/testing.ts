@@ -1147,6 +1147,17 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       true,
     );
     await page.click("#menu-toggle");
+    await page.waitForFunction(
+      () =>
+        document.activeElement ===
+        document.querySelector("#conversation-menu button:not(:disabled):not([hidden])"),
+    );
+    const firstMenuItem = await page.evaluate(() => document.activeElement?.id);
+    await page.keyboard.press("Control+j");
+    assert.notEqual(await page.evaluate(() => document.activeElement?.id), firstMenuItem);
+    await page.keyboard.press("Control+k");
+    assert.equal(await page.evaluate(() => document.activeElement?.id), firstMenuItem);
+    assert.equal(await page.locator("#picker").isVisible(), false);
     await page.click("#find");
     await page.fill("#search", "counter");
     assert.equal(await page.locator("article.search-hit").count(), 2);
@@ -1154,6 +1165,17 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     const before = await page
       .locator("article.search-current")
       .evaluate((node) => node.dataset.role);
+    await page.keyboard.press("Control+j");
+    assert.notEqual(
+      await page.locator("article.search-current").evaluate((node) => node.dataset.role),
+      before,
+    );
+    await page.keyboard.press("Control+k");
+    assert.equal(
+      await page.locator("article.search-current").evaluate((node) => node.dataset.role),
+      before,
+    );
+    assert.equal(await page.locator("#picker").isVisible(), false);
     await page.click("#search-next");
     assert.notEqual(
       await page.locator("article.search-current").evaluate((node) => node.dataset.role),
@@ -1189,9 +1211,24 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#input-menu > button").count(), 1);
     await shot(page, `${size}-input-menu`);
     await page.keyboard.press("Escape");
-    await page.click("#workspace");
+    await page.keyboard.press("Control+k");
     await page.waitForSelector("#picker[open]");
+    await page.keyboard.press("/");
+    assert.equal(
+      await page.locator("#session-filter").evaluate((node) => node === document.activeElement),
+      true,
+    );
     await page.fill("#session-filter", "Counter cleanup");
+    await page.keyboard.press("Control+j");
+    assert.equal(
+      await page.locator("#sessions button").evaluate((node) => node === document.activeElement),
+      true,
+    );
+    await page.keyboard.press("Control+k");
+    assert.equal(
+      await page.locator("#sessions button").evaluate((node) => node === document.activeElement),
+      true,
+    );
     assert.equal(await page.locator("#sessions button").count(), 1);
     if (size === "mobile")
       assert.equal(

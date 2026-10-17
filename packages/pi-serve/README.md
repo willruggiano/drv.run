@@ -2,9 +2,12 @@
 
 ## Keyboard shortcuts
 
-Ctrl/⌘+K opens Sessions. Outside text fields and native selects, `t` opens
-the target selector, `m` opens the model selector, and `n` creates a session
-using the selected target/model. `/` focuses the session filter. Escape dismisses the dialog.
+Ctrl/⌘+K opens Sessions. Outside text fields and native selects, `t` opens the
+target selector, `m` opens the model selector, and `n` creates a session using
+the selected target/model. `/` focuses the session filter. Escape dismisses the
+dialog. Ctrl+J/K moves to the next/previous filtered session (wrapping at the
+ends); Enter opens it. The same keys navigate menu items, select options, and
+conversation search matches when those controls have focus.
 
 Focused browser tests (with Chromium available):
 
