@@ -77,6 +77,7 @@ article:has(> :is(.tool-call, .thinking):last-child):has(+ article.same-speaker 
   & + article.same-speaker > :is(.tool-call, .thinking):is(:first-child, header + *) { margin-top: 0; }
 }
 .thinking { color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; padding-top: 3px; padding-bottom: 3px; }
+.tool-call { display: flow-root; }
 .tool-call summary { list-style: none; }
 .tool-call summary::marker { content: ""; }
 .tool-call summary::-webkit-details-marker { display: none; }
@@ -93,7 +94,8 @@ article:has(> :is(.tool-call, .thinking):last-child):has(+ article.same-speaker 
 .tool-result { min-width: 0; }
 .tool-call > .message-actions { display: block; }
 .tool-call .tool-call { margin-left: 6px; }
-.message-actions { margin-left: auto; min-height: 24px; font-weight: normal; opacity: 0; } article:hover .message-actions, .message-actions:focus-visible, .message-actions[aria-expanded=true] { opacity: 1; }
+.message-actions { margin-left: auto; min-height: 24px; font-weight: normal; opacity: 0; } .message-actions:focus-visible { opacity: 1; }
+@media (hover: hover) and (pointer: fine) { article:hover > header > .message-actions, .tool-call:hover > .message-actions { opacity: 1; } }
 .text { white-space: pre-wrap; } .text p { margin: 0 0 10px; } .text p:last-child { margin-bottom: 0; }
 pre { white-space: pre; overflow: auto; background: var(--code-bg); padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; tab-size: 2; }
 body.wrap-code pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -144,7 +146,7 @@ a { color: var(--link); } [hidden] { display: none !important; }
   #bottom-line { padding: 0 12px; font-size: 11px; } #bottom-line button { min-height: 28px; } #bottom-line .footer-row { justify-content: center; gap: 6px; } #footer-stats { display: none; }
   #footer-model { display: flex; align-items: center; gap: 6px; white-space: nowrap; } #footer-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; } #footer-effort { flex-shrink: 0; }
   .footer-dot { display: block; flex: 0 0 2px; width: 2px; height: 2px; border-radius: 50%; background: currentColor; }
-  #transcript { padding: 8px 16px; } #composer { padding: 6px 10px 4px; } .message-actions { opacity: .7; min-height: 30px; } #latest { margin-bottom: 4px; }
+  #transcript { padding: 8px 16px; } #composer { padding: 6px 10px 4px; } #latest { margin-bottom: 4px; }
   dialog { width: 100%; max-width: none; max-height: 88dvh; margin: auto 0 0; border-radius: 16px 16px 0 0; padding: 18px 16px max(18px, env(safe-area-inset-bottom)); border-bottom: none; }
   [popover], #input-menu { inset: auto 10px max(10px, env(safe-area-inset-bottom)) 10px; width: auto; max-height: 65dvh; padding: 8px; border-radius: 12px; } [popover] > button { min-height: 44px; } [popover]::backdrop { background: var(--backdrop-light); }
   [popover] kbd { display: none; }
@@ -153,6 +155,17 @@ a { color: var(--link); } [hidden] { display: none !important; }
 @media (min-width: 651px) and (hover: hover) and (pointer: fine) {
   .compose-box > .actions > button { height: 32px; min-height: 32px; }
   #send, #stop, #input-toggle { width: 32px; font-size: 18px; }
+}
+/* Keep action buttons in the accessibility tree without visible touch affordances. */
+@media (hover: none), (pointer: coarse) {
+  #transcript article, #transcript .tool-call { position: relative; }
+  #transcript .message-actions { position: absolute; width: 1px; min-width: 0; height: 1px; min-height: 0; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); border: 0; opacity: 0; }
+  article.same-speaker:has(> header > .message-actions) { padding-right: 0; }
+  #transcript article { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  #transcript :is(pre, code, a, img, input, textarea, select, [contenteditable]) { -webkit-touch-callout: default; -webkit-user-select: text; user-select: text; }
+  #message-menu { inset: auto 10px max(10px, env(safe-area-inset-bottom)) 10px; width: auto; max-height: 65dvh; padding: 8px; border-radius: 12px; }
+  #message-menu > button { min-height: 44px; }
+  #message-menu::backdrop { background: var(--backdrop-light); }
 }
 /* iOS zooms focused form controls below 16px. Include landscape phones and
    tablets without enlarging the rest of the UI or restricting pinch zoom. */

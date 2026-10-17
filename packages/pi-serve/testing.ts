@@ -14,7 +14,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { UsageDoc } from "@earendil-works/pi-durable";
-import { chromium, type Page } from "playwright";
+import { chromium, type Locator, type Page } from "playwright";
 import type { Sessions, Snapshot, ExecutionBinding } from "../pi-runtime/index.ts";
 import { exists, waitFor } from "../pi-runtime/testing.ts";
 import { httpServer } from "./server.ts";
@@ -64,6 +64,41 @@ export function post(url: string, data: unknown) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
+}
+
+async function openMessageActions(page: Page, actions: Locator): Promise<void> {
+  const desktop = await page.evaluate(
+    () => matchMedia("(hover: hover) and (pointer: fine)").matches,
+  );
+  if (desktop) {
+    await actions.hover();
+    assert.equal(await actions.evaluate((node) => getComputedStyle(node).opacity), "1");
+    await actions.click();
+    return;
+  }
+  assert.equal(await actions.evaluate((node) => getComputedStyle(node).opacity), "0");
+  const point = await actions.evaluate((node) => {
+    const target =
+      node.closest(".tool-call")?.querySelector(":scope > summary") ??
+      node.closest("article")?.querySelector(":scope > .text") ??
+      node.closest("article");
+    if (!target) throw new Error("Missing long-press target");
+    target.scrollIntoView({ block: "center" });
+    const box = target.getBoundingClientRect();
+    return { x: box.left + 2, y: box.top + 2 };
+  });
+  const touch = await page.context().newCDPSession(page);
+  try {
+    await touch.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ ...point, id: 1 }],
+    });
+    await page.waitForSelector("#message-menu:popover-open");
+    await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    assert.equal(await page.locator("#message-menu").isVisible(), true);
+  } finally {
+    await touch.detach();
+  }
 }
 
 export async function browserFlow(
@@ -265,15 +300,69 @@ export async function browserFlow(
   await page.locator(".tool-call > summary").click();
   assert.equal(await page.locator(".tool-result pre").first().isVisible(), true);
   assert.equal(await page.locator(".tool-call pre > :not(code)").count(), 0);
+  // A short tap still toggles disclosure; scrolling, lifting, and multitouch cancel a hold.
+  const touchSummary = page.locator(".tool-call > summary");
+  await touchSummary.tap();
+  assert.equal(
+    await page.locator(".tool-call").evaluate((node) => node.hasAttribute("open")),
+    false,
+  );
+  await touchSummary.tap();
+  await page.clock.install();
+  for (const cancel of ["pointerup", "pointercancel", "pointermove", "scroll", "multitouch"]) {
+    await touchSummary.dispatchEvent("pointerdown", {
+      pointerId: 7,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: 10,
+      clientY: 10,
+    });
+    if (cancel === "scroll") await page.locator("#transcript").dispatchEvent("scroll");
+    else
+      await touchSummary.dispatchEvent(cancel === "multitouch" ? "pointerdown" : cancel, {
+        pointerId: cancel === "multitouch" ? 8 : 7,
+        pointerType: "touch",
+        isPrimary: cancel !== "multitouch",
+        clientX: 30,
+        clientY: 10,
+      });
+    await page.clock.runFor(600);
+    assert.equal(await page.locator("#message-menu").isVisible(), false);
+  }
+  // Code retains native selection/context menus and does not open app actions.
+  const code = page.locator(".tool-result pre").first();
+  assert.equal(await code.evaluate((node) => getComputedStyle(node).userSelect), "text");
+  await code.dispatchEvent("pointerdown", { pointerId: 9, pointerType: "touch", isPrimary: true });
+  await page.clock.runFor(600);
+  assert.equal(await page.locator("#message-menu").isVisible(), false);
+  assert.equal(
+    await code.evaluate((node) =>
+      node.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })),
+    ),
+    true,
+  );
+  await code.dispatchEvent("pointerup", { pointerId: 9, pointerType: "touch", isPrimary: true });
+  await page.clock.resume();
   await browserContext.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
-  await page.locator(".tool-call > .message-actions").click();
+  await openMessageActions(page, page.locator(".tool-call > .message-actions"));
+  assert.equal(
+    await page.locator(".tool-call").evaluate((node) => node.hasAttribute("open")),
+    true,
+  );
   assert.equal(await page.locator("#copy-message").isVisible(), false);
   await page.getByRole("button", { name: "Copy input", exact: true }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '{"value":31}');
   const toolOutput = await page.locator(".tool-result > pre code").textContent();
-  await page.locator(".tool-call > .message-actions").click();
+  await openMessageActions(page, page.locator(".tool-call > .message-actions"));
   await page.getByRole("button", { name: "Copy output", exact: true }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), toolOutput);
+  await openMessageActions(page, page.locator(".tool-call > .message-actions"));
+  await page.locator("#title").tap();
+  assert.equal(await page.locator("#message-menu").isVisible(), false);
+  await openMessageActions(page, page.locator(".tool-call > .message-actions"));
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#message-menu").isVisible(), false);
+  assert.equal(await touchSummary.evaluate((node) => node === document.activeElement), true);
   await page.locator("#notice").click();
   assert.equal(await page.locator(".tool-call > details").count(), 0);
   assert.equal(await page.locator("#transcript img").count(), 0);
@@ -490,7 +579,7 @@ export async function browserFlow(
     await secondCall.locator(":scope > summary > .tool-status").getAttribute("aria-label"),
     "failed",
   );
-  await firstCall.locator(":scope > .message-actions").click();
+  await openMessageActions(reconnected, firstCall.locator(":scope > .message-actions"));
   await reconnected.getByRole("button", { name: "Copy changes", exact: true }).click();
   assert.equal(await reconnected.evaluate(() => navigator.clipboard.readText()), "-old\n+new");
   await reconnected.locator("#notice").click();
@@ -601,6 +690,11 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
+    );
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight),
+      true,
+      `${name}: clipped action buttons must not escape the transcript scrollport`,
     );
     const compactComposer = await page.evaluate(
       () => matchMedia("(min-width: 651px) and (hover: hover) and (pointer: fine)").matches,
@@ -850,7 +944,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#search-next").isDisabled(), true);
     await page.press("#search", "Escape");
     assert.equal(await page.locator("#search-bar").isVisible(), false);
-    await page.locator("article .message-actions").last().click();
+    await openMessageActions(page, page.locator("article .message-actions").last());
     await shot(page, `${size}-message-menu`);
     await page.click("#quote-message");
     assert.equal(
@@ -923,6 +1017,21 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   desktopPage.on("pageerror", (error) => errors.push(error));
   await desktopPage.goto(url);
   await desktopPage.waitForSelector('article[data-role="assistant"] .text .hljs-addition');
+  const desktopActions = desktopPage
+    .locator('article[data-role="user"] > header > .message-actions')
+    .last();
+  await desktopPage.mouse.move(0, 0);
+  assert.equal(await desktopActions.evaluate((node) => getComputedStyle(node).opacity), "0");
+  await desktopActions.focus();
+  assert.equal(await desktopActions.evaluate((node) => getComputedStyle(node).opacity), "1");
+  await desktopActions.press("Enter");
+  assert.equal(await desktopPage.locator("#message-menu").isVisible(), true);
+  await desktopPage.keyboard.press("Escape");
+  await desktopPage.locator("#prompt").focus();
+  await desktopActions.hover();
+  assert.equal(await desktopActions.evaluate((node) => getComputedStyle(node).opacity), "1");
+  await desktopPage.mouse.move(0, 0);
+  assert.equal(await desktopActions.evaluate((node) => getComputedStyle(node).opacity), "0");
   await gallery(desktopPage, "desktop");
   await desktop.setOffline(true);
   await desktopPage.waitForFunction(
@@ -975,7 +1084,10 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       Number(document.querySelector<HTMLElement>("#footer-input")?.dataset.value) === expected,
     expectedInput,
   );
-  await desktopPage.locator('article[data-role="user"] .message-actions').last().click();
+  await openMessageActions(
+    desktopPage,
+    desktopPage.locator('article[data-role="user"] .message-actions').last(),
+  );
   await desktopPage.click("#copy-message");
   assert.equal(
     await desktopPage.evaluate(() => navigator.clipboard.readText()),
@@ -1056,7 +1168,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
 
   // Fork history is isolated and survives a browser reload.
   const originalEntries = await session.history();
-  await reconnected.locator("article .message-actions").last().click();
+  await openMessageActions(reconnected, reconnected.locator("article .message-actions").last());
   await reconnected.click("#fork-message");
   await reconnected.waitForFunction(() => new URL(location.href).searchParams.has("conversation"));
   const branchId = Number(new URL(reconnected.url()).searchParams.get("conversation"));
@@ -1468,7 +1580,12 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
           assert.equal(await call.evaluate((node) => getComputedStyle(node).borderTopWidth), "0px");
           if (index === 1) assert((await call.boundingBox())!.height < 36);
         }
-        assert.equal(await call.locator(":scope > header > .message-actions").isVisible(), true);
+        assert.equal(
+          await call
+            .locator(":scope > header > .message-actions")
+            .evaluate((node) => getComputedStyle(node).opacity),
+          "0",
+        );
       }
       // Measure the actual space between rails, including after expanded output.
       for (const open of [false, true]) {

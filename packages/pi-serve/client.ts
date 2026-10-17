@@ -609,7 +609,7 @@ function messageActions(
     fork.disabled = !connected || recovering;
     messageMenu.showPopover();
     actions.setAttribute("aria-expanded", "true");
-    if (matchMedia("(min-width: 651px)").matches) {
+    if (matchMedia("(min-width: 651px) and (hover: hover) and (pointer: fine)").matches) {
       const rect = actions.getBoundingClientRect();
       messageMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - messageMenu.offsetHeight - 8))}px`;
       messageMenu.style.right = `${Math.max(8, Math.min(innerWidth - rect.right, innerWidth - messageMenu.offsetWidth - 8))}px`;
@@ -618,6 +618,95 @@ function messageActions(
   };
   return actions;
 }
+
+// Delegate to the live DOM so streamed/replaced messages never retain gesture handlers.
+function touchActions(target: EventTarget | null): HTMLButtonElement | undefined {
+  if (
+    !(target instanceof Element) ||
+    target.closest("a, button, input, textarea, select, pre, code, img, [contenteditable]")
+  )
+    return;
+  return (
+    target
+      .closest(".tool-call, article")
+      ?.querySelector<HTMLButtonElement>(
+        ":scope > .message-actions, :scope > header > .message-actions",
+      ) ?? undefined
+  );
+}
+let longPress:
+  | {
+      pointer: number;
+      x: number;
+      y: number;
+      actions: HTMLButtonElement;
+      timer: number;
+    }
+  | undefined;
+let heldActions: HTMLButtonElement | undefined;
+function cancelLongPress(): void {
+  if (longPress) clearTimeout(longPress.timer);
+  longPress = undefined;
+}
+function openHeldActions(actions: HTMLButtonElement): void {
+  cancelLongPress();
+  if (!actions.isConnected || !transcript.contains(actions)) return;
+  heldActions = actions;
+  actions.click();
+}
+transcript.addEventListener("pointerdown", (event) => {
+  cancelLongPress();
+  heldActions = undefined;
+  if (event.pointerType !== "touch" || !event.isPrimary) return;
+  const actions = touchActions(event.target);
+  if (!actions) return;
+  longPress = {
+    pointer: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    actions,
+    timer: window.setTimeout(() => openHeldActions(actions), 500),
+  };
+});
+document.addEventListener("pointermove", (event) => {
+  if (
+    longPress &&
+    event.pointerId === longPress.pointer &&
+    Math.hypot(event.clientX - longPress.x, event.clientY - longPress.y) > 8
+  )
+    cancelLongPress();
+});
+for (const event of ["pointerup", "pointercancel"])
+  document.addEventListener(event, cancelLongPress);
+document.addEventListener("pointerdown", (event) => {
+  if (!event.isPrimary) cancelLongPress();
+});
+transcript.addEventListener("scroll", cancelLongPress, { passive: true });
+window.addEventListener("blur", cancelLongPress);
+document.addEventListener("visibilitychange", cancelLongPress);
+transcript.addEventListener("contextmenu", (event) => {
+  const actions = touchActions(event.target);
+  if (!actions || (!longPress && !matchMedia("(pointer: coarse)").matches)) return;
+  event.preventDefault();
+  if (longPress?.actions === actions) openHeldActions(actions);
+});
+transcript.addEventListener(
+  "click",
+  (event) => {
+    // A completed hold must not also toggle the tool disclosure on release.
+    if (
+      event.isTrusted &&
+      event.detail > 0 &&
+      heldActions &&
+      touchActions(event.target) === heldActions
+    ) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      heldActions = undefined;
+    }
+  },
+  true,
+);
 
 function content(
   node: HTMLElement,
@@ -1394,6 +1483,21 @@ for (const popover of [menu, inputMenu])
     )
       popover.hidePopover();
   });
+// Manual dismissal keeps the release of a long press from immediately closing
+// the menu (automatic popover light-dismiss runs on that same pointer release).
+document.addEventListener("pointerdown", (event) => {
+  if (
+    messageMenu.matches(":popover-open") &&
+    event.target instanceof Node &&
+    !messageMenu.contains(event.target) &&
+    !selectedMessage?.trigger.contains(event.target)
+  )
+    messageMenu.hidePopover();
+});
+for (const popover of [menu, inputMenu])
+  popover.addEventListener("beforetoggle", (event) => {
+    if (event.newState === "open") messageMenu.hidePopover();
+  });
 messageMenu.addEventListener("toggle", () => {
   if (!messageMenu.matches(":popover-open"))
     selectedMessage?.trigger.setAttribute("aria-expanded", "false");
@@ -1624,11 +1728,18 @@ for (const popover of [menu, inputMenu])
     if (popover.matches(":popover-open"))
       popover.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])")?.focus();
   });
-messageMenu.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && messageMenu.matches(":popover-open")) {
     event.preventDefault();
     messageMenu.hidePopover();
-    selectedMessage?.trigger.focus();
+    const trigger = selectedMessage?.trigger;
+    if (matchMedia("(hover: hover) and (pointer: fine)").matches) trigger?.focus();
+    else {
+      const summary = trigger
+        ?.closest(".tool-call")
+        ?.querySelector<HTMLElement>(":scope > summary");
+      (summary ?? transcript).focus();
+    }
   }
 });
 
