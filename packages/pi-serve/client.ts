@@ -1310,10 +1310,27 @@ function showAttachments(): void {
   });
 }
 const imageInput = element("images", HTMLInputElement);
+element("input-toggle", HTMLButtonElement).onclick = (event) => {
+  if (matchMedia("(max-width: 650px)").matches) {
+    event.preventDefault();
+    imageInput.click();
+  }
+};
 element("attach", HTMLButtonElement).onclick = () => imageInput.click();
 imageInput.onchange = () => {
   const files = Array.from(imageInput.files ?? []);
   imageInput.value = "";
+  addImages(files);
+};
+prompt.onpaste = (event) => {
+  const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
+    file.type.startsWith("image/"),
+  );
+  if (!files.length) return;
+  if (!event.clipboardData?.getData("text/plain")) event.preventDefault();
+  addImages(files);
+};
+function addImages(files: File[]): void {
   if (
     images.length + files.length > 4 ||
     files.reduce((sum, file) => sum + file.size, 0) +
@@ -1351,7 +1368,7 @@ imageInput.onchange = () => {
       showAttachments();
     })
     .catch(report);
-};
+}
 
 function resizePrompt(): void {
   prompt.style.height = "auto";

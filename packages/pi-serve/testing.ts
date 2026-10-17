@@ -1032,9 +1032,40 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
 
   // Images are persisted as model input, not merely previewed in the browser.
   f.faux.setResponses([fauxAssistantMessage("The attached image is available.")]);
-  await reconnected.locator("#images").setInputFiles(join(source, "icon-192.png"));
+  const chooserPromise = reconnected.waitForEvent("filechooser");
+  await reconnected.click("#input-toggle");
+  const chooser = await chooserPromise;
+  assert.equal(await reconnected.locator("#input-menu").isVisible(), false);
+  assert.equal(chooser.isMultiple(), true);
+  await chooser.setFiles(join(source, "icon-192.png"));
   await reconnected.waitForSelector("#attachments button");
+  await reconnected.locator("#attachments button").click();
   await reconnected.fill("#prompt", "Describe this image.");
+  const pastedImage = await readFile(join(source, "icon-192.png"));
+  assert.equal(
+    await reconnected.locator("#prompt").evaluate((input, bytes) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(
+        new File([new Uint8Array(bytes)], "pasted.png", { type: "image/png" }),
+      );
+      return input.dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+      );
+    }, Array.from(pastedImage)),
+    false,
+  );
+  await reconnected.waitForSelector("#attachments button");
+  assert.equal(await reconnected.locator("#prompt").inputValue(), "Describe this image.");
+  assert.equal(
+    await reconnected.locator("#prompt").evaluate((input) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData("text/plain", "ordinary text");
+      return input.dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+      );
+    }),
+    true,
+  );
   await shot(reconnected, "mobile-attachment");
   await reconnected.click("#send");
   await reconnected.waitForFunction(
