@@ -309,7 +309,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     );
     // Compare text, not button boxes: flex children must share the vertical
     // center of the adjacent native button label, including taller touch targets.
-    const offsets = await page.locator(".footer-row:visible").evaluateAll((rows) => {
+    const offsets = await page.locator("#bottom-line:visible").evaluateAll((footers) => {
       const textCenter = (button: Element) => {
         const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
         const rects: DOMRect[] = [];
@@ -325,10 +325,37 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
           2
         );
       };
-      return rows.map((row) => textCenter(row.children[0]) - textCenter(row.children[1]));
+      return footers.flatMap((footer) => {
+        const groups = matchMedia("(max-width: 650px)").matches
+          ? [Array.from(footer.querySelectorAll("#footer-model, #footer-context"))]
+          : Array.from(footer.querySelectorAll(".footer-row"), (row) => Array.from(row.children));
+        return groups.map(([left, right]) => textCenter(left) - textCenter(right));
+      });
     });
     for (const offset of offsets)
       assert(Math.abs(offset) <= 1, `${name}: footer text offset ${offset}px`);
+    if (
+      (page.viewportSize()?.width ?? Infinity) <= 650 &&
+      (await page.locator("#bottom-line").isVisible())
+    ) {
+      const layout = await page.locator("#bottom-line").evaluate((footer) => {
+        const box = footer.getBoundingClientRect();
+        const [model, context] = Array.from(
+          footer.querySelectorAll("#footer-model, #footer-context"),
+          (node) => node.getBoundingClientRect(),
+        );
+        return {
+          height: box.height,
+          offset: (model.left + context.right) / 2 - (box.left + box.right) / 2,
+          buttons: Array.from(footer.querySelectorAll("button"))
+            .filter((node) => node.checkVisibility())
+            .map((node) => node.id),
+        };
+      });
+      assert(layout.height <= 35, `${name}: mobile footer must stay one tight line`);
+      assert(Math.abs(layout.offset) <= 1, `${name}: mobile footer must be centered`);
+      assert.deepEqual(layout.buttons, ["footer-model", "footer-context"]);
+    }
     if (screenshots)
       await page.screenshot({ path: join(screenshots, `${name}.png`), fullPage: true });
   };
@@ -355,7 +382,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       expectedContext.lastResponse?.tokens,
     );
     assert.equal(await page.locator("#footer-read").isVisible(), size === "desktop");
-    await page.click("#footer-stats");
+    await page.click(size === "desktop" ? "#footer-stats" : "#footer-context");
     await page.waitForSelector("#usage-dialog[open]");
     assert.equal(await page.locator("#usage-input").textContent(), expectedInput.toLocaleString());
     assert.equal(await page.locator("#usage-thinking").textContent(), "high");
@@ -591,6 +618,23 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     node.scrollTop = node.scrollHeight;
   });
   await shot(reconnected, "mobile-narrow");
+  // Stress just the label layout: effort and context must survive model truncation.
+  const modelLabel = reconnected.locator("#footer-model-name");
+  const modelName = await modelLabel.textContent();
+  await modelLabel.evaluate((node) => {
+    node.textContent = "provider/very-long-model-name-with-version-20261017";
+  });
+  assert.equal(await modelLabel.evaluate((node) => node.scrollWidth > node.clientWidth), true);
+  assert.equal(
+    await reconnected
+      .locator("#footer-effort")
+      .evaluate((node) => node.scrollWidth <= node.clientWidth),
+    true,
+  );
+  await shot(reconnected, "mobile-narrow-long-model");
+  await modelLabel.evaluate((node, text) => {
+    node.textContent = text;
+  }, modelName);
   await reconnected.click("#menu-toggle");
   await shot(reconnected, "mobile-narrow-menu");
   await reconnected.keyboard.press("Escape");

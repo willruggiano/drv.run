@@ -1413,7 +1413,8 @@ function renderFooter(): void {
           ? ""
           : "git…";
   element("footer-git", HTMLSpanElement).textContent = git ? `(${git})` : "";
-  element("footer-model", HTMLButtonElement).textContent = `${model.modelId} · ${thinking}`;
+  element("footer-model-name", HTMLSpanElement).textContent = model.modelId;
+  element("footer-effort", HTMLSpanElement).textContent = thinking;
   element("footer-model", HTMLButtonElement).title =
     `${model.provider} / ${model.modelId} · thinking ${thinking}`;
   const set = (id: string, text: string) => {
