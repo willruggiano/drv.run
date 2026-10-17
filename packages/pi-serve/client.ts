@@ -169,13 +169,12 @@ function controls(): void {
   );
   resume.disabled = !active || !connected || !recovering;
   recovery.hidden = !recovering;
-  for (const id of ["settings", "export", "find"])
+  for (const id of ["settings", "export", "find", "footer-model"])
     element(id, HTMLButtonElement).disabled = !active || !connected || recovering;
   document.body.classList.toggle("offline", !navigator.onLine);
   branches.disabled = !active;
   bottomLine.dataset.connected = String(connected);
   element("usage-connection", HTMLParagraphElement).hidden = connected;
-  element("footer-model", HTMLButtonElement).disabled = !active || !connected || recovering;
   const action = busy && !recovering ? (submissionMode === "steer" ? "Steer" : "Queue") : "Send";
   send.setAttribute("aria-label", action);
   send.title = `${action} (Ctrl/⌘ Enter)`;
@@ -1649,6 +1648,10 @@ function renderFooter(): void {
   const agent = latest.view.docs["pi.agent"] as AgentState | undefined;
   const model = agent?.model ?? latest.session.model;
   const thinking = agent?.thinkingLevel ?? latest.session.thinkingLevel;
+  element("footer-model-name", HTMLSpanElement).textContent = model.modelId;
+  element("footer-effort", HTMLSpanElement).textContent = thinking;
+  element("footer-model", HTMLButtonElement).title =
+    `${model.provider} / ${model.modelId} · thinking ${thinking}`;
   const usage = latest.view.docs["pi.usage"] as UsageState | undefined;
   const totals = [...Object.values(usage?.models ?? {}), ...Object.values(usage?.tools ?? {})];
   const sum = (key: "input" | "output" | "cacheRead" | "cacheWrite") =>
@@ -1659,21 +1662,6 @@ function renderFooter(): void {
     binding.provider === "local"
       ? binding.cwd
       : `${binding.provider}/${binding.target} · ${binding.cwd}`;
-  element("footer-workspace", HTMLSpanElement).textContent = workspace;
-  element("footer-location", HTMLButtonElement).title = `${workspace} · workspace details`;
-  const git =
-    repository?.state === "repository"
-      ? (repository.branch ?? `detached ${repository.revision ?? ""}`)
-      : repository?.state === "unavailable"
-        ? "git unavailable"
-        : repository
-          ? ""
-          : "git…";
-  element("footer-git", HTMLSpanElement).textContent = git ? `(${git})` : "";
-  element("footer-model-name", HTMLSpanElement).textContent = model.modelId;
-  element("footer-effort", HTMLSpanElement).textContent = thinking;
-  element("footer-model", HTMLButtonElement).title =
-    `${model.provider} / ${model.modelId} · thinking ${thinking}`;
   const set = (id: string, text: string) => {
     element(id, HTMLElement).textContent = text;
   };
@@ -1681,20 +1669,20 @@ function renderFooter(): void {
     ["input", "input", "↑"],
     ["output", "output", "↓"],
     ["read", "cacheRead", "R"],
-    ["write", "cacheWrite", "W"],
   ] as const) {
     const value = sum(key);
     const node = element(`footer-${field}`, HTMLSpanElement);
     node.textContent = `${prefix}${compactTokens(value)}`;
     node.dataset.value = String(value);
-    node.title = `${field === "read" || field === "write" ? "Cache " : ""}${field}: ${value.toLocaleString()} tokens`;
+    node.title = `${field === "read" ? "Cache " : ""}${field}: ${value.toLocaleString()} tokens`;
     set(`usage-${field}`, value.toLocaleString());
   }
+  set("usage-write", sum("cacheWrite").toLocaleString());
   const { window: limit, lastResponse, autoCompact } = latest.context;
   const hit = lastResponse?.cacheHit;
   const tokens = lastResponse?.tokens;
   const percent = tokens !== undefined && limit ? (tokens / limit) * 100 : undefined;
-  const contextText = `${percent === undefined ? "—" : percent.toFixed(1) + "%"}/${limit ? compactTokens(limit) : "?"}${autoCompact ? " auto" : ""}`;
+  const contextText = `${percent === undefined ? "—" : percent.toFixed(1) + "%"}/${limit ? compactTokens(limit) : "?"}${autoCompact ? " (auto)" : ""}`;
   const contextButton = element("footer-context", HTMLButtonElement);
   contextButton.textContent = contextText;
   contextButton.dataset.level =
@@ -1706,8 +1694,7 @@ function renderFooter(): void {
   contextButton.dataset.tokens = tokens === undefined ? "" : String(tokens);
   contextButton.title = `Context at last completed response: ${tokens?.toLocaleString() ?? "unknown"} / ${limit?.toLocaleString() ?? "unknown"} tokens. ${autoCompact ? "Automatic compaction enabled." : "Automatic compaction disabled."}`;
   const hitNode = element("footer-hit", HTMLSpanElement);
-  hitNode.hidden = hit === null || hit === undefined;
-  hitNode.textContent = hit == null ? "" : `CH${hit.toFixed(1)}%`;
+  hitNode.textContent = hit == null ? "CH—" : `CH${hit.toFixed(1)}%`;
   hitNode.title = "Cache hit rate at the last completed response";
   const costNode = element("footer-cost", HTMLSpanElement);
   costNode.textContent = `$${cost.toFixed(3)}`;
@@ -1753,7 +1740,7 @@ async function refreshRepository(): Promise<void> {
   }
   renderFooter();
 }
-for (const id of ["footer-location", "footer-stats", "footer-context"])
+for (const id of ["footer-stats", "footer-context"])
   element(id, HTMLButtonElement).onclick = () => {
     closePopovers();
     usageDialog.showModal();

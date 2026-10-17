@@ -144,7 +144,9 @@ export async function browserFlow(
     () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
   );
   assert.equal(
-    await page.locator("#transcript").evaluate((node) => getComputedStyle(node, "::before").content),
+    await page
+      .locator("#transcript")
+      .evaluate((node) => getComputedStyle(node, "::before").content),
     "none",
   );
   const emptyPrompt = await page.locator("#prompt").boundingBox();
@@ -464,8 +466,8 @@ export async function browserFlow(
   ]);
   await reconnected.fill("#prompt", "Initialize the workspace repository.");
   await reconnected.click("#send");
-  await reconnected.waitForFunction(
-    () => document.querySelector("#footer-git")?.textContent === "(pi-pwa)",
+  await reconnected.waitForFunction(() =>
+    document.querySelector("#usage-repository")?.textContent?.startsWith("pi-pwa · "),
   );
   await session.root.waitForIdle(context);
 
@@ -595,9 +597,9 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
         );
       };
       return footers.flatMap((footer) => {
-        const groups = matchMedia("(max-width: 650px)").matches
-          ? [Array.from(footer.querySelectorAll("#footer-model, #footer-context"))]
-          : Array.from(footer.querySelectorAll(".footer-row"), (row) => Array.from(row.children));
+        const groups = Array.from(footer.querySelectorAll(".footer-row"), (row) =>
+          Array.from(row.querySelectorAll("button")).filter((node) => node.checkVisibility()),
+        );
         return groups.map(([left, right]) => textCenter(left) - textCenter(right));
       });
     });
@@ -616,13 +618,37 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
         return {
           height: box.height,
           offset: (model.left + context.right) / 2 - (box.left + box.right) / 2,
+          overlap: model.right > context.left,
+          dots: Array.from(footer.querySelectorAll(".footer-dot"), (node) => {
+            const dot = node.getBoundingClientRect();
+            return {
+              width: dot.width,
+              height: dot.height,
+              offset: dot.top + dot.height / 2 - (box.top + box.height / 2),
+              radius: getComputedStyle(node).borderRadius,
+            };
+          }),
+          overflow: footer.scrollWidth > footer.clientWidth,
           buttons: Array.from(footer.querySelectorAll("button"))
             .filter((node) => node.checkVisibility())
             .map((node) => node.id),
         };
       });
-      assert.equal(layout.height, 28, `${name}: mobile footer must not add vertical padding`);
+      assert.equal(
+        layout.height,
+        28,
+        `${name}: mobile footer must remain one line without padding`,
+      );
       assert(Math.abs(layout.offset) <= 1, `${name}: mobile footer must be centered`);
+      assert.equal(layout.dots.length, 2);
+      for (const dot of layout.dots) {
+        assert.equal(dot.width, 2);
+        assert.equal(dot.height, 2);
+        assert.equal(dot.radius, "50%");
+        assert(Math.abs(dot.offset) <= 1, `${name}: dots must be vertically centered`);
+      }
+      assert.equal(layout.overlap, false);
+      assert.equal(layout.overflow, false);
       assert.deepEqual(layout.buttons, ["footer-model", "footer-context"]);
     }
     if (screenshots)
@@ -632,8 +658,8 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await page.locator("#transcript").evaluate((node) => {
       node.scrollTop = node.scrollHeight;
     });
-    await page.waitForFunction(
-      () => document.querySelector("#footer-git")?.textContent === "(pi-pwa)",
+    await page.waitForFunction(() =>
+      document.querySelector("#usage-repository")?.textContent?.startsWith("pi-pwa · "),
     );
     await shot(page, `${size}-conversation`);
     for (const tool of ["bash", "edit"]) {
@@ -657,7 +683,6 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       ["input", expectedInput],
       ["output", expectedOutput],
       ["read", expectedRead],
-      ["write", expectedWrite],
     ] as const)
       assert.equal(
         Number(await page.locator(`#footer-${field}`).getAttribute("data-value")),
@@ -668,15 +693,41 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       expectedContext.lastResponse?.tokens,
     );
     assert.equal(await page.locator("#footer-read").isVisible(), size === "desktop");
+    assert.equal(await page.locator("#footer-model-name").isVisible(), size !== "desktop");
+    assert.equal(await page.locator("#footer-effort").textContent(), "high");
+    assert.deepEqual(
+      await page
+        .locator("#footer-stats > span")
+        .evaluateAll((nodes) => nodes.map((node) => node.id)),
+      ["footer-input", "footer-output", "footer-read", "footer-hit", "footer-cost"],
+    );
+    assert.deepEqual(
+      await page
+        .locator("#bottom-line button")
+        .evaluateAll((nodes) =>
+          nodes.filter((node) => node.checkVisibility()).map((node) => node.id),
+        ),
+      size === "desktop" ? ["footer-stats", "footer-context"] : ["footer-model", "footer-context"],
+    );
     await page.click(size === "desktop" ? "#footer-stats" : "#footer-context");
     await page.waitForSelector("#usage-dialog[open]");
     assert.equal(await page.locator("#usage-input").textContent(), expectedInput.toLocaleString());
     assert.equal(await page.locator("#usage-thinking").textContent(), "high");
+    assert.equal(await page.locator("#usage-write").textContent(), expectedWrite.toLocaleString());
     await shot(page, `${size}-footer-breakdown`);
     await page.keyboard.press("Escape");
-    await page.click("#footer-model");
+    if (size === "desktop") {
+      await page.click("#menu-toggle");
+      await page.click("#settings");
+    } else {
+      await page.click("#footer-model");
+    }
     await page.waitForSelector("#preferences[open]");
     assert.equal(await page.locator("#thinking").inputValue(), "high");
+    assert.equal(
+      await page.locator("#footer-model").getAttribute("title"),
+      `${await page.locator("#usage-model").textContent()} · thinking high`,
+    );
     await page.keyboard.press("Escape");
     assert.equal(await page.locator("#stop").isVisible(), false);
     assert.equal(await page.locator("#input-mode").isVisible(), false);
@@ -910,19 +961,18 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     node.scrollTop = node.scrollHeight;
   });
   await shot(reconnected, "mobile-narrow");
-  // Stress just the label layout: effort and context must survive model truncation.
+  // Keep effort and context readable when only the model name needs truncation.
   const modelLabel = reconnected.locator("#footer-model-name");
   const modelName = await modelLabel.textContent();
   await modelLabel.evaluate((node) => {
     node.textContent = "provider/very-long-model-name-with-version-20261017";
   });
   assert.equal(await modelLabel.evaluate((node) => node.scrollWidth > node.clientWidth), true);
-  assert.equal(
-    await reconnected
-      .locator("#footer-effort")
-      .evaluate((node) => node.scrollWidth <= node.clientWidth),
-    true,
-  );
+  for (const id of ["footer-effort", "footer-context"])
+    assert.equal(
+      await reconnected.locator(`#${id}`).evaluate((node) => node.scrollWidth <= node.clientWidth),
+      true,
+    );
   await shot(reconnected, "mobile-narrow-long-model");
   await modelLabel.evaluate((node, text) => {
     node.textContent = text;

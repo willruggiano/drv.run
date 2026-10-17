@@ -87,8 +87,7 @@
     #bottom-line { padding: 0 max(20px, calc((100% - 820px)/2)) 8px; color: var(--muted); font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
     .footer-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
     #bottom-line button { font: inherit; color: inherit; min-height: 24px; padding: 0; border: none; background: transparent; text-align: left; min-width: 0; } #bottom-line button:hover { color: #dce0df; }
-    #footer-location { display: flex; align-items: center; flex: 1; gap: 6px; overflow: hidden; } #footer-workspace { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } #footer-git { flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a9b8ae; }
-    #footer-model { display: flex; align-items: center; justify-content: flex-end; gap: 6px; max-width: 50%; white-space: nowrap; } #footer-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; } #footer-effort, .footer-model-separator { flex-shrink: 0; } .footer-model-separator::before { content: "·"; } .footer-mobile-separator { display: none; }
+    #footer-model, .footer-dot { display: none; }
     #footer-stats { display: flex; align-items: center; align-content: center; flex-wrap: wrap; column-gap: 9px; } #footer-stats span { white-space: nowrap; }
     #footer-context { white-space: nowrap; flex-shrink: 0; } #footer-context[data-level=warning] { color: #e5bd8e; } #footer-context[data-level=critical] { color: #ffadad; }
     #bottom-line[data-connected=false] { opacity: .65; }
@@ -100,7 +99,9 @@
     a { color: #a2c9df; } [hidden] { display: none !important; }
     @media (max-width: 650px) {
       .bar { gap: 6px; padding: 6px 10px; } button, select { min-height: 38px; } .icon { min-width: 38px; } #status { font-size: 0; } #status::before { margin: 0; } #branches { max-width: 106px; font-size: 11px; }
-      #bottom-line { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; font-size: 11px; } #bottom-line button { min-height: 28px; } #bottom-line .footer-row { display: contents; } #footer-location, #footer-stats { display: none; } #footer-model { max-width: none; min-width: 0; } .footer-model-separator::before { content: "•"; } .footer-mobile-separator { display: block; flex-shrink: 0; }
+      #bottom-line { padding: 0 12px; font-size: 11px; } #bottom-line button { min-height: 28px; } #bottom-line .footer-row { justify-content: center; gap: 6px; } #footer-stats { display: none; }
+      #footer-model { display: flex; align-items: center; gap: 6px; white-space: nowrap; } #footer-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; } #footer-effort { flex-shrink: 0; }
+      .footer-dot { display: block; flex: 0 0 2px; width: 2px; height: 2px; border-radius: 50%; background: currentColor; }
       #transcript { padding: 8px 16px; } #composer { padding: 6px 10px 4px; } .message-actions { opacity: .7; min-height: 30px; } #latest { margin-bottom: 4px; }
       dialog { width: 100%; max-width: none; max-height: 88dvh; margin: auto 0 0; border-radius: 16px 16px 0 0; padding: 18px 16px max(18px, env(safe-area-inset-bottom)); border-bottom: none; }
       [popover], #input-menu { inset: auto 10px max(10px, env(safe-area-inset-bottom)) 10px; width: auto; max-height: 65dvh; padding: 8px; border-radius: 12px; } [popover] > button { min-height: 44px; } [popover]::backdrop { background: #0004; }
@@ -155,16 +156,13 @@
       </div>
       <input id="images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
     </form>
-    <footer id="bottom-line" aria-label="Workspace and conversation statistics" hidden>
-      <div class="footer-row">
-        <button id="footer-location" type="button" aria-label="Workspace details"><span id="footer-workspace"></span><span id="footer-git"></span></button>
-        <button id="footer-model" type="button" aria-label="Model and thinking settings"><span id="footer-model-name"></span><span class="footer-model-separator" aria-hidden="true"></span><span id="footer-effort"></span></button>
-      </div>
-      <span class="footer-mobile-separator" aria-hidden="true">•</span>
+    <footer id="bottom-line" aria-label="Conversation statistics" hidden>
       <div class="footer-row">
         <button id="footer-stats" type="button" aria-label="Token and cost breakdown">
-          <span id="footer-input"></span><span id="footer-output"></span><span id="footer-read" class="footer-cache"></span><span id="footer-write" class="footer-cache"></span><span id="footer-hit" class="footer-cache"></span><span id="footer-cost"></span>
+          <span id="footer-input"></span><span id="footer-output"></span><span id="footer-read" class="footer-cache"></span><span id="footer-hit" class="footer-cache"></span><span id="footer-cost"></span>
         </button>
+        <button id="footer-model" type="button" aria-label="Model and thinking settings"><span id="footer-model-name"></span><span class="footer-dot" aria-hidden="true"></span><span id="footer-effort"></span></button>
+        <span class="footer-dot" aria-hidden="true"></span>
         <button id="footer-context" type="button" aria-label="Context usage details"></button>
       </div>
     </footer>
