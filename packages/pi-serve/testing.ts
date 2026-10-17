@@ -471,7 +471,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
             .map((node) => node.id),
         };
       });
-      assert(layout.height <= 35, `${name}: mobile footer must stay one tight line`);
+      assert.equal(layout.height, 28, `${name}: mobile footer must not add vertical padding`);
       assert(Math.abs(layout.offset) <= 1, `${name}: mobile footer must be centered`);
       assert.deepEqual(layout.buttons, ["footer-model", "footer-context"]);
     }
