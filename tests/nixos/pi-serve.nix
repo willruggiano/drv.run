@@ -58,6 +58,12 @@
       fauxAssistantMessage(fauxToolCall("bash", {
         command: 'test "$DRV_RUN_TEST_READY" = 1 && test "$(pwd)" = /workspace && test -f pi-serve-result.json',
       }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxToolCall("codemode", { code: `
+        await tools.write({ path: "pi-codemode-result.json", content: "1" });
+        await tools.edit({ path: "pi-codemode-result.json", edits: [{ oldText: "1", newText: "2" }] });
+        await tools.read({ path: "pi-codemode-result.json" });
+        await tools.bash({ command: 'test "$DRV_RUN_TEST_READY" = 1 && test "$(pwd)" = /workspace && test -f pi-codemode-result.json' });
+      ` }), { stopReason: "toolUse" }),
       fauxAssistantMessage("Done."),
     ]);
     const sessions = await Sessions.open({
@@ -71,9 +77,15 @@
       await session.root.waitForIdle(BACKGROUND_CONTEXT);
       assert.equal((await session.harness.inspect(BACKGROUND_CONTEXT)).tasks.length, 0);
       const results = (await session.history()).flatMap((entry) => entry.model ?? []).filter((message) => message.role === "toolResult");
-      assert.equal(results.length, untrusted ? 1 : 4);
+      assert.equal(results.length, untrusted ? 1 : 5);
       assert(results.every((result) => result.isError === untrusted));
-      assert.equal(faux.state.callCount, untrusted ? 2 : 5);
+      if (!untrusted) {
+        assert.equal(results.at(-1).toolName, "codemode");
+        assert.deepEqual(results.at(-1).details.calls.map((call) => [call.name, call.status]), [
+          ["write", "ok"], ["edit", "ok"], ["read", "ok"], ["bash", "ok"],
+        ]);
+      }
+      assert.equal(faux.state.callCount, untrusted ? 2 : 6);
     } finally {
       await sessions.close();
       await rm(directory, { recursive: true });

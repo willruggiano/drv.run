@@ -896,6 +896,121 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
   );
   assert.equal(errors.length, 0);
+  // Real codemode: the faux provider selects the tool, but QuickJS, nested
+  // coding tools, Durable storage, SSE and both browser layouts are production.
+  const codeFile = f.filePath ? join(dirname(f.filePath), "codemode.json") : "codemode.json";
+  const releaseFile = join(f.workspace, "codemode-release");
+  const desktopCodeContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const desktopCode = await desktopCodeContext.newPage();
+  desktopCode.on("pageerror", (error) => errors.push(error));
+  await desktopCode.goto(reconnected.url());
+  f.faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall(
+        "codemode",
+        {
+          code: `
+      await tools.write({ path: ${JSON.stringify(codeFile)}, content: '{"value":1}' });
+      await tools.edit({ path: ${JSON.stringify(codeFile)}, edits: [{ oldText: "1", newText: "2" }] });
+      await Promise.all([
+        tools.read({ path: ${JSON.stringify(codeFile)} }),
+        tools.bash({ command: ${JSON.stringify(`while [ ! -f ${JSON.stringify(releaseFile)} ]; do sleep 0.05; done`)} }),
+      ]);
+      return { updated: true, value: 2 };
+    `,
+        },
+        { id: "real-codemode" },
+      ),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Codemode updated and read the file, then finished the shell command."),
+  ]);
+  await reconnected.fill(
+    "#prompt",
+    "Use codemode to write, edit and read a file, and run a shell command.",
+  );
+  await reconnected.click("#send");
+  try {
+    for (const [page, size] of [
+      [desktopCode, "desktop"],
+      [reconnected, "mobile"],
+    ] as const) {
+      await page.waitForSelector(
+        '.tool-call[data-call-id="real-codemode"] .tool-call[data-tool="bash"][data-state="running"]',
+        { state: "attached" },
+      );
+      const call = page.locator('.tool-call[data-call-id="real-codemode"]');
+      assert.equal(await call.count(), 1);
+      await call.evaluate((node) => {
+        (node as HTMLDetailsElement).open = true;
+      });
+      await call.scrollIntoViewIfNeeded();
+      await shot(page, `${size}-codemode-running`);
+    }
+  } finally {
+    await writeFile(releaseFile, "release");
+  }
+  await branch.waitForIdle(context);
+  assert.deepEqual(JSON.parse(await readFile(join(f.workspace, "codemode.json"), "utf8")), {
+    value: 2,
+  });
+  const codeResult = (await session.history(branch))
+    .flatMap((entry) => entry.model ?? [])
+    .find((message) => message.role === "toolResult" && message.toolCallId === "real-codemode");
+  assert(codeResult?.role === "toolResult");
+  assert.equal(codeResult.isError, false);
+  for (const [page, size] of [
+    [desktopCode, "desktop"],
+    [reconnected, "mobile"],
+  ] as const) {
+    await page.reload();
+    await page.waitForSelector('.tool-call[data-call-id="real-codemode"][data-state="completed"]', {
+      state: "attached",
+    });
+    const call = page.locator('.tool-call[data-call-id="real-codemode"]');
+    assert.equal(await call.count(), 1);
+    assert.equal(await call.locator(".nested-tools > details").count(), 5); // four calls plus raw metadata
+    await call.evaluate((node) => {
+      (node as HTMLDetailsElement).open = true;
+      node.querySelector<HTMLDetailsElement>(".nested-tools")!.open = true;
+    });
+    await call.scrollIntoViewIfNeeded();
+    await shot(page, `${size}-codemode-completed`);
+  }
+  f.faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall(
+        "codemode",
+        {
+          code: `await tools.read({ path: ${JSON.stringify(join(f.workspace, "missing-codemode-file"))} });`,
+        },
+        { id: "failed-codemode" },
+      ),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("The nested read failed."),
+  ]);
+  await reconnected.fill("#prompt", "Exercise a nested codemode error.");
+  await reconnected.click("#send");
+  for (const [page, size] of [
+    [desktopCode, "desktop"],
+    [reconnected, "mobile"],
+  ] as const) {
+    await page.waitForSelector('.tool-call[data-call-id="failed-codemode"][data-state="failed"]', {
+      state: "attached",
+    });
+    const call = page.locator('.tool-call[data-call-id="failed-codemode"]');
+    assert.equal(await call.locator(".nested-tools .error").count(), 1);
+    await call.evaluate((node) => {
+      (node as HTMLDetailsElement).open = true;
+      node.querySelector<HTMLDetailsElement>(".nested-tools")!.open = true;
+    });
+    await call.scrollIntoViewIfNeeded();
+    await shot(page, `${size}-codemode-error`);
+  }
+  await branch.waitForIdle(context);
+  await desktopCodeContext.close();
+  assert.equal(errors.length, 0);
   if (f.restart) {
     const started = Promise.withResolvers<void>();
     f.faux.setResponses([

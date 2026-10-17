@@ -27,6 +27,8 @@ import {
   type Extension,
   type ModelRef,
 } from "@earendil-works/pi-durable";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -348,6 +350,7 @@ export class ManagedSession {
   readonly root: Conversation;
   readonly binding: Readonly<ExecutionBinding>;
   readonly created: number;
+  private readonly sandbox: CodemodeSandbox;
 
   private constructor(
     owner: Sessions,
@@ -356,6 +359,7 @@ export class ManagedSession {
     root: Conversation,
     binding: ExecutionBinding,
     created: number,
+    sandbox: CodemodeSandbox,
   ) {
     this.owner = owner;
     this.id = id;
@@ -363,6 +367,7 @@ export class ManagedSession {
     this.root = root;
     this.binding = Object.freeze({ ...binding });
     this.created = created;
+    this.sandbox = sandbox;
   }
 
   static async open(
@@ -372,6 +377,10 @@ export class ManagedSession {
   ): Promise<ManagedSession> {
     const registry = createRegistry();
     registry.install(CodingTools);
+    // JavaScript runs in a worker-isolated QuickJS VM. Nested file/process
+    // calls still use this session's bound execution environment.
+    const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
+    registry.install(createCodemodeExtension({ sandbox }));
     registry.install(
       defineExtension({
         name: "coding",
@@ -427,12 +436,24 @@ export class ManagedSession {
       // Install only this session's integration, never another provider's prompt or tools.
       for (const extension of owner.integration(metadata.binding.provider)?.extensions ?? [])
         registry.install(extension);
-      managed = new ManagedSession(owner, id, harness, root, metadata.binding, metadata.created);
+      managed = new ManagedSession(
+        owner,
+        id,
+        harness,
+        root,
+        metadata.binding,
+        metadata.created,
+        sandbox,
+      );
       const inspection = await harness.inspect(context);
       managed.needsResume = inspection.tasks.length > 0 || inspection.submissions.length > 0;
       return managed;
     } catch (error) {
-      await harness.close(context);
+      try {
+        await harness.close(context);
+      } finally {
+        await sandbox.close();
+      }
       throw error;
     }
   }
@@ -639,7 +660,11 @@ fi`,
       try {
         await this.harness.close(context);
       } finally {
-        await (await this.lease)?.close();
+        try {
+          await this.sandbox.close();
+        } finally {
+          await (await this.lease)?.close();
+        }
       }
     })());
   }

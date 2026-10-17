@@ -133,6 +133,35 @@ await test("faux turns use the daemon for read/write/edit; extension removal pre
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
 });
 
+await test("codemode nested tools use the bound remote daemon", async (t) => {
+  const f = await remoteFixture(t);
+  const file = join(f.workspace, "codemode-remote.json");
+  f.faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("codemode", {
+        code: `
+      await tools.write({ path: ${JSON.stringify(file)}, content: "1" });
+      await tools.edit({ path: ${JSON.stringify(file)}, edits: [{ oldText: "1", newText: "2" }] });
+      await tools.read({ path: ${JSON.stringify(file)} });
+    `,
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Done."),
+  ]);
+  const session = await f.sessions.create(randomUUID(), f.binding, model);
+  await session.prompt("Use codemode in the guest.", randomUUID());
+  await session.root.waitForIdle(context);
+  const results = (await session.history())
+    .flatMap((entry) => entry.model ?? [])
+    .filter((message) => message.role === "toolResult");
+  assert.equal(results.length, 1);
+  assert.equal(results[0].toolName, "codemode");
+  assert.equal(results[0].isError, false);
+  assert.equal(JSON.parse(await readFile(file, "utf8")), 2);
+  assert.equal(f.connections.length, 1);
+});
+
 await test("stopping an instance blocks existing sessions without opening another connection", async (t) => {
   const f = await remoteFixture(t);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
