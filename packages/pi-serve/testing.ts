@@ -143,6 +143,10 @@ export async function browserFlow(
   await page.waitForFunction(
     () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
   );
+  assert.equal(
+    await page.locator("#transcript").evaluate((node) => getComputedStyle(node, "::before").content),
+    "none",
+  );
   const emptyPrompt = await page.locator("#prompt").boundingBox();
   assert(emptyPrompt);
   assert(emptyPrompt.height >= 140);

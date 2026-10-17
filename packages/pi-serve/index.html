@@ -25,8 +25,6 @@
     #transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; padding: 12px max(20px, calc((100% - 820px)/2)); scrollbar-gutter: stable; }
     #transcript:empty { flex: none; padding-top: clamp(16px, 6svh, 64px); }
     #transcript:empty ~ .composer-area #prompt { min-height: clamp(140px, 24svh, 240px); max-height: 40svh; }
-    #transcript:empty::before { content: "Start a session"; display: block; margin: 12px 0; color: var(--muted); text-align: center; }
-    body.offline #transcript:empty::before { content: "Offline"; }
     article { padding: 14px 0; scroll-margin: 16px; } article + article { border-top: 1px solid #222628; }
     article > header { color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; min-height: 24px; }
     article[data-role=user] > header { color: var(--muted); }
