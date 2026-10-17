@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { chromium, type Page } from "playwright";
 
 async function focused(page: Page, id: string) {
   assert.equal(await page.locator(`#${id}`).evaluate((node) => node === document.activeElement), true);
 }
 
-await test("browser key mappings: sessions mnemonics", async (t) => {
+async function setup(t: TestContext): Promise<Page> {
   const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH });
   t.after(() => browser.close());
   const page = await browser.newPage();
@@ -28,6 +28,11 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
     create.onclick = () => { create.dataset.clicks = String(Number(create.dataset.clicks || 0) + 1); };
     picker.showModal();
   ` });
+  return page;
+}
+
+await test("browser key mappings: sessions mnemonics", async (t) => {
+  const page = await setup(t);
   for (const [key, id] of [["t", "targets"], ["m", "models"]]) {
     await page.focus("#close-picker");
     await page.keyboard.press(key);
@@ -58,4 +63,23 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
     return [ { repeat: true }, { isComposing: true } ].every((extra) =>
       button.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true, ...extra })));
   }), true);
+});
+
+await test("browser key mappings: slash focuses session filter without inserting text", async (t) => {
+  const page = await setup(t);
+  await page.fill("#session-filter", "existing");
+  await page.focus("#close-picker");
+  await page.keyboard.press("/");
+  await focused(page, "session-filter");
+  assert.equal(await page.inputValue("#session-filter"), "existing");
+  // Once editing, slash remains ordinary input.
+  await page.keyboard.press("End");
+  await page.keyboard.press("/");
+  assert.equal(await page.inputValue("#session-filter"), "existing/");
+  await page.focus("#targets");
+  await page.keyboard.press("/");
+  await focused(page, "targets");
+  await page.focus("#close-picker");
+  await page.keyboard.press("Control+/");
+  await focused(page, "close-picker");
 });

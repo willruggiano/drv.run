@@ -8,15 +8,16 @@ export function installPickerKeyMappings(picker: HTMLDialogElement): void {
       (event.target instanceof Element &&
         event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])"))
     ) return;
-    const id = { t: "targets", m: "models", n: "create" }[event.key];
+    const id = { t: "targets", m: "models", n: "create", "/": "session-filter" }[event.key];
     if (!id) return;
-    const control = picker.querySelector<HTMLSelectElement | HTMLButtonElement>(`#${id}`);
+    const control = picker.querySelector<HTMLSelectElement | HTMLButtonElement | HTMLInputElement>(`#${id}`);
     if (!control || control.disabled) return;
     event.preventDefault();
     if (control instanceof HTMLSelectElement) {
       control.focus();
       // Older browsers lack showPicker; focus still permits native keyboard use.
       try { control.showPicker?.(); } catch { /* Unsupported platform or activation. */ }
-    } else control.click();
+    } else if (control instanceof HTMLInputElement) control.focus();
+    else control.click();
   });
 }

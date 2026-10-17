@@ -4,7 +4,7 @@
 
 Ctrl/⌘+K opens Sessions. Outside text fields and native selects, `t` opens
 the target selector, `m` opens the model selector, and `n` creates a session
-using the selected target/model. Escape dismisses the dialog.
+using the selected target/model. `/` focuses the session filter. Escape dismisses the dialog.
 
 Focused browser tests (with Chromium available):
 
