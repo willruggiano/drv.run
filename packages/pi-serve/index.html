@@ -28,11 +28,15 @@
     article { padding: 14px 0; scroll-margin: 16px; } article + article { border-top: 1px solid #222628; }
     article > header { color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; min-height: 24px; }
     article[data-role=user] > header { color: var(--muted); }
-    article[data-role=toolResult] { padding: 6px 12px; margin: 4px 0; font-size: 12px; border: 1px solid var(--line); border-radius: 8px; background: #191c1e; }
-    article[data-role=toolResult] > header { color: var(--muted); font-weight: 400; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+    article[data-role=toolResult] { padding: 4px 0; border-top: 0; }
     .tool-call { border-left: 2px solid var(--line); padding-left: 10px; margin: 6px 0; font-size: 12px; }
     .tool-call > summary { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
-    article[data-parent-call] { margin-left: 16px; }
+    .tool-status { margin-left: 10px; font: 11px system-ui; white-space: nowrap; color: var(--muted); }
+    .tool-call[data-state=failed] > summary .tool-status { color: #ffadad; }
+    .tool-call[data-state=running] > summary .tool-status { color: var(--accent); }
+    .tool-result { min-width: 0; }
+    .tool-result > .message-actions { display: block; }
+    .tool-call .tool-call { margin-left: 6px; }
     .message-actions { margin-left: auto; min-height: 24px; font-weight: normal; opacity: 0; } article:hover .message-actions, .message-actions:focus-visible, .message-actions[aria-expanded=true] { opacity: 1; }
     .text { white-space: pre-wrap; } .text p { margin: 0 0 10px; } .text p:last-child { margin-bottom: 0; }
     pre { white-space: pre; overflow: auto; background: #101214; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; tab-size: 2; }

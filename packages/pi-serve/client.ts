@@ -469,10 +469,51 @@ function toolDetails(node: HTMLElement, data: unknown): void {
   node.append(details);
 }
 
+function messageActions(entry: number, message: Message): HTMLButtonElement {
+  const actions = document.createElement("button");
+  actions.className = "icon message-actions";
+  actions.textContent = "···";
+  actions.setAttribute("aria-label", "Message actions");
+  actions.setAttribute("aria-controls", "message-menu");
+  actions.setAttribute("aria-expanded", "false");
+  actions.onclick = () => {
+    if (!active) return;
+    if (messageMenu.matches(":popover-open") && selectedMessage?.trigger === actions) {
+      messageMenu.hidePopover();
+      return;
+    }
+    selectedMessage?.trigger.setAttribute("aria-expanded", "false");
+    messageMenu.hidePopover();
+    selectedMessage = {
+      entry,
+      message,
+      session: active,
+      branch: conversation,
+      trigger: actions,
+    };
+    element("fork-message", HTMLButtonElement).disabled = !connected || recovering;
+    messageMenu.showPopover();
+    actions.setAttribute("aria-expanded", "true");
+    if (matchMedia("(min-width: 651px)").matches) {
+      const rect = actions.getBoundingClientRect();
+      messageMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - messageMenu.offsetHeight - 8))}px`;
+      messageMenu.style.right = `${Math.max(8, Math.min(innerWidth - rect.right, innerWidth - messageMenu.offsetWidth - 8))}px`;
+    }
+    element("copy-message", HTMLButtonElement).focus();
+  };
+  return actions;
+}
+
 function content(
   node: HTMLElement,
   message: Message,
   call?: { name: string; arguments: Record<string, unknown> },
+  renderTool?: (call: {
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  }) => HTMLElement,
+  embedded = false,
 ): void {
   if (message.role === "system") return;
   node.dataset.role = message.role;
@@ -483,14 +524,16 @@ function content(
       : message.role === "assistant"
         ? "Pi"
         : "You";
-  node.append(heading);
+  if (!embedded) node.append(heading);
   if (typeof message.content === "string") {
     node.append(markdown(message.content));
     return;
   }
   for (const block of message.content) {
     if (block.type === "text") {
-      if (message.role === "toolResult") {
+      if (message.role === "toolResult" && embedded) {
+        node.append(codeBlock(block.text));
+      } else if (message.role === "toolResult") {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
         summary.textContent = message.isError ? "Error output" : "Output";
@@ -498,6 +541,8 @@ function content(
         details.append(summary, codeBlock(block.text));
         node.append(details);
       } else node.append(markdown(block.text));
+    } else if (block.type === "toolCall" && renderTool) {
+      node.append(renderTool(block));
     } else if (block.type === "toolCall" || block.type === "thinking") {
       const details = document.createElement("details");
       const summary = document.createElement("summary");
@@ -605,6 +650,17 @@ function render(snapshot: Snapshot): void {
   } else if (busy) document.title = "Working · Pi";
   const wanted = new Set<string>();
   const ordered: HTMLElement[] = [];
+  // A streamed assistant entry can be replaced by its committed entry. Keep
+  // disclosure state by call ID across that transition as well as live updates.
+  const disclosureState = new Map(
+    Array.from(transcript.querySelectorAll<HTMLDetailsElement>("details[data-disclosure]")).map(
+      (detail) => [detail.dataset.disclosure, detail.open],
+    ),
+  );
+  const focusedDisclosure =
+    document.activeElement?.tagName === "SUMMARY"
+      ? (document.activeElement.parentElement as HTMLElement | null)?.dataset.disclosure
+      : undefined;
   const item = (key: string, value: unknown, build: (node: HTMLElement) => void) => {
     wanted.add(key);
     const signature = JSON.stringify(value);
@@ -614,24 +670,123 @@ function render(snapshot: Snapshot): void {
       rendered.set(key, existing);
     }
     if (signature !== existing.signature) {
-      const open = Array.from(existing.node.querySelectorAll("details")).map(
-        (detail) => detail.open,
+      const open = new Map(
+        Array.from(existing.node.querySelectorAll("details")).map((detail, index) => [
+          detail.dataset.disclosure ?? `detail:${index}`,
+          detail.open,
+        ]),
       );
       existing.node.replaceChildren();
       build(existing.node);
       existing.node.querySelectorAll("details").forEach((detail, index) => {
-        detail.open = open[index] ?? detail.open;
+        detail.open =
+          (detail.dataset.disclosure
+            ? disclosureState.get(detail.dataset.disclosure)
+            : open.get(`detail:${index}`)) ?? detail.open;
+        if (focusedDisclosure && detail.dataset.disclosure === focusedDisclosure)
+          detail.querySelector<HTMLElement>(":scope > summary")?.focus({ preventScroll: true });
       });
       existing.signature = signature;
     }
     ordered.push(existing.node);
   };
-  const calls = new Map<string, { name: string; arguments: Record<string, unknown> }>();
+  type Call = { id: string; name: string; arguments: Record<string, unknown> };
+  const calls = new Map<string, Call>();
+  const results = new Map<
+    string,
+    { entry: number; message: Extract<Message, { role: "toolResult" }> }
+  >();
+  const partial = live?.generation?.message;
   for (const entry of entries.values())
-    for (const message of entry.model ?? [])
+    for (const message of entry.model ?? []) {
       if (message.role === "assistant")
         for (const block of message.content)
           if (block.type === "toolCall") calls.set(block.id, block);
+      if (message.role === "toolResult")
+        results.set(message.toolCallId, { entry: entry.id, message });
+    }
+  if (partial)
+    for (const block of partial.content) if (block.type === "toolCall") calls.set(block.id, block);
+  const slots = [...(live?.tools ?? []), ...(live?.nestedTools ?? [])];
+  const buildTool = (call: Call): HTMLElement => {
+    const result = results.get(call.id);
+    const slot = slots.find((tool) => tool.callId === call.id);
+    const failed = result?.message.isError || (slot && "summary" in slot && slot.summary?.isError);
+    const state = failed
+      ? "failed"
+      : result
+        ? "completed"
+        : (slot?.status ?? (busy ? "pending" : "unavailable"));
+    const details = document.createElement("details");
+    details.className = "tool-call";
+    details.dataset.callId = call.id;
+    details.dataset.tool = call.name;
+    details.dataset.disclosure = `call:${call.id}`;
+    details.dataset.state = state;
+    details.open = !!failed;
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.textContent = toolLabel(call.name, call.arguments);
+    const status = document.createElement("span");
+    status.className = "tool-status";
+    status.textContent =
+      state === "completed"
+        ? "✓"
+        : state === "running"
+          ? "Running"
+          : state === "pending"
+            ? "Pending"
+            : state === "failed"
+              ? "Failed"
+              : state === "done"
+                ? "Finished"
+                : "No result";
+    status.setAttribute("aria-label", state);
+    summary.append(label, status);
+    details.append(summary);
+    const input = document.createElement("details");
+    input.dataset.disclosure = `input:${call.id}`;
+    const inputLabel = document.createElement("summary");
+    inputLabel.textContent = "Input";
+    input.append(inputLabel, toolInput(call.name, call.arguments));
+    details.append(input);
+    if (result) {
+      const output = document.createElement("div");
+      output.className = "tool-result";
+      content(output, result.message, call, undefined, true);
+      const actions = messageActions(result.entry, result.message);
+      actions.setAttribute("aria-label", "Tool result actions");
+      output.append(actions);
+      details.append(output);
+    } else if (slot) {
+      if (slot.output) details.append(codeBlock(slot.output));
+      toolDetails(details, slot.details);
+      if ("summary" in slot && slot.summary?.error) details.append(codeBlock(slot.summary.error));
+    }
+    for (const child of live?.nestedTools ?? [])
+      if (child.parentCallId === call.id)
+        details.append(
+          buildTool({ id: child.callId, name: child.name, arguments: child.arguments }),
+        );
+    // Stable disclosure keys keep input/output expansion independent when a
+    // running call gains its result or a sibling finishes out of order.
+    details.querySelectorAll("details:not([data-disclosure])").forEach((node, index) => {
+      (node as HTMLElement).dataset.disclosure = `result:${call.id}:${index}`;
+    });
+    return details;
+  };
+  const toolState = (message: Message) =>
+    message.role === "assistant"
+      ? message.content
+          .filter((block) => block.type === "toolCall")
+          .map((call) => [
+            busy,
+            results.get(call.id),
+            slots.filter(
+              (slot) => slot.callId === call.id || slot.callId.startsWith(`${call.id}/`),
+            ),
+          ])
+      : undefined;
   for (const entry of [...entries.values()].sort((a, b) => a.id - b.id)) {
     if (entry.kind === "pi.reset" || entry.kind === "pi.compaction")
       item(`context:${entry.id}`, entry, (node) => {
@@ -642,73 +797,48 @@ function render(snapshot: Snapshot): void {
         node.append(details);
       });
     entry.model?.forEach((message, index) => {
+      if (message.role === "toolResult" && calls.has(message.toolCallId)) return;
       if (message.role !== "system")
-        item(
-          `${entry.id}:${index}`,
-          [message, message.role === "toolResult" ? calls.get(message.toolCallId) : undefined],
-          (node) => {
-            content(
-              node,
-              message,
-              message.role === "toolResult" ? calls.get(message.toolCallId) : undefined,
+        item(`${entry.id}:${index}`, [message, toolState(message)], (node) => {
+          if (message.role === "toolResult") {
+            node.dataset.role = "toolResult";
+            node.append(
+              buildTool({ id: message.toolCallId, name: message.toolName, arguments: {} }),
             );
-            node.dataset.search = messageText(message).toLocaleLowerCase();
-            const actions = document.createElement("button");
-            actions.className = "icon message-actions";
-            actions.textContent = "···";
-            actions.setAttribute("aria-label", "Message actions");
-            actions.setAttribute("aria-controls", "message-menu");
-            actions.setAttribute("aria-expanded", "false");
-            actions.onclick = () => {
-              if (!active) return;
-              if (messageMenu.matches(":popover-open") && selectedMessage?.trigger === actions) {
-                messageMenu.hidePopover();
-                return;
-              }
-              selectedMessage?.trigger.setAttribute("aria-expanded", "false");
-              messageMenu.hidePopover();
-              selectedMessage = {
-                entry: entry.id,
-                message,
-                session: active,
-                branch: conversation,
-                trigger: actions,
-              };
-              element("fork-message", HTMLButtonElement).disabled = !connected || recovering;
-              messageMenu.showPopover();
-              actions.setAttribute("aria-expanded", "true");
-              if (matchMedia("(min-width: 651px)").matches) {
-                const rect = actions.getBoundingClientRect();
-                messageMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - messageMenu.offsetHeight - 8))}px`;
-                messageMenu.style.right = `${Math.max(8, Math.min(innerWidth - rect.right, innerWidth - messageMenu.offsetWidth - 8))}px`;
-              }
-              element("copy-message", HTMLButtonElement).focus();
-            };
-            node.querySelector("header")?.append(actions);
-          },
-        );
+          } else content(node, message, undefined, buildTool);
+          const resultText =
+            message.role === "assistant"
+              ? message.content
+                  .flatMap((block) => {
+                    const result = block.type === "toolCall" ? results.get(block.id) : undefined;
+                    return result ? [messageText(result.message)] : [];
+                  })
+                  .join("\n")
+              : "";
+          node.dataset.search = `${messageText(message)}\n${resultText}`.toLocaleLowerCase();
+          node.querySelector("header")?.append(messageActions(entry.id, message));
+        });
     });
   }
-  const partial = live?.generation?.message;
-  if (partial) item("partial", partial, (node) => content(node, partial));
-  for (const tool of [...(live?.tools ?? []), ...(live?.nestedTools ?? [])]) {
-    if (tool.status === "done" && !("parentCallId" in tool)) continue;
-    item(`tool:${tool.callId}`, tool, (node) => {
-      const header = document.createElement("header");
-      node.dataset.role = "toolResult";
-      const args = "arguments" in tool ? tool.arguments : calls.get(tool.callId)?.arguments;
-      header.textContent = `${toolLabel(tool.name, args)} · ${tool.status}`;
-      if ("parentCallId" in tool) node.dataset.parentCall = tool.parentCallId;
-      const pre = document.createElement("pre");
-      pre.textContent = tool.output ?? "";
-      pre.hidden = !tool.output;
-      if ("summary" in tool && tool.summary?.isError) {
-        node.classList.add("error");
-        pre.hidden = false;
-        pre.textContent = tool.summary.error ?? tool.output ?? "Tool failed";
-      }
-      node.append(header, pre);
-      toolDetails(node, tool.details);
+  if (partial)
+    item("partial", [partial, toolState(partial)], (node) =>
+      content(node, partial, undefined, buildTool),
+    );
+  for (const tool of slots) {
+    if (calls.has(tool.callId) || results.has(tool.callId)) continue;
+    if (
+      "parentCallId" in tool &&
+      (calls.has(tool.parentCallId) || slots.some((parent) => parent.callId === tool.parentCallId))
+    )
+      continue;
+    item(`tool:${tool.callId}`, [tool, live?.nestedTools], (node) => {
+      node.append(
+        buildTool({
+          id: tool.callId,
+          name: tool.name,
+          arguments: "arguments" in tool ? tool.arguments : {},
+        }),
+      );
     });
   }
   for (const [key, value] of rendered) {

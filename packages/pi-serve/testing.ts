@@ -141,10 +141,13 @@ export async function browserFlow(
   assert.deepEqual(JSON.parse(await readFile(join(f.workspace, "browser.json"), "utf8")), {
     value: 31,
   });
-  await page.waitForFunction(() => document.querySelectorAll("#transcript article").length === 4);
+  await page.waitForFunction(() => document.querySelectorAll("#transcript article").length === 3);
   assert.equal(await page.locator(".tool-call").count(), 1);
-  assert.equal(await page.locator('article[data-role="toolResult"] > header').count(), 1);
-  assert.equal(await page.locator('article[data-role="toolResult"] details').count(), 2);
+  assert.equal(await page.locator('article[data-role="toolResult"]').count(), 0);
+  assert.equal(await page.locator('.tool-call[data-state="completed"] .tool-result').count(), 1);
+  await page.locator(".tool-call > summary").click();
+  assert.equal(await page.locator(".tool-result pre").first().isVisible(), true);
+  assert.equal(await page.locator(".tool-call > details pre").first().isVisible(), false);
   assert.equal(await page.locator("#transcript img").count(), 0);
   assert.equal(await page.evaluate(() => document.body.dataset.injected), undefined);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -153,7 +156,7 @@ export async function browserFlow(
   reconnected.on("pageerror", (error) => errors.push(error));
   await reconnected.goto(url);
   await reconnected.waitForFunction(
-    () => document.querySelectorAll("#transcript article").length === 4,
+    () => document.querySelectorAll("#transcript article").length === 3,
   );
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
   assert.equal(f.faux.state.callCount, 2);
@@ -213,6 +216,65 @@ export async function browserFlow(
   assert.equal(await reconnected.locator(".nested-tools .error").count(), 1);
   assert.equal(await reconnected.locator(".nested-tools > details").count(), 4);
   assert.equal(errors.length, 0);
+  // Parallel calls of the same tool pair by ID, not tool name or result order.
+  await session.root.commit(async (tx) => {
+    await tx.appendEntry(session.root.id, {
+      kind: "test.parallel-tools",
+      model: [
+        fauxAssistantMessage([
+          fauxToolCall("bash", { command: "echo first" }, { id: "parallel-first" }),
+          fauxToolCall("bash", { command: "echo second" }, { id: "parallel-second" }),
+        ]),
+      ],
+    });
+  }, context);
+  const firstCall = reconnected.locator('.tool-call[data-call-id="parallel-first"]');
+  const secondCall = reconnected.locator('.tool-call[data-call-id="parallel-second"]');
+  await firstCall.locator(":scope > summary").click();
+  await firstCall.locator(":scope > details > summary").click();
+  await session.root.commit(async (tx) => {
+    await tx.appendEntry(session.root.id, {
+      kind: "test.parallel-results",
+      model: [
+        {
+          role: "toolResult",
+          toolCallId: "parallel-second",
+          toolName: "bash",
+          content: [{ type: "text", text: "Second failed" }],
+          isError: true,
+          timestamp: 3,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "parallel-first",
+          toolName: "bash",
+          content: [{ type: "text", text: "First finished" }],
+          isError: false,
+          timestamp: 4,
+        },
+      ],
+    });
+  }, context);
+  await reconnected.waitForSelector(
+    '.tool-call[data-call-id="parallel-first"][data-state="completed"]',
+  );
+  assert.equal(await firstCall.count(), 1);
+  assert.equal(await secondCall.count(), 1);
+  assert.equal(await secondCall.getAttribute("data-state"), "failed");
+  assert.equal(
+    await firstCall.locator(":scope > details").evaluate((node) => node.hasAttribute("open")),
+    true,
+  );
+  assert.equal(await firstCall.locator(".tool-result").count(), 1);
+  assert.equal(await secondCall.locator(".tool-result").count(), 1);
+  assert.equal(await reconnected.locator('article[data-role="toolResult"]').count(), 1); // unmatched legacy result only
+  await reconnected.reload();
+  await reconnected.waitForSelector(
+    '.tool-call[data-call-id="parallel-second"][data-state="failed"]',
+  );
+  assert.equal(await firstCall.count(), 1);
+  assert.equal(await secondCall.count(), 1);
+  assert.equal(await secondCall.evaluate((node) => node.hasAttribute("open")), true);
   if (!f.extended) return;
 
   // A real repository in the bound workspace, created through the scripted agent.
@@ -243,9 +305,7 @@ export async function browserFlow(
   ]);
   await reconnected.fill("#prompt", "Update the stored value.");
   await reconnected.click("#send");
-  await reconnected.waitForFunction(
-    () => !!document.querySelector('article[data-role="toolResult"] .hljs-addition'),
-  );
+  await reconnected.waitForFunction(() => !!document.querySelector(".tool-result .hljs-addition"));
   await session.root.waitForIdle(context);
   assert.equal(JSON.parse(await readFile(join(f.workspace, "browser.json"), "utf8")).value, 32);
 
@@ -367,6 +427,18 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       () => document.querySelector("#footer-git")?.textContent === "(pi-pwa)",
     );
     await shot(page, `${size}-conversation`);
+    for (const tool of ["bash", "edit"]) {
+      const call = page.locator(`.tool-call[data-tool="${tool}"]`).last();
+      await call.evaluate((node) => {
+        (node as HTMLDetailsElement).open = true;
+      });
+      await call.scrollIntoViewIfNeeded();
+      await shot(page, `${size}-unified-${tool}`);
+      await call.evaluate((node) => {
+        (node as HTMLDetailsElement).open = false;
+      });
+    }
+
     for (const [field, expected] of [
       ["input", expectedInput],
       ["output", expectedOutput],
@@ -759,16 +831,31 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   ]);
   await reconnected.fill("#prompt", "Run a command so I can stop it.");
   await reconnected.click("#send");
-  await reconnected.waitForFunction(() =>
-    Array.from(document.querySelectorAll("article header")).some(
-      (node) => node.textContent === "$ sleep 60 · running",
-    ),
+  await reconnected.waitForFunction(
+    () => !!document.querySelector('.tool-call[data-state="running"]'),
   );
+  const running = reconnected.locator('.tool-call[data-state="running"]');
+  assert.equal(await running.count(), 1);
+  await running.locator(":scope > summary").click();
+  const runningId = await running.getAttribute("data-call-id");
   await reconnected.click("#stop");
   await reconnected.waitForFunction(
     () => document.querySelector<HTMLButtonElement>("#stop")?.disabled,
   );
   await branch.waitForIdle(context);
+  await reconnected.waitForFunction((id) => {
+    const call = Array.from(document.querySelectorAll<HTMLElement>(".tool-call")).find(
+      (node) => node.dataset.callId === id,
+    );
+    return !!call?.querySelector(".tool-result");
+  }, runningId);
+  assert.equal(await reconnected.locator(`.tool-call[data-call-id="${runningId}"]`).count(), 1);
+  assert.equal(
+    await reconnected
+      .locator(`.tool-call[data-call-id="${runningId}"]`)
+      .evaluate((node) => node.hasAttribute("open")),
+    true,
+  );
 
   // Context reset preserves history, and export returns the selected branch.
   await reconnected.click("#menu-toggle");
