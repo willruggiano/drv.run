@@ -2,6 +2,7 @@
   importNpmLock,
   callPackage,
   chromium,
+  esbuild,
   lib,
   stdenv,
   nodejs,
@@ -21,6 +22,8 @@
       ./tsconfig.json
       ./server.ts
       ./client.ts
+      ./highlight.ts
+      ./build.ts
       ./benchmark.ts
       ./server.test.ts
       ./testing.ts
@@ -39,10 +42,11 @@ in
     inherit (manifest) version;
     inherit src;
     npmDeps = pi-development-node-modules;
-    nativeBuildInputs = [importNpmLock.hooks.linkNodeModulesHook nodejs typescript makeWrapper];
+    nativeBuildInputs = [importNpmLock.hooks.linkNodeModulesHook nodejs typescript esbuild makeWrapper];
     buildPhase = ''
       runHook preBuild
       tsc -p pi-serve/tsconfig.json --noEmit false --rewriteRelativeImportExtensions --rootDir . --outDir dist
+      node pi-serve/build.ts dist/pi-serve
       runHook postBuild
     '';
     doCheck = true;
@@ -55,8 +59,8 @@ in
     installPhase = ''
       runHook preInstall
       mkdir -p "$out/lib/pi-serve" "$out/bin"
-      cp pi-serve/{package.json,index.html,styles.css,design-system.html,sw.js,icon-192.png,icon-512.png} "$out/lib/pi-serve/"
-      cp dist/pi-serve/{server,client}.js "$out/lib/pi-serve/"
+      cp pi-serve/package.json "$out/lib/pi-serve/"
+      cp dist/pi-serve/{index.html,styles.css,design-system.html,sw.js,icon-192.png,icon-512.png,server.js,client.js,highlight.js} "$out/lib/pi-serve/"
       ln -s ${pi-workspace}/node_modules "$out/lib/pi-serve/node_modules"
       ln -s ${pi-runtime}/lib/pi-runtime "$out/lib/pi-runtime"
       makeWrapper ${nodejs}/bin/node "$out/bin/pi-serve" \
@@ -70,14 +74,15 @@ in
         installPhase = ''
           runHook preInstall
           mkdir -p "$out/lib/pi-serve" "$out/bin"
-          cp dist/pi-serve/benchmark.js pi-serve/package.json "$out/lib/pi-serve/"
-          for file in server.js client.js index.html styles.css; do
+          cp dist/pi-serve/{benchmark,build}.js pi-serve/package.json "$out/lib/pi-serve/"
+          for file in server.js client.js highlight.js index.html styles.css; do
             ln -s ${finalAttrs.finalPackage}/lib/pi-serve/"$file" "$out/lib/pi-serve/$file"
           done
           ln -s ${pi-runtime}/lib/pi-runtime "$out/lib/pi-runtime"
           ln -s ${pi-development-node-modules}/node_modules "$out/lib/pi-serve/node_modules"
           makeWrapper ${nodejs}/bin/node "$out/bin/pi-serve-bench-render" \
             --set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ${lib.getExe chromium} \
+            --prefix PATH : ${lib.makeBinPath [esbuild]} \
             --add-flags "$out/lib/pi-serve/benchmark.js"
           runHook postInstall
         '';

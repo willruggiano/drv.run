@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
@@ -303,42 +302,12 @@ export function httpServer(
         }
         throw new RequestError(405, "Method not allowed.");
       }
-      if (request.method === "GET" && url.pathname === "/highlight.js") {
-        const require = createRequire(import.meta.url);
-        const files = [
-          "core",
-          ...[
-            "typescript",
-            "javascript",
-            "json",
-            "bash",
-            "python",
-            "nix",
-            "diff",
-            "css",
-            "xml",
-            "rust",
-            "go",
-            "sql",
-          ].map((name) => `languages/${name}`),
-        ];
-        const modules = await Promise.all(
-          files.map(async (file) => {
-            const code = await readFile(require.resolve(`highlight.js/lib/${file}`), "utf8");
-            const expression = `(() => { const module = {exports: {}}; ${code}\nreturn module.exports; })()`;
-            return file === "core"
-              ? `const hljs = ${expression};`
-              : `hljs.registerLanguage(${JSON.stringify(file.slice(10))}, ${expression});`;
-          }),
-        );
-        response.setHeader("Content-Type", "text/javascript; charset=utf-8");
-        return response.end(modules.join("\n") + "\nexport default hljs;");
-      }
       if (
         request.method === "GET" &&
         [
           "/",
           "/client.js",
+          "/highlight.js",
           "/styles.css",
           "/design-system.html",
           "/manifest.webmanifest",
@@ -352,6 +321,7 @@ export function httpServer(
         const types: Record<string, string> = {
           "index.html": "text/html; charset=utf-8",
           "client.js": "text/javascript; charset=utf-8",
+          "highlight.js": "text/javascript; charset=utf-8",
           "styles.css": "text/css; charset=utf-8",
           "design-system.html": "text/html; charset=utf-8",
           "manifest.webmanifest": "application/manifest+json",

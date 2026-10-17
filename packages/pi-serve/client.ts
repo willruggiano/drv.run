@@ -886,7 +886,8 @@ function content(
   }
 }
 
-function render(snapshot: Snapshot): void {
+// A stable module export lets benchmarks exercise the minified renderer.
+export function render(snapshot: Snapshot): void {
   const wasEmpty = !transcript.childElementCount;
   latest = snapshot;
   const agent = snapshot.view.docs["pi.agent"] as AgentState | undefined;

@@ -7,6 +7,7 @@ pkgs: let
     chromium
     curl
     diffutils
+    esbuild
     fd
     file
     findutils

@@ -3,8 +3,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
+import { copyFile, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { availableParallelism, cpus, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -21,6 +20,7 @@ import {
 import { chromium, type CDPSession, type Page } from "playwright";
 import { Sessions, type Snapshot } from "../pi-runtime/index.ts";
 import { httpServer } from "./server.ts";
+import { buildAssets } from "./build.ts";
 
 const usage = `Usage: node packages/pi-serve/benchmark.ts [options]
   --runs N       Fresh browser launches (default 3, maximum 100)
@@ -243,28 +243,15 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
   let sessions: Sessions | undefined;
   let server: ReturnType<typeof httpServer> | undefined;
   try {
-    const source = join(options.assets, "client.ts");
-    const client = existsSync(source)
-      ? stripTypeScriptTypes(await readFile(source, "utf8"))
-      : await readFile(join(options.assets, "client.js"), "utf8");
-    const html = await readFile(join(options.assets, "index.html"), "utf8");
-    const css = await readFile(join(options.assets, "styles.css"), "utf8");
+    if (existsSync(join(options.assets, "client.ts"))) await buildAssets(options.assets, directory);
+    else
+      for (const file of ["client.js", "highlight.js", "index.html", "styles.css"])
+        await copyFile(join(options.assets, file), join(directory, file));
+    const client = await readFile(join(directory, "client.js"), "utf8");
+    const html = await readFile(join(directory, "index.html"), "utf8");
+    const css = await readFile(join(directory, "styles.css"), "utf8");
+    const highlighter = await readFile(join(directory, "highlight.js"), "utf8");
     const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-    // Instrument only the temporary served copy, never the production client.
-    await writeFile(
-      join(directory, "client.js"),
-      client +
-        `
-window.__piBenchmarkRender = (snapshot) => {
-  const start = performance.now();
-  render(JSON.parse(snapshot));
-  transcript.getBoundingClientRect();
-  return performance.now() - start;
-};
-`,
-    );
-    await writeFile(join(directory, "index.html"), html);
-    await writeFile(join(directory, "styles.css"), css);
     // A real, empty runtime serves the app/catalog/highlighter. No provider,
     // credentials, sessions or tools are used by this synthetic workload.
     sessions = await Sessions.open({
@@ -320,7 +307,24 @@ window.__piBenchmarkRender = (snapshot) => {
         const errors: Error[] = [];
         page.on("pageerror", (error) => errors.push(error));
         await page.goto(base);
-        await page.waitForFunction(() => typeof window.__piBenchmarkRender === "function");
+        // Import the public renderer export, not private names that minifiers
+        // can rename. The timed code uses the exact served production module.
+        // The literal browser import avoids tsc adding a Node-side import
+        // rewriting helper to a function that Playwright serializes.
+        const frontend = await page.evaluateHandle<{ render: (snapshot: Snapshot) => void }>(
+          "import('/client.js')",
+        );
+        await page.evaluate(({ render }) => {
+          const transcript = document.getElementById("transcript");
+          if (!transcript) throw new Error("Missing transcript");
+          window.__piBenchmarkRender = (snapshot) => {
+            const start = performance.now();
+            render(JSON.parse(snapshot) as Snapshot);
+            transcript.getBoundingClientRect();
+            return performance.now() - start;
+          };
+        }, frontend);
+        await frontend.dispose();
         await page.locator("#close-picker").click();
         const cdp = await page.context().newCDPSession(page);
         await cdp.send("Emulation.setCPUThrottlingRate", { rate: options.cpuRate });
@@ -410,7 +414,12 @@ window.__piBenchmarkRender = (snapshot) => {
         locale: "en-US",
         timezone: "UTC",
       },
-      source: { clientSha256: hash(client), cssSha256: hash(css), htmlSha256: hash(html) },
+      source: {
+        clientSha256: hash(client),
+        cssSha256: hash(css),
+        htmlSha256: hash(html),
+        highlighterSha256: hash(highlighter),
+      },
       workload: {
         version: 1,
         turns: options.turns,

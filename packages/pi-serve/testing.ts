@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -18,6 +17,7 @@ import { chromium, type Locator, type Page } from "playwright";
 import type { Sessions, Snapshot, ExecutionBinding } from "../pi-runtime/index.ts";
 import { exists, waitFor } from "../pi-runtime/testing.ts";
 import { httpServer } from "./server.ts";
+import { buildAssets } from "./build.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -190,18 +190,7 @@ export async function browserFlow(
   const source = dirname(fileURLToPath(import.meta.url));
   const screenshots = process.env.PI_SCREENSHOT_DIR;
   if (screenshots) await mkdir(screenshots, { recursive: true });
-  await writeFile(
-    join(assets, "client.js"),
-    stripTypeScriptTypes(await readFile(join(source, "client.ts"), "utf8")),
-  );
-  for (const file of ["index.html", "styles.css", "design-system.html"])
-    await writeFile(join(assets, file), await readFile(join(source, file)));
-  await writeFile(join(assets, "sw.js"), await readFile(join(source, "sw.js")));
-  for (const size of [192, 512])
-    await writeFile(
-      join(assets, `icon-${size}.png`),
-      await readFile(join(source, `icon-${size}.png`)),
-    );
+  await buildAssets(source, assets);
   const base = await serve(t, f.sessions, assets);
   const executablePath =
     process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ??

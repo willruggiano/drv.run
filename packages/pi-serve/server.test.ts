@@ -6,8 +6,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
@@ -15,6 +15,7 @@ import { fixture, model, waitFor } from "../pi-runtime/testing.ts";
 import { browserFlow, serve, snapshot, post } from "./testing.ts";
 import { parseOptions } from "./server.ts";
 import { benchmark, benchmarkFixture, benchmarkOptions } from "./benchmark.ts";
+import { buildAssets } from "./build.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -255,6 +256,44 @@ await test("CLI defaults to local execution and accepts explicit integration com
     ["--unknown", "x"],
   ])
     assert.throws(() => parseOptions(args), Error);
+});
+
+await test("built highlighter preserves selected languages and is served as a static module", async (t) => {
+  const assets = await mkdtemp(join(tmpdir(), "pi-serve-build-"));
+  t.after(() => rm(assets, { recursive: true, force: true }));
+  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  const { default: highlighter }: { default: typeof import("highlight.js") } = await import(
+    pathToFileURL(join(assets, "highlight.js")).href
+  );
+  assert.deepEqual(highlighter.listLanguages().sort(), [
+    "bash",
+    "css",
+    "diff",
+    "go",
+    "javascript",
+    "json",
+    "nix",
+    "python",
+    "rust",
+    "sql",
+    "typescript",
+    "xml",
+  ]);
+  for (const [alias, name] of [
+    ["js", "javascript"],
+    ["ts", "typescript"],
+    ["html", "xml"],
+  ])
+    assert.equal(highlighter.getLanguage(alias), highlighter.getLanguage(name));
+  const f = await fixture(t);
+  const base = await serve(t, f.sessions, assets);
+  const response = await fetch(`${base}/highlight.js`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/javascript; charset=utf-8");
+  assert.deepEqual(
+    Buffer.from(await response.arrayBuffer()),
+    await readFile(join(assets, "highlight.js")),
+  );
 });
 
 await test("renderer benchmark validates options and builds deterministic paired history", () => {
