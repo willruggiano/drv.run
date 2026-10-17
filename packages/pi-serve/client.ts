@@ -287,13 +287,27 @@ function renderSessions(): void {
   empty.textContent = query ? "No matching sessions" : "No sessions";
 }
 
-function codeBlock(text: string, language = ""): HTMLElement {
+function codeBlock(text: string, language = "", disclosure?: HTMLDetailsElement): HTMLElement {
   const pre = document.createElement("pre");
   const code = document.createElement("code");
+  code.textContent = text;
   if (language && hljs.getLanguage(language)) {
-    // highlight.js escapes all input before adding its own span markup.
-    code.innerHTML = hljs.highlight(text, { language, ignoreIllegals: true }).value;
-  } else code.textContent = text;
+    const highlight = () => {
+      // highlight.js escapes all input before adding its own span markup.
+      code.innerHTML = hljs.highlight(text, { language, ignoreIllegals: true }).value;
+    };
+    if (disclosure && !disclosure.open) {
+      // Keep raw text searchable without parsing thousands of hidden spans.
+      const onToggle = () => {
+        if (!disclosure.open) return;
+        disclosure.removeEventListener("toggle", onToggle);
+        highlight();
+        // Highlighting replaces text nodes referenced by search ranges.
+        if (!searchBar.hidden) updateSearch();
+      };
+      disclosure.addEventListener("toggle", onToggle);
+    } else highlight();
+  }
   pre.append(code);
   return pre;
 }
@@ -492,14 +506,10 @@ function toolDetails(node: HTMLElement, data: unknown): void {
   const summary = document.createElement("summary");
   summary.textContent = patch ? "Changes" : "Details";
   details.open = !!patch;
-  details.append(
-    summary,
-    codeBlock(patch ?? JSON.stringify(data, null, 2), patch ? "diff" : "json"),
-  );
+  details.append(summary);
   if ("calls" in data && Array.isArray(data.calls)) {
     summary.textContent = `Nested tools · ${data.calls.length}${"complete" in data && data.complete === false ? " · partial record" : ""}`;
     details.className = "nested-tools";
-    details.replaceChildren(summary);
     for (const call of data.calls) {
       if (!call || typeof call !== "object") continue;
       const row = document.createElement("details");
@@ -537,9 +547,12 @@ function toolDetails(node: HTMLElement, data: unknown): void {
     const raw = document.createElement("details");
     const label = document.createElement("summary");
     label.textContent = "Raw details";
-    raw.append(label, codeBlock(JSON.stringify(data, null, 2), "json"));
+    raw.append(label, codeBlock(JSON.stringify(data, null, 2), "json", raw));
     details.append(raw);
-  }
+  } else
+    details.append(
+      codeBlock(patch ?? JSON.stringify(data, null, 2), patch ? "diff" : "json", details),
+    );
   node.append(details);
 }
 
@@ -763,6 +776,16 @@ transcript.addEventListener(
   true,
 );
 
+const messageTime = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
+const messageDateTime = new Intl.DateTimeFormat([], {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "numeric",
+  second: "numeric",
+});
+
 function content(
   node: HTMLElement,
   message: Message,
@@ -792,8 +815,8 @@ function content(
       const time = document.createElement("time");
       time.className = "message-time";
       time.dateTime = date.toISOString();
-      time.textContent = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      time.title = date.toLocaleString();
+      time.textContent = messageTime.format(date);
+      time.title = messageDateTime.format(date);
       heading.append(time);
     }
     node.append(heading);
@@ -1055,7 +1078,10 @@ function render(snapshot: Snapshot): void {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
         summary.textContent = entry.kind === "pi.reset" ? "Context reset" : "Context compacted";
-        details.append(summary, codeBlock(JSON.stringify(entry.data ?? {}, null, 2), "json"));
+        details.append(
+          summary,
+          codeBlock(JSON.stringify(entry.data ?? {}, null, 2), "json", details),
+        );
         node.append(details);
       });
     entry.model?.forEach((message, index) => {

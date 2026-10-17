@@ -551,6 +551,7 @@ export async function browserFlow(
           isError: false,
           timestamp: 1,
           details: {
+            note: '<img src=x onerror="document.body.dataset.metadataInjected = 1">',
             calls: [
               { id: 1, name: "read", args: '{"path":"example...', status: "ok", durationMs: 2 },
               { id: 2, name: "read", args: '{"path":"pending.txt"}', status: "pending" },
@@ -671,6 +672,43 @@ export async function browserFlow(
     await reconnected.locator('.tool-call[data-call-id="code-history"]').screenshot({
       path: join(screenshots, "mobile-tool-statuses.png"),
     });
+  // Collapsed metadata keeps searchable/copyable text, but no syntax spans.
+  const historyCall = reconnected.locator('.tool-call[data-call-id="code-history"]');
+  const rawDetails = historyCall.locator(".nested-tools > details").last();
+  const rawCode = rawDetails.locator("pre code");
+  const rawText = await rawCode.textContent();
+  assert(rawText);
+  assert.equal(await rawCode.locator("*").count(), 0);
+  assert.equal(await rawDetails.evaluate((node) => node.hasAttribute("open")), false);
+  await openMessageActions(reconnected, historyCall.locator(":scope > .message-actions"));
+  await reconnected.getByRole("button", { name: "Copy details", exact: true }).click();
+  assert.deepEqual(
+    JSON.parse(await reconnected.evaluate(() => navigator.clipboard.readText())),
+    JSON.parse(rawText),
+  );
+  await reconnected.locator("#notice").click();
+  await reconnected.click("#menu-toggle");
+  await reconnected.click("#find");
+  await reconnected.fill("#search", "example");
+  await rawCode.locator(".hljs-attr").first().waitFor();
+  assert.equal(await rawDetails.evaluate((node) => node.hasAttribute("open")), true);
+  assert.equal(await rawCode.textContent(), rawText);
+  assert.equal(await rawCode.locator("img").count(), 0);
+  assert.equal(await reconnected.evaluate(() => document.body.dataset.metadataInjected), undefined);
+  assert(
+    await rawCode.evaluate((node) =>
+      Array.from(CSS.highlights.get("pi-search") ?? []).some((range) =>
+        node.contains(range.startContainer),
+      ),
+    ),
+  );
+  await reconnected.press("#search", "Escape");
+  const syntax = await rawCode.locator(".hljs-attr").first().elementHandle();
+  assert(syntax);
+  await rawDetails.locator(":scope > summary").click();
+  await rawDetails.locator(":scope > summary").click();
+  assert.equal(await syntax.evaluate((node) => node.isConnected), true);
+
   const nestedError = reconnected.locator(
     '.nested-tools .tool-call[data-state="error"] > summary > .tool-status',
   );
@@ -772,6 +810,20 @@ export async function browserFlow(
   assert.equal(await secondCall.count(), 1);
   assert.equal(await secondCall.evaluate((node) => node.hasAttribute("open")), true);
   if (!f.extended) return;
+  for (const [locale, timezoneId] of [
+    ["de-DE", "Europe/Berlin"],
+    ["en-US", "America/Los_Angeles"],
+  ]) {
+    const localized = await browser.newContext({ locale, timezoneId });
+    try {
+      const page = await localized.newPage();
+      await page.goto(url);
+      await page.waitForSelector('.tool-call[data-call-id="parallel-first"]');
+      await assertMessageTimestamps(page);
+    } finally {
+      await localized.close();
+    }
+  }
 
   // Completed tool subtrees must survive unrelated runs, not merely look the
   // same after being rebuilt (which loses selection and repeats highlighting).
