@@ -63,12 +63,14 @@ h1 { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; margin: 0; overfl
 article { padding: 14px 0; scroll-margin: 16px; } article + article { border-top: 1px solid var(--surface-subtle); }
 article > header { color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; min-height: 24px; }
 article[data-role=user] > header { color: var(--muted); }
+.message-time { margin-left: auto; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.message-actions + .message-time { margin-left: 0; }
 article.same-speaker { border-top: 0; padding-top: 4px; position: relative; }
 article.same-speaker:has(> header > .message-actions) { padding-right: 32px; }
 article.same-speaker > header { position: absolute; right: 0; top: 4px; margin: 0; min-height: 0; }
-article.same-speaker > header > .speaker { display: none; }
+article.same-speaker > header > :is(.speaker, .message-time) { display: none; }
 article[data-role=toolResult] { padding: 4px 0; border-top: 0; }
-.tool-call, .thinking { border-left: 2px solid var(--line); padding-left: 10px; margin: var(--trace-gap) 0; font-size: 12px; }
+.tool-call, .thinking { margin: var(--trace-gap) 0; font-size: 12px; }
 /* Preserve the same trace-block gap within and across assistant messages. */
 article:has(> :is(.tool-call, .thinking):last-child):has(+ article.same-speaker > :is(.tool-call, .thinking):is(:first-child, header + *)) {
   padding-bottom: 0;
@@ -76,7 +78,7 @@ article:has(> :is(.tool-call, .thinking):last-child):has(+ article.same-speaker 
   & + article.same-speaker { padding-top: var(--trace-gap); }
   & + article.same-speaker > :is(.tool-call, .thinking):is(:first-child, header + *) { margin-top: 0; }
 }
-.thinking { color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; padding-top: 3px; padding-bottom: 3px; }
+.thinking { border-left: 2px solid var(--line); padding-left: 10px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; padding-top: 3px; padding-bottom: 3px; }
 .tool-call { display: flow-root; }
 .tool-call summary { list-style: none; }
 .tool-call summary::marker { content: ""; }
@@ -163,6 +165,7 @@ a { color: var(--link); } [hidden] { display: none !important; }
   #transcript article, #transcript .tool-call { position: relative; }
   #transcript .message-actions { position: absolute; width: 1px; min-width: 0; height: 1px; min-height: 0; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); border: 0; opacity: 0; }
   article.same-speaker:has(> header > .message-actions) { padding-right: 0; }
+  .message-actions + .message-time { margin-left: auto; }
   #transcript article { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   #transcript :is(pre, code, a, img, input, textarea, select, [contenteditable]) { -webkit-touch-callout: default; -webkit-user-select: text; user-select: text; }
   #message-menu { inset: 8px auto auto 8px; width: 260px; max-width: calc(100% - 16px); max-height: calc(100dvh - 16px); padding: 8px; border-radius: 12px; }

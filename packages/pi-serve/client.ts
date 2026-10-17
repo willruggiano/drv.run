@@ -786,7 +786,18 @@ function content(
       : message.role === "assistant"
         ? "Pi"
         : "You";
-  if (!embedded) node.append(heading);
+  if (!embedded) {
+    const date = new Date(message.timestamp);
+    if (Number.isFinite(date.getTime())) {
+      const time = document.createElement("time");
+      time.className = "message-time";
+      time.dateTime = date.toISOString();
+      time.textContent = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      time.title = date.toLocaleString();
+      heading.append(time);
+    }
+    node.append(heading);
+  }
   if (typeof message.content === "string") {
     node.append(markdown(message.content));
     return;
@@ -1063,7 +1074,11 @@ function render(snapshot: Snapshot): void {
                   .join("\n")
               : "";
           node.dataset.search = `${messageText(message)}\n${resultText}`.toLocaleLowerCase();
-          node.querySelector("header")?.append(messageActions(entry.id, message));
+          const heading = node.querySelector("header");
+          heading?.insertBefore(
+            messageActions(entry.id, message),
+            heading.querySelector(".message-time"),
+          );
         });
     });
   }

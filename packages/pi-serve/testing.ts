@@ -66,6 +66,31 @@ export function post(url: string, data: unknown) {
   });
 }
 
+async function assertMessageTimestamps(page: Page): Promise<void> {
+  const times = await page.locator("article > header > .message-time").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const date = new Date((node as HTMLTimeElement).dateTime);
+      return {
+        text: node.textContent,
+        expected: date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        title: (node as HTMLElement).title,
+        expectedTitle: date.toLocaleString(),
+        visible: node.checkVisibility(),
+        speakerVisible: node.parentElement!.querySelector(".speaker")!.checkVisibility(),
+        right: node.getBoundingClientRect().right,
+        edge: node.parentElement!.getBoundingClientRect().right,
+      };
+    }),
+  );
+  assert(times.length > 0);
+  for (const time of times) {
+    assert.equal(time.text, time.expected);
+    assert.equal(time.title, time.expectedTitle);
+    assert.equal(time.visible, time.speakerVisible);
+    if (time.visible) assert(Math.abs(time.right - time.edge) < 1);
+  }
+}
+
 async function assertTouchMenuPosition(page: Page, point: { x: number; y: number }): Promise<void> {
   const layout = await page.locator("#message-menu").evaluate((node) => {
     const rect = node.getBoundingClientRect();
@@ -309,6 +334,16 @@ export async function browserFlow(
   });
   await page.waitForFunction(() => document.querySelectorAll("#transcript article").length === 3);
   assert.equal(await page.locator(".tool-call").count(), 1);
+  await assertMessageTimestamps(page);
+  assert.deepEqual(
+    await page
+      .locator("article > header > .message-time")
+      .evaluateAll((nodes) => nodes.map((node) => (node as HTMLTimeElement).dateTime)),
+    (await session.history())
+      .flatMap((entry) => entry.model ?? [])
+      .filter((message) => message.role === "user" || message.role === "assistant")
+      .map((message) => new Date(message.timestamp).toISOString()),
+  );
   assert.equal(await page.locator(".thinking").count(), 2);
   assert.equal(await page.locator(".thinking").first().textContent(), "Thinking…");
   assert.equal(await page.locator(".thinking").last().textContent(), thinkingText);
@@ -333,13 +368,15 @@ export async function browserFlow(
         const style = getComputedStyle(node);
         const tool = getComputedStyle(document.querySelector(".tool-call")!);
         const summary = getComputedStyle(document.querySelector(".tool-call > summary")!);
-        return [style.borderLeft, style.color, tool.borderLeft, summary.color];
-      })
-      .then(([border, color, toolBorder, toolColor]) => [
-        border === toolBorder,
-        color === toolColor,
-      ]),
-    [true, true],
+        return [
+          style.borderLeftWidth,
+          style.paddingLeft,
+          tool.borderLeftWidth,
+          tool.paddingLeft,
+          style.color === summary.color,
+        ];
+      }),
+    ["2px", "10px", "0px", "0px", true],
   );
   assert((await page.locator("#prompt").boundingBox())!.height < emptyPrompt.height);
   assert.equal(await page.locator('article[data-role="toolResult"]').count(), 0);
@@ -1646,7 +1683,16 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       (node as HTMLDetailsElement).open = true;
       node.querySelector<HTMLDetailsElement>(".nested-tools")!.open = true;
     });
+    await assertMessageTimestamps(page);
     assert.equal(await call.locator(".tool-duration").count(), 5);
+    assert.deepEqual(
+      await call
+        .locator(".tool-call")
+        .evaluateAll((nodes) => [
+          ...new Set(nodes.map((node) => getComputedStyle(node).borderLeftWidth)),
+        ]),
+      ["0px"],
+    );
     assert.equal(
       await call.locator(":scope > summary > .tool-duration").getAttribute("title"),
       `Duration: ${codeResult.durationMs}ms`,
@@ -1754,6 +1800,10 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       for (let index = 0; index < 5; index++) {
         const call = calls.nth(index);
         assert.equal(await call.locator(":scope > header > .speaker").isVisible(), index === 0);
+        assert.equal(
+          await call.locator(":scope > header > .message-time").isVisible(),
+          index === 0,
+        );
         if (index > 0) {
           assert.equal(await call.evaluate((node) => getComputedStyle(node).borderTopWidth), "0px");
           if (index === 1) assert((await call.boundingBox())!.height < 36);
@@ -1765,7 +1815,8 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
           "0",
         );
       }
-      // Measure the actual space between rails, including after expanded output.
+      await assertMessageTimestamps(reconnected);
+      // Measure the actual space between blocks, including after expanded output.
       for (const open of [false, true]) {
         await calls
           .first()
