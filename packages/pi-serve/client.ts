@@ -1,3 +1,4 @@
+import { installPickerKeyMappings } from "./key-mappings.ts";
 import type { ImageContent, Message } from "@earendil-works/pi-ai";
 import type {
   AgentState,
@@ -1591,6 +1592,7 @@ function openPicker(): void {
 element("workspace", HTMLButtonElement).onclick = openPicker;
 element("close-picker", HTMLButtonElement).onclick = () => picker.close();
 sessionFilter.oninput = renderSessions;
+installPickerKeyMappings(picker);
 for (const popover of [menu, inputMenu])
   popover.addEventListener("click", (event) => {
     if (

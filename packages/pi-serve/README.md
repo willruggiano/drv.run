@@ -1,5 +1,17 @@
 # pi-serve
 
+## Keyboard shortcuts
+
+Ctrl/⌘+K opens Sessions. Outside text fields and native selects, `t` opens
+the target selector, `m` opens the model selector, and `n` creates a session
+using the selected target/model. Escape dismisses the dialog.
+
+Focused browser tests (with Chromium available):
+
+```sh
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$(command -v chromium) node --test packages/pi-serve/key-mappings.test.ts
+```
+
 ## Benchmarks
 
 “Minified” uses esbuild 0.27.2. Deltas are relative to the unminified build at

@@ -21,6 +21,8 @@
       ./package-lock.json
       ./tsconfig.json
       ./server.ts
+      ./key-mappings.ts
+      ./key-mappings.test.ts
       ./client.ts
       ./highlight.ts
       ./build.ts
