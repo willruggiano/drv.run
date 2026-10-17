@@ -388,7 +388,7 @@ function toolCommand(name: string, args: Record<string, unknown> = {}): string {
   return Object.keys(args).length ? `${label}\n${JSON.stringify(args, null, 2)}` : label;
 }
 
-function toolSummary(command: string, state: string): HTMLElement {
+function toolSummary(command: string, state: string, durationMs?: number): HTMLElement {
   const summary = document.createElement("summary");
   const status = document.createElement("span");
   status.className = "tool-status";
@@ -420,6 +420,15 @@ function toolSummary(command: string, state: string): HTMLElement {
   label.className = "tool-command";
   label.textContent = command;
   summary.append(status, label);
+  if (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0) {
+    const duration = document.createElement("span");
+    duration.className = "tool-duration";
+    duration.textContent =
+      durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`;
+    duration.title = `Duration: ${durationMs}ms`;
+    duration.setAttribute("aria-label", `Duration: ${durationMs} milliseconds`);
+    summary.append(duration);
+  }
   return summary;
 }
 
@@ -500,7 +509,7 @@ function toolDetails(node: HTMLElement, data: unknown): void {
         call.arguments && typeof call.arguments === "object"
           ? toolCommand(String(call.name), call.arguments)
           : `${toolLabel(String(call.name))}${typeof call.args === "string" ? `\n${call.args}` : ""}`;
-      row.append(toolSummary(command, String(call.status)));
+      row.append(toolSummary(command, String(call.status), call.durationMs));
       if (typeof call.argumentsBytes === "number")
         row.append(`Arguments omitted (${call.argumentsBytes} bytes)`);
       if (typeof call.error === "string") {
@@ -970,7 +979,10 @@ function render(snapshot: Snapshot): void {
     details.dataset.disclosure = `call:${call.id}`;
     details.dataset.state = state;
     details.open = !!failed;
-    details.append(toolSummary(toolCommand(call.name, call.arguments), state));
+    const durationMs =
+      result?.message.durationMs ??
+      (slot && "summary" in slot ? slot.summary?.durationMs : undefined);
+    details.append(toolSummary(toolCommand(call.name, call.arguments), state, durationMs));
     if (result) {
       const output = document.createElement("div");
       output.className = "tool-result";

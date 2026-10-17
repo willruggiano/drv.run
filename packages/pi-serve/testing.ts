@@ -508,6 +508,7 @@ export async function browserFlow(
         {
           role: "toolResult",
           toolCallId: "code-history",
+          durationMs: 1234,
           toolName: "codemode",
           content: [{ type: "text", text: "Nested call finished" }],
           isError: false,
@@ -520,6 +521,7 @@ export async function browserFlow(
                 id: index + 3,
                 name: "read",
                 args: JSON.stringify({ path: `${status}.txt` }),
+                ...(status === "done" ? { durationMs: 0 } : {}),
                 status,
               })),
             ],
@@ -540,6 +542,7 @@ export async function browserFlow(
                 name: "read",
                 status: "error",
                 argumentsBytes: 300,
+                durationMs: 65000,
                 error: "File unavailable",
               },
             ],
@@ -587,6 +590,29 @@ export async function browserFlow(
     assert.equal(await status.getAttribute("aria-label"), state);
     assert.equal(await status.getAttribute("title"), state);
   }
+  assert.equal(
+    await reconnected
+      .locator('.tool-call[data-call-id="code-history"] > summary > .tool-duration')
+      .textContent(),
+    "1.2s",
+  );
+  for (const [state, duration] of [
+    ["ok", "2ms"],
+    ["done", "0ms"],
+    ["error", "65.0s"],
+  ] as const)
+    assert.equal(
+      await reconnected
+        .locator(`.nested-tools .tool-call[data-state="${state}"] > summary > .tool-duration`)
+        .textContent(),
+      duration,
+    );
+  assert.equal(
+    await reconnected
+      .locator('.nested-tools .tool-call[data-state="pending"] .tool-duration')
+      .count(),
+    0,
+  );
   await reconnected.locator('.tool-call[data-call-id="code-history"] > summary').click();
   await reconnected
     .locator('.tool-call[data-call-id="code-history"] .nested-tools > summary')
@@ -1580,6 +1606,16 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       await call.evaluate((node) => {
         (node as HTMLDetailsElement).open = true;
       });
+      // Finished nested tools already have timing, even while their parent runs.
+      await page.waitForSelector(
+        '.tool-call[data-call-id="real-codemode"] .tool-call[data-tool="write"] > summary > .tool-duration',
+        { state: "attached" },
+      );
+      assert.equal(await call.locator(":scope > summary > .tool-duration").count(), 0);
+      assert.equal(
+        await call.locator('.tool-call[data-state="running"] > summary > .tool-duration').count(),
+        0,
+      );
       await call.scrollIntoViewIfNeeded();
       await shot(page, `${size}-codemode-running`);
     }
@@ -1610,6 +1646,33 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       (node as HTMLDetailsElement).open = true;
       node.querySelector<HTMLDetailsElement>(".nested-tools")!.open = true;
     });
+    assert.equal(await call.locator(".tool-duration").count(), 5);
+    assert.equal(
+      await call.locator(":scope > summary > .tool-duration").getAttribute("title"),
+      `Duration: ${codeResult.durationMs}ms`,
+    );
+    // Timing stays at the right edge without overlapping long or expanded commands.
+    for (const open of [false, true]) {
+      await call.locator(".nested-tools > .tool-call").evaluateAll((nodes, expanded) => {
+        for (const node of nodes) (node as HTMLDetailsElement).open = expanded;
+      }, open);
+      const positions = await call.locator(".tool-duration").evaluateAll((nodes) =>
+        nodes.map((node) => ({
+          right: node.getBoundingClientRect().right,
+          edge: node.parentElement!.getBoundingClientRect().right,
+          left: node.getBoundingClientRect().left,
+          commandRight: node.parentElement!.querySelector(".tool-command")!.getBoundingClientRect()
+            .right,
+        })),
+      );
+      for (const position of positions) {
+        assert(Math.abs(position.right - position.edge) < 1);
+        assert(position.left - position.commandRight >= 7);
+      }
+    }
+    await call.locator(".nested-tools > .tool-call").evaluateAll((nodes) => {
+      for (const node of nodes) (node as HTMLDetailsElement).open = false;
+    });
     await call.scrollIntoViewIfNeeded();
     await shot(page, `${size}-codemode-completed`);
   }
@@ -1637,6 +1700,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     });
     const call = page.locator('.tool-call[data-call-id="failed-codemode"]');
     assert.equal(await call.locator(".nested-tools .error").count(), 1);
+    assert.equal(await call.locator(".tool-duration").count(), 2);
     await call.evaluate((node) => {
       (node as HTMLDetailsElement).open = true;
       node.querySelector<HTMLDetailsElement>(".nested-tools")!.open = true;

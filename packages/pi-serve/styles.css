@@ -84,6 +84,7 @@ article:has(> :is(.tool-call, .thinking):last-child):has(+ article.same-speaker 
 .tool-call > summary { display: flex; align-items: baseline; gap: 8px; font-family: var(--font-mono); }
 .tool-command { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tool-call[open] > summary > .tool-command { white-space: pre-wrap; overflow-wrap: anywhere; overflow: visible; }
+.tool-duration { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tool-status { flex: none; font: 11px var(--font-ui); white-space: nowrap; color: var(--muted); }
 .tool-status[data-state=running] { display: inline-grid; grid-template-columns: repeat(2, 2px); grid-template-rows: repeat(2, 2px); gap: 2px; align-self: center; }
 .tool-status[data-state=running] > span { border-radius: 50%; background: currentColor; animation: tool-spinner 900ms linear infinite; }
