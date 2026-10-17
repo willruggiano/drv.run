@@ -11,7 +11,7 @@
 </head>
 <body>
   <header class="bar">
-    <h1><button id="title" type="button" popovertarget="conversation-menu" aria-haspopup="true">No session</button></h1>
+    <h1><button id="title" type="button" popovertarget="conversation-menu" aria-haspopup="true">No session</button><span id="status" class="session-status" data-state="none" role="status" title="No session"><span class="sr-only">No session</span></span></h1>
     <button id="menu-toggle" aria-label="App menu" type="button" popovertarget="app-menu" aria-haspopup="true"><span aria-hidden="true">···</span></button>
   </header>
   <div id="conversation-menu" popover aria-label="Session menu">
@@ -20,12 +20,10 @@
     <label><span>Conversation</span><select id="branches" aria-label="Conversation" disabled><option>Main</option></select></label>
     <button id="find" disabled>Find in conversation <kbd>⌘ F</kbd></button>
     <button id="export" disabled>Export JSON</button>
-    <p id="status" role="status">Ready</p>
   </div>
   <div id="app-menu" popover aria-label="App menu">
     <button id="wrap-code" aria-pressed="false">Wrap code <span aria-hidden="true">Off</span></button>
     <button id="install" hidden>Install app</button>
-    <p id="pwa-status"></p>
   </div>
   <div id="message-menu" popover="manual" aria-label="Message actions">
     <button id="copy-message">Copy message</button>
@@ -106,8 +104,6 @@
       <dt>Context window</dt><dd id="usage-window"></dd>
       <dt>Auto compaction</dt><dd id="usage-auto"></dd>
     </dl>
-    <p id="usage-connection" class="usage-note" hidden>Disconnected · showing the last received values.</p>
-    <p class="usage-note">Totals include model, tool and compaction usage in this conversation, excluding inherited fork spend. Context excludes messages after the last completed response. Cost is an estimate, not a bill or subscription balance.</p>
   </dialog>
   <script type="module" src="/client.js"></script>
 </body>

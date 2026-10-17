@@ -62,7 +62,7 @@ const send = element("send", HTMLButtonElement);
 const stop = element("stop", HTMLButtonElement);
 const resume = element("resume", HTMLButtonElement);
 const notice = element("notice", HTMLDivElement);
-const status = element("status", HTMLParagraphElement);
+const status = element("status", HTMLSpanElement);
 const title = element("title", HTMLButtonElement);
 const create = element("create", HTMLButtonElement);
 const recovery = element("recovery", HTMLDivElement);
@@ -181,23 +181,31 @@ function controls(): void {
   document.body.classList.toggle("offline", !navigator.onLine);
   branches.disabled = !active;
   bottomLine.dataset.connected = String(connected);
-  element("usage-connection", HTMLParagraphElement).hidden = connected;
   const action = busy && !recovering ? (submissionMode === "steer" ? "Steer" : "Queue") : "Send";
   send.setAttribute("aria-label", action);
   send.title = `${action} (Ctrl/⌘ Enter)`;
-  status.textContent = !navigator.onLine
-    ? "Offline"
+  const state = !navigator.onLine
+    ? "offline"
     : !active
-      ? "Select a target"
+      ? "none"
       : !connected
-        ? "Reconnecting…"
+        ? "reconnecting"
         : recovering
-          ? "Interrupted"
+          ? "interrupted"
           : busy
-            ? "Working"
-            : "Ready";
-  status.dataset.state = !connected || recovering ? "disconnected" : "connected";
-  status.title = status.textContent;
+            ? "working"
+            : "ready";
+  const label = {
+    offline: "Offline",
+    none: "No session",
+    reconnecting: "Reconnecting",
+    interrupted: "Interrupted",
+    working: "Working",
+    ready: "Ready",
+  }[state];
+  status.dataset.state = state;
+  status.title = label;
+  status.querySelector(".sr-only")!.textContent = label;
 }
 function targetKey(binding: ExecutionBinding): string {
   return JSON.stringify([binding.provider, binding.target, binding.cwd]);
@@ -1470,13 +1478,10 @@ window.addEventListener("online", () => {
     })
     .catch(report);
 });
-const pwaStatus = element("pwa-status", HTMLParagraphElement);
 if ("serviceWorker" in navigator && isSecureContext) {
   void navigator.serviceWorker
     .register("/sw.js")
     .then((registration) => {
-      pwaStatus.textContent =
-        "App shell available offline. Conversations and tools require a connection.";
       registration.addEventListener("updatefound", () => {
         const worker = registration.installing;
         worker?.addEventListener("statechange", () => {
@@ -1486,9 +1491,7 @@ if ("serviceWorker" in navigator && isSecureContext) {
       });
     })
     .catch(report);
-} else
-  pwaStatus.textContent =
-    "Install and offline support require HTTPS or localhost. Plain HTTP can still connect to your workspace.";
+}
 interface InstallEvent extends Event {
   prompt(): Promise<void>;
   userChoice: Promise<{ outcome: string }>;

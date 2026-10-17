@@ -136,10 +136,18 @@ await session.prompt("Hello");</code></pre></div>
 
   <section id="navigation" class="ds-section">
     <h2>Navigation &amp; search</h2>
+    <p class="ds-note">Session actions open from the name; app-wide options open from the three-dot button. The header status dot is always 8px, with a tooltip and screen-reader label.</p>
+    <div class="ds-row" aria-label="Session status colors">
+      <span><span class="session-status" data-state="none"></span> No session</span>
+      <span><span class="session-status" data-state="ready"></span> Ready</span>
+      <span><span class="session-status" data-state="working"></span> Working</span>
+      <span><span class="session-status" data-state="reconnecting"></span> Reconnecting</span>
+      <span><span class="session-status" data-state="offline"></span> Offline / interrupted</span>
+    </div>
     <div class="ds-panel">
-      <header class="bar"><h1><button id="title" popovertarget="conversation-menu">Refactor the workspace</button></h1><button id="menu-toggle" aria-label="App menu" popovertarget="app-menu"><span aria-hidden="true">···</span></button></header>
-      <div id="conversation-menu" popover aria-label="Session menu"><button commandfor="picker" command="show-modal">Sessions</button><button commandfor="preferences" command="show-modal">Session settings</button><label><span>Conversation</span><select id="branches" aria-label="Conversation"><option>Main</option><option>Experiment</option></select></label><button>Find in conversation</button><button>Export JSON</button><p id="status">Ready</p></div>
-      <div id="app-menu" popover aria-label="App menu"><button>Wrap code</button><button>Install app</button><p id="pwa-status">App shell available offline. Conversations and tools require a connection.</p></div>
+      <header class="bar"><h1><button id="title" popovertarget="conversation-menu">Refactor the workspace</button><span id="status" class="session-status" data-state="ready" role="status" title="Ready"><span class="sr-only">Ready</span></span></h1><button id="menu-toggle" aria-label="App menu" popovertarget="app-menu"><span aria-hidden="true">···</span></button></header>
+      <div id="conversation-menu" popover aria-label="Session menu"><button commandfor="picker" command="show-modal">Sessions</button><button commandfor="preferences" command="show-modal">Session settings</button><label><span>Conversation</span><select id="branches" aria-label="Conversation"><option>Main</option><option>Experiment</option></select></label><button>Find in conversation</button><button>Export JSON</button></div>
+      <div id="app-menu" popover aria-label="App menu"><button>Wrap code</button><button>Install app</button></div>
       <div id="search-bar"><input type="search" aria-label="Find in conversation" placeholder="Find in conversation…" value="workspace"><span id="search-count">1 / 3</span><button class="icon" aria-label="Previous match">↑</button><button class="icon" aria-label="Next match">↓</button><button class="icon" aria-label="Close search">×</button></div>
     </div>
   </section>
@@ -225,13 +233,12 @@ await session.prompt("Hello");</code></pre></div>
         <dialog id="usage-dialog" open aria-labelledby="usage-title">
           <div class="dialog-heading"><h2 id="usage-title">Conversation stats</h2><button class="icon" commandfor="usage-dialog" command="close" aria-label="Close statistics">×</button></div>
           <dl><dt>Workspace</dt><dd>/workspace</dd><dt>Repository</dt><dd>main · a1b2c3d</dd><dt>Model</dt><dd>anthropic / claude-sonnet</dd><dt>Thinking</dt><dd>high</dd><dt>Input tokens</dt><dd>12,400</dd><dt>Output tokens</dt><dd>860</dd><dt>Cache read</dt><dd>8,200</dd><dt>Cache write</dt><dd>1,000</dd><dt>Cache hit · last response</dt><dd>66.1%</dd><dt>Estimated cost · USD</dt><dd>$0.024</dd><dt>Context · last response</dt><dd>13,200 tokens · 6.6%</dd><dt>Context window</dt><dd>200,000 tokens</dd><dt>Auto compaction</dt><dd>On</dd></dl>
-          <p class="usage-note">Totals exclude inherited fork spend. Context excludes messages after the last completed response. Cost is an estimate, not a bill or subscription balance.</p>
         </dialog>
       </div>
       <div class="ds-panel ds-stack">
         <h3>Menu previews</h3>
-        <div class="ds-menu-preview" popover="manual" aria-label="Session menu preview"><button>Sessions <kbd>Ctrl K</kbd></button><button>Session settings</button><label><span>Conversation</span><select aria-label="Preview conversation"><option>Main</option><option>Experiment</option></select></label><button>Find in conversation <kbd>⌘ F</kbd></button><button>Export JSON</button><p>Ready</p></div>
-        <div class="ds-menu-preview" popover="manual" aria-label="App menu preview"><button aria-pressed="false">Wrap code <span>Off</span></button><button>Install app</button><p>App shell available offline. Conversations and tools require a connection.</p></div>
+        <div class="ds-menu-preview" popover="manual" aria-label="Session menu preview"><button>Sessions <kbd>Ctrl K</kbd></button><button>Session settings</button><label><span>Conversation</span><select aria-label="Preview conversation"><option>Main</option><option>Experiment</option></select></label><button>Find in conversation <kbd>⌘ F</kbd></button><button>Export JSON</button></div>
+        <div class="ds-menu-preview" popover="manual" aria-label="App menu preview"><button aria-pressed="false">Wrap code <span>Off</span></button><button>Install app</button></div>
         <div class="ds-menu-preview" popover="manual" aria-label="Message menu preview"><button>Copy message</button><button>Quote in reply</button><button>Fork from here</button></div>
         <div class="ds-menu-preview" popover="manual" aria-label="Tool menu preview"><button>Copy input</button><button>Copy output</button><button>Copy details</button></div>
       </div>

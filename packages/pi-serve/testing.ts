@@ -66,6 +66,36 @@ export function post(url: string, data: unknown) {
   });
 }
 
+async function assertHeaderStatus(page: Page, state: string, label: string): Promise<void> {
+  const dot = page.locator(".bar #status");
+  assert.equal(await dot.getAttribute("data-state"), state);
+  assert.equal(await dot.getAttribute("title"), label);
+  assert.equal(await dot.locator(".sr-only").textContent(), label);
+  const style = await dot.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    const css = getComputedStyle(node);
+    return {
+      width: box.width,
+      height: box.height,
+      radius: css.borderRadius,
+      color: css.backgroundColor,
+    };
+  });
+  assert.equal(style.width, 8);
+  assert.equal(style.height, 8);
+  assert.equal(style.radius, "50%");
+  const colors: Record<string, string> = {
+    ready: "rgb(175, 214, 188)",
+    working: "rgb(162, 201, 223)",
+    offline: "rgb(255, 173, 173)",
+  };
+  if (colors[state]) assert.equal(style.color, colors[state]);
+  assert.equal(
+    await page.locator("#conversation-menu #status, #app-menu p, #usage-dialog p").count(),
+    0,
+  );
+}
+
 async function assertMessageTimestamps(page: Page): Promise<void> {
   const times = await page.locator("article > header > .message-time").evaluateAll((nodes) =>
     nodes.map((node) => {
@@ -1039,24 +1069,35 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       await page.screenshot({ path: join(screenshots, `${name}.png`), fullPage: true });
   };
   const gallery = async (page: Page, size: string) => {
+    await assertHeaderStatus(page, "ready", "Ready");
     assert.equal(await page.locator(".bar button").count(), 2);
     assert.equal(await page.locator(".bar .icon, .bar select, .bar svg, .bar img").count(), 0);
     assert.equal(await page.locator("#title").textContent(), "Counter cleanup");
     assert.equal(await page.locator("#menu-toggle").textContent(), "···");
     assert.equal(await page.locator("#menu-toggle").getAttribute("aria-label"), "App menu");
     const originalTitle = await page.locator("#title").textContent();
-    await page.locator("#title").evaluate((node) => { node.textContent = "Very long session name ".repeat(30); });
+    await page.locator("#title").evaluate((node) => {
+      node.textContent = "Very long session name ".repeat(30);
+    });
     const layout = await page.locator(".bar").evaluate((bar) => {
       const title = bar.querySelector("#title")!.getBoundingClientRect();
       const menu = bar.querySelector("#menu-toggle")!.getBoundingClientRect();
       const bounds = bar.getBoundingClientRect();
-      return { left: title.left - bounds.left, right: bounds.right - menu.right, overlap: title.right > menu.left, overflow: document.documentElement.scrollWidth > innerWidth };
+      return {
+        left: title.left - bounds.left,
+        right: bounds.right - menu.right,
+        overlap: title.right > menu.left,
+        overflow: document.documentElement.scrollWidth > innerWidth,
+      };
     });
     assert(layout.left <= 16 && layout.right <= 16);
     assert.equal(layout.overlap, false);
     assert.equal(layout.overflow, false);
+    await assertHeaderStatus(page, "ready", "Ready");
     await shot(page, `${size}-header-long-name`);
-    await page.locator("#title").evaluate((node, name) => { node.textContent = name; }, originalTitle);
+    await page.locator("#title").evaluate((node, name) => {
+      node.textContent = name;
+    }, originalTitle);
     await page.click("#title");
     assert.equal(await page.locator("#settings").isVisible(), true);
     assert.equal(await page.locator("#branches").isVisible(), true);
@@ -1152,9 +1193,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#stop [aria-hidden=true]").textContent(), "×");
     assert.equal(await page.locator('label[for="prompt"]').count(), 0);
     await page.click("#menu-toggle");
-    await page.waitForFunction(() =>
-      document.querySelector("#app-menu")?.matches(":popover-open"),
-    );
+    await page.waitForFunction(() => document.querySelector("#app-menu")?.matches(":popover-open"));
     if (size === "mobile") {
       const menuBox = await page.locator("#app-menu").boundingBox();
       assert(menuBox);
@@ -1333,7 +1372,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     () => document.querySelector<HTMLElement>("#bottom-line")?.dataset.connected === "false",
   );
   await desktopPage.click("#footer-stats");
-  assert.equal(await desktopPage.locator("#usage-connection").isVisible(), true);
+  await assertHeaderStatus(desktopPage, "offline", "Offline");
   assert.equal(
     Number(await desktopPage.locator("#footer-input").getAttribute("data-value")),
     expectedInput,
@@ -1513,6 +1552,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.waitForFunction(
     () => !document.querySelector<HTMLButtonElement>("#stop")?.disabled,
   );
+  await assertHeaderStatus(reconnected, "working", "Working");
   assert.equal(await reconnected.locator("#input-mode").getAttribute("data-mode"), "followUp");
   await reconnected.click("#input-mode");
   assert.equal(await reconnected.locator("#input-mode").getAttribute("data-mode"), "steer");
