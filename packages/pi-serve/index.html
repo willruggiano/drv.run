@@ -74,6 +74,11 @@
       [popover] kbd { display: none; }
       .pickers { grid-template-columns: 1fr; } #search-bar { padding: 6px 10px; } #search-count { min-width: 30px; text-align: center; } #sessions { max-height: 30dvh; }
     }
+    /* iOS zooms focused form controls below 16px. Include landscape phones and
+       tablets without enlarging the rest of the UI or restricting pinch zoom. */
+    @media (max-width: 650px), (any-pointer: coarse) {
+      input, textarea, select, #branches { font-size: 16px; }
+    }
   </style>
 </head>
 <body>

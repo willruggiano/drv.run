@@ -367,6 +367,38 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   );
   await desktop.close();
   await gallery(reconnected, "mobile");
+  // Chromium does not reproduce iOS's keyboard-triggered auto-zoom. Guard the
+  // computed 16px minimum that prevents it, including controls inside dialogs
+  // and touch viewports wider than the phone layout breakpoint.
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 844, height: 390 },
+    { width: 768, height: 1024 },
+    { width: 1024, height: 768 },
+  ]) {
+    await reconnected.setViewportSize(viewport);
+    const undersized = await reconnected
+      .locator('input:not([type="file"]), textarea, select')
+      .evaluateAll((nodes) =>
+        nodes
+          .map((node) => ({ id: node.id, size: parseFloat(getComputedStyle(node).fontSize) }))
+          .filter((field) => field.size < 16),
+      );
+    assert.deepEqual(
+      undersized,
+      [],
+      `Touch form controls at ${viewport.width}px must not trigger iOS focus zoom`,
+    );
+    const scale = await reconnected.evaluate(() => visualViewport?.scale);
+    await reconnected.fill("#prompt", "Check the input without changing the page zoom.");
+    assert.equal(await reconnected.evaluate(() => visualViewport?.scale), scale);
+    assert.equal(
+      await reconnected.locator("#prompt").evaluate((node) => node === document.activeElement),
+      true,
+    );
+    await shot(reconnected, `touch-focused-${viewport.width}`);
+    await reconnected.fill("#prompt", "");
+  }
   await reconnected.setViewportSize({ width: 320, height: 640 });
   await reconnected.locator("#transcript").evaluate((node) => {
     node.scrollTop = node.scrollHeight;
