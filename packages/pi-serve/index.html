@@ -68,9 +68,9 @@
     #bottom-line { padding: 0 max(20px, calc((100% - 820px)/2)) 8px; color: var(--muted); font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
     .footer-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
     #bottom-line button { font: inherit; color: inherit; min-height: 24px; padding: 0; border: none; background: transparent; text-align: left; min-width: 0; } #bottom-line button:hover { color: #dce0df; }
-    #footer-location { display: flex; flex: 1; gap: 6px; overflow: hidden; } #footer-workspace { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } #footer-git { flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a9b8ae; }
+    #footer-location { display: flex; align-items: center; flex: 1; gap: 6px; overflow: hidden; } #footer-workspace { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } #footer-git { flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a9b8ae; }
     #footer-model { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right !important; }
-    #footer-stats { display: flex; flex-wrap: wrap; column-gap: 9px; } #footer-stats span { white-space: nowrap; }
+    #footer-stats { display: flex; align-items: center; align-content: center; flex-wrap: wrap; column-gap: 9px; } #footer-stats span { white-space: nowrap; }
     #footer-context { white-space: nowrap; flex-shrink: 0; } #footer-context[data-level=warning] { color: #e5bd8e; } #footer-context[data-level=critical] { color: #ffadad; }
     #bottom-line[data-connected=false] { opacity: .65; }
     #usage-dialog dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 6px 18px; margin: 10px 0; font-size: 13px; } #usage-dialog dt { color: var(--muted); } #usage-dialog dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; } #usage-dialog .usage-note { font-size: 11px; margin-bottom: 0; }

@@ -307,6 +307,28 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
     );
+    // Compare text, not button boxes: flex children must share the vertical
+    // center of the adjacent native button label, including taller touch targets.
+    const offsets = await page.locator(".footer-row:visible").evaluateAll((rows) => {
+      const textCenter = (button: Element) => {
+        const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+        const rects: DOMRect[] = [];
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!node.textContent?.trim()) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          rects.push(...Array.from(range.getClientRects()).filter((rect) => rect.height > 0));
+        }
+        return (
+          (Math.min(...rects.map((rect) => rect.top)) +
+            Math.max(...rects.map((rect) => rect.bottom))) /
+          2
+        );
+      };
+      return rows.map((row) => textCenter(row.children[0]) - textCenter(row.children[1]));
+    });
+    for (const offset of offsets)
+      assert(Math.abs(offset) <= 1, `${name}: footer text offset ${offset}px`);
     if (screenshots)
       await page.screenshot({ path: join(screenshots, `${name}.png`), fullPage: true });
   };
