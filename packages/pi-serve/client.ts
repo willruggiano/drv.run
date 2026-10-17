@@ -369,12 +369,120 @@ async function refreshBranches(): Promise<void> {
   if (conversation !== undefined) branches.value = String(conversation);
 }
 
-function content(node: HTMLElement, message: Message): void {
+// Arguments may be incomplete while streaming. Never parse display previews (in
+// particular codemode's truncated args) as JSON.
+function toolLabel(name: string, args: Record<string, unknown> = {}): string {
+  const short = name.split(".").at(-1) ?? name;
+  const path = typeof args.path === "string" ? args.path : "";
+  if (short === "bash") {
+    const command = typeof args.command === "string" ? args.command.trim() : "Shell command";
+    const line = command.split("\n")[0].slice(0, 140);
+    return `$ ${line}${line.length < command.length ? "…" : ""}`;
+  }
+  if (short === "codemode") return "Code · JavaScript";
+  const verb = {
+    read: "Read",
+    edit: "Edit",
+    write: "Write",
+    grep: "Search",
+    find: "Find",
+    ls: "List",
+  }[short];
+  return `${verb ?? name}${path ? ` · ${path}` : ""}`;
+}
+
+function toolInput(name: string, args: Record<string, unknown>): HTMLElement {
+  const short = name.split(".").at(-1);
+  if (short === "bash" && typeof args.command === "string") return codeBlock(args.command, "bash");
+  if (short === "codemode" && typeof args.code === "string")
+    return codeBlock(args.code, "javascript");
+  if (short === "write" && typeof args.content === "string") return codeBlock(args.content);
+  if (short === "edit") {
+    const edits = Array.isArray(args.edits) ? args.edits : [args];
+    if (
+      edits.every(
+        (edit) => edit && typeof edit.oldText === "string" && typeof edit.newText === "string",
+      )
+    ) {
+      const preview = edits
+        .map(
+          (edit) =>
+            `@@ Requested replacement @@\n${edit.oldText
+              .split("\n")
+              .map((line: string) => `-${line}`)
+              .join("\n")}\n${edit.newText
+              .split("\n")
+              .map((line: string) => `+${line}`)
+              .join("\n")}`,
+        )
+        .join("\n");
+      return codeBlock(preview, "diff");
+    }
+  }
+  return codeBlock(JSON.stringify(args, null, 2), "json");
+}
+
+function toolDetails(node: HTMLElement, data: unknown): void {
+  if (!data || typeof data !== "object") return;
+  const patch =
+    "patch" in data && typeof data.patch === "string"
+      ? data.patch
+      : "diff" in data && typeof data.diff === "string"
+        ? data.diff
+        : undefined;
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = patch ? "Changes" : "Details";
+  details.open = !!patch;
+  details.append(
+    summary,
+    codeBlock(patch ?? JSON.stringify(data, null, 2), patch ? "diff" : "json"),
+  );
+  if ("calls" in data && Array.isArray(data.calls)) {
+    summary.textContent = `Nested tools · ${data.calls.length}${"complete" in data && data.complete === false ? " · partial record" : ""}`;
+    details.className = "nested-tools";
+    details.replaceChildren(summary);
+    for (const call of data.calls) {
+      if (!call || typeof call !== "object") continue;
+      const row = document.createElement("details");
+      const title = document.createElement("summary");
+      title.textContent = `${toolLabel(String(call.name), call.arguments)} · ${String(call.status)}${typeof call.durationMs === "number" ? ` · ${call.durationMs}ms` : ""}`;
+      row.append(title);
+      if (call.arguments && typeof call.arguments === "object")
+        row.append(toolInput(String(call.name), call.arguments));
+      else if (typeof call.args === "string") row.append(codeBlock(call.args));
+      else if (typeof call.argumentsBytes === "number")
+        row.append(`Arguments omitted (${call.argumentsBytes} bytes)`);
+      if (typeof call.error === "string") {
+        row.classList.add("error");
+        row.append(codeBlock(call.error));
+      }
+      details.append(row);
+    }
+    // Keep truncation paths and any future metadata accessible as well.
+    const raw = document.createElement("details");
+    const label = document.createElement("summary");
+    label.textContent = "Raw details";
+    raw.append(label, codeBlock(JSON.stringify(data, null, 2), "json"));
+    details.append(raw);
+  }
+  node.append(details);
+}
+
+function content(
+  node: HTMLElement,
+  message: Message,
+  call?: { name: string; arguments: Record<string, unknown> },
+): void {
   if (message.role === "system") return;
   node.dataset.role = message.role;
   const heading = document.createElement("header");
   heading.textContent =
-    message.role === "toolResult" ? message.toolName : message.role === "assistant" ? "Pi" : "You";
+    message.role === "toolResult"
+      ? `${message.isError ? "Failed" : "Completed"} · ${toolLabel(message.toolName, call?.arguments)}`
+      : message.role === "assistant"
+        ? "Pi"
+        : "You";
   node.append(heading);
   if (typeof message.content === "string") {
     node.append(markdown(message.content));
@@ -385,18 +493,21 @@ function content(node: HTMLElement, message: Message): void {
       if (message.role === "toolResult") {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
-        summary.textContent = `${message.isError ? "Error · " : ""}${block.text.split("\n")[0].slice(0, 140) || "Tool output"}`;
-        details.append(summary, codeBlock(block.text, /^[+-]/m.test(block.text) ? "diff" : ""));
+        summary.textContent = message.isError ? "Error output" : "Output";
+        details.open = message.isError;
+        details.append(summary, codeBlock(block.text));
         node.append(details);
       } else node.append(markdown(block.text));
     } else if (block.type === "toolCall" || block.type === "thinking") {
       const details = document.createElement("details");
       const summary = document.createElement("summary");
-      summary.textContent = block.type === "toolCall" ? block.name : "Thinking";
-      const pre = codeBlock(
-        block.type === "toolCall" ? JSON.stringify(block.arguments, null, 2) : block.thinking,
-        block.type === "toolCall" ? "json" : "",
-      );
+      summary.textContent =
+        block.type === "toolCall" ? toolLabel(block.name, block.arguments) : "Thinking";
+      if (block.type === "toolCall") details.className = "tool-call";
+      const pre =
+        block.type === "toolCall"
+          ? toolInput(block.name, block.arguments)
+          : codeBlock(block.thinking);
       details.append(summary, pre);
       node.append(details);
     } else if (
@@ -409,21 +520,35 @@ function content(node: HTMLElement, message: Message): void {
       node.append(image);
     }
   }
-  if (message.role === "toolResult" && "details" in message && message.details) {
+  if (message.role === "toolResult") {
+    const data = message.details;
+    toolDetails(
+      node,
+      message.nestedCalls
+        ? {
+            ...(data && typeof data === "object" && !Array.isArray(data)
+              ? Object.fromEntries(Object.entries(data))
+              : {}),
+            ...message.nestedCalls,
+          }
+        : data,
+    );
+  }
+  if (
+    message.role === "toolResult" &&
+    !message.isError &&
+    message.toolName.split(".").at(-1) === "write" &&
+    typeof call?.arguments.content === "string"
+  ) {
     const details = document.createElement("details");
     const summary = document.createElement("summary");
-    const data = message.details;
-    const patch =
-      typeof data === "object" && data !== null && "patch" in data && typeof data.patch === "string"
-        ? data.patch
-        : undefined;
-    summary.textContent = patch ? "Changes" : "Details";
-    details.append(
-      summary,
-      codeBlock(patch ?? JSON.stringify(data, null, 2), patch ? "diff" : "json"),
-    );
+    // The write tool does not supply the old file. Do not invent a diff that
+    // would incorrectly describe an overwrite as a newly created file.
+    summary.textContent = "Written content";
+    details.append(summary, codeBlock(call.arguments.content));
     node.append(details);
   }
+
   if (message.role === "assistant" && message.errorMessage) {
     const error = document.createElement("p");
     error.className = "error";
@@ -495,12 +620,18 @@ function render(snapshot: Snapshot): void {
       existing.node.replaceChildren();
       build(existing.node);
       existing.node.querySelectorAll("details").forEach((detail, index) => {
-        detail.open = open[index] ?? false;
+        detail.open = open[index] ?? detail.open;
       });
       existing.signature = signature;
     }
     ordered.push(existing.node);
   };
+  const calls = new Map<string, { name: string; arguments: Record<string, unknown> }>();
+  for (const entry of entries.values())
+    for (const message of entry.model ?? [])
+      if (message.role === "assistant")
+        for (const block of message.content)
+          if (block.type === "toolCall") calls.set(block.id, block);
   for (const entry of [...entries.values()].sort((a, b) => a.id - b.id)) {
     if (entry.kind === "pi.reset" || entry.kind === "pi.compaction")
       item(`context:${entry.id}`, entry, (node) => {
@@ -512,54 +643,72 @@ function render(snapshot: Snapshot): void {
       });
     entry.model?.forEach((message, index) => {
       if (message.role !== "system")
-        item(`${entry.id}:${index}`, message, (node) => {
-          content(node, message);
-          node.dataset.search = messageText(message).toLocaleLowerCase();
-          const actions = document.createElement("button");
-          actions.className = "icon message-actions";
-          actions.textContent = "···";
-          actions.setAttribute("aria-label", "Message actions");
-          actions.setAttribute("aria-controls", "message-menu");
-          actions.setAttribute("aria-expanded", "false");
-          actions.onclick = () => {
-            if (!active) return;
-            if (messageMenu.matches(":popover-open") && selectedMessage?.trigger === actions) {
-              messageMenu.hidePopover();
-              return;
-            }
-            selectedMessage?.trigger.setAttribute("aria-expanded", "false");
-            messageMenu.hidePopover();
-            selectedMessage = {
-              entry: entry.id,
+        item(
+          `${entry.id}:${index}`,
+          [message, message.role === "toolResult" ? calls.get(message.toolCallId) : undefined],
+          (node) => {
+            content(
+              node,
               message,
-              session: active,
-              branch: conversation,
-              trigger: actions,
+              message.role === "toolResult" ? calls.get(message.toolCallId) : undefined,
+            );
+            node.dataset.search = messageText(message).toLocaleLowerCase();
+            const actions = document.createElement("button");
+            actions.className = "icon message-actions";
+            actions.textContent = "···";
+            actions.setAttribute("aria-label", "Message actions");
+            actions.setAttribute("aria-controls", "message-menu");
+            actions.setAttribute("aria-expanded", "false");
+            actions.onclick = () => {
+              if (!active) return;
+              if (messageMenu.matches(":popover-open") && selectedMessage?.trigger === actions) {
+                messageMenu.hidePopover();
+                return;
+              }
+              selectedMessage?.trigger.setAttribute("aria-expanded", "false");
+              messageMenu.hidePopover();
+              selectedMessage = {
+                entry: entry.id,
+                message,
+                session: active,
+                branch: conversation,
+                trigger: actions,
+              };
+              element("fork-message", HTMLButtonElement).disabled = !connected || recovering;
+              messageMenu.showPopover();
+              actions.setAttribute("aria-expanded", "true");
+              if (matchMedia("(min-width: 651px)").matches) {
+                const rect = actions.getBoundingClientRect();
+                messageMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - messageMenu.offsetHeight - 8))}px`;
+                messageMenu.style.right = `${Math.max(8, Math.min(innerWidth - rect.right, innerWidth - messageMenu.offsetWidth - 8))}px`;
+              }
+              element("copy-message", HTMLButtonElement).focus();
             };
-            element("fork-message", HTMLButtonElement).disabled = !connected || recovering;
-            messageMenu.showPopover();
-            actions.setAttribute("aria-expanded", "true");
-            if (matchMedia("(min-width: 651px)").matches) {
-              const rect = actions.getBoundingClientRect();
-              messageMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - messageMenu.offsetHeight - 8))}px`;
-              messageMenu.style.right = `${Math.max(8, Math.min(innerWidth - rect.right, innerWidth - messageMenu.offsetWidth - 8))}px`;
-            }
-            element("copy-message", HTMLButtonElement).focus();
-          };
-          node.querySelector("header")?.append(actions);
-        });
+            node.querySelector("header")?.append(actions);
+          },
+        );
     });
   }
   const partial = live?.generation?.message;
   if (partial) item("partial", partial, (node) => content(node, partial));
   for (const tool of [...(live?.tools ?? []), ...(live?.nestedTools ?? [])]) {
-    if (tool.status === "done") continue;
+    if (tool.status === "done" && !("parentCallId" in tool)) continue;
     item(`tool:${tool.callId}`, tool, (node) => {
       const header = document.createElement("header");
-      header.textContent = `${tool.name} · ${tool.status}`;
+      node.dataset.role = "toolResult";
+      const args = "arguments" in tool ? tool.arguments : calls.get(tool.callId)?.arguments;
+      header.textContent = `${toolLabel(tool.name, args)} · ${tool.status}`;
+      if ("parentCallId" in tool) node.dataset.parentCall = tool.parentCallId;
       const pre = document.createElement("pre");
       pre.textContent = tool.output ?? "";
+      pre.hidden = !tool.output;
+      if ("summary" in tool && tool.summary?.isError) {
+        node.classList.add("error");
+        pre.hidden = false;
+        pre.textContent = tool.summary.error ?? tool.output ?? "Tool failed";
+      }
       node.append(header, pre);
+      toolDetails(node, tool.details);
     });
   }
   for (const [key, value] of rendered) {
@@ -1022,7 +1171,7 @@ window.addEventListener("resize", () => {
 });
 function messageText(message: Message): string {
   if (typeof message.content === "string") return message.content;
-  const text = message.content
+  let text = message.content
     .map((block) => {
       if (block.type === "text") return block.text;
       if (block.type === "thinking") return block.thinking;
@@ -1031,6 +1180,8 @@ function messageText(message: Message): string {
       return "[image]";
     })
     .join("\n\n");
+  if (message.role === "toolResult" && message.nestedCalls)
+    text += `\n\n${JSON.stringify(message.nestedCalls, null, 2)}`;
   if (message.role === "toolResult" && "details" in message && message.details) {
     const data = message.details;
     const patch =

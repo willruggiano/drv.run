@@ -142,6 +142,9 @@ export async function browserFlow(
     value: 31,
   });
   await page.waitForFunction(() => document.querySelectorAll("#transcript article").length === 4);
+  assert.equal(await page.locator(".tool-call").count(), 1);
+  assert.equal(await page.locator('article[data-role="toolResult"] > header').count(), 1);
+  assert.equal(await page.locator('article[data-role="toolResult"] details').count(), 2);
   assert.equal(await page.locator("#transcript img").count(), 0);
   assert.equal(await page.evaluate(() => document.body.dataset.injected), undefined);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -154,6 +157,61 @@ export async function browserFlow(
   );
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
   assert.equal(f.faux.state.callCount, 2);
+  assert.equal(errors.length, 0);
+  // Persist both supported nested-call record formats. Legacy codemode args are
+  // deliberately truncated JSON: display text, not a parseable input payload.
+  await session.root.commit(async (tx) => {
+    await tx.appendEntry(session.root.id, {
+      kind: "test.tool-history",
+      model: [
+        fauxAssistantMessage(
+          fauxToolCall(
+            "codemode",
+            { code: 'await tools.read({ path: "example.txt" })' },
+            { id: "code-history" },
+          ),
+        ),
+        {
+          role: "toolResult",
+          toolCallId: "code-history",
+          toolName: "codemode",
+          content: [{ type: "text", text: "Nested call finished" }],
+          isError: false,
+          timestamp: 1,
+          details: {
+            calls: [
+              { id: 1, name: "read", args: '{"path":"example...', status: "ok", durationMs: 2 },
+            ],
+          },
+        },
+        {
+          role: "toolResult",
+          toolCallId: "nested-history",
+          toolName: "custom.tool",
+          content: [],
+          isError: true,
+          timestamp: 2,
+          nestedCalls: {
+            complete: false,
+            calls: [
+              {
+                id: "nested-history/c1",
+                name: "read",
+                status: "error",
+                argumentsBytes: 300,
+                error: "File unavailable",
+              },
+            ],
+          },
+        },
+      ],
+    });
+  }, context);
+  await reconnected.waitForSelector(".nested-tools", { state: "attached" });
+  await reconnected.reload();
+  await reconnected.waitForFunction(() => document.querySelectorAll(".nested-tools").length === 2);
+  assert.equal(await reconnected.locator(".nested-tools .error").count(), 1);
+  assert.equal(await reconnected.locator(".nested-tools > details").count(), 4);
   assert.equal(errors.length, 0);
   if (!f.extended) return;
 
@@ -214,7 +272,8 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.fill("#prompt", "Fix the counter and show me the change.");
   await reconnected.press("#prompt", "Control+Enter");
   await reconnected.waitForFunction(
-    () => document.querySelectorAll('article[data-role="assistant"] .hljs-addition').length > 0,
+    () =>
+      document.querySelectorAll('article[data-role="assistant"] .text .hljs-addition').length > 0,
   );
   await session.root.waitForIdle(context);
   assert((await reconnected.locator(".hljs-keyword").count()) > 0);
@@ -378,7 +437,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await page.keyboard.press("Escape");
     // Persisted presentation preference and name survive a page reload.
     await page.reload();
-    await page.waitForSelector('article[data-role="assistant"] .hljs-addition');
+    await page.waitForSelector('article[data-role="assistant"] .text .hljs-addition');
     assert.equal(
       await page.locator("body").evaluate((node) => node.classList.contains("wrap-code")),
       true,
@@ -401,7 +460,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   const desktopPage = await desktop.newPage();
   desktopPage.on("pageerror", (error) => errors.push(error));
   await desktopPage.goto(url);
-  await desktopPage.waitForSelector('article[data-role="assistant"] .hljs-addition');
+  await desktopPage.waitForSelector('article[data-role="assistant"] .text .hljs-addition');
   await gallery(desktopPage, "desktop");
   await desktop.setOffline(true);
   await desktopPage.waitForFunction(
@@ -419,7 +478,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await desktopPage.waitForFunction(
     () => document.querySelector<HTMLElement>("#bottom-line")?.dataset.connected === "true",
   );
-  await desktopPage.waitForSelector('article[data-role="assistant"] .hljs-addition');
+  await desktopPage.waitForSelector('article[data-role="assistant"] .text .hljs-addition');
   // Stress the presentation with a persisted high-usage ledger. No fake HTTP/SSE data.
   await session.root.commit(async (tx) => {
     const usage = await tx.doc(UsageDoc, session.root.id);
@@ -636,7 +695,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.click("#send");
   await reconnected.waitForFunction(() =>
     Array.from(document.querySelectorAll("article header")).some(
-      (node) => node.textContent === "bash · running",
+      (node) => node.textContent === "$ sleep 60 · running",
     ),
   );
   await reconnected.click("#stop");
