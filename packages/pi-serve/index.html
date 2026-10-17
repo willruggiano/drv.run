@@ -59,8 +59,11 @@
     textarea { display: block; width: 100%; resize: vertical; padding: 8px 10px; max-height: 30dvh; min-height: 64px; }
     #prompt { resize: none; min-height: 42px; max-height: 25dvh; background: transparent; border: none; outline: none; }
     .actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; } .compose-box > .actions { margin: 0; } .spacer { flex: 1; }
-    #send { background: #b4d4be; border-color: #b4d4be; color: #17251d; font-weight: 600; font-size: 12px; } #stop { font-size: 12px; }
-    #input-toggle { font-size: 18px; } #input-mode { font-size: 11px; color: var(--muted); padding-left: 4px; }
+    #send { background: #b4d4be; border-color: #b4d4be; color: #17251d; font-weight: 600; }
+    #send, #stop, #queue button { font-size: 20px; flex-shrink: 0; }
+    .compose-box > .actions > button, #queue button { display: inline-flex; align-items: center; justify-content: center; height: 40px; min-height: 40px; line-height: 1; }
+    #send, #stop, #input-toggle, #queue button { width: 40px; padding: 0; }
+    #input-toggle { font-size: 20px; } #input-mode { font-size: 11px; color: var(--muted); background: transparent; border-color: transparent; padding: 3px 6px; }
     #attachments { display: flex; flex-wrap: wrap; gap: 4px; } #attachments button { font-size: 11px; margin: 4px; }
     #latest { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 6px; border-radius: 20px; box-shadow: 0 3px 12px #0006; font-size: 12px; } .composer-area { position: relative; }
     dialog { color: inherit; background: #191c1e; border: 1px solid #454e49; border-radius: 12px; width: min(520px, calc(100% - 32px)); padding: 20px; max-height: 85dvh; overflow: auto; } dialog::backdrop { background: #0009; }
@@ -141,7 +144,7 @@
       <div class="compose-box">
         <textarea id="prompt" aria-label="Message" rows="1" placeholder="Ask Pi…" maxlength="100000"></textarea>
         <div id="attachments" aria-label="Attached images"></div>
-        <div class="actions"><button id="input-toggle" class="icon" type="button" popovertarget="input-menu" aria-label="Input options">+</button><span id="input-mode"></span><span class="spacer"></span><button id="stop" type="button" hidden disabled>Stop</button><button id="send" type="submit" disabled title="Send (Ctrl/⌘ Enter)">Send</button></div>
+        <div class="actions"><button id="input-toggle" class="icon" type="button" popovertarget="input-menu" aria-label="Upload attachments">+</button><button id="input-mode" type="button" hidden>Follow up</button><span class="spacer"></span><button id="stop" class="icon" type="button" hidden disabled aria-label="Stop" title="Stop"><span aria-hidden="true">×</span></button><button id="send" class="icon" type="submit" disabled aria-label="Send" title="Send (Ctrl/⌘ Enter)"><span aria-hidden="true">↑</span></button></div>
       </div>
       <input id="images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
     </form>
@@ -159,9 +162,8 @@
       </div>
     </footer>
   </div>
-  <div id="input-menu" popover aria-label="Input options">
+  <div id="input-menu" popover aria-label="Upload attachments">
     <button id="attach">Attach images</button>
-    <label><span>When the agent is working</span><select id="mode" aria-label="When busy"><option value="followUp">Follow up</option><option value="steer">Steer</option><option value="reject">Only when idle</option></select></label>
   </div>
   <dialog id="picker" aria-labelledby="picker-title">
     <div class="dialog-heading"><h2 id="picker-title">Sessions</h2><button id="close-picker" class="icon" aria-label="Close sessions">×</button></div>

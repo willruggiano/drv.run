@@ -389,6 +389,43 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
     );
+    const composerAlignment = await page.locator(".compose-box > .actions").evaluate((row) => {
+      const buttons = Array.from(row.querySelectorAll("button")).filter((button) =>
+        button.checkVisibility(),
+      );
+      return buttons.map((button) => {
+        const box = button.getBoundingClientRect();
+        const text = document.createRange();
+        text.selectNodeContents(button);
+        const label = text.getBoundingClientRect();
+        return {
+          id: button.id,
+          height: box.height,
+          center: box.top + box.height / 2,
+          labelCenter: label.top + label.height / 2,
+        };
+      });
+    });
+    for (const button of composerAlignment) {
+      assert.equal(button.height, 40, `${name}: ${button.id} touch target`);
+      assert(
+        Math.abs(button.center - composerAlignment[0].center) <= 1,
+        `${name}: ${button.id} button alignment`,
+      );
+      assert(
+        Math.abs(button.labelCenter - composerAlignment[0].labelCenter) <= 1,
+        `${name}: ${button.id} label alignment`,
+      );
+    }
+    const queueAlignment = await page.locator("#queue > div").evaluateAll((rows) =>
+      rows.map((row) => {
+        const box = row.getBoundingClientRect();
+        const button = row.querySelector("button")!.getBoundingClientRect();
+        return box.top + box.height / 2 - button.top - button.height / 2;
+      }),
+    );
+    for (const offset of queueAlignment)
+      assert(Math.abs(offset) <= 1, `${name}: queue cancel alignment`);
     // Compare text, not button boxes: flex children must share the vertical
     // center of the adjacent native button label, including taller touch targets.
     const offsets = await page.locator("#bottom-line:visible").evaluateAll((footers) => {
@@ -492,6 +529,10 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#thinking").inputValue(), "high");
     await page.keyboard.press("Escape");
     assert.equal(await page.locator("#stop").isVisible(), false);
+    assert.equal(await page.locator("#input-mode").isVisible(), false);
+    assert.equal(await page.locator("#send").getAttribute("aria-label"), "Send");
+    assert.equal(await page.locator("#send [aria-hidden=true]").textContent(), "↑");
+    assert.equal(await page.locator("#stop [aria-hidden=true]").textContent(), "×");
     assert.equal(await page.locator('label[for="prompt"]').count(), 0);
     await page.click("#menu-toggle");
     await page.waitForFunction(() =>
@@ -552,6 +593,8 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await shot(page, `${size}-quote`);
     await page.fill("#prompt", "");
     await page.click("#input-toggle");
+    assert.equal(await page.locator("#input-menu select").count(), 0);
+    assert.equal(await page.locator("#input-menu > button").count(), 1);
     await shot(page, `${size}-input-menu`);
     await page.keyboard.press("Escape");
     await page.click("#workspace");
@@ -793,18 +836,29 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.waitForFunction(
     () => !document.querySelector<HTMLButtonElement>("#stop")?.disabled,
   );
-  await reconnected.click("#input-toggle");
-  await reconnected.selectOption("#mode", "steer");
-  await reconnected.press("#mode", "Escape");
+  assert.equal(await reconnected.locator("#input-mode").getAttribute("data-mode"), "followUp");
+  await reconnected.click("#input-mode");
+  assert.equal(await reconnected.locator("#input-mode").getAttribute("data-mode"), "steer");
+  assert.equal(
+    await reconnected.locator("#input-menu").evaluate((node) => node.matches(":popover-open")),
+    false,
+  );
+  assert.equal(await reconnected.locator("#send").getAttribute("aria-label"), "Steer");
   await reconnected.fill("#prompt", "Withdraw this steering input.");
   await reconnected.click("#send");
   await reconnected.waitForFunction(() => document.querySelectorAll("#queue button").length === 1);
   await shot(reconnected, "mobile-working-queue");
-  await reconnected.click("#queue button");
+  for (const width of [320, 768, 1440]) {
+    await reconnected.setViewportSize({ width, height: 900 });
+    await shot(reconnected, `working-buttons-${width}`);
+  }
+  await reconnected.setViewportSize({ width: 390, height: 844 });
+  await reconnected.getByRole("button", { name: "Cancel queued message", exact: true }).click();
   await reconnected.waitForFunction(() => document.querySelector("#queue")?.hasAttribute("hidden"));
-  await reconnected.click("#input-toggle");
-  await reconnected.selectOption("#mode", "followUp");
-  await reconnected.press("#mode", "Escape");
+  await reconnected.click("#input-mode");
+  assert.equal(await reconnected.locator("#input-mode").getAttribute("data-mode"), "followUp");
+  assert.equal(await reconnected.locator("#send").getAttribute("aria-label"), "Queue");
+  await shot(reconnected, "mobile-follow-up-buttons");
   await reconnected.fill("#prompt", "Follow up after the current run.");
   await reconnected.click("#send");
   await reconnected.waitForFunction(() => document.querySelectorAll("#queue button").length === 1);

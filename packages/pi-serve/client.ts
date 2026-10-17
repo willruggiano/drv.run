@@ -32,7 +32,8 @@ const {
     ): { value: string };
   };
 } = await import(highlighterURL);
-const mode = element("mode", HTMLSelectElement);
+const modeToggle = element("input-mode", HTMLButtonElement);
+let submissionMode: "followUp" | "steer" = "followUp";
 const branches = element("branches", HTMLSelectElement);
 const preferences = element("preferences", HTMLDialogElement);
 const usageDialog = element("usage-dialog", HTMLDialogElement);
@@ -151,17 +152,21 @@ async function api<T>(path: string, data?: unknown): Promise<T> {
   return result as T;
 }
 function controls(): void {
-  send.disabled =
-    !active ||
-    !connected ||
-    (busy && mode.value === "reject") ||
-    recovering ||
-    sending ||
-    !prompt.value.trim();
+  send.disabled = !active || !connected || recovering || sending || !prompt.value.trim();
   stop.disabled = !active || !connected || !busy || recovering;
   stop.hidden = !busy || recovering;
-  element("input-mode", HTMLSpanElement).textContent =
-    busy && !recovering ? mode.selectedOptions[0].textContent : "";
+  modeToggle.hidden = !busy || recovering;
+  modeToggle.disabled = !active || !connected || recovering || sending;
+  modeToggle.textContent = submissionMode === "steer" ? "Steer" : "Follow up";
+  modeToggle.dataset.mode = submissionMode;
+  modeToggle.title =
+    submissionMode === "steer"
+      ? "Steer at the next opportunity. Click to switch to Follow up."
+      : "Queue after the current run. Click to switch to Steer.";
+  modeToggle.setAttribute(
+    "aria-label",
+    `${modeToggle.textContent}. Switch to ${submissionMode === "steer" ? "Follow up" : "Steer"}`,
+  );
   resume.disabled = !active || !connected || !recovering;
   recovery.hidden = !recovering;
   for (const id of ["settings", "export", "find"])
@@ -171,7 +176,9 @@ function controls(): void {
   bottomLine.dataset.connected = String(connected);
   element("usage-connection", HTMLParagraphElement).hidden = connected;
   element("footer-model", HTMLButtonElement).disabled = !active || !connected || recovering;
-  send.textContent = busy && !recovering ? (mode.value === "steer" ? "Steer" : "Queue") : "Send";
+  const action = busy && !recovering ? (submissionMode === "steer" ? "Steer" : "Queue") : "Send";
+  send.setAttribute("aria-label", action);
+  send.title = `${action} (Ctrl/⌘ Enter)`;
   status.textContent = !navigator.onLine
     ? "Offline"
     : !active
@@ -647,7 +654,11 @@ function render(snapshot: Snapshot): void {
     row.append(text);
     if (item.mode !== "write") {
       const cancel = document.createElement("button");
-      cancel.textContent = "Cancel";
+      cancel.type = "button";
+      cancel.className = "icon";
+      cancel.textContent = "×";
+      cancel.setAttribute("aria-label", "Cancel queued message");
+      cancel.title = "Cancel queued message";
       cancel.onclick = () => {
         void api(endpoint("cancel"), { id: item.id }).catch(report);
       };
@@ -953,14 +964,14 @@ composer.onsubmit = (event) => {
     pending?.session !== active ||
     pending.conversation !== conversation ||
     pending.text !== text ||
-    pending.mode !== mode.value ||
+    pending.mode !== submissionMode ||
     pending.images !== images
   )
     pending = {
       session: active,
       conversation,
       text,
-      mode: mode.value,
+      mode: submissionMode,
       requestId: requestId(),
       images,
     };
@@ -994,7 +1005,10 @@ prompt.oninput = () => {
   saveDraft();
   controls();
 };
-mode.onchange = controls;
+modeToggle.onclick = () => {
+  submissionMode = submissionMode === "followUp" ? "steer" : "followUp";
+  controls();
+};
 prompt.onkeydown = (event) => {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
