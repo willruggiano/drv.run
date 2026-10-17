@@ -773,6 +773,13 @@ export async function browserFlow(
   assert.equal(await secondCall.evaluate((node) => node.hasAttribute("open")), true);
   if (!f.extended) return;
 
+  // Completed tool subtrees must survive unrelated runs, not merely look the
+  // same after being rebuilt (which loses selection and repeats highlighting).
+  const historicalTool = await firstCall.elementHandle();
+  const historicalOutput = await firstCall.locator(".tool-result").elementHandle();
+  assert(historicalTool);
+  assert(historicalOutput);
+
   // A real repository in the bound workspace, created through the scripted agent.
   f.faux.setResponses([
     fauxAssistantMessage(
@@ -790,6 +797,8 @@ export async function browserFlow(
     document.querySelector("#usage-repository")?.textContent?.startsWith("pi-pwa · "),
   );
   await session.root.waitForIdle(context);
+  assert.equal(await historicalTool.evaluate((node) => node.isConnected), true);
+  assert.equal(await historicalOutput.evaluate((node) => node.isConnected), true);
 
   // Real edit tool details carry a unified patch independently of assistant prose.
   f.faux.setResponses([

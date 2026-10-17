@@ -72,7 +72,7 @@ article.same-speaker > header > :is(.speaker, .message-time) { display: none; }
 article[data-role=toolResult] { padding: 4px 0; border-top: 0; }
 .tool-call, .thinking { margin: var(--trace-gap) 0; font-size: 12px; }
 /* Preserve the same trace-block gap within and across assistant messages. */
-article:has(> :is(.tool-call, .thinking):last-child):has(+ article.same-speaker > :is(.tool-call, .thinking):is(:first-child, header + *)) {
+article.trace-continues {
   padding-bottom: 0;
   & > :is(.tool-call, .thinking):last-child { margin-bottom: 0; }
   & + article.same-speaker { padding-top: var(--trace-gap); }

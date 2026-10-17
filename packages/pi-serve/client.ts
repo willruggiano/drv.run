@@ -1038,7 +1038,11 @@ function render(snapshot: Snapshot): void {
       ? message.content
           .filter((block) => block.type === "toolCall")
           .map((call) => [
-            busy,
+            // Busy only affects calls without a result or a live slot. Completed
+            // history must not be rebuilt when an unrelated run starts/stops.
+            !results.has(call.id) && !slots.some((slot) => slot.callId === call.id)
+              ? busy
+              : undefined,
             results.get(call.id),
             slots.filter(
               (slot) => slot.callId === call.id || slot.callId.startsWith(`${call.id}/`),
@@ -1114,14 +1118,27 @@ function render(snapshot: Snapshot): void {
   ordered.forEach((node, index) => {
     // Tool output belongs to the assistant visually; context markers break a group.
     const role = node.dataset.role === "toolResult" ? "assistant" : node.dataset.role;
-    node.classList.toggle("same-speaker", role !== undefined && role === previousRole);
+    const sameSpeaker = role !== undefined && role === previousRole;
+    if (node.classList.contains("same-speaker") !== sameSpeaker)
+      node.classList.toggle("same-speaker", sameSpeaker);
     previousRole = role;
+    // A sibling :has() selector invalidates the whole transcript on each
+    // streamed child mutation. Record this relationship only when it changes.
+    const next = ordered[index + 1];
+    const nextRole = next?.dataset.role === "toolResult" ? "assistant" : next?.dataset.role;
+    const traceContinues =
+      role !== undefined &&
+      role === nextRole &&
+      !!node.lastElementChild?.matches(".tool-call, .thinking") &&
+      !!next?.querySelector(":scope > :is(.tool-call, .thinking):is(:first-child, header + *)");
+    if (node.classList.contains("trace-continues") !== traceContinues)
+      node.classList.toggle("trace-continues", traceContinues);
     if (transcript.children[index] !== node)
       transcript.insertBefore(node, transcript.children[index] ?? null);
   });
   if (wasEmpty !== !transcript.childElementCount) resizePrompt();
   if (stick) transcript.scrollTop = transcript.scrollHeight;
-  updateSearch();
+  if (!searchBar.hidden) updateSearch();
   updateLatest();
   renderFooter();
   controls();
