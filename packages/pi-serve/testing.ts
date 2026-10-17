@@ -1421,16 +1421,26 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await branch.waitForIdle(context);
   await desktopCodeContext.close();
 
-  // Separate assistant messages, not five calls inside one message: this is the
-  // back-to-back layout that previously repeated the speaker and separator.
+  // Exercise every thinking/tool adjacency within and across assistant messages.
   f.faux.setResponses([
     ...Array.from({ length: 5 }, (_, index) =>
       fauxAssistantMessage(
-        fauxToolCall(
-          "read",
-          { path: f.filePath ?? "browser.json" },
-          { id: `speaker-group-${index}` },
-        ),
+        [
+          ...(index === 2 || index === 3
+            ? [{ type: "thinking" as const, thinking: "Inspecting the next file." }]
+            : []),
+          ...(index === 2
+            ? [{ type: "thinking" as const, thinking: "Checking the file format." }]
+            : []),
+          fauxToolCall(
+            "read",
+            { path: f.filePath ?? "browser.json" },
+            { id: `speaker-group-${index}` },
+          ),
+          ...(index === 2 || index === 3
+            ? [{ type: "thinking" as const, thinking: "Reviewing the tool output." }]
+            : []),
+        ],
         { stopReason: "toolUse" },
       ),
     ),
@@ -1449,17 +1459,62 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     );
     const calls = reconnected.locator('article:has(> .tool-call[data-call-id^="speaker-group-"])');
     assert.equal(await calls.count(), 5);
-    for (let index = 0; index < 5; index++) {
-      const call = calls.nth(index);
-      assert.equal(await call.locator(":scope > header > .speaker").isVisible(), index === 0);
-      if (index > 0) {
-        assert.equal(await call.evaluate((node) => getComputedStyle(node).borderTopWidth), "0px");
-        assert((await call.boundingBox())!.height < 70);
+    for (const width of [390, 1440]) {
+      await reconnected.setViewportSize({ width, height: 900 });
+      for (let index = 0; index < 5; index++) {
+        const call = calls.nth(index);
+        assert.equal(await call.locator(":scope > header > .speaker").isVisible(), index === 0);
+        if (index > 0) {
+          assert.equal(await call.evaluate((node) => getComputedStyle(node).borderTopWidth), "0px");
+          if (index === 1) assert((await call.boundingBox())!.height < 36);
+        }
+        assert.equal(await call.locator(":scope > header > .message-actions").isVisible(), true);
       }
-      assert.equal(await call.locator(":scope > header > .message-actions").isVisible(), true);
+      // Measure the actual space between rails, including after expanded output.
+      for (const open of [false, true]) {
+        await calls
+          .first()
+          .locator(":scope > .tool-call")
+          .evaluate((node, expanded) => {
+            (node as HTMLDetailsElement).open = expanded;
+          }, open);
+        const gaps = await calls.evaluateAll((nodes) => {
+          const blocks = nodes.flatMap((node) =>
+            Array.from(node.querySelectorAll(":scope > .tool-call, :scope > .thinking")),
+          );
+          return blocks.slice(1).map((block, index) => ({
+            pair: `${blocks[index].className} → ${block.className}`,
+            gap: block.getBoundingClientRect().top - blocks[index].getBoundingClientRect().bottom,
+          }));
+        });
+        assert.deepEqual([...new Set(gaps.map(({ pair }) => pair))].sort(), [
+          "thinking → thinking",
+          "thinking → tool-call",
+          "tool-call → thinking",
+          "tool-call → tool-call",
+        ]);
+        for (const { pair, gap } of gaps)
+          assert.equal(gap, 6, `${phase}, ${width}px, open=${open}: ${pair} gap`);
+        // The prose after the final tool keeps normal message spacing.
+        assert.equal(
+          await calls.last().evaluate((node) => {
+            const tool = node.querySelector(":scope > .tool-call")!.getBoundingClientRect();
+            const prose = node.nextElementSibling!.querySelector(".text")!.getBoundingClientRect();
+            return prose.top - tool.bottom;
+          }),
+          24,
+        );
+        await calls.first().evaluate((node) => node.previousElementSibling?.scrollIntoView());
+        await shot(reconnected, `speaker-groups-${width}-${phase}-${open ? "open" : "closed"}`);
+      }
+      await calls
+        .first()
+        .locator(":scope > .tool-call")
+        .evaluate((node) => {
+          (node as HTMLDetailsElement).open = false;
+        });
     }
-    await calls.first().evaluate((node) => node.previousElementSibling?.scrollIntoView());
-    await shot(reconnected, `mobile-speaker-groups-${phase}`);
+    await reconnected.setViewportSize({ width: 390, height: 844 });
   }
   assert.equal(errors.length, 0);
   if (f.restart) {
