@@ -71,8 +71,8 @@ let matches: HTMLElement[] = [];
 let matchIndex = -1;
 let selectedMessage:
   | {
-      entry: number;
-      message: Message;
+      entry: number | undefined;
+      message: Message | undefined;
       session: string;
       branch: number | undefined;
       trigger: HTMLButtonElement;
@@ -290,29 +290,12 @@ function renderSessions(): void {
 
 function codeBlock(text: string, language = ""): HTMLElement {
   const pre = document.createElement("pre");
-  const bar = document.createElement("div");
-  bar.className = "codebar";
-  const name = document.createElement("span");
-  name.textContent = language || "text";
-  const copy = document.createElement("button");
-  copy.type = "button";
-  copy.textContent = "Copy";
-  copy.onclick = () => {
-    if (!navigator.clipboard) return report("Copy requires HTTPS or localhost.");
-    void navigator.clipboard
-      .writeText(text)
-      .then(() => {
-        copy.textContent = "Copied";
-      })
-      .catch(report);
-  };
-  bar.append(name, copy);
   const code = document.createElement("code");
   if (language && hljs.getLanguage(language)) {
     // highlight.js escapes all input before adding its own span markup.
     code.innerHTML = hljs.highlight(text, { language, ignoreIllegals: true }).value;
   } else code.textContent = text;
-  pre.append(bar, code);
+  pre.append(code);
   return pre;
 }
 function inline(parent: HTMLElement, text: string): void {
@@ -414,15 +397,26 @@ function toolSummary(command: string, state: string): HTMLElement {
     {
       completed: "✓",
       ok: "✓",
-      running: "Running",
-      pending: "Pending",
-      failed: "Failed",
-      error: "Failed",
-      cancelled: "Cancelled",
-      done: "Finished",
-      unfinished: "Unfinished",
-    }[state] ?? "No result";
+      running: "",
+      pending: "◷",
+      failed: "✕",
+      error: "✕",
+      cancelled: "⊘",
+      done: "✓",
+      unfinished: "◷",
+    }[state] ?? "?";
+  status.dataset.state = state;
+  status.setAttribute("role", "img");
   status.setAttribute("aria-label", state);
+  status.title = state;
+  if (state === "running") {
+    for (let index = 0; index < 4; index++) {
+      const dot = document.createElement("span");
+      dot.setAttribute("aria-hidden", "true");
+      dot.style.animationDelay = `-${index * 225}ms`;
+      status.append(dot);
+    }
+  }
   const label = document.createElement("span");
   label.className = "tool-command";
   label.textContent = command;
@@ -430,12 +424,17 @@ function toolSummary(command: string, state: string): HTMLElement {
   return summary;
 }
 
-function toolInput(name: string, args: Record<string, unknown>): HTMLElement {
+function toolInput(
+  name: string,
+  args: Record<string, unknown>,
+): { text: string; language: string } {
   const short = name.split(".").at(-1);
-  if (short === "bash" && typeof args.command === "string") return codeBlock(args.command, "bash");
+  if (short === "bash" && typeof args.command === "string")
+    return { text: args.command, language: "bash" };
   if (short === "codemode" && typeof args.code === "string")
-    return codeBlock(args.code, "javascript");
-  if (short === "write" && typeof args.content === "string") return codeBlock(args.content);
+    return { text: args.code, language: "javascript" };
+  if (short === "write" && typeof args.content === "string")
+    return { text: args.content, language: "" };
   if (short === "edit") {
     const edits = Array.isArray(args.edits) ? args.edits : [args];
     if (
@@ -455,10 +454,22 @@ function toolInput(name: string, args: Record<string, unknown>): HTMLElement {
               .join("\n")}`,
         )
         .join("\n");
-      return codeBlock(preview, "diff");
+      return { text: preview, language: "diff" };
     }
   }
-  return codeBlock(JSON.stringify(args, null, 2), "json");
+  return { text: JSON.stringify(args, null, 2), language: "json" };
+}
+
+function resultDetails(message: Extract<Message, { role: "toolResult" }>): unknown {
+  const data = message.details;
+  return message.nestedCalls
+    ? {
+        ...(data && typeof data === "object" && !Array.isArray(data)
+          ? Object.fromEntries(Object.entries(data))
+          : {}),
+        ...message.nestedCalls,
+      }
+    : data;
 }
 
 function toolDetails(node: HTMLElement, data: unknown): void {
@@ -497,6 +508,21 @@ function toolDetails(node: HTMLElement, data: unknown): void {
         row.classList.add("error");
         row.append(codeBlock(call.error));
       }
+      const actions = messageActions(
+        undefined,
+        undefined,
+        toolCopies(
+          call.arguments && typeof call.arguments === "object"
+            ? toolInput(String(call.name), call.arguments).text
+            : typeof call.args === "string"
+              ? call.args
+              : undefined,
+          typeof call.error === "string" ? call.error : undefined,
+          call,
+        ),
+      );
+      actions.setAttribute("aria-label", "Tool actions");
+      row.append(actions);
       details.append(row);
     }
     // Keep truncation paths and any future metadata accessible as well.
@@ -509,7 +535,43 @@ function toolDetails(node: HTMLElement, data: unknown): void {
   node.append(details);
 }
 
-function messageActions(entry: number, message: Message): HTMLButtonElement {
+type CopyAction = { label: string; text: string };
+
+function copyText(text: string): void {
+  messageMenu.hidePopover();
+  if (!navigator.clipboard) return report("Copy requires HTTPS or localhost.");
+  void navigator.clipboard
+    .writeText(text)
+    .then(() => report("Copied"))
+    .catch(report);
+}
+
+function toolCopies(
+  input: string | undefined,
+  output: string | undefined,
+  data: unknown,
+): CopyAction[] {
+  const copies: CopyAction[] = [];
+  if (input !== undefined) copies.push({ label: "Copy input", text: input });
+  if (output !== undefined) copies.push({ label: "Copy output", text: output });
+  if (data && typeof data === "object") {
+    const patch =
+      "patch" in data && typeof data.patch === "string"
+        ? data.patch
+        : "diff" in data && typeof data.diff === "string"
+          ? data.diff
+          : undefined;
+    if (patch !== undefined) copies.push({ label: "Copy changes", text: patch });
+    copies.push({ label: "Copy details", text: JSON.stringify(data, null, 2) });
+  }
+  return copies;
+}
+
+function messageActions(
+  entry: number | undefined,
+  message: Message | undefined,
+  copies: CopyAction[] = [],
+): HTMLButtonElement {
   const actions = document.createElement("button");
   actions.className = "icon message-actions";
   actions.textContent = "···";
@@ -531,7 +593,21 @@ function messageActions(entry: number, message: Message): HTMLButtonElement {
       branch: conversation,
       trigger: actions,
     };
-    element("fork-message", HTMLButtonElement).disabled = !connected || recovering;
+    messageMenu.querySelectorAll("[data-copy]").forEach((button) => button.remove());
+    const buttons = copies.map(({ label, text }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.copy = label;
+      button.textContent = label;
+      button.onclick = () => copyText(text);
+      return button;
+    });
+    messageMenu.prepend(...buttons);
+    element("copy-message", HTMLButtonElement).hidden = !message || copies.length > 0;
+    element("quote-message", HTMLButtonElement).hidden = !message;
+    const fork = element("fork-message", HTMLButtonElement);
+    fork.hidden = entry === undefined;
+    fork.disabled = !connected || recovering;
     messageMenu.showPopover();
     actions.setAttribute("aria-expanded", "true");
     if (matchMedia("(min-width: 651px)").matches) {
@@ -539,7 +615,7 @@ function messageActions(entry: number, message: Message): HTMLButtonElement {
       messageMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - messageMenu.offsetHeight - 8))}px`;
       messageMenu.style.right = `${Math.max(8, Math.min(innerWidth - rect.right, innerWidth - messageMenu.offsetWidth - 8))}px`;
     }
-    element("copy-message", HTMLButtonElement).focus();
+    messageMenu.querySelector<HTMLButtonElement>("button:not([hidden]):not(:disabled)")?.focus();
   };
   return actions;
 }
@@ -558,7 +634,10 @@ function content(
   if (message.role === "system") return;
   node.dataset.role = message.role;
   const heading = document.createElement("header");
-  heading.textContent =
+  const speaker = document.createElement("span");
+  speaker.className = "speaker";
+  heading.append(speaker);
+  speaker.textContent =
     message.role === "toolResult"
       ? `${message.isError ? "Failed" : "Completed"} · ${toolLabel(message.toolName, call?.arguments)}`
       : message.role === "assistant"
@@ -583,17 +662,18 @@ function content(
       } else node.append(markdown(block.text));
     } else if (block.type === "toolCall" && renderTool) {
       node.append(renderTool(block));
-    } else if (block.type === "toolCall" || block.type === "thinking") {
+    } else if (block.type === "thinking") {
+      const thinking = document.createElement("div");
+      thinking.className = "thinking";
+      thinking.textContent = block.thinking || "Thinking…";
+      node.append(thinking);
+    } else if (block.type === "toolCall") {
       const details = document.createElement("details");
       const summary = document.createElement("summary");
-      summary.textContent =
-        block.type === "toolCall" ? toolLabel(block.name, block.arguments) : "Thinking";
-      if (block.type === "toolCall") details.className = "tool-call";
-      const pre =
-        block.type === "toolCall"
-          ? toolInput(block.name, block.arguments)
-          : codeBlock(block.thinking);
-      details.append(summary, pre);
+      summary.textContent = toolLabel(block.name, block.arguments);
+      details.className = "tool-call";
+      const input = toolInput(block.name, block.arguments);
+      details.append(summary, codeBlock(input.text, input.language));
       node.append(details);
     } else if (
       block.type === "image" &&
@@ -605,20 +685,7 @@ function content(
       node.append(image);
     }
   }
-  if (message.role === "toolResult") {
-    const data = message.details;
-    toolDetails(
-      node,
-      message.nestedCalls
-        ? {
-            ...(data && typeof data === "object" && !Array.isArray(data)
-              ? Object.fromEntries(Object.entries(data))
-              : {}),
-            ...message.nestedCalls,
-          }
-        : data,
-    );
-  }
+  if (message.role === "toolResult") toolDetails(node, resultDetails(message));
   if (
     message.role === "toolResult" &&
     !message.isError &&
@@ -643,6 +710,7 @@ function content(
 }
 
 function render(snapshot: Snapshot): void {
+  const wasEmpty = !transcript.childElementCount;
   latest = snapshot;
   const agent = snapshot.view.docs["pi.agent"] as AgentState | undefined;
   const queue = element("queue", HTMLDivElement);
@@ -773,15 +841,29 @@ function render(snapshot: Snapshot): void {
       const output = document.createElement("div");
       output.className = "tool-result";
       content(output, result.message, call, undefined, true);
-      const actions = messageActions(result.entry, result.message);
-      actions.setAttribute("aria-label", "Tool result actions");
-      output.append(actions);
       details.append(output);
     } else if (slot) {
       if (slot.output) details.append(codeBlock(slot.output));
       toolDetails(details, slot.details);
       if ("summary" in slot && slot.summary?.error) details.append(codeBlock(slot.summary.error));
     }
+    const output = result
+      ? result.message.content
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("\n\n")
+      : (slot?.output ?? (slot && "summary" in slot ? slot.summary?.error : undefined));
+    const actions = messageActions(
+      result?.entry,
+      result?.message,
+      toolCopies(
+        toolInput(call.name, call.arguments).text,
+        output,
+        result ? resultDetails(result.message) : slot?.details,
+      ),
+    );
+    actions.setAttribute("aria-label", "Tool actions");
+    details.append(actions);
     for (const child of live?.nestedTools ?? [])
       if (child.parentCallId === call.id)
         details.append(
@@ -851,6 +933,7 @@ function render(snapshot: Snapshot): void {
     )
       continue;
     item(`tool:${tool.callId}`, [tool, live?.nestedTools], (node) => {
+      node.dataset.role = "toolResult";
       node.append(
         buildTool({
           id: tool.callId,
@@ -866,10 +949,16 @@ function render(snapshot: Snapshot): void {
       rendered.delete(key);
     }
   }
+  let previousRole: string | undefined;
   ordered.forEach((node, index) => {
+    // Tool output belongs to the assistant visually; context markers break a group.
+    const role = node.dataset.role === "toolResult" ? "assistant" : node.dataset.role;
+    node.classList.toggle("same-speaker", role !== undefined && role === previousRole);
+    previousRole = role;
     if (transcript.children[index] !== node)
       transcript.insertBefore(node, transcript.children[index] ?? null);
   });
+  if (wasEmpty !== !transcript.childElementCount) resizePrompt();
   if (stick) transcript.scrollTop = transcript.scrollHeight;
   updateSearch();
   updateLatest();
@@ -893,7 +982,6 @@ function attach(id: string, branch?: number): void {
   generation++;
   active = id;
   prompt.value = loadDraft();
-  resizePrompt();
   notice.hidden = true;
   connected = false;
   busy = false;
@@ -901,6 +989,7 @@ function attach(id: string, branch?: number): void {
   entries.clear();
   rendered.clear();
   transcript.replaceChildren();
+  resizePrompt();
   picker.close();
   history.replaceState(
     null,
@@ -1266,7 +1355,7 @@ imageInput.onchange = () => {
 
 function resizePrompt(): void {
   prompt.style.height = "auto";
-  prompt.style.height = `${Math.min(prompt.scrollHeight, innerHeight * 0.25)}px`;
+  prompt.style.height = `${prompt.scrollHeight}px`;
 }
 function closePopovers(): void {
   for (const popover of [menu, messageMenu, inputMenu]) popover.hidePopover();
@@ -1345,17 +1434,10 @@ function messageText(message: Message): string {
   return text;
 }
 element("copy-message", HTMLButtonElement).onclick = () => {
-  if (!selectedMessage) return;
-  const text = messageText(selectedMessage.message);
-  messageMenu.hidePopover();
-  if (!navigator.clipboard) return report("Copy requires HTTPS or localhost.");
-  void navigator.clipboard
-    .writeText(text)
-    .then(() => report("Copied"))
-    .catch(report);
+  if (selectedMessage?.message) copyText(messageText(selectedMessage.message));
 };
 element("quote-message", HTMLButtonElement).onclick = () => {
-  if (!selectedMessage) return;
+  if (!selectedMessage?.message) return;
   const quoted = messageText(selectedMessage.message)
     .split("\n")
     .map((line) => `> ${line}`)
@@ -1371,7 +1453,13 @@ element("quote-message", HTMLButtonElement).onclick = () => {
 };
 element("fork-message", HTMLButtonElement).onclick = () => {
   const selected = selectedMessage;
-  if (!selected || selected.session !== active || selected.branch !== conversation) return;
+  if (
+    !selected ||
+    selected.entry === undefined ||
+    selected.session !== active ||
+    selected.branch !== conversation
+  )
+    return;
   messageMenu.hidePopover();
   void api<{ id: number }>(endpoint("fork"), { entry: selected.entry })
     .then((result) => {
@@ -1421,10 +1509,10 @@ function updateSearch(): void {
     article.classList.remove("search-current");
     if (found) {
       matches.push(article);
-      // Keep syntax markup and copy handlers intact while highlighting matching text.
+      // Keep syntax markup intact while highlighting matching text.
       const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        if (node.parentElement?.closest("header, .codebar, button")) continue;
+        if (node.parentElement?.closest("header, button")) continue;
         const pattern = new RegExp(
           search.value.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
           "giu",

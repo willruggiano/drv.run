@@ -81,6 +81,8 @@ export async function browserFlow(
   const assets = await mkdtemp(join(tmpdir(), "pi-serve-assets-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
   const source = dirname(fileURLToPath(import.meta.url));
+  const screenshots = process.env.PI_SCREENSHOT_DIR;
+  if (screenshots) await mkdir(screenshots, { recursive: true });
   await writeFile(
     join(assets, "client.js"),
     stripTypeScriptTypes(await readFile(join(source, "client.ts"), "utf8")),
@@ -110,9 +112,14 @@ export async function browserFlow(
   const page = await browserContext.newPage();
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
+  const thinkingText = "Considering the next step.\n".repeat(40);
   f.faux.setResponses([
     fauxAssistantMessage(
-      fauxToolCall("write", { path: f.filePath ?? "browser.json", content: '{"value":31}' }),
+      [
+        { type: "thinking", thinking: "" },
+        { type: "thinking", thinking: thinkingText },
+        fauxToolCall("write", { path: f.filePath ?? "browser.json", content: '{"value":31}' }),
+      ],
       {
         stopReason: "toolUse",
       },
@@ -133,6 +140,16 @@ export async function browserFlow(
   const url = page.url();
   const id = new URL(url).searchParams.get("session");
   assert(id);
+  await page.waitForFunction(
+    () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
+  );
+  const emptyPrompt = await page.locator("#prompt").boundingBox();
+  assert(emptyPrompt);
+  assert(emptyPrompt.height >= 140);
+  assert(emptyPrompt.y + emptyPrompt.height < 844 / 2);
+  await page.locator("#prompt").tap();
+  assert.deepEqual(await page.locator("#prompt").boundingBox(), emptyPrompt);
+  assert.equal(await page.evaluate(() => scrollY), 0);
   await page.fill("#prompt", "Run the browser integration test.");
   await page.click("#send");
   const session = await f.sessions.get(id);
@@ -143,10 +160,54 @@ export async function browserFlow(
   });
   await page.waitForFunction(() => document.querySelectorAll("#transcript article").length === 3);
   assert.equal(await page.locator(".tool-call").count(), 1);
+  assert.equal(await page.locator(".thinking").count(), 2);
+  assert.equal(await page.locator(".thinking").first().textContent(), "Thinking…");
+  assert.equal(await page.locator(".thinking").last().textContent(), thinkingText);
+  assert.equal(
+    await page
+      .locator(".thinking")
+      .last()
+      .evaluate(
+        (node) =>
+          node.tagName === "DIV" &&
+          !node.closest("details") &&
+          node.scrollHeight <= node.clientHeight &&
+          node.scrollWidth <= node.clientWidth,
+      ),
+    true,
+  );
+  assert.deepEqual(
+    await page
+      .locator(".thinking")
+      .last()
+      .evaluate((node) => {
+        const style = getComputedStyle(node);
+        const tool = getComputedStyle(document.querySelector(".tool-call")!);
+        const summary = getComputedStyle(document.querySelector(".tool-call > summary")!);
+        return [style.borderLeft, style.color, tool.borderLeft, summary.color];
+      })
+      .then(([border, color, toolBorder, toolColor]) => [
+        border === toolBorder,
+        color === toolColor,
+      ]),
+    [true, true],
+  );
+  assert((await page.locator("#prompt").boundingBox())!.height < emptyPrompt.height);
   assert.equal(await page.locator('article[data-role="toolResult"]').count(), 0);
   assert.equal(await page.locator('.tool-call[data-state="completed"] .tool-result').count(), 1);
   await page.locator(".tool-call > summary").click();
   assert.equal(await page.locator(".tool-result pre").first().isVisible(), true);
+  assert.equal(await page.locator(".tool-call pre > :not(code)").count(), 0);
+  await browserContext.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
+  await page.locator(".tool-call > .message-actions").click();
+  assert.equal(await page.locator("#copy-message").isVisible(), false);
+  await page.getByRole("button", { name: "Copy input", exact: true }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), '{"value":31}');
+  const toolOutput = await page.locator(".tool-result > pre code").textContent();
+  await page.locator(".tool-call > .message-actions").click();
+  await page.getByRole("button", { name: "Copy output", exact: true }).click();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), toolOutput);
+  await page.locator("#notice").click();
   assert.equal(await page.locator(".tool-call > details").count(), 0);
   assert.equal(await page.locator("#transcript img").count(), 0);
   assert.equal(await page.evaluate(() => document.body.dataset.injected), undefined);
@@ -161,6 +222,13 @@ export async function browserFlow(
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
   assert.equal(f.faux.state.callCount, 2);
   assert.equal(errors.length, 0);
+  const iconStates = {
+    cancelled: "⊘",
+    done: "✓",
+    unfinished: "◷",
+    unavailable: "?",
+    unknown: "?",
+  };
   // Persist both supported nested-call record formats. Legacy codemode args are
   // deliberately truncated JSON: display text, not a parseable input payload.
   await session.root.commit(async (tx) => {
@@ -184,6 +252,13 @@ export async function browserFlow(
           details: {
             calls: [
               { id: 1, name: "read", args: '{"path":"example...', status: "ok", durationMs: 2 },
+              { id: 2, name: "read", args: '{"path":"pending.txt"}', status: "pending" },
+              ...Object.keys(iconStates).map((status, index) => ({
+                id: index + 3,
+                name: "read",
+                args: JSON.stringify({ path: `${status}.txt` }),
+                status,
+              })),
             ],
           },
         },
@@ -213,8 +288,71 @@ export async function browserFlow(
   await reconnected.waitForSelector(".nested-tools", { state: "attached" });
   await reconnected.reload();
   await reconnected.waitForFunction(() => document.querySelectorAll(".nested-tools").length === 2);
+  const speakerGroups = await reconnected.locator("#transcript > article").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const speaker = node.querySelector(":scope > header > .speaker");
+      return {
+        role: (node as HTMLElement).dataset.role,
+        grouped: node.classList.contains("same-speaker"),
+        border: getComputedStyle(node).borderTopWidth,
+        labelVisible: speaker ? getComputedStyle(speaker).display !== "none" : false,
+      };
+    }),
+  );
+  assert(speakerGroups.some((group) => group.grouped));
+  let previousRole: string | undefined;
+  for (const group of speakerGroups) {
+    const role = group.role === "toolResult" ? "assistant" : group.role;
+    const grouped = role !== undefined && role === previousRole;
+    assert.equal(group.grouped, grouped);
+    if (grouped) {
+      assert.equal(group.border, "0px");
+      assert.equal(group.labelVisible, false);
+    } else if (role === "assistant" || role === "user") {
+      assert.equal(group.labelVisible, true);
+    }
+    previousRole = role;
+  }
   assert.equal(await reconnected.locator(".nested-tools .error").count(), 1);
-  assert.equal(await reconnected.locator(".nested-tools > details").count(), 4);
+  assert.equal(
+    await reconnected.locator(".nested-tools > details").count(),
+    5 + Object.keys(iconStates).length,
+  );
+  for (const [state, icon] of Object.entries(iconStates)) {
+    const status = reconnected.locator(`.nested-tools .tool-status[data-state="${state}"]`);
+    assert.equal(await status.textContent(), icon);
+    assert.equal(await status.getAttribute("aria-label"), state);
+    assert.equal(await status.getAttribute("title"), state);
+  }
+  await reconnected.locator('.tool-call[data-call-id="code-history"] > summary').click();
+  await reconnected
+    .locator('.tool-call[data-call-id="code-history"] .nested-tools > summary')
+    .click();
+  for (const state of ["pending", "unfinished"]) {
+    const status = reconnected.locator(`.tool-status[data-state="${state}"]`);
+    assert.equal(await status.textContent(), "◷");
+    assert.equal(await status.locator("span").count(), 0);
+    assert.equal(await status.evaluate((node) => getComputedStyle(node).animationName), "none");
+  }
+  for (const state of ["completed", "ok", "done", "cancelled", "unavailable", "unknown"]) {
+    const status = reconnected.locator(`.tool-status[data-state="${state}"]`).first();
+    assert.equal(
+      await status.evaluate((node) => getComputedStyle(node).color),
+      ["completed", "ok", "done"].includes(state) ? "rgb(175, 214, 188)" : "rgb(150, 158, 157)",
+    );
+  }
+  if (screenshots)
+    await reconnected.locator('.tool-call[data-call-id="code-history"]').screenshot({
+      path: join(screenshots, "mobile-tool-statuses.png"),
+    });
+  const nestedError = reconnected.locator(
+    '.nested-tools .tool-call[data-state="error"] > summary > .tool-status',
+  );
+  assert.equal(await nestedError.textContent(), "✕");
+  assert.equal(
+    await nestedError.evaluate((node) => getComputedStyle(node).color),
+    "rgb(255, 173, 173)",
+  );
   assert.equal(errors.length, 0);
   // Parallel calls of the same tool pair by ID, not tool name or result order.
   const fullCommand = `printf '%s\\n' '${"long command argument ".repeat(18)}'\necho finished`;
@@ -267,6 +405,7 @@ export async function browserFlow(
           toolCallId: "parallel-first",
           toolName: "bash",
           content: [{ type: "text", text: "First finished" }],
+          details: { diff: "-old\n+new" },
           isError: false,
           timestamp: 4,
         },
@@ -279,6 +418,15 @@ export async function browserFlow(
   assert.equal(await firstCall.count(), 1);
   assert.equal(await secondCall.count(), 1);
   assert.equal(await secondCall.getAttribute("data-state"), "failed");
+  assert.equal(await secondCall.locator(":scope > summary > .tool-status").textContent(), "✕");
+  assert.equal(
+    await secondCall.locator(":scope > summary > .tool-status").getAttribute("aria-label"),
+    "failed",
+  );
+  await firstCall.locator(":scope > .message-actions").click();
+  await reconnected.getByRole("button", { name: "Copy changes", exact: true }).click();
+  assert.equal(await reconnected.evaluate(() => navigator.clipboard.readText()), "-old\n+new");
+  await reconnected.locator("#notice").click();
   assert.equal(await firstCall.evaluate((node) => node.hasAttribute("open")), true);
   assert.equal(await firstCall.locator(".tool-result").count(), 1);
   await summary.focus();
@@ -382,8 +530,6 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   const expectedWrite = buckets.reduce((sum, usage) => sum + usage.cacheWrite, 0);
   const expectedContext = (await snapshot(`${base}/api/sessions/${id}/events`)).context;
   // Exercise secondary controls in both pointer/keyboard and touch layouts.
-  const screenshots = process.env.PI_SCREENSHOT_DIR;
-  if (screenshots) await mkdir(screenshots, { recursive: true });
   const shot = async (page: Page, name: string) => {
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -917,6 +1063,34 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   );
   const running = reconnected.locator('.tool-call[data-state="running"]');
   assert.equal(await running.count(), 1);
+  const runningStatus = running.locator(":scope > summary > .tool-status");
+  assert.equal(await runningStatus.textContent(), "");
+  assert.equal(await runningStatus.getAttribute("aria-label"), "running");
+  assert.equal(await runningStatus.getAttribute("title"), "running");
+  assert.equal(await runningStatus.locator("span").count(), 4);
+  assert.deepEqual(
+    await runningStatus.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return [style.gridTemplateColumns, style.gridTemplateRows, style.color];
+    }),
+    ["2px 2px", "2px 2px", "rgb(175, 214, 188)"],
+  );
+  assert.equal(
+    await runningStatus
+      .locator("span")
+      .first()
+      .evaluate((node) => getComputedStyle(node).animationName),
+    "tool-spinner",
+  );
+  await reconnected.emulateMedia({ reducedMotion: "reduce" });
+  assert.equal(
+    await runningStatus
+      .locator("span")
+      .first()
+      .evaluate((node) => getComputedStyle(node).animationName),
+    "none",
+  );
+  await reconnected.emulateMedia({ reducedMotion: "no-preference" });
   await running.locator(":scope > summary").click();
   const runningId = await running.getAttribute("data-call-id");
   await reconnected.click("#stop");
@@ -1091,6 +1265,47 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   }
   await branch.waitForIdle(context);
   await desktopCodeContext.close();
+
+  // Separate assistant messages, not five calls inside one message: this is the
+  // back-to-back layout that previously repeated the speaker and separator.
+  f.faux.setResponses([
+    ...Array.from({ length: 5 }, (_, index) =>
+      fauxAssistantMessage(
+        fauxToolCall(
+          "read",
+          { path: f.filePath ?? "browser.json" },
+          { id: `speaker-group-${index}` },
+        ),
+        { stopReason: "toolUse" },
+      ),
+    ),
+    fauxAssistantMessage("All five reads completed."),
+  ]);
+  await reconnected.fill("#prompt", "Run five consecutive tool calls.");
+  await reconnected.click("#send");
+  await reconnected.waitForSelector(
+    '.tool-call[data-call-id="speaker-group-4"][data-state="completed"]',
+  );
+  await branch.waitForIdle(context);
+  for (const phase of ["live", "reloaded"]) {
+    if (phase === "reloaded") await reconnected.reload();
+    await reconnected.waitForSelector(
+      '.tool-call[data-call-id="speaker-group-4"][data-state="completed"]',
+    );
+    const calls = reconnected.locator('article:has(> .tool-call[data-call-id^="speaker-group-"])');
+    assert.equal(await calls.count(), 5);
+    for (let index = 0; index < 5; index++) {
+      const call = calls.nth(index);
+      assert.equal(await call.locator(":scope > header > .speaker").isVisible(), index === 0);
+      if (index > 0) {
+        assert.equal(await call.evaluate((node) => getComputedStyle(node).borderTopWidth), "0px");
+        assert((await call.boundingBox())!.height < 70);
+      }
+      assert.equal(await call.locator(":scope > header > .message-actions").isVisible(), true);
+    }
+    await calls.first().evaluate((node) => node.previousElementSibling?.scrollIntoView());
+    await shot(reconnected, `mobile-speaker-groups-${phase}`);
+  }
   assert.equal(errors.length, 0);
   if (f.restart) {
     const started = Promise.withResolvers<void>();
