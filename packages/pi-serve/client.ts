@@ -376,8 +376,7 @@ function toolLabel(name: string, args: Record<string, unknown> = {}): string {
   const path = typeof args.path === "string" ? args.path : "";
   if (short === "bash") {
     const command = typeof args.command === "string" ? args.command.trim() : "Shell command";
-    const line = command.split("\n")[0].slice(0, 140);
-    return `$ ${line}${line.length < command.length ? "…" : ""}`;
+    return `$ ${command}`;
   }
   if (short === "codemode") return "Code · JavaScript";
   const verb = {
@@ -389,6 +388,39 @@ function toolLabel(name: string, args: Record<string, unknown> = {}): string {
     ls: "List",
   }[short];
   return `${verb ?? name}${path ? ` · ${path}` : ""}`;
+}
+
+function toolCommand(name: string, args: Record<string, unknown> = {}): string {
+  const short = name.split(".").at(-1);
+  if (short === "bash") return toolLabel(name, args);
+  if (short === "codemode" && typeof args.code === "string") return args.code.trim();
+  const label = toolLabel(name, args);
+  if (short === "write" && typeof args.content === "string") return `${label}\n${args.content}`;
+  return Object.keys(args).length ? `${label}\n${JSON.stringify(args, null, 2)}` : label;
+}
+
+function toolSummary(command: string, state: string): HTMLElement {
+  const summary = document.createElement("summary");
+  const status = document.createElement("span");
+  status.className = "tool-status";
+  status.textContent =
+    {
+      completed: "✓",
+      ok: "✓",
+      running: "Running",
+      pending: "Pending",
+      failed: "Failed",
+      error: "Failed",
+      cancelled: "Cancelled",
+      done: "Finished",
+      unfinished: "Unfinished",
+    }[state] ?? "No result";
+  status.setAttribute("aria-label", state);
+  const label = document.createElement("span");
+  label.className = "tool-command";
+  label.textContent = command;
+  summary.append(status, label);
+  return summary;
 }
 
 function toolInput(name: string, args: Record<string, unknown>): HTMLElement {
@@ -445,13 +477,14 @@ function toolDetails(node: HTMLElement, data: unknown): void {
     for (const call of data.calls) {
       if (!call || typeof call !== "object") continue;
       const row = document.createElement("details");
-      const title = document.createElement("summary");
-      title.textContent = `${toolLabel(String(call.name), call.arguments)} · ${String(call.status)}${typeof call.durationMs === "number" ? ` · ${call.durationMs}ms` : ""}`;
-      row.append(title);
-      if (call.arguments && typeof call.arguments === "object")
-        row.append(toolInput(String(call.name), call.arguments));
-      else if (typeof call.args === "string") row.append(codeBlock(call.args));
-      else if (typeof call.argumentsBytes === "number")
+      row.className = "tool-call";
+      row.dataset.state = String(call.status);
+      const command =
+        call.arguments && typeof call.arguments === "object"
+          ? toolCommand(String(call.name), call.arguments)
+          : `${toolLabel(String(call.name))}${typeof call.args === "string" ? `\n${call.args}` : ""}`;
+      row.append(toolSummary(command, String(call.status)));
+      if (typeof call.argumentsBytes === "number")
         row.append(`Arguments omitted (${call.argumentsBytes} bytes)`);
       if (typeof call.error === "string") {
         row.classList.add("error");
@@ -724,32 +757,7 @@ function render(snapshot: Snapshot): void {
     details.dataset.disclosure = `call:${call.id}`;
     details.dataset.state = state;
     details.open = !!failed;
-    const summary = document.createElement("summary");
-    const label = document.createElement("span");
-    label.textContent = toolLabel(call.name, call.arguments);
-    const status = document.createElement("span");
-    status.className = "tool-status";
-    status.textContent =
-      state === "completed"
-        ? "✓"
-        : state === "running"
-          ? "Running"
-          : state === "pending"
-            ? "Pending"
-            : state === "failed"
-              ? "Failed"
-              : state === "done"
-                ? "Finished"
-                : "No result";
-    status.setAttribute("aria-label", state);
-    summary.append(label, status);
-    details.append(summary);
-    const input = document.createElement("details");
-    input.dataset.disclosure = `input:${call.id}`;
-    const inputLabel = document.createElement("summary");
-    inputLabel.textContent = "Input";
-    input.append(inputLabel, toolInput(call.name, call.arguments));
-    details.append(input);
+    details.append(toolSummary(toolCommand(call.name, call.arguments), state));
     if (result) {
       const output = document.createElement("div");
       output.className = "tool-result";

@@ -30,9 +30,14 @@
     article[data-role=user] > header { color: var(--muted); }
     article[data-role=toolResult] { padding: 4px 0; border-top: 0; }
     .tool-call { border-left: 2px solid var(--line); padding-left: 10px; margin: 6px 0; font-size: 12px; }
-    .tool-call > summary { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
-    .tool-status { margin-left: 10px; font: 11px system-ui; white-space: nowrap; color: var(--muted); }
-    .tool-call[data-state=failed] > summary .tool-status { color: #ffadad; }
+    .tool-call summary { list-style: none; }
+    .tool-call summary::marker { content: ""; }
+    .tool-call summary::-webkit-details-marker { display: none; }
+    .tool-call > summary { display: flex; align-items: baseline; gap: 8px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .tool-command { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tool-call[open] > summary > .tool-command { white-space: pre-wrap; overflow-wrap: anywhere; overflow: visible; }
+    .tool-status { flex: none; font: 11px system-ui; white-space: nowrap; color: var(--muted); }
+    .tool-call[data-state=failed] > summary .tool-status, .tool-call[data-state=error] > summary .tool-status { color: #ffadad; }
     .tool-call[data-state=running] > summary .tool-status { color: var(--accent); }
     .tool-result { min-width: 0; }
     .tool-result > .message-actions { display: block; }

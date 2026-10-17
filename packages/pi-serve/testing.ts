@@ -147,7 +147,7 @@ export async function browserFlow(
   assert.equal(await page.locator('.tool-call[data-state="completed"] .tool-result').count(), 1);
   await page.locator(".tool-call > summary").click();
   assert.equal(await page.locator(".tool-result pre").first().isVisible(), true);
-  assert.equal(await page.locator(".tool-call > details pre").first().isVisible(), false);
+  assert.equal(await page.locator(".tool-call > details").count(), 0);
   assert.equal(await page.locator("#transcript img").count(), 0);
   assert.equal(await page.evaluate(() => document.body.dataset.injected), undefined);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -217,12 +217,13 @@ export async function browserFlow(
   assert.equal(await reconnected.locator(".nested-tools > details").count(), 4);
   assert.equal(errors.length, 0);
   // Parallel calls of the same tool pair by ID, not tool name or result order.
+  const fullCommand = `printf '%s\\n' '${"long command argument ".repeat(18)}'\necho finished`;
   await session.root.commit(async (tx) => {
     await tx.appendEntry(session.root.id, {
       kind: "test.parallel-tools",
       model: [
         fauxAssistantMessage([
-          fauxToolCall("bash", { command: "echo first" }, { id: "parallel-first" }),
+          fauxToolCall("bash", { command: fullCommand }, { id: "parallel-first" }),
           fauxToolCall("bash", { command: "echo second" }, { id: "parallel-second" }),
         ]),
       ],
@@ -230,8 +231,25 @@ export async function browserFlow(
   }, context);
   const firstCall = reconnected.locator('.tool-call[data-call-id="parallel-first"]');
   const secondCall = reconnected.locator('.tool-call[data-call-id="parallel-second"]');
-  await firstCall.locator(":scope > summary").click();
-  await firstCall.locator(":scope > details > summary").click();
+  await firstCall.waitFor();
+  const summary = firstCall.locator(":scope > summary");
+  assert.equal(
+    await summary.evaluate((node) => node.firstElementChild?.classList.contains("tool-status")),
+    true,
+  );
+  assert.equal(await summary.evaluate((node) => getComputedStyle(node).listStyleType), "none");
+  assert.equal(
+    await firstCall
+      .locator(".tool-command")
+      .evaluate((node) => node.scrollWidth > node.clientWidth),
+    true,
+  );
+  await summary.focus();
+  await summary.press("Enter");
+  const command = firstCall.locator(":scope > summary > .tool-command");
+  assert.equal(await command.evaluate((node) => getComputedStyle(node).whiteSpace), "pre-wrap");
+  assert.equal(await command.textContent(), `$ ${fullCommand}`);
+  assert.equal(await command.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true);
   await session.root.commit(async (tx) => {
     await tx.appendEntry(session.root.id, {
       kind: "test.parallel-results",
@@ -261,11 +279,15 @@ export async function browserFlow(
   assert.equal(await firstCall.count(), 1);
   assert.equal(await secondCall.count(), 1);
   assert.equal(await secondCall.getAttribute("data-state"), "failed");
-  assert.equal(
-    await firstCall.locator(":scope > details").evaluate((node) => node.hasAttribute("open")),
-    true,
-  );
+  assert.equal(await firstCall.evaluate((node) => node.hasAttribute("open")), true);
   assert.equal(await firstCall.locator(".tool-result").count(), 1);
+  await summary.focus();
+  await summary.press("Enter");
+  assert.equal(await firstCall.locator(".tool-result").isVisible(), false);
+  assert.equal(await command.evaluate((node) => getComputedStyle(node).whiteSpace), "nowrap");
+  await summary.press("Space");
+  assert.equal(await firstCall.locator(".tool-result").isVisible(), true);
+
   assert.equal(await secondCall.locator(".tool-result").count(), 1);
   assert.equal(await reconnected.locator('article[data-role="toolResult"]').count(), 1); // unmatched legacy result only
   await reconnected.reload();
@@ -429,6 +451,11 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await shot(page, `${size}-conversation`);
     for (const tool of ["bash", "edit"]) {
       const call = page.locator(`.tool-call[data-tool="${tool}"]`).last();
+      await call.evaluate((node) => {
+        (node as HTMLDetailsElement).open = false;
+      });
+      await call.scrollIntoViewIfNeeded();
+      await shot(page, `${size}-collapsed-${tool}`);
       await call.evaluate((node) => {
         (node as HTMLDetailsElement).open = true;
       });
