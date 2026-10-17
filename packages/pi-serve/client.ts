@@ -62,12 +62,13 @@ const send = element("send", HTMLButtonElement);
 const stop = element("stop", HTMLButtonElement);
 const resume = element("resume", HTMLButtonElement);
 const notice = element("notice", HTMLDivElement);
-const status = element("status", HTMLSpanElement);
-const title = element("title", HTMLHeadingElement);
+const status = element("status", HTMLParagraphElement);
+const title = element("title", HTMLButtonElement);
 const create = element("create", HTMLButtonElement);
 const recovery = element("recovery", HTMLDivElement);
 const picker = element("picker", HTMLDialogElement);
 const menu = element("conversation-menu", HTMLDivElement);
+const appMenu = element("app-menu", HTMLDivElement);
 const messageMenu = element("message-menu", HTMLDivElement);
 const inputMenu = element("input-menu", HTMLDivElement);
 const sessionFilter = element("session-filter", HTMLInputElement);
@@ -940,10 +941,8 @@ export function render(snapshot: Snapshot): void {
         ? "Waiting for provider…"
         : "");
   activity.hidden = !activity.textContent;
-  if (wasBusy && !busy) {
-    void refreshRepository();
-    document.title = "✓ Pi";
-  } else if (busy) document.title = "Working · Pi";
+  if (wasBusy && !busy) void refreshRepository();
+  document.title = `${busy ? "Working · " : ""}${sessionTitle(snapshot.session)}`;
   const wanted = new Set<string>();
   const ordered: HTMLElement[] = [];
   // A streamed assistant entry can be replaced by its committed entry. Keep
@@ -1377,9 +1376,13 @@ notice.onclick = () => {
   notice.hidden = true;
 };
 branches.onchange = () => {
-  if (active) attach(active, Number(branches.value));
+  if (active) {
+    closePopovers();
+    attach(active, Number(branches.value));
+  }
 };
 element("settings", HTMLButtonElement).onclick = () => {
+  closePopovers();
   preferences.querySelector(".dialog-error")?.remove();
   const agent = latest?.view.docs["pi.agent"] as AgentState | undefined;
   element("session-name", HTMLInputElement).value = latest?.session.name ?? "";
@@ -1586,7 +1589,7 @@ function resizePrompt(): void {
   prompt.style.height = `${prompt.scrollHeight}px`;
 }
 function closePopovers(): void {
-  for (const popover of [menu, messageMenu, inputMenu]) popover.hidePopover();
+  for (const popover of [menu, appMenu, messageMenu, inputMenu]) popover.hidePopover();
 }
 function openPicker(): void {
   closePopovers();
@@ -1599,7 +1602,7 @@ element("close-picker", HTMLButtonElement).onclick = () => picker.close();
 sessionFilter.oninput = renderSessions;
 installPickerKeyMappings(picker);
 installSelectKeyMappings(document);
-for (const popover of [menu, inputMenu])
+for (const popover of [menu, appMenu, inputMenu])
   popover.addEventListener("click", (event) => {
     if (
       event.target instanceof Element &&
@@ -1619,7 +1622,7 @@ document.addEventListener("pointerdown", (event) => {
   )
     messageMenu.hidePopover();
 });
-for (const popover of [menu, inputMenu])
+for (const popover of [menu, appMenu, inputMenu])
   popover.addEventListener("beforetoggle", (event) => {
     if (event.newState === "open") messageMenu.hidePopover();
   });
@@ -1627,7 +1630,7 @@ messageMenu.addEventListener("toggle", () => {
   if (!messageMenu.matches(":popover-open"))
     selectedMessage?.trigger.setAttribute("aria-expanded", "false");
 });
-for (const popover of [menu, messageMenu, inputMenu])
+for (const popover of [menu, appMenu, messageMenu, inputMenu])
   popover.addEventListener("keydown", (event) => {
     const direction = navigationDirection(event);
     if (
@@ -1869,7 +1872,7 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-for (const popover of [menu, inputMenu])
+for (const popover of [menu, appMenu, inputMenu])
   popover.addEventListener("toggle", () => {
     if (popover.matches(":popover-open"))
       popover.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])")?.focus();

@@ -4,26 +4,28 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#151719">
-  <title>Pi</title>
+  <title>No session</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="bar">
-    <button id="workspace" class="icon" aria-label="Sessions" title="Sessions (Ctrl/⌘ K)">π</button>
-    <h1 id="title">Pi</h1>
-    <select id="branches" aria-label="Conversation" disabled><option>Main</option></select>
-    <span id="status" role="status">Ready</span>
-    <button id="menu-toggle" class="icon" popovertarget="conversation-menu" aria-label="Conversation menu">···</button>
+    <h1><button id="title" type="button" popovertarget="conversation-menu" aria-haspopup="true">No session</button></h1>
+    <button id="menu-toggle" type="button" popovertarget="app-menu" aria-haspopup="true">Menu</button>
   </header>
-  <div id="conversation-menu" popover aria-label="Conversation actions">
+  <div id="conversation-menu" popover aria-label="Session menu">
+    <button id="workspace" title="Sessions (Ctrl/⌘ K)">Sessions <kbd>Ctrl K</kbd></button>
+    <button id="settings" disabled>Session settings</button>
+    <label><span>Conversation</span><select id="branches" aria-label="Conversation" disabled><option>Main</option></select></label>
     <button id="find" disabled>Find in conversation <kbd>⌘ F</kbd></button>
-    <button id="settings" disabled>Settings</button>
     <button id="export" disabled>Export JSON</button>
+    <p id="status" role="status">Ready</p>
+  </div>
+  <div id="app-menu" popover aria-label="App menu">
     <button id="wrap-code" aria-pressed="false">Wrap code <span aria-hidden="true">Off</span></button>
-    <button id="install" hidden>Install Pi</button>
-
+    <button id="install" hidden>Install app</button>
+    <p id="pwa-status"></p>
   </div>
   <div id="message-menu" popover="manual" aria-label="Message actions">
     <button id="copy-message">Copy message</button>
@@ -86,7 +88,6 @@
       <div class="actions"><button id="compact">Compact</button><button id="reset">Reset…</button></div>
       <p>Reset clears model context, not history.</p>
     </details>
-    <details><summary>App</summary><p id="pwa-status"></p></details>
   </dialog>
   <dialog id="usage-dialog" aria-labelledby="usage-title">
     <div class="dialog-heading"><h2 id="usage-title">Conversation stats</h2><button id="close-usage" class="icon" aria-label="Close statistics">×</button></div>

@@ -137,7 +137,9 @@ await session.prompt("Hello");</code></pre></div>
   <section id="navigation" class="ds-section">
     <h2>Navigation &amp; search</h2>
     <div class="ds-panel">
-      <header class="bar"><button id="workspace" class="icon" aria-label="Sessions" commandfor="picker" command="show-modal">π</button><h1>Refactor the workspace</h1><select id="branches" aria-label="Conversation"><option>Main</option><option>Experiment</option></select><span id="status" role="status">Ready</span><button class="icon" aria-label="Conversation menu" popovertarget="live-menu">···</button></header>
+      <header class="bar"><h1><button id="title" popovertarget="conversation-menu">Refactor the workspace</button></h1><button id="menu-toggle" popovertarget="app-menu">Menu</button></header>
+      <div id="conversation-menu" popover aria-label="Session menu"><button commandfor="picker" command="show-modal">Sessions</button><button commandfor="preferences" command="show-modal">Session settings</button><label><span>Conversation</span><select id="branches" aria-label="Conversation"><option>Main</option><option>Experiment</option></select></label><button>Find in conversation</button><button>Export JSON</button><p id="status">Ready</p></div>
+      <div id="app-menu" popover aria-label="App menu"><button>Wrap code</button><button>Install app</button><p id="pwa-status">App shell available offline. Conversations and tools require a connection.</p></div>
       <div id="search-bar"><input type="search" aria-label="Find in conversation" placeholder="Find in conversation…" value="workspace"><span id="search-count">1 / 3</span><button class="icon" aria-label="Previous match">↑</button><button class="icon" aria-label="Next match">↓</button><button class="icon" aria-label="Close search">×</button></div>
     </div>
   </section>

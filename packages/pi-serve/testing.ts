@@ -484,7 +484,7 @@ export async function browserFlow(
   await page.getByRole("button", { name: "Copy output", exact: true }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), toolOutput);
   await openMessageActions(page, page.locator(".tool-call > .message-actions"));
-  await page.locator("#title").tap();
+  await page.locator(".bar").tap({ position: { x: 200, y: 2 } });
   assert.equal(await page.locator("#message-menu").isVisible(), false);
   await openMessageActions(page, page.locator(".tool-call > .message-actions"));
   await page.keyboard.press("Escape");
@@ -676,7 +676,7 @@ export async function browserFlow(
     JSON.parse(rawText),
   );
   await reconnected.locator("#notice").click();
-  await reconnected.click("#menu-toggle");
+  await reconnected.click("#title");
   await reconnected.click("#find");
   await reconnected.fill("#search", "example");
   await rawCode.locator(".hljs-attr").first().waitFor();
@@ -885,7 +885,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   assert((await reconnected.locator(".hljs-keyword").count()) > 0);
   assert((await reconnected.locator(".hljs-deletion").count()) > 0);
   // Settings persist in the actual agent document, not just in the form.
-  await reconnected.click("#menu-toggle");
+  await reconnected.click("#title");
   await reconnected.click("#settings");
   await reconnected.selectOption("#thinking", "high");
   await reconnected.fill("#session-name", "Counter cleanup");
@@ -1039,6 +1039,35 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       await page.screenshot({ path: join(screenshots, `${name}.png`), fullPage: true });
   };
   const gallery = async (page: Page, size: string) => {
+    assert.equal(await page.locator(".bar button").count(), 2);
+    assert.equal(await page.locator(".bar .icon, .bar select, .bar svg, .bar img").count(), 0);
+    assert.equal(await page.locator("#title").textContent(), "Counter cleanup");
+    assert.equal(await page.locator("#menu-toggle").textContent(), "Menu");
+    const originalTitle = await page.locator("#title").textContent();
+    await page.locator("#title").evaluate((node) => { node.textContent = "Very long session name ".repeat(30); });
+    const layout = await page.locator(".bar").evaluate((bar) => {
+      const title = bar.querySelector("#title")!.getBoundingClientRect();
+      const menu = bar.querySelector("#menu-toggle")!.getBoundingClientRect();
+      const bounds = bar.getBoundingClientRect();
+      return { left: title.left - bounds.left, right: bounds.right - menu.right, overlap: title.right > menu.left, overflow: document.documentElement.scrollWidth > innerWidth };
+    });
+    assert(layout.left <= 16 && layout.right <= 16);
+    assert.equal(layout.overlap, false);
+    assert.equal(layout.overflow, false);
+    await page.locator("#title").evaluate((node, name) => { node.textContent = name; }, originalTitle);
+    await page.click("#title");
+    assert.equal(await page.locator("#settings").isVisible(), true);
+    assert.equal(await page.locator("#branches").isVisible(), true);
+    assert.equal(await page.locator("#wrap-code").isVisible(), false);
+    await page.click("#workspace");
+    await page.waitForSelector("#picker[open]");
+    await page.keyboard.press("Escape");
+    await page.click("#menu-toggle");
+    assert.equal(await page.locator("#wrap-code").isVisible(), true);
+    assert.equal(await page.locator("#settings").isVisible(), false);
+    assert.equal(await page.locator("#branches").isVisible(), false);
+    await page.keyboard.press("Escape");
+
     await page.locator("#transcript").evaluate((node) => {
       node.scrollTop = node.scrollHeight;
     });
@@ -1101,7 +1130,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await shot(page, `${size}-footer-breakdown`);
     await page.keyboard.press("Escape");
     if (size === "desktop") {
-      await page.click("#menu-toggle");
+      await page.click("#title");
       await page.click("#settings");
     } else {
       await page.click("#footer-model");
@@ -1121,14 +1150,13 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator('label[for="prompt"]').count(), 0);
     await page.click("#menu-toggle");
     await page.waitForFunction(() =>
-      document.querySelector("#conversation-menu")?.matches(":popover-open"),
+      document.querySelector("#app-menu")?.matches(":popover-open"),
     );
     if (size === "mobile") {
-      const menuBox = await page.locator("#conversation-menu").boundingBox();
+      const menuBox = await page.locator("#app-menu").boundingBox();
       assert(menuBox);
-      assert.equal(menuBox.x, 10);
-      assert.equal(menuBox.width, page.viewportSize()!.width - 20);
-      assert.equal(menuBox.y + menuBox.height, page.viewportSize()!.height - 10);
+      assert.equal(menuBox.x + menuBox.width, page.viewportSize()!.width - 10);
+      assert(menuBox.y >= 50 && menuBox.y < 80);
     }
     await shot(page, `${size}-menu`);
     await page.keyboard.press("End");
@@ -1146,7 +1174,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       await page.locator("#menu-toggle").evaluate((node) => node === document.activeElement),
       true,
     );
-    await page.click("#menu-toggle");
+    await page.click("#title");
     await page.waitForFunction(
       () =>
         document.activeElement ===
@@ -1243,7 +1271,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#sessions-empty").isVisible(), true);
     await page.fill("#session-filter", "");
     await page.keyboard.press("Escape");
-    await page.click("#menu-toggle");
+    await page.click("#title");
     await page.click("#settings");
     assert.equal(await page.locator("#session-name").inputValue(), "Counter cleanup");
     if (size === "mobile")
@@ -1644,7 +1672,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   );
 
   // Context reset preserves history, and export returns the selected branch.
-  await reconnected.click("#menu-toggle");
+  await reconnected.click("#title");
   await reconnected.click("#settings");
   reconnected.once("dialog", (dialog) => {
     void dialog.accept();
@@ -1662,7 +1690,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   assert(Number(await reconnected.locator("#footer-input").getAttribute("data-value")) > 0);
   await shot(reconnected, "mobile-footer-reset");
   const download = reconnected.waitForEvent("download");
-  await reconnected.click("#menu-toggle");
+  await reconnected.click("#title");
   await reconnected.click("#export");
   assert(await (await download).path());
 
