@@ -23,6 +23,8 @@
       ./server.test.ts
       ./testing.ts
       ./index.html
+      ./styles.css
+      ./design-system.html
       ./sw.js
       ./icon-192.png
       ./icon-512.png
@@ -51,7 +53,7 @@ in
     installPhase = ''
       runHook preInstall
       mkdir -p "$out/lib/pi-serve" "$out/bin"
-      cp pi-serve/{package.json,index.html,sw.js,icon-192.png,icon-512.png} "$out/lib/pi-serve/"
+      cp pi-serve/{package.json,index.html,styles.css,design-system.html,sw.js,icon-192.png,icon-512.png} "$out/lib/pi-serve/"
       cp dist/pi-serve/{server,client}.js "$out/lib/pi-serve/"
       ln -s ${pi-workspace}/node_modules "$out/lib/pi-serve/node_modules"
       ln -s ${pi-runtime}/lib/pi-runtime "$out/lib/pi-runtime"

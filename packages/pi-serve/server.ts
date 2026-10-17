@@ -339,6 +339,8 @@ export function httpServer(
         [
           "/",
           "/client.js",
+          "/styles.css",
+          "/design-system.html",
           "/manifest.webmanifest",
           "/icon.svg",
           "/icon-192.png",
@@ -350,6 +352,8 @@ export function httpServer(
         const types: Record<string, string> = {
           "index.html": "text/html; charset=utf-8",
           "client.js": "text/javascript; charset=utf-8",
+          "styles.css": "text/css; charset=utf-8",
+          "design-system.html": "text/html; charset=utf-8",
           "manifest.webmanifest": "application/manifest+json",
           "icon.svg": "image/svg+xml",
           "icon-192.png": "image/png",

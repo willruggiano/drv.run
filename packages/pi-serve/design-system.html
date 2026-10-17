@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#151719">
+  <title>Pi · Design system</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Only showcase layout lives here. Components and tokens come from styles.css. */
+    body { height: auto; display: block; }
+    .ds-page { max-width: 1100px; margin: auto; padding: 32px 20px 64px; }
+    .ds-intro { border-bottom: 1px solid var(--line); padding-bottom: 24px; }
+    .ds-intro h1 { font-size: 32px; white-space: normal; }
+    .ds-eyebrow, .ds-note { color: var(--muted); font-size: 12px; }
+    .ds-eyebrow { letter-spacing: .12em; text-transform: uppercase; }
+    .ds-intro nav { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+    .ds-section { margin-top: 40px; scroll-margin-top: 20px; }
+    .ds-section > h2 { font-size: 20px; margin-bottom: 8px; }
+    .ds-section h3 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 12px; }
+    .ds-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+    .ds-panel { min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    .ds-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .ds-palette { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+    .ds-palette li { min-width: 0; font-size: 11px; }
+    .ds-palette code { background: none; padding: 0; }
+    .ds-palette small { display: block; color: var(--muted); }
+    .ds-swatch { display: block; height: 48px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; }
+    .ds-type-brand { font: 32px var(--font-brand); color: var(--accent); }
+    .ds-type-mono { font-family: var(--font-mono); }
+    .ds-space { display: inline-block; width: var(--size); height: 24px; background: var(--accent); }
+    .ds-radius { display: grid; place-items: center; width: 56px; height: 44px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); font-size: 11px; }
+    .ds-stack { display: grid; gap: 12px; }
+    .ds-section #transcript { padding: 0; overflow: visible; }
+    .ds-section #search-bar, .ds-section #notice, .ds-section #recovery, .ds-section #activity, .ds-section #queue { padding: 8px 12px; }
+    .ds-section #composer { padding: 0; }
+    .ds-section #bottom-line { padding: 6px 0 0; }
+    .ds-section #latest { position: static; transform: none; margin: 0; }
+    .ds-section #input-mode { display: inline-block; }
+    .ds-section dialog[open]:not(:modal) { position: static; margin: 0; width: 100%; max-height: none; }
+    .ds-section dialog form { margin: 0; }
+    .ds-menu-preview[popover] { display: block; position: static; inset: auto; width: 100%; max-height: none; box-shadow: none; }
+    .ds-section #sessions { max-height: none; }
+    .ds-image { display: grid; place-items: center; width: 180px; height: 100px; background: var(--surface-subtle); border-radius: 6px; color: var(--accent); }
+    @media (max-width: 650px) { .ds-page { padding: 20px 12px 40px; } .ds-panel { padding: 12px; } }
+  </style>
+</head>
+<body>
+<main class="ds-page">
+  <header class="ds-intro">
+    <p class="ds-eyebrow">Pi / Frontend reference</p>
+    <h1>Design system</h1>
+    <p>Quiet surfaces, compact controls, readable conversations.</p>
+    <p class="ds-note">Live application styles from <code>styles.css</code>. Static sample data; no backend, build, fonts, or scripts required. Open this file directly or visit <code>/design-system.html</code>.</p>
+    <nav aria-label="Design system sections">
+      <a href="#colors">Colors</a><a href="#type">Typography</a><a href="#geometry">Spacing &amp; shape</a><a href="#controls">Controls</a><a href="#navigation">Navigation</a><a href="#messages">Messages &amp; tools</a><a href="#feedback">Feedback</a><a href="#composition">Composer &amp; footer</a><a href="#overlays">Dialogs &amp; menus</a>
+    </nav>
+  </header>
+
+  <section id="colors" class="ds-section">
+    <h2>Colors</h2>
+    <p class="ds-note">Semantic CSS custom properties. Transparent colors are shown over the page background.</p>
+    <ul class="ds-palette">
+        <li><span class="ds-swatch" style="background:var(--bg)"></span><code>--bg</code><small>#151719</small></li>
+        <li><span class="ds-swatch" style="background:var(--fg)"></span><code>--fg</code><small>#dce0df</small></li>
+        <li><span class="ds-swatch" style="background:var(--line)"></span><code>--line</code><small>#2c3032</small></li>
+        <li><span class="ds-swatch" style="background:var(--muted)"></span><code>--muted</code><small>#969e9d</small></li>
+        <li><span class="ds-swatch" style="background:var(--accent)"></span><code>--accent</code><small>#afd6bc</small></li>
+        <li><span class="ds-swatch" style="background:var(--surface)"></span><code>--surface</code><small>#1d2022</small></li>
+        <li><span class="ds-swatch" style="background:var(--hover)"></span><code>--hover</code><small>#292e2e</small></li>
+        <li><span class="ds-swatch" style="background:var(--border-hover)"></span><code>--border-hover</code><small>#667870</small></li>
+        <li><span class="ds-swatch" style="background:var(--warning)"></span><code>--warning</code><small>#e5bd8e</small></li>
+        <li><span class="ds-swatch" style="background:var(--surface-subtle)"></span><code>--surface-subtle</code><small>#222628</small></li>
+        <li><span class="ds-swatch" style="background:var(--danger)"></span><code>--danger</code><small>#ffadad</small></li>
+        <li><span class="ds-swatch" style="background:var(--code-bg)"></span><code>--code-bg</code><small>#101214</small></li>
+        <li><span class="ds-swatch" style="background:var(--code-inline)"></span><code>--code-inline</code><small>#d6c7a7</small></li>
+        <li><span class="ds-swatch" style="background:var(--syntax-keyword)"></span><code>--syntax-keyword</code><small>#d7afe5</small></li>
+        <li><span class="ds-swatch" style="background:var(--link)"></span><code>--link</code><small>#a2c9df</small></li>
+        <li><span class="ds-swatch" style="background:var(--syntax-comment)"></span><code>--syntax-comment</code><small>#87938e</small></li>
+        <li><span class="ds-swatch" style="background:var(--diff-add-bg)"></span><code>--diff-add-bg</code><small>#203d2c</small></li>
+        <li><span class="ds-swatch" style="background:var(--diff-add)"></span><code>--diff-add</code><small>#b7e8bd</small></li>
+        <li><span class="ds-swatch" style="background:var(--diff-remove-bg)"></span><code>--diff-remove-bg</code><small>#462c2e</small></li>
+        <li><span class="ds-swatch" style="background:var(--diff-remove)"></span><code>--diff-remove</code><small>#efb2b2</small></li>
+        <li><span class="ds-swatch" style="background:var(--syntax-meta)"></span><code>--syntax-meta</code><small>#9fb9d5</small></li>
+        <li><span class="ds-swatch" style="background:var(--activity-bg)"></span><code>--activity-bg</code><small>#202b25</small></li>
+        <li><span class="ds-swatch" style="background:var(--notice-bg)"></span><code>--notice-bg</code><small>#252b28</small></li>
+        <li><span class="ds-swatch" style="background:var(--warning-bg)"></span><code>--warning-bg</code><small>#3a3020</small></li>
+        <li><span class="ds-swatch" style="background:var(--border-focus)"></span><code>--border-focus</code><small>#607e6c</small></li>
+        <li><span class="ds-swatch" style="background:var(--primary)"></span><code>--primary</code><small>#b4d4be</small></li>
+        <li><span class="ds-swatch" style="background:var(--on-primary)"></span><code>--on-primary</code><small>#17251d</small></li>
+        <li><span class="ds-swatch" style="background:var(--shadow)"></span><code>--shadow</code><small>#0006</small></li>
+        <li><span class="ds-swatch" style="background:var(--dialog-bg)"></span><code>--dialog-bg</code><small>#191c1e</small></li>
+        <li><span class="ds-swatch" style="background:var(--border-overlay)"></span><code>--border-overlay</code><small>#454e49</small></li>
+        <li><span class="ds-swatch" style="background:var(--backdrop)"></span><code>--backdrop</code><small>#0009</small></li>
+        <li><span class="ds-swatch" style="background:var(--selected)"></span><code>--selected</code><small>#24322a</small></li>
+        <li><span class="ds-swatch" style="background:var(--popover-bg)"></span><code>--popover-bg</code><small>#202426</small></li>
+        <li><span class="ds-swatch" style="background:var(--menu-hover)"></span><code>--menu-hover</code><small>#303638</small></li>
+        <li><span class="ds-swatch" style="background:var(--search-border)"></span><code>--search-border</code><small>#59664d</small></li>
+        <li><span class="ds-swatch" style="background:var(--search-current)"></span><code>--search-current</code><small>#afd6bc08</small></li>
+        <li><span class="ds-swatch" style="background:var(--search-highlight)"></span><code>--search-highlight</code><small>#52603b</small></li>
+        <li><span class="ds-swatch" style="background:var(--search-text)"></span><code>--search-text</code><small>#fff</small></li>
+        <li><span class="ds-swatch" style="background:var(--backdrop-light)"></span><code>--backdrop-light</code><small>#0004</small></li>
+    </ul>
+  </section>
+
+  <section id="type" class="ds-section">
+    <h2>Typography</h2>
+    <div class="ds-grid">
+      <div class="ds-panel"><h3>Interface · --font-ui</h3><h2>Section title · 16 / 500</h2><p>Body · 14px / 1.6. The quick brown fox jumps over the lazy dog.</p><span class="ds-note">Metadata · 11–12px. Ready · last response.</span></div>
+      <div class="ds-panel"><h3>Code &amp; statistics · --font-mono</h3><p class="ds-type-mono">↑12.4k ↓860 R8.2k CH66.1% $0.024</p><pre><code>const answer = 42;
+await session.prompt("Hello");</code></pre></div>
+      <div class="ds-panel"><h3>Brand · --font-brand</h3><div class="ds-type-brand">π Pi</div><p class="ds-note">Georgia / serif. The workspace mark uses 26px.</p><p><a href="#controls">Links</a> and <code>inline code</code>.</p></div>
+    </div>
+  </section>
+
+  <section id="geometry" class="ds-section">
+    <h2>Spacing &amp; shape</h2>
+    <div class="ds-grid">
+      <div class="ds-panel"><h3>Spacing · px</h3><div class="ds-row">
+        <span><i class="ds-space" style="--size:4px"></i> 4</span><span><i class="ds-space" style="--size:6px"></i> 6</span><span><i class="ds-space" style="--size:8px"></i> 8</span><span><i class="ds-space" style="--size:10px"></i> 10</span><span><i class="ds-space" style="--size:12px"></i> 12</span><span><i class="ds-space" style="--size:16px"></i> 16</span><span><i class="ds-space" style="--size:20px"></i> 20</span>
+      </div><p class="ds-note">Conversation width: 820px. Mobile breakpoint: 650px. Touch inputs: 16px to avoid iOS focus zoom.</p></div>
+      <div class="ds-panel"><h3>Radii · px</h3><div class="ds-row">
+        <span class="ds-radius" style="--radius:3px">3</span><span class="ds-radius" style="--radius:6px">6</span><span class="ds-radius" style="--radius:9px">9</span><span class="ds-radius" style="--radius:10px">10</span><span class="ds-radius" style="--radius:12px">12</span><span class="ds-radius" style="--radius:20px">20</span>
+      </div><p class="ds-note">1px surface borders. 2px focus rings and tool rails. Composer buttons: 40px.</p></div>
+    </div>
+  </section>
+
+  <section id="controls" class="ds-section">
+    <h2>Controls</h2>
+    <p class="ds-note">Hover or Tab through controls to inspect native interaction states. Disabled controls use 40% opacity.</p>
+    <div class="ds-grid">
+      <div class="ds-panel ds-stack"><h3>Buttons</h3><div class="ds-row"><button type="button">Default</button><button type="button" disabled>Disabled</button><button type="button" class="icon" aria-label="Refresh">↻</button><button type="button" class="icon" aria-label="More actions" popovertarget="live-menu">···</button></div><details><summary>Disclosure</summary><p>Expanded content. Enter or Space toggles the summary.</p></details></div>
+      <div class="ds-panel ds-stack"><h3>Fields</h3><label><span>Session name</span><input placeholder="Untitled session"></label><label><span>Model</span><select><option>claude-sonnet</option>gpt-5</option></select></label><label><span>Unavailable</span><input value="Read only" disabled></label><label><span>Instructions</span><textarea rows="2" placeholder="Optional"></textarea></label></div>
+    </div>
+  </section>
+
+  <section id="navigation" class="ds-section">
+    <h2>Navigation &amp; search</h2>
+    <div class="ds-panel">
+      <header class="bar"><button id="workspace" class="icon" aria-label="Sessions" commandfor="picker" command="show-modal">π</button><h1>Refactor the workspace</h1><select id="branches" aria-label="Conversation"><option>Main</option><option>Experiment</option></select><span id="status" role="status">Ready</span><button class="icon" aria-label="Conversation menu" popovertarget="live-menu">···</button></header>
+      <div id="search-bar"><input type="search" aria-label="Find in conversation" placeholder="Find in conversation…" value="workspace"><span id="search-count">1 / 3</span><button class="icon" aria-label="Previous match">↑</button><button class="icon" aria-label="Next match">↓</button><button class="icon" aria-label="Close search">×</button></div>
+    </div>
+  </section>
+
+  <section id="messages" class="ds-section">
+    <h2>Messages &amp; tools</h2>
+    <div class="ds-panel"><div id="transcript" aria-label="Example conversation">
+      <article data-role="user"><header><span class="speaker">You</span><button class="icon message-actions" aria-label="User message actions" popovertarget="live-menu">···</button></header><div class="text">Update the workspace and run the checks.</div></article>
+      <article data-role="assistant"><header><span class="speaker">Pi</span><button class="icon message-actions" aria-label="Assistant message actions" popovertarget="live-menu">···</button></header><div class="thinking">I’ll inspect the files before making a small change.</div><div class="text"><p>Use <code>just check</code> to validate the changes.</p></div>
+        <pre><code><span class="hljs-comment">// Syntax highlighting</span>
+<span class="hljs-keyword">const</span> <span class="hljs-title">message</span> = <span class="hljs-string">"Ready"</span>;
+<span class="hljs-keyword">return</span> <span class="hljs-number">42</span>;</code></pre>
+      </article>
+      <article data-role="toolResult">
+        <details class="tool-call" data-state="running"><summary><span class="tool-command">bash · just check</span><span class="tool-status" data-state="running" role="status" aria-label="Running"><span></span><span style="animation-delay:150ms"></span><span style="animation-delay:300ms"></span><span style="animation-delay:450ms"></span></span></summary><div class="tool-result"><pre><code>Checking types…</code></pre></div></details>
+        <details class="tool-call" data-state="completed" open><summary><span class="tool-command">edit · client.ts</span><span class="tool-status" data-state="completed">Completed</span></summary><button class="icon message-actions" aria-label="Tool actions" popovertarget="live-menu">···</button><div class="tool-result"><pre><code><span class="hljs-deletion">- const label = "Before";</span>
+<span class="hljs-addition">+ const label = "After";</span></code></pre></div></details>
+        <details class="tool-call" data-state="failed" open><summary><span class="tool-command">bash · missing-command</span><span class="tool-status" data-state="failed">Failed</span></summary><div class="tool-result"><pre class="error"><code>Command not found · exit 127</code></pre></div></details>
+        <details class="tool-call" data-state="completed" open><summary><span class="tool-command">delegate · inspect workspace</span><span class="tool-status" data-state="completed">Completed</span></summary><div class="nested-tools"><details class="tool-call" data-state="completed"><summary><span class="tool-command">read · package.json</span><span class="tool-status" data-state="completed">Completed</span></summary><div class="tool-result"><pre><code>{ "name": "pi-serve" }</code></pre></div></details></div></details>
+      </article>
+      <article data-role="assistant" class="search-hit search-current"><header><span class="speaker">Pi</span></header><div class="text">The workspace is ready. This message is the current search result.</div></article>
+      <article><header>Context reset</header><div class="text">Context markers separate conversation segments.</div></article>
+      <article data-role="user"><header><span class="speaker">You</span></header><div class="ds-image" role="img" aria-label="Example image attachment">Image attachment</div></article>
+    </div></div>
+  </section>
+
+  <section id="feedback" class="ds-section">
+    <h2>Feedback &amp; queued work</h2>
+    <div class="ds-panel ds-stack">
+      <div id="notice" role="status">Copied to clipboard.</div>
+      <div id="recovery">Interrupted. A command may already have had side effects. <button type="button">Resume</button></div>
+      <div id="activity" role="status">Compacting context…</div>
+      <div id="queue" aria-label="Queued messages"><div><span>Follow up · Check the mobile layout.</span><button class="icon" aria-label="Cancel queued message">×</button></div></div>
+      <p class="error">Unable to connect. Showing the last received values.</p>
+    </div>
+  </section>
+
+  <section id="composition" class="ds-section">
+    <h2>Composer &amp; footer</h2>
+    <p class="ds-note">Sample values. Desktop shows token totals and right-aligned context. Mobile shows a centered model, effort, and context line separated by 2px dots. Cache hit is from the last turn, not a lifetime average.</p>
+    <div class="ds-panel composer-area">
+      <div class="ds-row"><button id="latest" type="button">↓ Latest</button></div>
+      <div id="composer"><div class="compose-box">
+        <textarea id="prompt" aria-label="Message" rows="2" placeholder="Ask Pi…"></textarea>
+        <div id="attachments" aria-label="Attached images"><button type="button">screenshot.png ×</button></div>
+        <div class="actions"><button id="input-toggle" class="icon" type="button" aria-label="Upload attachments" popovertarget="input-menu">+</button><button id="input-mode" type="button">Follow up</button><span class="spacer"></span><button id="stop" class="icon" type="button" aria-label="Stop">×</button><button id="send" class="icon" type="button" aria-label="Send">↑</button></div>
+      </div></div>
+      <footer id="bottom-line" aria-label="Conversation statistics"><div class="footer-row"><button id="footer-stats" type="button" aria-label="Token and cost breakdown" commandfor="usage-dialog" command="show-modal"><span id="footer-input">↑12.4k</span><span id="footer-output">↓860</span><span id="footer-read">R8.2k</span><span id="footer-hit">CH66.1%</span><span id="footer-cost">$0.024</span></button><button id="footer-model" type="button" aria-label="Model and thinking settings" commandfor="preferences" command="show-modal"><span id="footer-model-name">claude-sonnet</span><span class="footer-dot" aria-hidden="true"></span><span id="footer-effort">high</span></button><span class="footer-dot" aria-hidden="true"></span><button id="footer-context" type="button" aria-label="Context usage details" commandfor="usage-dialog" command="show-modal">6.6%/200k (auto)</button></div></footer>
+    </div>
+    <p class="ds-note">Context states: <span style="color:var(--muted)">—/200k (auto)</span> · <span style="color:var(--warning)">75.0%/200k (auto)</span> · <span style="color:var(--danger)">95.0%/200k (auto)</span>. Unknown cache hit: CH—. Disconnected footer opacity: 65%.</p>
+  </section>
+
+  <section id="overlays" class="ds-section">
+    <h2>Dialogs &amp; menus</h2>
+    <p class="ds-note">Dialogs are shown inline for inspection. Close a preview, then reopen it to see the modal/backdrop and mobile bottom-sheet behavior. Menus and disclosures work without JavaScript.</p>
+    <div class="ds-grid">
+      <div class="ds-stack">
+        <button type="button" commandfor="picker" command="show-modal">Open sessions</button>
+        <dialog id="picker" open aria-labelledby="picker-title">
+          <div class="dialog-heading"><h2 id="picker-title">Sessions</h2><button class="icon" commandfor="picker" command="close" aria-label="Close sessions">×</button></div>
+          <div class="pickers"><label><span>Target</span><select><option>local · /workspace</option></select></label><label><span>Model</span><select><option>claude-sonnet</option></select></label></div>
+          <div class="actions"><button type="button">New session</button><span class="spacer"></span><button class="icon" aria-label="Refresh targets">↻</button></div>
+          <input id="session-filter" type="search" aria-label="Filter sessions" placeholder="Filter sessions…">
+          <div id="sessions"><button class="session" aria-current="true"><strong>Refactor the workspace</strong><small>/workspace · claude-sonnet · now</small></button><button class="session"><strong>Investigate a failing test</strong><small>/workspace · gpt-5 · yesterday</small></button></div>
+          <p id="sessions-empty">No sessions · empty-state example</p>
+        </dialog>
+      </div>
+      <div class="ds-stack">
+        <button type="button" commandfor="preferences" command="show-modal">Open settings</button>
+        <dialog id="preferences" open aria-labelledby="preferences-title">
+          <div class="dialog-heading"><h2 id="preferences-title">Settings</h2><button class="icon" commandfor="preferences" command="close" aria-label="Close settings">×</button></div>
+          <label><span>Session name</span><input value="Refactor the workspace"></label><label><span>Model</span><select><option>claude-sonnet</option></select></label><label><span>Thinking</span><select><option>high</option><option>off</option></select></label><label><span>Additional instructions</span><textarea rows="2">Keep changes surgical.</textarea></label>
+          <div class="actions"><button type="button">Save</button></div>
+          <details open><summary>Context</summary><label><span>Compaction instructions / reset handoff</span><textarea rows="2" placeholder="Optional"></textarea></label><div class="actions"><button type="button">Compact</button><button type="button">Reset…</button></div><p>Reset clears model context, not history.</p></details>
+          <details><summary>App</summary><p>Pi is ready to use offline.</p></details>
+        </dialog>
+      </div>
+      <div class="ds-stack">
+        <button type="button" commandfor="usage-dialog" command="show-modal">Open statistics</button>
+        <dialog id="usage-dialog" open aria-labelledby="usage-title">
+          <div class="dialog-heading"><h2 id="usage-title">Conversation stats</h2><button class="icon" commandfor="usage-dialog" command="close" aria-label="Close statistics">×</button></div>
+          <dl><dt>Workspace</dt><dd>/workspace</dd><dt>Repository</dt><dd>main · a1b2c3d</dd><dt>Model</dt><dd>anthropic / claude-sonnet</dd><dt>Thinking</dt><dd>high</dd><dt>Input tokens</dt><dd>12,400</dd><dt>Output tokens</dt><dd>860</dd><dt>Cache read</dt><dd>8,200</dd><dt>Cache write</dt><dd>1,000</dd><dt>Cache hit · last response</dt><dd>66.1%</dd><dt>Estimated cost · USD</dt><dd>$0.024</dd><dt>Context · last response</dt><dd>13,200 tokens · 6.6%</dd><dt>Context window</dt><dd>200,000 tokens</dd><dt>Auto compaction</dt><dd>On</dd></dl>
+          <p class="usage-note">Totals exclude inherited fork spend. Context excludes messages after the last completed response. Cost is an estimate, not a bill or subscription balance.</p>
+        </dialog>
+      </div>
+      <div class="ds-panel ds-stack">
+        <h3>Menu previews</h3>
+        <div class="ds-menu-preview" popover="manual" aria-label="Conversation menu preview"><button>Find in conversation <kbd>⌘ F</kbd></button><button>Settings</button><button>Export JSON</button><button aria-pressed="false">Wrap code <span>Off</span></button><button disabled>Install Pi</button></div>
+        <div class="ds-menu-preview" popover="manual" aria-label="Message menu preview"><button>Copy message</button><button>Quote in reply</button><button>Fork from here</button></div>
+        <div class="ds-menu-preview" popover="manual" aria-label="Tool menu preview"><button>Copy input</button><button>Copy output</button><button>Copy details</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="live-menu" popover aria-label="Example message actions"><button>Copy message</button><button>Quote in reply</button><button>Fork from here</button></div>
+<div id="input-menu" popover aria-label="Upload attachments"><button>Attach images</button></div>
+</body>
+</html>
