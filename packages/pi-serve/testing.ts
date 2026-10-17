@@ -602,6 +602,9 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
     );
+    const compactComposer = await page.evaluate(
+      () => matchMedia("(min-width: 651px) and (hover: hover) and (pointer: fine)").matches,
+    );
     const composerAlignment = await page.locator(".compose-box > .actions").evaluate((row) => {
       const buttons = Array.from(row.querySelectorAll("button")).filter((button) =>
         button.checkVisibility(),
@@ -614,13 +617,19 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
         return {
           id: button.id,
           height: box.height,
+          width: box.width,
+          fontSize: getComputedStyle(button).fontSize,
           center: box.top + box.height / 2,
           labelCenter: label.top + label.height / 2,
         };
       });
     });
     for (const button of composerAlignment) {
-      assert.equal(button.height, 40, `${name}: ${button.id} touch target`);
+      assert.equal(button.height, compactComposer ? 32 : 40, `${name}: ${button.id} height`);
+      if (["input-toggle", "send", "stop"].includes(button.id)) {
+        assert.equal(button.width, compactComposer ? 32 : 40, `${name}: ${button.id} width`);
+        assert.equal(button.fontSize, compactComposer ? "18px" : "20px");
+      }
       assert(
         Math.abs(button.center - composerAlignment[0].center) <= 1,
         `${name}: ${button.id} button alignment`,

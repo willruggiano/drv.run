@@ -142,6 +142,10 @@ a { color: var(--link); } [hidden] { display: none !important; }
   [popover] kbd { display: none; }
   .pickers { grid-template-columns: 1fr; } #search-bar { padding: 6px 10px; } #search-count { min-width: 30px; text-align: center; } #sessions { max-height: 30dvh; }
 }
+@media (min-width: 651px) and (hover: hover) and (pointer: fine) {
+  .compose-box > .actions > button { height: 32px; min-height: 32px; }
+  #send, #stop, #input-toggle { width: 32px; font-size: 18px; }
+}
 /* iOS zooms focused form controls below 16px. Include landscape phones and
    tablets without enlarging the rest of the UI or restricting pinch zoom. */
 @media (max-width: 650px), (any-pointer: coarse) {
