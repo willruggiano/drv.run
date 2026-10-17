@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
@@ -6,7 +7,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
+import {
+  ConversationBusy,
+  type Conversation,
+  type ConversationView,
+  type EntryRecord,
+  type SubmissionId,
+} from "@earendil-works/pi-durable";
 import {
   loadIntegrations,
   localIntegration,
@@ -38,7 +45,10 @@ function string(value: unknown, maximum = 100_000): string {
     throw new RequestError(400, "Invalid text value.");
   return value;
 }
-async function body(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function body(
+  request: IncomingMessage,
+  maximum = 128 * 1024,
+): Promise<Record<string, unknown>> {
   if (request.headers["content-type"]?.split(";")[0] !== "application/json")
     throw new RequestError(415, "Expected application/json.");
   const chunks: Buffer[] = [];
@@ -46,7 +56,7 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
   for await (const chunk of request) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > 128 * 1024) throw new RequestError(413, "Request too large.");
+    if (size > maximum) throw new RequestError(413, "Request too large.");
     chunks.push(buffer);
   }
   try {
@@ -61,14 +71,18 @@ function json(response: ServerResponse, status: number, data: unknown): void {
   response.end(JSON.stringify(data));
 }
 
-async function stream(session: ManagedSession, response: ServerResponse): Promise<void> {
-  const watch = await session.root.watch(context);
+async function stream(
+  session: ManagedSession,
+  response: ServerResponse,
+  conversation: Conversation,
+): Promise<void> {
+  const watch = await conversation.watch(context);
   const cleanup = () => {
     void watch.stop();
   };
   response.once("close", cleanup);
   try {
-    const history = await session.history();
+    const history = await session.history(conversation);
     if (response.destroyed) {
       await watch.stop();
       return;
@@ -107,7 +121,9 @@ export function httpServer(
   sessions: Sessions,
   host: string,
   assets = dirname(fileURLToPath(import.meta.url)),
+  publicOrigin?: string,
 ) {
+  const external = publicOrigin === undefined ? undefined : new URL(validateOrigin(publicOrigin));
   const server = createServer((request, response) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -120,14 +136,16 @@ export function httpServer(
       // No authentication, but reject cross-site writes and DNS rebinding.
       const authority = request.headers.host;
       if (!authority) throw new RequestError(400, "Host header required.");
-      const origin = new URL(`http://${authority}`);
+      const proxied = external?.host === authority;
+      const origin = proxied ? external : new URL(`http://${authority}`);
       const hostname = origin.hostname.replace(/^\[|\]$/g, "");
       const address = server.address();
       const port = address && typeof address === "object" ? address.port : 80;
       const destination = host === "0.0.0.0" ? request.socket.localAddress : host;
       if (
-        ![destination, ...(destination === "127.0.0.1" ? ["localhost"] : [])].includes(hostname) ||
-        Number(origin.port || 80) !== port
+        !proxied &&
+        (![destination, ...(destination === "127.0.0.1" ? ["localhost"] : [])].includes(hostname) ||
+          Number(origin.port || 80) !== port)
       )
         throw new RequestError(403, "Unexpected Host.");
       if (
@@ -156,26 +174,174 @@ export function httpServer(
         );
         return json(response, 201, await session.info());
       }
-      const match = /^\/api\/sessions\/([^/]+)\/(events|prompt|resume|stop)$/.exec(url.pathname);
+      const match =
+        /^\/api\/sessions\/([^/]+)\/(events|prompt|resume|stop|configure|compact|reset|cancel|fork|conversations|export|rename)$/.exec(
+          url.pathname,
+        );
       if (match) {
         const session = await sessions.get(match[1]);
+        const conversation = await session.conversation(
+          url.searchParams.has("conversation")
+            ? Number(url.searchParams.get("conversation"))
+            : undefined,
+        );
+        if (request.method === "GET" && match[2] === "conversations")
+          return json(response, 200, await session.conversations());
+        if (request.method === "GET" && match[2] === "export")
+          return json(response, 200, await session.history(conversation));
         if (request.method === "GET" && match[2] === "events")
-          return await stream(session, response);
+          return await stream(session, response, conversation);
         if (request.method === "POST" && match[2] !== "events") {
-          const data = await body(request);
+          const data = await body(request, match[2] === "prompt" ? 8 * 1024 * 1024 : 128 * 1024);
           if (match[2] === "prompt") {
             const requestId = string(data.requestId, 36);
             if (!uuid.test(requestId)) throw new RequestError(400, "Invalid request ID.");
-            await session.prompt(string(data.text), requestId);
+            const mode = data.mode ?? "reject";
+            if (mode !== "reject" && mode !== "steer" && mode !== "followUp")
+              throw new RequestError(400, "Invalid queue mode.");
+            const images = data.images ?? [];
+            if (!Array.isArray(images) || images.length > 4)
+              throw new RequestError(400, "At most four images are allowed.");
+            const validated = images.map((value: unknown) => {
+              const image = object(value);
+              if (
+                typeof image.mimeType !== "string" ||
+                !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image.mimeType) ||
+                typeof image.data !== "string" ||
+                !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)
+              )
+                throw new RequestError(400, "Invalid image.");
+              return { type: "image" as const, mimeType: image.mimeType, data: image.data };
+            });
+            if (validated.length) {
+              const agent = await conversation.agent(context);
+              const available = await sessions.options.models.getAvailable();
+              if (
+                !available
+                  .find(
+                    (model) =>
+                      model.provider === agent.model?.provider && model.id === agent.model.modelId,
+                  )
+                  ?.input.includes("image")
+              )
+                throw new RequestError(400, "This model does not support images.");
+            }
+            await session.prompt(string(data.text), requestId, mode, conversation, validated);
+          } else if (match[2] === "rename") {
+            if (typeof data.name !== "string") throw new RequestError(400, "Invalid session name.");
+            await session.rename(data.name);
+            return json(response, 200, await session.info());
           } else if (match[2] === "resume") await session.resume();
-          else await session.stop();
+          else if (match[2] === "stop") await session.stop(conversation);
+          else {
+            if (session.needsResume) throw new RequestError(409, "Resume interrupted work first.");
+            await sessions.requireTarget(session.binding);
+            if (match[2] === "configure") {
+              const model = object(data.model);
+              const available = (await sessions.catalog()).models;
+              const selected = available.find(
+                (item) => item.provider === model.provider && item.modelId === model.modelId,
+              );
+              if (!selected) throw new RequestError(400, "Model is unavailable.");
+              const thinking = data.thinkingLevel;
+              if (
+                thinking !== "off" &&
+                thinking !== "minimal" &&
+                thinking !== "low" &&
+                thinking !== "medium" &&
+                thinking !== "high" &&
+                thinking !== "xhigh"
+              )
+                throw new RequestError(400, "Invalid thinking level.");
+              if (typeof data.instructions !== "string" || data.instructions.length > 100_000)
+                throw new RequestError(400, "Invalid instructions.");
+              await conversation.configure(
+                {
+                  model: { provider: selected.provider, modelId: selected.modelId },
+                  thinkingLevel: thinking,
+                  instructions: data.instructions,
+                },
+                context,
+              );
+            } else if (match[2] === "compact") {
+              await conversation.compact(
+                data.instructions === undefined ? undefined : string(data.instructions),
+                context,
+              );
+            } else if (match[2] === "reset") {
+              await conversation.reset(
+                data.handoff === undefined ? undefined : string(data.handoff),
+                context,
+              );
+            } else if (match[2] === "cancel") {
+              if (!Number.isSafeInteger(data.id))
+                throw new RequestError(400, "Invalid submission ID.");
+              const result = await session.harness.abortSubmission(
+                data.id as SubmissionId,
+                context,
+                conversation.id,
+              );
+              if (result === "not_found") throw new RequestError(404, "Submission not found.");
+              return json(response, 200, { result });
+            } else if (match[2] === "fork") {
+              const entry = (await session.history(conversation)).find(
+                (entry) => entry.id === data.entry,
+              );
+              if (!entry) throw new RequestError(400, "Entry not found in this conversation.");
+              const fork = await conversation.fork(
+                entry.id,
+                { ownership: { kind: "ownerless" } },
+                context,
+              );
+              return json(response, 201, { id: fork.id });
+            } else throw new RequestError(405, "Method not allowed.");
+          }
           return json(response, 200, { accepted: true });
         }
         throw new RequestError(405, "Method not allowed.");
       }
+      if (request.method === "GET" && url.pathname === "/highlight.js") {
+        const require = createRequire(import.meta.url);
+        const files = [
+          "core",
+          ...[
+            "typescript",
+            "javascript",
+            "json",
+            "bash",
+            "python",
+            "nix",
+            "diff",
+            "css",
+            "xml",
+            "rust",
+            "go",
+            "sql",
+          ].map((name) => `languages/${name}`),
+        ];
+        const modules = await Promise.all(
+          files.map(async (file) => {
+            const code = await readFile(require.resolve(`highlight.js/lib/${file}`), "utf8");
+            const expression = `(() => { const module = {exports: {}}; ${code}\nreturn module.exports; })()`;
+            return file === "core"
+              ? `const hljs = ${expression};`
+              : `hljs.registerLanguage(${JSON.stringify(file.slice(10))}, ${expression});`;
+          }),
+        );
+        response.setHeader("Content-Type", "text/javascript; charset=utf-8");
+        return response.end(modules.join("\n") + "\nexport default hljs;");
+      }
       if (
         request.method === "GET" &&
-        ["/", "/client.js", "/manifest.webmanifest", "/icon.svg"].includes(url.pathname)
+        [
+          "/",
+          "/client.js",
+          "/manifest.webmanifest",
+          "/icon.svg",
+          "/icon-192.png",
+          "/icon-512.png",
+          "/sw.js",
+        ].includes(url.pathname)
       ) {
         const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
         const types: Record<string, string> = {
@@ -183,18 +349,28 @@ export function httpServer(
           "client.js": "text/javascript; charset=utf-8",
           "manifest.webmanifest": "application/manifest+json",
           "icon.svg": "image/svg+xml",
+          "icon-192.png": "image/png",
+          "icon-512.png": "image/png",
+          "sw.js": "text/javascript; charset=utf-8",
         };
         if (file === "manifest.webmanifest") {
           response.setHeader("Content-Type", types[file]);
           return response.end(
             JSON.stringify({
-              name: "Pi",
+              id: "/",
+              scope: "/",
+              name: "Pi · durable workspace",
               short_name: "Pi",
               start_url: "/",
               display: "standalone",
               background_color: "#101217",
               theme_color: "#101217",
-              icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" }],
+              icons: [192, 512].map((size) => ({
+                src: `/icon-${size}.png`,
+                sizes: `${size}x${size}`,
+                type: "image/png",
+                purpose: "any maskable",
+              })),
             }),
           );
         }
@@ -214,7 +390,10 @@ export function httpServer(
         response.destroy();
         return;
       }
-      if (error instanceof RequestError) json(response, error.status, { error: error.message });
+      if (error instanceof ConversationBusy)
+        json(response, 409, { error: "Conversation is busy. Choose Steer or Follow up." });
+      else if (error instanceof RequestError)
+        json(response, error.status, { error: error.message });
       else if (error instanceof SessionError) {
         const statuses = {
           invalid: 400,
@@ -236,12 +415,29 @@ export function httpServer(
   return server;
 }
 
+function validateOrigin(value: string): string {
+  const url = new URL(value);
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  )
+    throw new Error(
+      "--origin must be an HTTPS origin, without credentials, path, query or fragment.",
+    );
+  return url.origin;
+}
+
 export function parseOptions(args: string[]) {
   let host = "0.0.0.0",
     port = 8080,
     directory = join(stateDirectory(), "pi-serve"),
     cwd = process.cwd(),
     local = true;
+  let publicOrigin: string | undefined;
   const extensions: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const option = args[i];
@@ -255,6 +451,7 @@ export function parseOptions(args: string[]) {
     else if (option === "--port") port = Number(value);
     else if (option === "--state") directory = resolve(value);
     else if (option === "--cwd") cwd = resolve(value);
+    else if (option === "--origin") publicOrigin = validateOrigin(value);
     else if (option === "--extension") extensions.push(resolve(value));
     else throw new Error(`Unknown option: ${option}`);
   }
@@ -262,13 +459,13 @@ export function parseOptions(args: string[]) {
     throw new Error("--host must be an IP address; IPv6 wildcard binding is not supported.");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid port.");
   if (!local && extensions.length === 0) throw new Error("--no-local requires an extension.");
-  return { host, port, directory, cwd, local, extensions };
+  return { host, port, directory, cwd, local, extensions, publicOrigin };
 }
 
 export async function main(args: string[]): Promise<void> {
   if (args.includes("--help")) {
     console.log(`Usage: pi-serve [--host IP] [--port PORT] [--state DIRECTORY]
-                [--cwd DIRECTORY] [--extension MODULE]... [--no-local]
+                [--cwd DIRECTORY] [--extension MODULE]... [--no-local] [--origin HTTPS_ORIGIN]
 
 Runs pi-durable with a web frontend. Defaults to local tools in the launch directory.
 Extensions are explicitly loaded application integrations, not coding-agent extensions.
@@ -276,10 +473,13 @@ Uses ~/.pi/agent model settings and credentials (PI_CODING_AGENT_DIR supported).
 Run pi /login to configure credentials.
 History survives restart; interrupted work requires explicit Resume.
 Default: unauthenticated HTTP on 0.0.0.0:8080. No TLS or browser authentication.
-HTTP does not provide secure-context PWA features.`);
+HTTP does not provide secure-context PWA features outside localhost.
+For a trusted HTTPS reverse proxy, bind --host 127.0.0.1 and set --origin to its
+exact HTTPS origin. The proxy must preserve Host. Forwarded headers are ignored.
+This does not add authentication: restrict access at the proxy/network boundary.`);
     return;
   }
-  const { host, port, directory, cwd, extensions, local } = parseOptions(args);
+  const { host, port, directory, cwd, extensions, local, publicOrigin } = parseOptions(args);
   process.umask(0o077);
   const models = await ModelRuntime.create();
   const settings = SettingsManager.create(homedir(), getAgentDir(), { projectTrusted: false });
@@ -296,7 +496,7 @@ HTTP does not provide secure-context PWA features.`);
     thinkingLevel: settings.getDefaultThinkingLevel(),
     onReport: (error) => console.error("pi-serve session", error),
   });
-  const server = httpServer(sessions, host);
+  const server = httpServer(sessions, host, undefined, publicOrigin);
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);

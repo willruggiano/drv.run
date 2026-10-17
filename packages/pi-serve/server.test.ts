@@ -257,5 +257,115 @@ await test("CLI defaults to local execution and accepts explicit integration com
 });
 
 await test("mobile browser runs local tools, reconnects and renders untrusted content safely", async (t) => {
-  await browserFlow(t, await fixture(t));
+  const f = await fixture(t);
+  await browserFlow(t, {
+    ...f,
+    extended: true,
+    restart: async () => {
+      await f.reopen();
+      return f.sessions;
+    },
+  });
+});
+
+await test("conversation controls validate input and keep forks scoped to their session", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const base = await serve(t, f.sessions);
+  const url = `${base}/api/sessions/${session.id}`;
+  f.faux.setResponses([fauxAssistantMessage("A completed turn.")]);
+  await session.prompt("Begin.", randomUUID());
+  await session.root.waitForIdle(context);
+  const history = await session.history();
+  for (const [action, data] of [
+    ["prompt", { text: "No", requestId: randomUUID(), mode: "invalid" }],
+    [
+      "prompt",
+      { text: "No", requestId: randomUUID(), images: [{ mimeType: "text/html", data: "AAAA" }] },
+    ],
+    ["configure", { model, thinkingLevel: "invalid", instructions: "" }],
+    [
+      "configure",
+      {
+        model: { provider: "missing", modelId: "missing" },
+        thinkingLevel: "off",
+        instructions: "",
+      },
+    ],
+    ["cancel", { id: "wrong" }],
+    ["fork", { entry: -1 }],
+  ] as const)
+    assert.equal((await post(`${url}/${action}`, data)).status, 400);
+  for (const name of [null, 123, "a".repeat(121), "line\nbreak"]) {
+    assert.equal((await post(`${url}/rename`, { name })).status, 400);
+  }
+  const renamed = await post(`${url}/rename`, { name: "  Counter cleanup  " });
+  assert.equal(renamed.status, 200);
+  assert.equal((await renamed.json()).name, "Counter cleanup");
+  assert.equal(
+    (await (await fetch(base + "/api/catalog")).json()).sessions[0].name,
+    "Counter cleanup",
+  );
+  assert.deepEqual(await session.history(), history);
+  assert.equal((await fetch(`${url}/events?conversation=-1`)).status, 400);
+  assert.equal((await fetch(`${url}/events?conversation=9999999`)).status, 404);
+  const forkResponse = await post(`${url}/fork`, { entry: history.at(-1)?.id });
+  assert.equal(forkResponse.status, 201);
+  const fork = await forkResponse.json();
+  const branch = await session.conversation(fork.id);
+  assert.deepEqual(await session.history(branch), history);
+  assert.equal((await fetch(`${url}/conversations`)).status, 200);
+  const reset = await post(`${url}/reset?conversation=${fork.id}`, {
+    handoff: "Carry this forward.",
+  });
+  assert.equal(reset.status, 200);
+  assert.equal((await branch.context(context)).messages.length, 1);
+  assert.deepEqual(await session.history(), history);
+  const exported = await (await fetch(`${url}/export?conversation=${fork.id}`)).json();
+  assert.equal(exported.length, history.length + 1);
+  assert.equal((await post(`${url}/compact?conversation=${fork.id}`, {})).status, 200);
+  await session.harness.waitForIdle(context);
+  assert.equal((await session.harness.inspect(context)).tasks.length, 0);
+  const manifest = await (await fetch(base + "/manifest.webmanifest")).json();
+  assert.equal(manifest.display, "standalone");
+  assert.deepEqual(
+    manifest.icons.map((icon: { sizes: string }) => icon.sizes),
+    ["192x192", "512x512"],
+  );
+});
+
+await test("HTTPS proxy origin is explicit and forwarded headers cannot bypass origin checks", async (t) => {
+  const f = await fixture(t);
+  const base = await serve(t, f.sessions, undefined, "127.0.0.1", "https://pi.example");
+  const status = (headers: Record<string, string>) =>
+    new Promise<number | undefined>((resolve, reject) => {
+      const req = request(base + "/api/catalog", { headers }, (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      });
+      req.once("error", reject);
+      req.end();
+    });
+  assert.equal(await status({ Host: "pi.example", Origin: "https://pi.example" }), 200);
+  assert.equal(await status({ Host: "pi.example", Origin: "https://evil.example" }), 403);
+  assert.equal(
+    await status({
+      Host: "evil.example",
+      "X-Forwarded-Host": "pi.example",
+      "X-Forwarded-Proto": "https",
+    }),
+    403,
+  );
+  for (const value of [
+    "http://pi.example",
+    "https://pi.example/path",
+    "https://user:pass@pi.example",
+    "https://pi.example?query",
+    "https://pi.example#fragment",
+  ])
+    assert.throws(() => parseOptions(["--origin", value]));
+  assert.equal(
+    parseOptions(["--origin", "https://pi.example/"]).publicOrigin,
+    "https://pi.example",
+  );
 });

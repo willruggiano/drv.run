@@ -3,71 +3,149 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#101217">
+  <meta name="theme-color" content="#151719">
   <title>Pi</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <style>
-    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; color: #e5e8ee; background: #101217; }
+    :root { color-scheme: dark; font: 14px/1.6 system-ui, sans-serif; color: #dce0df; background: #151719; --line: #2c3032; --muted: #969e9d; --accent: #afd6bc; }
     * { box-sizing: border-box; }
     body { margin: 0; height: 100dvh; display: flex; flex-direction: column; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
-    button, select, textarea { font: inherit; color: inherit; border: 1px solid #414958; border-radius: .5rem; background: #1b2029; }
-    button, select { min-height: 44px; padding: .5rem .75rem; }
-    button { cursor: pointer; }
-    button:hover { border-color: #9dd5ae; }
-    button:disabled { opacity: .45; cursor: default; }
-    :focus-visible { outline: 2px solid #9dd5ae; outline-offset: 2px; }
-    header.bar { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .65rem 1rem; border-bottom: 1px solid #303744; }
-    h1 { font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
-    #status { white-space: nowrap; color: #9dd5ae; font-size: .85rem; }
-    #picker { padding: .6rem 1rem; border-bottom: 1px solid #303744; overflow-y: auto; max-height: 55dvh; flex-shrink: 0; }
-    summary { cursor: pointer; min-height: 32px; }
-    .pickers { display: grid; grid-template-columns: 1fr 1fr auto; gap: .5rem; margin: .5rem 0; }
-    label { min-width: 0; }
-    label span { display: block; font-size: .8rem; color: #aeb8c8; }
-    select { width: 100%; }
-    #sessions { display: flex; flex-wrap: wrap; gap: .4rem; }
-    .session { text-align: left; font-size: .8rem; }
-    .session[aria-current=true] { border-color: #9dd5ae; }
-    #transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; padding: .5rem max(1rem, calc((100% - 900px)/2)); }
-    article { padding: .8rem 0; border-bottom: 1px solid #252d38; }
-    article > header { color: #9dd5ae; font-size: .8rem; margin-bottom: .4rem; }
-    .text { white-space: pre-wrap; }
-    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #191e26; padding: .6rem; border-radius: .4rem; font-size: .85rem; }
-    img { max-width: 100%; height: auto; }
-    article details { font-size: .85rem; color: #bcc6d5; }
-    #notice, #recovery { padding: .5rem 1rem; background: #27372e; font-size: .9rem; }
-    #recovery { background: #3a3020; }
-    .error { color: #ffadad; }
-    #composer { padding: .6rem max(1rem, calc((100% - 900px)/2)); border-top: 1px solid #303744; background: #101217; }
-    textarea { display: block; width: 100%; resize: vertical; padding: .65rem; max-height: 35dvh; }
-    .actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem; }
-    #send { background: #2c4938; }
-    [hidden] { display: none !important; }
-    @media (max-width: 650px) { .pickers { grid-template-columns: 1fr; } #picker[open] { max-height: 45dvh; } }
-    @media (prefers-reduced-motion: no-preference) { button { transition: border-color .15s; } }
+    button, select, textarea, input { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: 6px; background: #1d2022; }
+    button, select { min-height: 30px; padding: 3px 9px; }
+    button { cursor: pointer; } button:hover { background: #292e2e; border-color: #667870; }
+    button:disabled { opacity: .4; cursor: default; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .icon { min-width: 32px; padding: 3px 6px; background: transparent; border-color: transparent; }
+    .bar { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+    #workspace { color: var(--accent); font: 26px Georgia, serif; }
+    h1 { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #status { white-space: nowrap; color: var(--muted); font-size: 11px; } #status::before { content: ""; display: inline-block; width: 5px; height: 5px; margin: 0 6px 2px 0; border-radius: 50%; background: var(--accent); } #status[data-state=disconnected]::before { background: #e5bd8e; }
+    #branches { width: auto; max-width: 190px; border-color: transparent; background: transparent; font-size: 12px; color: var(--muted); }
+    #transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; padding: 12px max(20px, calc((100% - 820px)/2)); scrollbar-gutter: stable; }
+    #transcript:empty::before { content: "Start a session"; display: block; margin: 22vh 0; color: var(--muted); text-align: center; }
+    body.offline #transcript:empty::before { content: "Offline"; }
+    article { padding: 14px 0; scroll-margin: 16px; } article + article { border-top: 1px solid #222628; }
+    article > header { color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; min-height: 24px; }
+    article[data-role=user] > header { color: var(--muted); }
+    article[data-role=toolResult] { padding: 7px 0; font-size: 12px; }
+    .message-actions { margin-left: auto; min-height: 24px; font-weight: normal; opacity: 0; } article:hover .message-actions, .message-actions:focus-visible, .message-actions[aria-expanded=true] { opacity: 1; }
+    .text { white-space: pre-wrap; } .text p { margin: 0 0 10px; } .text p:last-child { margin-bottom: 0; }
+    pre { white-space: pre; overflow: auto; background: #101214; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; tab-size: 2; }
+    body.wrap-code pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; } :not(pre) > code { color: #d6c7a7; background: #222628; padding: 1px 4px; border-radius: 3px; }
+    .codebar { display: flex; align-items: center; justify-content: space-between; font: 11px system-ui; color: var(--muted); margin-bottom: 8px; }
+    .codebar button { font-size: 11px; min-height: 24px; padding: 1px 6px; background: transparent; border-color: transparent; }
+    .hljs-keyword, .hljs-selector-tag, .hljs-literal { color: #d7afe5; } .hljs-string, .hljs-attr { color: #afd6bc; } .hljs-number, .hljs-built_in { color: #e5bd8e; } .hljs-title, .hljs-function { color: #a2c9df; } .hljs-comment { color: #87938e; } .hljs-addition { display: inline-block; min-width: 100%; background: #203d2c; color: #b7e8bd; } .hljs-deletion { display: inline-block; min-width: 100%; background: #462c2e; color: #efb2b2; } .hljs-meta { color: #9fb9d5; }
+    img { max-width: 100%; height: auto; } summary { cursor: pointer; padding: 3px 0; color: var(--muted); } article details pre { max-height: 360px; }
+    #notice, #recovery, #queue, #activity { padding: 6px max(20px, calc((100% - 820px)/2)); font-size: 12px; background: #202b25; }
+    #notice { cursor: pointer; background: #252b28; } #recovery { background: #3a3020; } .error { color: #ffadad; }
+    #queue > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; } #queue { background: #222628; max-height: 20vh; overflow: auto; }
+    #composer { padding: 8px max(20px, calc((100% - 820px)/2)) 14px; }
+    .compose-box { border: 1px solid var(--line); border-radius: 10px; background: #1d2022; padding: 4px; } .compose-box:focus-within { border-color: #607e6c; }
+    textarea { display: block; width: 100%; resize: vertical; padding: 8px 10px; max-height: 30dvh; min-height: 64px; }
+    #prompt { resize: none; min-height: 42px; max-height: 25dvh; background: transparent; border: none; outline: none; }
+    .actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; } .compose-box > .actions { margin: 0; } .spacer { flex: 1; }
+    #send { background: #b4d4be; border-color: #b4d4be; color: #17251d; font-weight: 600; font-size: 12px; } #stop { font-size: 12px; }
+    #input-toggle { font-size: 18px; } #input-mode { font-size: 11px; color: var(--muted); padding-left: 4px; }
+    #attachments { display: flex; flex-wrap: wrap; gap: 4px; } #attachments button { font-size: 11px; margin: 4px; }
+    #latest { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 6px; border-radius: 20px; box-shadow: 0 3px 12px #0006; font-size: 12px; } .composer-area { position: relative; }
+    dialog { color: inherit; background: #191c1e; border: 1px solid #454e49; border-radius: 12px; width: min(520px, calc(100% - 32px)); padding: 20px; max-height: 85dvh; overflow: auto; } dialog::backdrop { background: #0009; }
+    .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; } h2 { margin: 0; font-size: 16px; font-weight: 500; }
+    label { min-width: 0; } label > span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; } select { width: 100%; }
+    dialog label { display: block; margin: 12px 0; } dialog p { color: var(--muted); font-size: 12px; } dialog .error { color: #ffadad; } dialog .actions { flex-wrap: wrap; }
+    .pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; } .pickers label { margin: 0; }
+    input { padding: 7px 10px; width: 100%; min-width: 0; }
+    #session-filter { margin: 18px 0 8px; } #sessions { display: grid; gap: 4px; max-height: 35dvh; overflow: auto; } .session { text-align: left; padding: 9px 10px; border-color: transparent; background: transparent; } .session strong, .session small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .session strong { font-size: 13px; font-weight: 500; } .session small { color: var(--muted); font-size: 11px; } .session[aria-current=true] { background: #24322a; }
+    #sessions-empty { color: var(--muted); font-size: 12px; text-align: center; margin: 16px 0 4px; }
+    [popover] { color: inherit; background: #202426; border: 1px solid #454e49; box-shadow: 0 8px 36px #0006; border-radius: 9px; padding: 6px; width: 230px; max-height: 70dvh; overflow: auto; position: fixed; inset: 52px 14px auto auto; margin: 0; }
+    [popover] > button { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; border: none; background: transparent; padding: 7px 10px; font-size: 13px; } [popover] > button:hover { background: #303638; } [popover] label { display: block; margin: 8px; } [popover] label > span { margin-bottom: 6px; } [popover] kbd { font: 11px system-ui; color: var(--muted); }
+    #input-menu { inset: auto auto 110px max(20px, calc((100% - 820px)/2)); }
+    #usage { display: block; border-top: 1px solid var(--line); margin: 4px 8px 0; padding: 9px 2px 3px; font-size: 11px; color: var(--muted); }
+    #search-bar { display: flex; gap: 6px; align-items: center; padding: 6px max(16px, calc((100% - 820px)/2)); border-bottom: 1px solid var(--line); } #search-count { white-space: nowrap; font-size: 11px; color: var(--muted); } article.search-hit { border-left: 2px solid #59664d; padding-left: 10px; } article.search-current { border-left-color: var(--accent); background: #afd6bc08; }
+    ::highlight(pi-search) { background: #52603b; color: #fff; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+    a { color: #a2c9df; } [hidden] { display: none !important; }
+    @media (max-width: 650px) {
+      .bar { gap: 6px; padding: 6px 10px; } button, select { min-height: 38px; } .icon { min-width: 38px; } #status { font-size: 0; } #status::before { margin: 0; } #branches { max-width: 106px; font-size: 11px; }
+      #transcript { padding: 8px 16px; } #composer { padding: 6px 10px 10px; } .message-actions { opacity: .7; min-height: 30px; } .codebar button { min-height: 30px; } #latest { margin-bottom: 4px; }
+      dialog { width: 100%; max-width: none; max-height: 88dvh; margin: auto 0 0; border-radius: 16px 16px 0 0; padding: 18px 16px max(18px, env(safe-area-inset-bottom)); border-bottom: none; }
+      [popover], #input-menu { inset: auto 10px max(10px, env(safe-area-inset-bottom)) 10px; width: auto; max-height: 65dvh; padding: 8px; border-radius: 12px; } [popover] > button { min-height: 44px; } [popover]::backdrop { background: #0004; }
+      [popover] kbd { display: none; }
+      .pickers { grid-template-columns: 1fr; } #search-bar { padding: 6px 10px; } #search-count { min-width: 30px; text-align: center; } #sessions { max-height: 30dvh; }
+    }
   </style>
 </head>
 <body>
-  <header class="bar"><h1 id="title">Pi</h1><span id="status" role="status">Select a target</span></header>
-  <details id="picker" open>
-    <summary>Targets &amp; sessions</summary>
+  <header class="bar">
+    <button id="workspace" class="icon" aria-label="Sessions" title="Sessions (Ctrl/⌘ K)">π</button>
+    <h1 id="title">Pi</h1>
+    <select id="branches" aria-label="Conversation" disabled><option>Main</option></select>
+    <span id="status" role="status">Ready</span>
+    <button id="menu-toggle" class="icon" popovertarget="conversation-menu" aria-label="Conversation menu">···</button>
+  </header>
+  <div id="conversation-menu" popover aria-label="Conversation actions">
+    <button id="find" disabled>Find in conversation <kbd>⌘ F</kbd></button>
+    <button id="settings" disabled>Settings</button>
+    <button id="export" disabled>Export JSON</button>
+    <button id="wrap-code" aria-pressed="false">Wrap code <span aria-hidden="true">Off</span></button>
+    <button id="install" hidden>Install Pi</button>
+    <span id="usage"></span>
+  </div>
+  <div id="message-menu" popover aria-label="Message actions">
+    <button id="copy-message">Copy message</button>
+    <button id="quote-message">Quote in reply</button>
+    <button id="fork-message">Fork from here</button>
+  </div>
+  <div id="search-bar" hidden>
+    <input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…">
+    <span id="search-count" role="status"></span>
+    <button id="search-prev" class="icon" aria-label="Previous match">↑</button><button id="search-next" class="icon" aria-label="Next match">↓</button><button id="search-close" class="icon" aria-label="Close search">×</button>
+  </div>
+  <div id="notice" role="status" title="Click to dismiss" hidden></div>
+  <div id="recovery" hidden>Interrupted. A command may already have had side effects. <button id="resume" type="button">Resume</button></div>
+  <div id="activity" role="status" hidden></div>
+  <div id="transcript" aria-label="Conversation" tabindex="0"></div>
+  <div id="queue" aria-label="Queued messages" hidden></div>
+  <div class="composer-area">
+    <button id="latest" hidden>↓ Latest</button>
+    <form id="composer">
+      <div class="compose-box">
+        <textarea id="prompt" aria-label="Message" rows="1" placeholder="Ask Pi…" maxlength="100000"></textarea>
+        <div id="attachments" aria-label="Attached images"></div>
+        <div class="actions"><button id="input-toggle" class="icon" type="button" popovertarget="input-menu" aria-label="Input options">+</button><span id="input-mode"></span><span class="spacer"></span><button id="stop" type="button" hidden disabled>Stop</button><button id="send" type="submit" disabled title="Send (Ctrl/⌘ Enter)">Send</button></div>
+      </div>
+      <input id="images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+    </form>
+  </div>
+  <div id="input-menu" popover aria-label="Input options">
+    <button id="attach">Attach images</button>
+    <label><span>When the agent is working</span><select id="mode" aria-label="When busy"><option value="followUp">Follow up</option><option value="steer">Steer</option><option value="reject">Only when idle</option></select></label>
+  </div>
+  <dialog id="picker" aria-labelledby="picker-title">
+    <div class="dialog-heading"><h2 id="picker-title">Sessions</h2><button id="close-picker" class="icon" aria-label="Close sessions">×</button></div>
     <div class="pickers">
       <label><span>Target</span><select id="targets" aria-label="Target"></select></label>
       <label><span>Model</span><select id="models" aria-label="Model"></select></label>
-      <button id="create" type="button" disabled>New session</button>
     </div>
-    <button id="refresh" type="button">Refresh</button>
-    <div id="sessions" aria-label="Sessions"></div>
-  </details>
-  <div id="notice" role="status" hidden></div>
-  <div id="recovery" hidden>Work was interrupted. Resume explicitly; an interrupted command may already have had side effects. <button id="resume" type="button">Resume</button></div>
-  <div id="transcript" aria-label="Conversation" tabindex="0"></div>
-  <form id="composer">
-    <label for="prompt"><span>Message</span></label>
-    <textarea id="prompt" rows="3" placeholder="Ask Pi to work…" maxlength="100000"></textarea>
-    <div class="actions"><button id="stop" type="button" disabled>Stop</button><button id="send" type="submit" disabled>Send</button></div>
-  </form>
+    <div class="actions"><button id="create" type="button" disabled>New session</button><span class="spacer"></span><button id="refresh" class="icon" type="button" aria-label="Refresh targets">↻</button></div>
+    <input id="session-filter" type="search" aria-label="Filter sessions" placeholder="Filter sessions…">
+    <div id="sessions" aria-label="Sessions"></div><p id="sessions-empty" hidden>No sessions</p>
+  </dialog>
+  <dialog id="preferences" aria-labelledby="preferences-title">
+    <div class="dialog-heading"><h2 id="preferences-title">Settings</h2><button id="close-settings" class="icon" aria-label="Close settings">×</button></div>
+    <label><span>Session name</span><input id="session-name" maxlength="120" placeholder="Untitled session"></label>
+    <label><span>Model</span><select id="session-model"></select></label>
+    <label><span>Thinking</span><select id="thinking"><option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option></select></label>
+    <label><span>Additional instructions</span><textarea id="instructions" rows="2" maxlength="100000"></textarea></label>
+    <div class="actions"><button id="save-settings">Save</button></div>
+    <details><summary>Context</summary>
+      <label><span>Compaction instructions / reset handoff</span><textarea id="handoff" rows="2" maxlength="100000" placeholder="Optional"></textarea></label>
+      <div class="actions"><button id="compact">Compact</button><button id="reset">Reset…</button></div>
+      <p>Reset clears model context, not history.</p>
+    </details>
+    <details><summary>App</summary><p id="pwa-status"></p></details>
+  </dialog>
   <script type="module" src="/client.js"></script>
 </body>
 </html>

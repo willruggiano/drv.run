@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Models, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ImageContent, Models, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   createRegistry,
   defineDoc,
@@ -13,6 +13,9 @@ import {
   section,
   type Conversation,
   type ConversationView,
+  type ConversationId,
+  type ConversationRecord,
+  type Cursor,
   type EntryRecord,
   type Extension,
   type ModelRef,
@@ -130,10 +133,12 @@ export function localIntegration(directory: string): Integration {
 
 export type SessionInfo = {
   id: string;
+  name: string;
   binding: ExecutionBinding;
   created: number;
   model: ModelRef;
   needsResume: boolean;
+  thinkingLevel: ModelThinkingLevel;
 };
 export type Snapshot = {
   session: SessionInfo;
@@ -158,6 +163,7 @@ export type SessionOptions = {
 const Metadata = defineDoc<{
   binding: ExecutionBinding | null;
   created: number;
+  name?: string;
 }>({
   kind: "app.session",
   version: 1,
@@ -425,35 +431,91 @@ export class ManagedSession {
 
   async info(): Promise<SessionInfo> {
     const agent = await this.root.agent(context);
+    const metadata = await this.harness.snapshot(Metadata, this.root.id, context);
     assert(agent.model, "Session has no model.");
     return {
       id: this.id,
+      name: metadata?.name ?? "",
       binding: { ...this.binding },
       created: this.created,
       model: agent.model,
       needsResume: this.needsResume,
+      thinkingLevel: agent.thinkingLevel,
     };
   }
 
-  async history(): Promise<EntryRecord[]> {
-    const entries: EntryRecord[] = [];
-    let cursor;
+  async rename(name: string): Promise<void> {
+    if (
+      typeof name !== "string" ||
+      name.trim().length > 120 ||
+      Array.from(name).some((character) => {
+        const code = character.charCodeAt(0);
+        return code < 32 || code === 127;
+      })
+    )
+      throw new SessionError(
+        "invalid",
+        "Session name must be at most 120 characters without control characters.",
+      );
+    await this.root.commit(async (tx) => {
+      const metadata = await tx.doc(Metadata, this.root.id);
+      metadata.name = name.trim();
+    }, context);
+  }
+
+  async conversations(): Promise<ConversationRecord[]> {
+    const records: ConversationRecord[] = [];
+    let cursor: Cursor | undefined;
     do {
-      const page = await this.root.entries({ order: "ascending" }, 256, cursor, context);
+      const page = await this.harness.commit(
+        (tx) => tx.scanConversations({}, 256, cursor),
+        context,
+      );
+      records.push(...page.items);
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return records;
+  }
+
+  async conversation(id?: number): Promise<Conversation> {
+    if (id === undefined) return this.root;
+    if (!Number.isSafeInteger(id) || id < 0)
+      throw new SessionError("invalid", "Invalid conversation ID.");
+    const conversation = await this.harness.conversation(id as ConversationId, context);
+    if (!conversation) throw new SessionError("not_found", "Conversation not found.");
+    return conversation;
+  }
+
+  async history(conversation = this.root): Promise<EntryRecord[]> {
+    const entries: EntryRecord[] = [];
+    let cursor: Cursor | undefined;
+    do {
+      const page = await conversation.entries({ order: "ascending" }, 256, cursor, context);
       entries.push(...page.items);
       cursor = page.next;
     } while (cursor !== undefined);
     return entries;
   }
 
-  async prompt(text: string, requestId: string): Promise<void> {
+  async prompt(
+    text: string,
+    requestId: string,
+    whenBusy: "reject" | "steer" | "followUp" = "reject",
+    conversation = this.root,
+    images: readonly ImageContent[] = [],
+  ): Promise<void> {
     if (!uuid.test(requestId) || !text.trim())
       throw new SessionError("invalid", "Invalid prompt or request ID.");
     if (this.needsResume)
       throw new SessionError("conflict", "Resume interrupted work before sending a new prompt.");
     await this.owner.requireTarget(this.binding);
-    await this.root.submit(
-      { type: "input", content: text, requestId, whenBusy: "reject" },
+    await conversation.submit(
+      {
+        type: "input",
+        content: images.length ? [{ type: "text", text }, ...images] : text,
+        requestId,
+        whenBusy,
+      },
       context,
     );
   }
@@ -464,11 +526,11 @@ export class ManagedSession {
     this.needsResume = false;
   }
 
-  async stop(): Promise<void> {
+  async stop(conversation = this.root): Promise<void> {
     // abort() starts Durable's scheduler. Never execute pending work via this path.
     if (this.needsResume)
       throw new SessionError("conflict", "Resume interrupted work before stopping it.");
-    await this.root.abort(context);
+    await conversation.abort(context);
   }
 
   close(): Promise<void> {

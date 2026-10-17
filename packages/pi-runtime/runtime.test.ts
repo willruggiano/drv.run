@@ -332,6 +332,8 @@ await test("opening persisted work is read-only until explicit resume, even when
   await f.reopen();
   const restored = await f.sessions.get(session.id);
   assert.equal(restored.needsResume, true);
+  await restored.rename("Interrupted work");
+  assert.equal((await restored.info()).name, "Interrupted work");
   await restored.history();
   await f.sessions.catalog();
   assert.equal(f.faux.state.callCount, 1);
@@ -365,4 +367,22 @@ await test("stop aborts a running local process group", async (t) => {
   await session.stop();
   assert.equal((await session.harness.inspect(context)).tasks.length, 0);
   assert.equal(await exists(join(f.workspace, "finished")), false);
+});
+
+await test("session names persist without changing bindings or starting work", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  await session.rename("  Counter cleanup  ");
+  assert.equal((await session.info()).name, "Counter cleanup");
+  assert.deepEqual((await session.info()).binding, f.binding);
+  for (const name of ["a".repeat(121), "line\nbreak", "null\0byte"])
+    await assert.rejects(session.rename(name), code("invalid"));
+  await f.reopen([]);
+  const restored = await f.sessions.get(session.id);
+  assert.equal((await restored.info()).name, "Counter cleanup");
+  await restored.rename("<b>Plain text</b>");
+  assert.equal((await restored.info()).name, "<b>Plain text</b>");
+  assert.equal(f.faux.state.callCount, 0);
+  await restored.rename("");
+  assert.equal((await restored.info()).name, "");
 });
