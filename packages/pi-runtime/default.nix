@@ -3,6 +3,7 @@
   lib,
   stdenv,
   nodejs,
+  git,
   typescript,
   pi-workspace,
   pi-development-node-modules,
@@ -15,7 +16,7 @@ stdenv.mkDerivation {
     fileset = lib.fileset.unions [./index.ts ./testing.ts ./runtime.test.ts ./package.json ./tsconfig.json];
   };
   npmDeps = pi-development-node-modules;
-  nativeBuildInputs = [importNpmLock.hooks.linkNodeModulesHook nodejs typescript];
+  nativeBuildInputs = [importNpmLock.hooks.linkNodeModulesHook nodejs typescript git];
   buildPhase = ''
     runHook preBuild
     tsc -p tsconfig.json --noEmit false --rewriteRelativeImportExtensions --outDir dist

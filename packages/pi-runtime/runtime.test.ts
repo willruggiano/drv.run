@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { defineExtension, section } from "@earendil-works/pi-durable";
+import { defineExtension, section, type Conversation } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import {
   Sessions,
@@ -385,4 +385,102 @@ await test("session names persist without changing bindings or starting work", a
   assert.equal(f.faux.state.callCount, 0);
   await restored.rename("");
   assert.equal((await restored.info()).name, "");
+});
+
+await test("footer repository inspection follows the bound directory without running the agent", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  assert.deepEqual(await session.repository(), { state: "none" });
+  const env = new NodeExecutionEnv({ cwd: f.workspace });
+  t.after(() => env.cleanup(context));
+  const git = async (...args: string[]) => {
+    const result = await env.exec(["git", ...args], { timeout: 3 }, context);
+    assert(result.ok);
+    assert.equal(result.value.exitCode, 0);
+  };
+  await git("init", "--initial-branch=footer-test");
+  assert.deepEqual(await session.repository(), {
+    state: "repository",
+    branch: "footer-test",
+    revision: null,
+  });
+  await git(
+    "-c",
+    "user.name=Pi",
+    "-c",
+    "user.email=pi@example.invalid",
+    "commit",
+    "--allow-empty",
+    "-m",
+    "Initial",
+  );
+  const committed = await session.repository();
+  assert.equal(committed.state, "repository");
+  assert(committed.state === "repository" && committed.revision);
+  await git("checkout", "--detach");
+  assert.deepEqual(await session.repository(), {
+    state: "repository",
+    branch: null,
+    revision: committed.revision,
+  });
+  assert.equal(f.faux.state.callCount, 0);
+  assert.equal((await session.harness.inspect(context)).scheduling, "paused");
+  await f.reopen([]);
+  assert.deepEqual(await (await f.sessions.get(session.id)).repository(), { state: "unavailable" });
+});
+
+await test("footer context uses the selected model and active context, not lifetime spend", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const status = async (conversation: Conversation = session.root) => {
+    const watch = await conversation.watch(context);
+    try {
+      return session.contextStatus(watch.value);
+    } finally {
+      await watch.stop();
+    }
+  };
+  assert.deepEqual(await status(), { window: 128000, autoCompact: true, lastResponse: null });
+  f.faux.setResponses([fauxAssistantMessage("Measured response.")]);
+  await session.prompt("Hello.", randomUUID());
+  await session.root.waitForIdle(context);
+  const history = await session.history();
+  const entry = history.at(-1);
+  const message = entry?.model?.[0];
+  assert(entry && message?.role === "assistant");
+  const measured = await status();
+  assert.equal(measured.lastResponse?.tokens, message.usage.totalTokens);
+  assert.equal(measured.lastResponse?.entry, entry.id);
+  const promptTokens = message.usage.input + message.usage.cacheRead + message.usage.cacheWrite;
+  assert.equal(measured.lastResponse?.cacheHit, (message.usage.cacheRead / promptTokens) * 100);
+  const watch = await session.root.watch(context);
+  try {
+    // Switching back to an earlier model must not resurrect older measurements.
+    assert.equal(
+      session.contextStatus({
+        ...watch.value,
+        entries: [
+          { ...entry, id: watch.value.entries[0].id },
+          { ...entry, model: [{ ...message, model: "other" }] },
+        ],
+      }).lastResponse,
+      null,
+    );
+  } finally {
+    await watch.stop();
+  }
+  const fork = await session.root.fork(entry.id, { ownership: { kind: "ownerless" } }, context);
+  assert.deepEqual(await status(fork), measured);
+  await fork.reset(undefined, context);
+  assert.equal((await status(fork)).lastResponse, null);
+  assert.deepEqual(await status(), measured);
+  await session.root.configure({ model: { provider: "missing", modelId: "unknown" } }, context);
+  assert.deepEqual(await status(), { window: null, autoCompact: true, lastResponse: null });
+  await session.root.configure({ model }, context);
+  // A context head invalidates older usage even if earlier entries are kept.
+  await session.root.submit(
+    { type: "write", entry: { kind: "pi.compaction", data: { reason: "manual" }, head: entry.id } },
+    context,
+  );
+  assert.equal((await status()).lastResponse, null);
 });

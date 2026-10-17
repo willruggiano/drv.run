@@ -13,6 +13,7 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
+import { UsageDoc } from "@earendil-works/pi-durable";
 import { chromium, type Page } from "playwright";
 import type { Sessions, Snapshot, ExecutionBinding } from "../pi-runtime/index.ts";
 import { exists, waitFor } from "../pi-runtime/testing.ts";
@@ -156,6 +157,24 @@ export async function browserFlow(
   assert.equal(errors.length, 0);
   if (!f.extended) return;
 
+  // A real repository in the bound workspace, created through the scripted agent.
+  f.faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("bash", {
+        command:
+          "git init --initial-branch=pi-pwa && git -c user.name=Pi -c user.email=pi@example.invalid commit --allow-empty -m Initial",
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Repository ready."),
+  ]);
+  await reconnected.fill("#prompt", "Initialize the workspace repository.");
+  await reconnected.click("#send");
+  await reconnected.waitForFunction(
+    () => document.querySelector("#footer-git")?.textContent === "(pi-pwa)",
+  );
+  await session.root.waitForIdle(context);
+
   // Real edit tool details carry a unified patch independently of assistant prose.
   f.faux.setResponses([
     fauxAssistantMessage(
@@ -213,6 +232,14 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   assert.equal((await session.root.agent(context)).thinkingLevel, "high");
   assert.equal((await session.info()).name, "Counter cleanup");
 
+  const ledger = await session.harness.snapshot(UsageDoc, session.root.id, context);
+  assert(ledger);
+  const buckets = [...Object.values(ledger.models), ...Object.values(ledger.tools)];
+  const expectedInput = buckets.reduce((sum, usage) => sum + usage.input, 0);
+  const expectedOutput = buckets.reduce((sum, usage) => sum + usage.output, 0);
+  const expectedRead = buckets.reduce((sum, usage) => sum + usage.cacheRead, 0);
+  const expectedWrite = buckets.reduce((sum, usage) => sum + usage.cacheWrite, 0);
+  const expectedContext = (await snapshot(`${base}/api/sessions/${id}/events`)).context;
   // Exercise secondary controls in both pointer/keyboard and touch layouts.
   const screenshots = process.env.PI_SCREENSHOT_DIR;
   if (screenshots) await mkdir(screenshots, { recursive: true });
@@ -228,7 +255,35 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await page.locator("#transcript").evaluate((node) => {
       node.scrollTop = node.scrollHeight;
     });
+    await page.waitForFunction(
+      () => document.querySelector("#footer-git")?.textContent === "(pi-pwa)",
+    );
     await shot(page, `${size}-conversation`);
+    for (const [field, expected] of [
+      ["input", expectedInput],
+      ["output", expectedOutput],
+      ["read", expectedRead],
+      ["write", expectedWrite],
+    ] as const)
+      assert.equal(
+        Number(await page.locator(`#footer-${field}`).getAttribute("data-value")),
+        expected,
+      );
+    assert.equal(
+      Number(await page.locator("#footer-context").getAttribute("data-tokens")),
+      expectedContext.lastResponse?.tokens,
+    );
+    assert.equal(await page.locator("#footer-read").isVisible(), size === "desktop");
+    await page.click("#footer-stats");
+    await page.waitForSelector("#usage-dialog[open]");
+    assert.equal(await page.locator("#usage-input").textContent(), expectedInput.toLocaleString());
+    assert.equal(await page.locator("#usage-thinking").textContent(), "high");
+    await shot(page, `${size}-footer-breakdown`);
+    await page.keyboard.press("Escape");
+    await page.click("#footer-model");
+    await page.waitForSelector("#preferences[open]");
+    assert.equal(await page.locator("#thinking").inputValue(), "high");
+    await page.keyboard.press("Escape");
     assert.equal(await page.locator("#stop").isVisible(), false);
     assert.equal(await page.locator('label[for="prompt"]').count(), 0);
     await page.click("#menu-toggle");
@@ -348,6 +403,57 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await desktopPage.goto(url);
   await desktopPage.waitForSelector('article[data-role="assistant"] .hljs-addition');
   await gallery(desktopPage, "desktop");
+  await desktop.setOffline(true);
+  await desktopPage.waitForFunction(
+    () => document.querySelector<HTMLElement>("#bottom-line")?.dataset.connected === "false",
+  );
+  await desktopPage.click("#footer-stats");
+  assert.equal(await desktopPage.locator("#usage-connection").isVisible(), true);
+  assert.equal(
+    Number(await desktopPage.locator("#footer-input").getAttribute("data-value")),
+    expectedInput,
+  );
+  await shot(desktopPage, "desktop-footer-offline");
+  await desktopPage.keyboard.press("Escape");
+  await desktop.setOffline(false);
+  await desktopPage.waitForFunction(
+    () => document.querySelector<HTMLElement>("#bottom-line")?.dataset.connected === "true",
+  );
+  await desktopPage.waitForSelector('article[data-role="assistant"] .hljs-addition');
+  // Stress the presentation with a persisted high-usage ledger. No fake HTTP/SSE data.
+  await session.root.commit(async (tx) => {
+    const usage = await tx.doc(UsageDoc, session.root.id);
+    usage.models["stress/model"] = {
+      input: 15_000_000,
+      output: 81_000,
+      cacheRead: 1_300_000,
+      cacheWrite: 20_000,
+      totalTokens: 16_401_000,
+      cost: { input: 150, output: 4, cacheRead: 0.9, cacheWrite: 0.089, total: 154.989 },
+    };
+  }, context);
+  await desktopPage.waitForFunction(
+    () => Number(document.querySelector<HTMLElement>("#footer-input")?.dataset.value) > 15_000_000,
+  );
+  await shot(desktopPage, "desktop-footer-high-usage");
+  await reconnected.waitForFunction(
+    () => Number(document.querySelector<HTMLElement>("#footer-input")?.dataset.value) > 15_000_000,
+  );
+  await reconnected.setViewportSize({ width: 320, height: 640 });
+  await shot(reconnected, "mobile-footer-high-usage");
+  await reconnected.click("#footer-context");
+  await shot(reconnected, "mobile-footer-high-usage-breakdown");
+  await reconnected.keyboard.press("Escape");
+  await reconnected.setViewportSize({ width: 390, height: 844 });
+  await session.root.commit(async (tx) => {
+    const usage = await tx.doc(UsageDoc, session.root.id);
+    delete usage.models["stress/model"];
+  }, context);
+  await reconnected.waitForFunction(
+    (expected) =>
+      Number(document.querySelector<HTMLElement>("#footer-input")?.dataset.value) === expected,
+    expectedInput,
+  );
   await desktopPage.locator('article[data-role="user"] .message-actions').last().click();
   await desktopPage.click("#copy-message");
   assert.equal(
@@ -419,6 +525,13 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   const branchId = Number(new URL(reconnected.url()).searchParams.get("conversation"));
   const branch = await session.conversation(branchId);
   assert.notEqual(branch.id, session.root.id);
+  await reconnected.waitForFunction(
+    () => document.querySelector<HTMLElement>("#footer-input")?.dataset.value === "0",
+  );
+  assert.equal(
+    Number(await reconnected.locator("#footer-context").getAttribute("data-tokens")),
+    expectedContext.lastResponse?.tokens,
+  );
   f.faux.setResponses([fauxAssistantMessage("This alternative is isolated in the branch.")]);
   await reconnected.fill("#prompt", "Try another approach.");
   await reconnected.click("#send");
@@ -545,6 +658,11 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   );
   assert((await session.history(branch)).some((entry) => entry.kind === "pi.reset"));
   assert.equal((await branch.context(context)).messages.length, 0);
+  await reconnected.waitForFunction(
+    () => document.querySelector<HTMLElement>("#footer-context")?.dataset.tokens === "",
+  );
+  assert(Number(await reconnected.locator("#footer-input").getAttribute("data-value")) > 0);
+  await shot(reconnected, "mobile-footer-reset");
   const download = reconnected.waitForEvent("download");
   await reconnected.click("#menu-toggle");
   await reconnected.click("#export");

@@ -92,6 +92,7 @@ async function stream(
       const snapshot: Snapshot = {
         session: await session.info(),
         view,
+        context: session.contextStatus(view),
         ...(initial ? { history: initial } : {}),
       };
       if (response.destroyed) return;
@@ -175,7 +176,7 @@ export function httpServer(
         return json(response, 201, await session.info());
       }
       const match =
-        /^\/api\/sessions\/([^/]+)\/(events|prompt|resume|stop|configure|compact|reset|cancel|fork|conversations|export|rename)$/.exec(
+        /^\/api\/sessions\/([^/]+)\/(events|prompt|resume|stop|configure|compact|reset|cancel|fork|conversations|export|rename|repository)$/.exec(
           url.pathname,
         );
       if (match) {
@@ -185,6 +186,8 @@ export function httpServer(
             ? Number(url.searchParams.get("conversation"))
             : undefined,
         );
+        if (request.method === "GET" && match[2] === "repository")
+          return json(response, 200, await session.repository());
         if (request.method === "GET" && match[2] === "conversations")
           return json(response, 200, await session.conversations());
         if (request.method === "GET" && match[2] === "export")

@@ -4,8 +4,15 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ImageContent, Models, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  ImageContent,
+  Models,
+  ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import {
+  DEFAULT_COMPACTION_POLICY,
+  type AgentState,
   createRegistry,
   defineDoc,
   defineExtension,
@@ -140,9 +147,19 @@ export type SessionInfo = {
   needsResume: boolean;
   thinkingLevel: ModelThinkingLevel;
 };
+export type ContextStatus = {
+  window: number | null;
+  autoCompact: boolean;
+  /** Last completed response in the current context/model; not a live token estimate. */
+  lastResponse: { tokens: number; cacheHit: number | null; entry: number } | null;
+};
+export type RepositoryStatus =
+  | { state: "repository"; branch: string | null; revision: string | null }
+  | { state: "none" | "unavailable" };
 export type Snapshot = {
   session: SessionInfo;
   view: ConversationView;
+  context: ContextStatus;
   history?: readonly EntryRecord[];
 };
 export type Catalog = {
@@ -378,16 +395,7 @@ export class ManagedSession {
         registry,
         env: async () => {
           assert(managed, "Session initialization must finish before tools run.");
-          const integration = await owner.requireTarget(managed.binding);
-          // Promise caching matters: Durable can run sibling tools concurrently.
-          const binding = managed.binding;
-          managed.lease ??= Promise.resolve().then(() => integration.open(binding));
-          try {
-            return (await managed.lease).env;
-          } catch (error) {
-            managed.lease = undefined;
-            throw error;
-          }
+          return managed.environment();
         },
         onReport: owner.options.onReport,
       },
@@ -427,6 +435,99 @@ export class ManagedSession {
       await harness.close(context);
       throw error;
     }
+  }
+
+  private async environment(): Promise<ExecutionEnv> {
+    const integration = await this.owner.requireTarget(this.binding);
+    // The viewer and sibling tools share a lease; validation still runs on every use.
+    this.lease ??= Promise.resolve().then(() => integration.open(this.binding));
+    try {
+      return (await this.lease).env;
+    } catch (error) {
+      this.lease = undefined;
+      throw error;
+    }
+  }
+
+  async repository(): Promise<RepositoryStatus> {
+    if (this.closed) return { state: "unavailable" };
+    try {
+      const env = await this.environment();
+      let output = "";
+      const result = await env.exec(
+        `if ! command -v git >/dev/null 2>&1; then
+  printf 'unavailable\n'
+elif ! git rev-parse --git-dir >/dev/null 2>&1; then
+  printf 'none\n'
+else
+  printf 'repository\n'
+  git symbolic-ref --quiet --short HEAD || printf '\n'
+  git rev-parse --verify --short HEAD 2>/dev/null || true
+fi`,
+        {
+          cwd: this.binding.cwd,
+          timeout: 3,
+          env: { GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+          onOutput(text, _context, info) {
+            if (info.stream === "stdout") output = (output + text).slice(0, 8192);
+          },
+        },
+        context,
+      );
+      if (!result.ok || result.value.exitCode !== 0) return { state: "unavailable" };
+      const [state, branch, revision] = output.split("\n");
+      if (state === "none") return { state };
+      if (state !== "repository") return { state: "unavailable" };
+      return { state, branch: branch || null, revision: revision || null };
+    } catch {
+      // A disconnected guest must not break the transcript or fall back to host Git.
+      return { state: "unavailable" };
+    }
+  }
+
+  contextStatus(view: ConversationView): ContextStatus {
+    const agent = view.docs["pi.agent"] as AgentState | undefined;
+    const model =
+      agent?.model && this.owner.options.models.getModel(agent.model.provider, agent.model.modelId);
+    const head = view.entries.reduce(
+      (head, entry) => (entry.head === undefined ? head : Math.max(head, entry.id)),
+      -1,
+    );
+    let last: { message: AssistantMessage; entry: number } | undefined;
+    for (const entry of view.entries) {
+      if (entry.id <= head || (last && entry.id <= last.entry)) continue;
+      const message = entry.model
+        ?.slice()
+        .reverse()
+        .find(
+          (message): message is AssistantMessage =>
+            message.role === "assistant" &&
+            message.stopReason !== "error" &&
+            message.stopReason !== "aborted",
+        );
+      if (message) last = { message, entry: entry.id };
+    }
+    let lastResponse: ContextStatus["lastResponse"] = null;
+    if (
+      last &&
+      last.message.provider === agent?.model?.provider &&
+      last.message.model === agent?.model?.modelId
+    ) {
+      const usage = last.message.usage;
+      const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+      const tokens = usage.totalTokens || prompt + usage.output;
+      if (tokens > 0)
+        lastResponse = {
+          tokens,
+          cacheHit: prompt > 0 ? (usage.cacheRead / prompt) * 100 : null,
+          entry: last.entry,
+        };
+    }
+    return {
+      window: model?.contextWindow ?? null,
+      autoCompact: DEFAULT_COMPACTION_POLICY.enabled,
+      lastResponse,
+    };
   }
 
   async info(): Promise<SessionInfo> {

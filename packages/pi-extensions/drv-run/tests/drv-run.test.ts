@@ -171,3 +171,17 @@ await test("transport failure returns a failed tool result without touching loca
   assert.equal(results.length, 1);
   assert.equal(results[0].isError, true);
 });
+
+await test("repository inspection uses the guest environment and fails closed when stopped", async (t) => {
+  const f = await remoteFixture(t);
+  const session = await f.sessions.create(randomUUID(), f.binding, model);
+  const exec = t.mock.method(RemoteExecutionEnv.prototype, "exec");
+  await session.repository();
+  assert.equal(exec.mock.callCount(), 1);
+  assert.equal(exec.mock.calls[0].arguments[1]?.cwd, "/workspace");
+  assert.equal(f.connections.length, 1);
+  assert.equal(f.faux.state.callCount, 0);
+  await writeFile(f.states, JSON.stringify({ test1: "inactive" }));
+  assert.deepEqual(await session.repository(), { state: "unavailable" });
+  assert.equal(exec.mock.callCount(), 1);
+});

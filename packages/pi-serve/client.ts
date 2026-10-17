@@ -7,7 +7,13 @@ import type {
   LiveState,
   UsageState,
 } from "@earendil-works/pi-durable";
-import type { Catalog, ExecutionBinding, SessionInfo, Snapshot } from "../pi-runtime/index.ts";
+import type {
+  Catalog,
+  ExecutionBinding,
+  RepositoryStatus,
+  SessionInfo,
+  Snapshot,
+} from "../pi-runtime/index.ts";
 
 function element<T extends HTMLElement>(id: string, type: { new (): T }): T {
   const found = document.getElementById(id);
@@ -29,6 +35,10 @@ const {
 const mode = element("mode", HTMLSelectElement);
 const branches = element("branches", HTMLSelectElement);
 const preferences = element("preferences", HTMLDialogElement);
+const usageDialog = element("usage-dialog", HTMLDialogElement);
+const bottomLine = element("bottom-line", HTMLElement);
+let repository: RepositoryStatus | undefined;
+let repositoryRequest = -1;
 const sessionModel = element("session-model", HTMLSelectElement);
 const thinking = element("thinking", HTMLSelectElement);
 const instructions = element("instructions", HTMLTextAreaElement);
@@ -158,6 +168,9 @@ function controls(): void {
     element(id, HTMLButtonElement).disabled = !active || !connected || recovering;
   document.body.classList.toggle("offline", !navigator.onLine);
   branches.disabled = !active;
+  bottomLine.dataset.connected = String(connected);
+  element("usage-connection", HTMLParagraphElement).hidden = connected;
+  element("footer-model", HTMLButtonElement).disabled = !active || !connected || recovering;
   send.textContent = busy && !recovering ? (mode.value === "steer" ? "Steer" : "Queue") : "Send";
   status.textContent = !navigator.onLine
     ? "Offline"
@@ -422,10 +435,6 @@ function content(node: HTMLElement, message: Message): void {
 function render(snapshot: Snapshot): void {
   latest = snapshot;
   const agent = snapshot.view.docs["pi.agent"] as AgentState | undefined;
-  const usage = snapshot.view.docs["pi.usage"] as UsageState | undefined;
-  const totals = [...Object.values(usage?.models ?? {}), ...Object.values(usage?.tools ?? {})];
-  element("usage", HTMLSpanElement).textContent =
-    `${totals.reduce((sum, value) => sum + value.totalTokens, 0).toLocaleString()} tokens · $${totals.reduce((sum, value) => sum + value.cost.total, 0).toFixed(3)}`;
   const queue = element("queue", HTMLDivElement);
   queue.replaceChildren();
   for (const item of (snapshot.view.docs["pi.inbox"] as InboxState | undefined)?.items ?? []) {
@@ -466,6 +475,7 @@ function render(snapshot: Snapshot): void {
         : "");
   activity.hidden = !activity.textContent;
   if (wasBusy && !busy) {
+    void refreshRepository();
     document.title = "✓ Pi";
   } else if (busy) document.title = "Working · Pi";
   const wanted = new Set<string>();
@@ -565,6 +575,7 @@ function render(snapshot: Snapshot): void {
   if (stick) transcript.scrollTop = transcript.scrollHeight;
   updateSearch();
   updateLatest();
+  renderFooter();
   controls();
 }
 
@@ -578,6 +589,9 @@ function attach(id: string, branch?: number): void {
   images = [];
   showAttachments();
   latest = undefined;
+  repository = undefined;
+  bottomLine.hidden = true;
+  usageDialog.close();
   generation++;
   active = id;
   prompt.value = loadDraft();
@@ -596,6 +610,7 @@ function attach(id: string, branch?: number): void {
     `/?session=${encodeURIComponent(id)}${branch === undefined ? "" : `&conversation=${branch}`}`,
   );
   void refreshBranches().catch(report);
+  void refreshRepository();
   for (const button of sessions.querySelectorAll("button"))
     button.setAttribute("aria-current", String(button.dataset.session === id));
   const currentGeneration = generation;
@@ -719,6 +734,7 @@ element("refresh", HTMLButtonElement).onclick = () => {
 };
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
+    void refreshRepository();
     void refresh().catch(report);
   }
 });
@@ -1184,7 +1200,8 @@ element("search-close", HTMLButtonElement).onclick = () => {
   prompt.focus();
 };
 document.addEventListener("keydown", (event) => {
-  if (!(event.metaKey || event.ctrlKey) || preferences.open || picker.open) return;
+  if (!(event.metaKey || event.ctrlKey) || preferences.open || picker.open || usageDialog.open)
+    return;
   if (event.key.toLowerCase() === "k") {
     event.preventDefault();
     openPicker();
@@ -1211,3 +1228,131 @@ messageMenu.addEventListener("keydown", (event) => {
 const findShortcut = element("find", HTMLButtonElement).querySelector("kbd");
 if (findShortcut)
   findShortcut.textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ F" : "Ctrl F";
+
+function compactTokens(value: number): string {
+  if (value < 1000) return String(value);
+  if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
+  if (value < 1_000_000) return `${Math.round(value / 1000)}k`;
+  return `${(value / 1_000_000).toFixed(value < 10_000_000 ? 1 : 0)}M`;
+}
+function renderFooter(): void {
+  if (!latest) return;
+  bottomLine.hidden = false;
+  const agent = latest.view.docs["pi.agent"] as AgentState | undefined;
+  const model = agent?.model ?? latest.session.model;
+  const thinking = agent?.thinkingLevel ?? latest.session.thinkingLevel;
+  const usage = latest.view.docs["pi.usage"] as UsageState | undefined;
+  const totals = [...Object.values(usage?.models ?? {}), ...Object.values(usage?.tools ?? {})];
+  const sum = (key: "input" | "output" | "cacheRead" | "cacheWrite") =>
+    totals.reduce((value, item) => value + item[key], 0);
+  const cost = totals.reduce((value, item) => value + item.cost.total, 0);
+  const binding = latest.session.binding;
+  const workspace =
+    binding.provider === "local"
+      ? binding.cwd
+      : `${binding.provider}/${binding.target} · ${binding.cwd}`;
+  element("footer-workspace", HTMLSpanElement).textContent = workspace;
+  element("footer-location", HTMLButtonElement).title = `${workspace} · workspace details`;
+  const git =
+    repository?.state === "repository"
+      ? (repository.branch ?? `detached ${repository.revision ?? ""}`)
+      : repository?.state === "unavailable"
+        ? "git unavailable"
+        : repository
+          ? ""
+          : "git…";
+  element("footer-git", HTMLSpanElement).textContent = git ? `(${git})` : "";
+  element("footer-model", HTMLButtonElement).textContent = `${model.modelId} · ${thinking}`;
+  element("footer-model", HTMLButtonElement).title =
+    `${model.provider} / ${model.modelId} · thinking ${thinking}`;
+  const set = (id: string, text: string) => {
+    element(id, HTMLElement).textContent = text;
+  };
+  for (const [field, key, prefix] of [
+    ["input", "input", "↑"],
+    ["output", "output", "↓"],
+    ["read", "cacheRead", "R"],
+    ["write", "cacheWrite", "W"],
+  ] as const) {
+    const value = sum(key);
+    const node = element(`footer-${field}`, HTMLSpanElement);
+    node.textContent = `${prefix}${compactTokens(value)}`;
+    node.dataset.value = String(value);
+    node.title = `${field === "read" || field === "write" ? "Cache " : ""}${field}: ${value.toLocaleString()} tokens`;
+    set(`usage-${field}`, value.toLocaleString());
+  }
+  const { window: limit, lastResponse, autoCompact } = latest.context;
+  const hit = lastResponse?.cacheHit;
+  const tokens = lastResponse?.tokens;
+  const percent = tokens !== undefined && limit ? (tokens / limit) * 100 : undefined;
+  const contextText = `${percent === undefined ? "—" : percent.toFixed(1) + "%"}/${limit ? compactTokens(limit) : "?"}${autoCompact ? " auto" : ""}`;
+  const contextButton = element("footer-context", HTMLButtonElement);
+  contextButton.textContent = contextText;
+  contextButton.dataset.level =
+    percent !== undefined && percent > 90
+      ? "critical"
+      : percent !== undefined && percent > 70
+        ? "warning"
+        : "normal";
+  contextButton.dataset.tokens = tokens === undefined ? "" : String(tokens);
+  contextButton.title = `Context at last completed response: ${tokens?.toLocaleString() ?? "unknown"} / ${limit?.toLocaleString() ?? "unknown"} tokens. ${autoCompact ? "Automatic compaction enabled." : "Automatic compaction disabled."}`;
+  const hitNode = element("footer-hit", HTMLSpanElement);
+  hitNode.hidden = hit === null || hit === undefined;
+  hitNode.textContent = hit == null ? "" : `CH${hit.toFixed(1)}%`;
+  hitNode.title = "Cache hit rate at the last completed response";
+  const costNode = element("footer-cost", HTMLSpanElement);
+  costNode.textContent = `$${cost.toFixed(3)}`;
+  costNode.dataset.value = String(cost);
+  costNode.title = "Estimated cost (USD), not a subscription balance";
+  set("usage-workspace", workspace);
+  set(
+    "usage-repository",
+    repository?.state === "repository"
+      ? `${repository.branch ?? "Detached HEAD"}${repository.revision ? ` · ${repository.revision}` : " · no commits"}`
+      : repository?.state === "none"
+        ? "Not a Git repository"
+        : repository?.state === "unavailable"
+          ? "Unavailable"
+          : "Checking…",
+  );
+  set("usage-model", `${model.provider} / ${model.modelId}`);
+  set("usage-thinking", thinking);
+  set("usage-hit", hit == null ? "Unknown" : `${hit.toFixed(1)}%`);
+  set("usage-cost", `$${cost.toFixed(3)}`);
+  set(
+    "usage-context",
+    tokens === undefined
+      ? "Unknown until a response in this context"
+      : `${tokens.toLocaleString()} tokens${percent === undefined ? "" : ` · ${percent.toFixed(1)}%`}`,
+  );
+  set("usage-window", limit ? `${limit.toLocaleString()} tokens` : "Unknown");
+  set("usage-auto", autoCompact ? "On" : "Off");
+}
+async function refreshRepository(): Promise<void> {
+  const current = generation;
+  if (!active || document.hidden || repositoryRequest === current) return;
+  repositoryRequest = current;
+  try {
+    const result = await api<RepositoryStatus>(endpoint("repository"));
+    if (current !== generation) return;
+    repository = result;
+  } catch {
+    if (current !== generation) return;
+    repository = { state: "unavailable" };
+  } finally {
+    if (repositoryRequest === current) repositoryRequest = -1;
+  }
+  renderFooter();
+}
+for (const id of ["footer-location", "footer-stats", "footer-context"])
+  element(id, HTMLButtonElement).onclick = () => {
+    closePopovers();
+    usageDialog.showModal();
+    void refreshRepository();
+  };
+element("footer-model", HTMLButtonElement).onclick = () =>
+  element("settings", HTMLButtonElement).click();
+element("close-usage", HTMLButtonElement).onclick = () => usageDialog.close();
+setInterval(() => {
+  if (active && connected && !document.hidden) void refreshRepository();
+}, 30_000);

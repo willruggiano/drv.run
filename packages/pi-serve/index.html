@@ -61,14 +61,24 @@
     [popover] { color: inherit; background: #202426; border: 1px solid #454e49; box-shadow: 0 8px 36px #0006; border-radius: 9px; padding: 6px; width: 230px; max-height: 70dvh; overflow: auto; position: fixed; inset: 52px 14px auto auto; margin: 0; }
     [popover] > button { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; border: none; background: transparent; padding: 7px 10px; font-size: 13px; } [popover] > button:hover { background: #303638; } [popover] label { display: block; margin: 8px; } [popover] label > span { margin-bottom: 6px; } [popover] kbd { font: 11px system-ui; color: var(--muted); }
     #input-menu { inset: auto auto 110px max(20px, calc((100% - 820px)/2)); }
-    #usage { display: block; border-top: 1px solid var(--line); margin: 4px 8px 0; padding: 9px 2px 3px; font-size: 11px; color: var(--muted); }
+    #bottom-line { padding: 0 max(20px, calc((100% - 820px)/2)) 8px; color: var(--muted); font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; }
+    .footer-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+    #bottom-line button { font: inherit; color: inherit; min-height: 24px; padding: 0; border: none; background: transparent; text-align: left; min-width: 0; } #bottom-line button:hover { color: #dce0df; }
+    #footer-location { display: flex; flex: 1; gap: 6px; overflow: hidden; } #footer-workspace { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } #footer-git { flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a9b8ae; }
+    #footer-model { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right !important; }
+    #footer-stats { display: flex; flex-wrap: wrap; column-gap: 9px; } #footer-stats span { white-space: nowrap; }
+    #footer-context { white-space: nowrap; flex-shrink: 0; } #footer-context[data-level=warning] { color: #e5bd8e; } #footer-context[data-level=critical] { color: #ffadad; }
+    #bottom-line[data-connected=false] { opacity: .65; }
+    #usage-dialog dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 6px 18px; margin: 10px 0; font-size: 13px; } #usage-dialog dt { color: var(--muted); } #usage-dialog dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; } #usage-dialog .usage-note { font-size: 11px; margin-bottom: 0; }
+    #composer { padding-bottom: 5px; }
     #search-bar { display: flex; gap: 6px; align-items: center; padding: 6px max(16px, calc((100% - 820px)/2)); border-bottom: 1px solid var(--line); } #search-count { white-space: nowrap; font-size: 11px; color: var(--muted); } article.search-hit { border-left: 2px solid #59664d; padding-left: 10px; } article.search-current { border-left-color: var(--accent); background: #afd6bc08; }
     ::highlight(pi-search) { background: #52603b; color: #fff; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
     a { color: #a2c9df; } [hidden] { display: none !important; }
     @media (max-width: 650px) {
       .bar { gap: 6px; padding: 6px 10px; } button, select { min-height: 38px; } .icon { min-width: 38px; } #status { font-size: 0; } #status::before { margin: 0; } #branches { max-width: 106px; font-size: 11px; }
-      #transcript { padding: 8px 16px; } #composer { padding: 6px 10px 10px; } .message-actions { opacity: .7; min-height: 30px; } .codebar button { min-height: 30px; } #latest { margin-bottom: 4px; }
+      #bottom-line { padding: 0 12px 6px; font-size: 11px; } #bottom-line button { min-height: 28px; } #bottom-line .footer-row { gap: 8px; } #footer-stats { column-gap: 6px; } #footer-stats .footer-cache { display: none; } #footer-model { max-width: 52%; } #footer-git { max-width: 42%; }
+      #transcript { padding: 8px 16px; } #composer { padding: 6px 10px 4px; } .message-actions { opacity: .7; min-height: 30px; } .codebar button { min-height: 30px; } #latest { margin-bottom: 4px; }
       dialog { width: 100%; max-width: none; max-height: 88dvh; margin: auto 0 0; border-radius: 16px 16px 0 0; padding: 18px 16px max(18px, env(safe-area-inset-bottom)); border-bottom: none; }
       [popover], #input-menu { inset: auto 10px max(10px, env(safe-area-inset-bottom)) 10px; width: auto; max-height: 65dvh; padding: 8px; border-radius: 12px; } [popover] > button { min-height: 44px; } [popover]::backdrop { background: #0004; }
       [popover] kbd { display: none; }
@@ -95,7 +105,7 @@
     <button id="export" disabled>Export JSON</button>
     <button id="wrap-code" aria-pressed="false">Wrap code <span aria-hidden="true">Off</span></button>
     <button id="install" hidden>Install Pi</button>
-    <span id="usage"></span>
+
   </div>
   <div id="message-menu" popover aria-label="Message actions">
     <button id="copy-message">Copy message</button>
@@ -122,6 +132,18 @@
       </div>
       <input id="images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
     </form>
+    <footer id="bottom-line" aria-label="Workspace and conversation statistics" hidden>
+      <div class="footer-row">
+        <button id="footer-location" type="button" aria-label="Workspace details"><span id="footer-workspace"></span><span id="footer-git"></span></button>
+        <button id="footer-model" type="button" aria-label="Model and thinking settings"></button>
+      </div>
+      <div class="footer-row">
+        <button id="footer-stats" type="button" aria-label="Token and cost breakdown">
+          <span id="footer-input"></span><span id="footer-output"></span><span id="footer-read" class="footer-cache"></span><span id="footer-write" class="footer-cache"></span><span id="footer-hit" class="footer-cache"></span><span id="footer-cost"></span>
+        </button>
+        <button id="footer-context" type="button" aria-label="Context usage details"></button>
+      </div>
+    </footer>
   </div>
   <div id="input-menu" popover aria-label="Input options">
     <button id="attach">Attach images</button>
@@ -150,6 +172,26 @@
       <p>Reset clears model context, not history.</p>
     </details>
     <details><summary>App</summary><p id="pwa-status"></p></details>
+  </dialog>
+  <dialog id="usage-dialog" aria-labelledby="usage-title">
+    <div class="dialog-heading"><h2 id="usage-title">Conversation stats</h2><button id="close-usage" class="icon" aria-label="Close statistics">×</button></div>
+    <dl>
+      <dt>Workspace</dt><dd id="usage-workspace"></dd>
+      <dt>Repository</dt><dd id="usage-repository"></dd>
+      <dt>Model</dt><dd id="usage-model"></dd>
+      <dt>Thinking</dt><dd id="usage-thinking"></dd>
+      <dt>Input tokens</dt><dd id="usage-input"></dd>
+      <dt>Output tokens</dt><dd id="usage-output"></dd>
+      <dt>Cache read</dt><dd id="usage-read"></dd>
+      <dt>Cache write</dt><dd id="usage-write"></dd>
+      <dt>Cache hit · last response</dt><dd id="usage-hit"></dd>
+      <dt>Estimated cost · USD</dt><dd id="usage-cost"></dd>
+      <dt>Context · last response</dt><dd id="usage-context"></dd>
+      <dt>Context window</dt><dd id="usage-window"></dd>
+      <dt>Auto compaction</dt><dd id="usage-auto"></dd>
+    </dl>
+    <p id="usage-connection" class="usage-note" hidden>Disconnected · showing the last received values.</p>
+    <p class="usage-note">Totals include model, tool and compaction usage in this conversation, excluding inherited fork spend. Context excludes messages after the last completed response. Cost is an estimate, not a bill or subscription balance.</p>
   </dialog>
   <script type="module" src="/client.js"></script>
 </body>
