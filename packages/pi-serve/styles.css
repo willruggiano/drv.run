@@ -190,3 +190,5 @@ a { color: var(--link); } [hidden] { display: none !important; }
 #conversation-menu { left: max(10px, env(safe-area-inset-left)); right: auto; }
 #app-menu { right: max(10px, env(safe-area-inset-right)); left: auto; }
 @media (any-pointer: coarse) { .bar button { min-height: 44px; } }
+
+body.hide-thinking .thinking, body.hide-images #transcript img { display: none; }

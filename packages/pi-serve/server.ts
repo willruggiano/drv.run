@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   ConversationBusy,
@@ -14,6 +15,7 @@ import {
   type SubmissionId,
 } from "@earendil-works/pi-durable";
 import {
+  DEFAULT_THINKING_LEVEL,
   loadIntegrations,
   localIntegration,
   stateDirectory,
@@ -21,7 +23,167 @@ import {
   SessionError,
   type ManagedSession,
   type Snapshot,
+  type SessionOptions,
 } from "../pi-runtime/index.ts";
+import { settingFields, thinkingLevels, type GlobalSettings } from "./settings.ts";
+
+export class GlobalSettingsStore {
+  readonly manager: SettingsManager;
+  private writes: Promise<void> = Promise.resolve();
+
+  constructor(manager: SettingsManager) {
+    this.manager = manager;
+    const errors = manager.drainErrors();
+    if (errors.length) throw errors[0].error;
+  }
+
+  read(): GlobalSettings {
+    const s = this.manager;
+    const compaction = s.getCompactionSettings();
+    const retry = s.getRetrySettings();
+    const provider = s.getDefaultProvider(),
+      modelId = s.getDefaultModel();
+    return {
+      model: provider && modelId ? { provider, modelId } : null,
+      modelThinkingLevels: s.getAllModelThinkingLevels(),
+      values: {
+        defaultThinkingLevel: s.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
+        transport: s.getTransport(),
+        steeringMode: s.getSteeringMode(),
+        followUpMode: s.getFollowUpMode(),
+        "compaction.enabled": compaction.enabled,
+        "compaction.reserveTokens": compaction.reserveTokens,
+        "compaction.keepRecentTokens": compaction.keepRecentTokens,
+        "retry.enabled": retry.enabled,
+        "retry.maxRetries": retry.maxRetries,
+        "retry.baseDelayMs": retry.baseDelayMs,
+        "retry.maxAgentDelayMs": retry.maxAgentDelayMs,
+        hideThinkingBlock: s.getHideThinkingBlock(),
+        "terminal.showImages": s.getShowImages(),
+      },
+    };
+  }
+
+  // Getters are intentional: Durable resolves host policy on every run. Agent
+  // model/thinking remain persisted in the conversation, not changed by defaults.
+  bind(options: SessionOptions): SessionOptions {
+    const manager = this.manager;
+    return {
+      ...options,
+      get defaultModel() {
+        const provider = manager.getDefaultProvider(),
+          modelId = manager.getDefaultModel();
+        return provider && modelId ? { provider, modelId } : undefined;
+      },
+      get thinkingLevel() {
+        return manager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
+      },
+      get modelThinkingLevels() {
+        return manager.getAllModelThinkingLevels();
+      },
+      settings: {
+        get stream() {
+          return {
+            transport: manager.getTransport(),
+            ...manager.getProviderRetrySettings(),
+          };
+        },
+        get retry() {
+          return manager.getRetrySettings();
+        },
+        get compaction() {
+          // Durable has harness-wide thresholds, not per-conversation/model overrides.
+          return manager.getCompactionSettings();
+        },
+        get steeringMode() {
+          return manager.getSteeringMode();
+        },
+        get followUpMode() {
+          return manager.getFollowUpMode();
+        },
+      },
+    };
+  }
+
+  update(data: Record<string, unknown>, sessions: Sessions): Promise<GlobalSettings> {
+    const write = this.writes.then(() => this.apply(data, sessions));
+    this.writes = write.then(
+      () => {},
+      () => {},
+    );
+    return write;
+  }
+
+  private async apply(data: Record<string, unknown>, sessions: Sessions): Promise<GlobalSettings> {
+    for (const key of Object.keys(data))
+      if (!["values", "model", "modelThinkingLevel"].includes(key))
+        throw new RequestError(400, "Unknown settings field.");
+    const values = data.values === undefined ? {} : object(data.values);
+    for (const [key, value] of Object.entries(values)) {
+      const field = settingFields.find((field) => field.key === key);
+      if (!field || ("readonly" in field && field.readonly))
+        throw new RequestError(400, `Unsupported setting: ${key}`);
+      const valid =
+        "choices" in field
+          ? field.choices.some((choice) => choice === value)
+          : typeof value === "boolean";
+      if (!valid) throw new RequestError(400, `Invalid setting: ${key}`);
+    }
+    let model: { provider: string; modelId: string } | undefined;
+    if (data.model !== undefined) {
+      const ref = object(data.model);
+      model = { provider: string(ref.provider, 200), modelId: string(ref.modelId, 300) };
+      const available = await sessions.options.models.getAvailable();
+      if (!available.some((item) => item.provider === model?.provider && item.id === model.modelId))
+        throw new RequestError(400, "Model is unavailable.");
+    }
+    const level = data.modelThinkingLevel;
+    if (level !== undefined && (!model || (level !== null && !isThinkingLevel(level))))
+      throw new RequestError(400, "Invalid per-model thinking preference.");
+    // Validate the entire request before scheduling any of Pi's locked writes.
+    // Use public setters: applyOverrides() is not persistent.
+    const s = this.manager;
+    for (const [key, value] of Object.entries(values)) {
+      if (key === "defaultThinkingLevel" && isThinkingLevel(value))
+        s.setDefaultThinkingLevel(value);
+      else if (
+        key === "transport" &&
+        (value === "auto" ||
+          value === "sse" ||
+          value === "websocket" ||
+          value === "websocket-cached")
+      )
+        s.setTransport(value);
+      else if (key === "steeringMode" && (value === "all" || value === "one-at-a-time"))
+        s.setSteeringMode(value);
+      else if (key === "followUpMode" && (value === "all" || value === "one-at-a-time"))
+        s.setFollowUpMode(value);
+      else if (key === "compaction.enabled" && typeof value === "boolean")
+        s.setCompactionEnabled(value);
+      else if (key === "retry.enabled" && typeof value === "boolean") s.setRetryEnabled(value);
+      else if (key === "hideThinkingBlock" && typeof value === "boolean")
+        s.setHideThinkingBlock(value);
+      else if (key === "terminal.showImages" && typeof value === "boolean") s.setShowImages(value);
+    }
+    if (model) {
+      s.setDefaultModelAndProvider(model.provider, model.modelId);
+      if (level === null) s.removeModelThinkingLevel(model.provider, model.modelId);
+      else if (isThinkingLevel(level))
+        s.setModelThinkingLevel(model.provider, model.modelId, level);
+    }
+    await s.flush();
+    const errors = s.drainErrors();
+    if (errors.length) {
+      await s.reload();
+      throw errors[0].error;
+    }
+    return this.read();
+  }
+}
+
+function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
+  return thinkingLevels.some((level) => level === value);
+}
 
 const context = BACKGROUND_CONTEXT;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -122,6 +284,7 @@ export function httpServer(
   host: string,
   assets = dirname(fileURLToPath(import.meta.url)),
   publicOrigin?: string,
+  settings?: GlobalSettingsStore,
 ) {
   const external = publicOrigin === undefined ? undefined : new URL(validateOrigin(publicOrigin));
   const server = createServer((request, response) => {
@@ -154,12 +317,24 @@ export function httpServer(
       )
         throw new RequestError(403, "Cross-origin requests are not allowed.");
       const url = new URL(request.url ?? "/", origin);
+      if (url.pathname === "/api/settings") {
+        if (!settings) {
+          if (request.method === "GET") return json(response, 200, null);
+          throw new RequestError(503, "Shared settings are not configured.");
+        }
+        if (request.method === "GET") return json(response, 200, settings.read());
+        if (request.method === "POST")
+          return json(response, 200, await settings.update(await body(request), sessions));
+        throw new RequestError(405, "Method not allowed.");
+      }
       if (request.method === "GET" && url.pathname === "/api/catalog")
         return json(response, 200, await sessions.catalog());
       if (request.method === "POST" && url.pathname === "/api/sessions") {
         const data = await body(request);
         const model = object(data.model);
         const binding = object(data.binding);
+        if (data.thinkingLevel !== undefined && !isThinkingLevel(data.thinkingLevel))
+          throw new RequestError(400, "Invalid thinking level.");
         const session = await sessions.create(
           string(data.id, 36),
           {
@@ -171,6 +346,7 @@ export function httpServer(
             provider: string(model.provider, 200),
             modelId: string(model.modelId, 300),
           },
+          data.thinkingLevel,
         );
         return json(response, 201, await session.info());
       }
@@ -246,21 +422,14 @@ export function httpServer(
               );
               if (!selected) throw new RequestError(400, "Model is unavailable.");
               const thinking = data.thinkingLevel;
-              if (
-                thinking !== "off" &&
-                thinking !== "minimal" &&
-                thinking !== "low" &&
-                thinking !== "medium" &&
-                thinking !== "high" &&
-                thinking !== "xhigh"
-              )
+              if (!isThinkingLevel(thinking))
                 throw new RequestError(400, "Invalid thinking level.");
               if (typeof data.instructions !== "string" || data.instructions.length > 100_000)
                 throw new RequestError(400, "Invalid instructions.");
               await conversation.configure(
                 {
                   model: { provider: selected.provider, modelId: selected.modelId },
-                  thinkingLevel: thinking,
+                  thinkingLevel: sessions.resolveThinking(selected, thinking),
                   instructions: data.instructions,
                 },
                 context,
@@ -459,21 +628,21 @@ This does not add authentication: restrict access at the proxy/network boundary.
   const { host, port, directory, cwd, extensions, local, publicOrigin } = parseOptions(args);
   process.umask(0o077);
   const models = await ModelRuntime.create();
-  const settings = SettingsManager.create(homedir(), getAgentDir(), { projectTrusted: false });
-  const provider = settings.getDefaultProvider(),
-    modelId = settings.getDefaultModel();
-  const sessions = await Sessions.open({
-    directory,
-    models,
-    integrations: [
-      ...(local ? [localIntegration(cwd)] : []),
-      ...(await loadIntegrations(extensions)),
-    ],
-    defaultModel: provider && modelId ? { provider, modelId } : undefined,
-    thinkingLevel: settings.getDefaultThinkingLevel(),
-    onReport: (error) => console.error("pi-serve session", error),
-  });
-  const server = httpServer(sessions, host, undefined, publicOrigin);
+  const settings = new GlobalSettingsStore(
+    SettingsManager.create(homedir(), getAgentDir(), { projectTrusted: false }),
+  );
+  const sessions = await Sessions.open(
+    settings.bind({
+      directory,
+      models,
+      integrations: [
+        ...(local ? [localIntegration(cwd)] : []),
+        ...(await loadIntegrations(extensions)),
+      ],
+      onReport: (error) => console.error("pi-serve session", error),
+    }),
+  );
+  const server = httpServer(sessions, host, undefined, publicOrigin, settings);
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);

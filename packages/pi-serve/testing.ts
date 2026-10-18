@@ -16,7 +16,7 @@ import { UsageDoc } from "@earendil-works/pi-durable";
 import { chromium, type Locator, type Page } from "playwright";
 import type { Sessions, Snapshot, ExecutionBinding } from "../pi-runtime/index.ts";
 import { exists, waitFor } from "../pi-runtime/testing.ts";
-import { httpServer } from "./server.ts";
+import { httpServer, type GlobalSettingsStore } from "./server.ts";
 import { buildAssets } from "./build.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -27,8 +27,9 @@ export async function serve(
   assets?: string,
   host = "127.0.0.1",
   publicOrigin?: string,
+  settings?: GlobalSettingsStore,
 ) {
-  const server = httpServer(sessions, host, assets, publicOrigin);
+  const server = httpServer(sessions, host, assets, publicOrigin, settings);
   await new Promise<void>((resolve) => server.listen(0, host, resolve));
   t.after(async () => {
     server.closeAllConnections();

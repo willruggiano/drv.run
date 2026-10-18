@@ -1,3 +1,4 @@
+import { settingFields, type GlobalSettings } from "./settings.ts";
 import {
   installPickerKeyMappings,
   installSelectKeyMappings,
@@ -42,6 +43,10 @@ const modeToggle = element("input-mode", HTMLButtonElement);
 let submissionMode: "followUp" | "steer" = "followUp";
 const branches = element("branches", HTMLSelectElement);
 const preferences = element("preferences", HTMLDialogElement);
+const globalPreferences = element("global-preferences", HTMLDialogElement);
+const newThinking = element("new-thinking", HTMLSelectElement);
+let globalSettings: GlobalSettings | null = null;
+let editingSettings: GlobalSettings | null = null;
 const usageDialog = element("usage-dialog", HTMLDialogElement);
 const bottomLine = element("bottom-line", HTMLElement);
 let repository: RepositoryStatus | undefined;
@@ -128,7 +133,7 @@ function report(error: unknown): void {
     : error instanceof Error
       ? error.message
       : String(error);
-  const dialog = [picker, preferences].find((dialog) => dialog.open);
+  const dialog = [globalPreferences, picker, preferences].find((dialog) => dialog.open);
   if (dialog) {
     let local = dialog.querySelector<HTMLParagraphElement>(".dialog-error");
     if (!local) {
@@ -223,7 +228,15 @@ function chooseOption(
 async function refresh(): Promise<void> {
   const previousTarget = targets.value;
   const previousModel = models.value ? catalog?.models[Number(models.value)] : undefined;
-  const next = await api<Catalog>("/api/catalog");
+  const [next, defaults] = await Promise.all([
+    api<Catalog>("/api/catalog"),
+    api<GlobalSettings | null>("/api/settings"),
+  ]);
+  globalSettings = defaults;
+  for (const id of ["global-settings", "picker-defaults"])
+    element(id, HTMLButtonElement).hidden = !defaults;
+  document.body.classList.toggle("hide-thinking", defaults?.values.hideThinkingBlock === true);
+  document.body.classList.toggle("hide-images", defaults?.values["terminal.showImages"] === false);
   catalog = next;
   targets.replaceChildren();
   chooseOption(targets, "", "Select an execution target");
@@ -261,6 +274,7 @@ async function refresh(): Promise<void> {
     );
   if (selected) models.value = String(catalog.models.indexOf(selected));
   else if (catalog.models.length === 1) models.value = "0";
+  fillThinking(newThinking, models, newThinking.value, true);
   renderSessions();
   create.disabled = !targets.value || !models.value;
 }
@@ -1242,7 +1256,11 @@ function attach(id: string, branch?: number): void {
   controls();
 }
 
-targets.onchange = models.onchange = () => {
+targets.onchange = () => {
+  create.disabled = !targets.value || !models.value;
+};
+models.onchange = () => {
+  fillThinking(newThinking, models, "", true);
   create.disabled = !targets.value || !models.value;
 };
 create.onclick = () => {
@@ -1251,7 +1269,8 @@ create.onclick = () => {
   void api<SessionInfo>("/api/sessions", {
     id,
     binding: catalog.targets.find((target) => targetKey(target) === targets.value),
-    model: catalog.models[Number(models.value)],
+    model: models.value ? catalog.models[Number(models.value)] : undefined,
+    thinkingLevel: newThinking.value || undefined,
   })
     .then((session) => {
       sessionFilter.value = "";
@@ -1389,12 +1408,172 @@ branches.onchange = () => {
     attach(active, Number(branches.value));
   }
 };
+function fillThinking(
+  select: HTMLSelectElement,
+  modelSelect: HTMLSelectElement,
+  value?: string,
+  inherit = false,
+): void {
+  const model = modelSelect.value ? catalog.models[Number(modelSelect.value)] : undefined;
+  select.replaceChildren();
+  if (inherit)
+    chooseOption(
+      select,
+      "",
+      model ? `Default (${model.defaultThinkingLevel})` : "Select a model first",
+    );
+  for (const level of model?.thinkingLevels ?? []) chooseOption(select, level, level);
+  // Existing sessions can outlive a model capability change. Do not silently
+  // replace their saved effort with the new-session default when opening a form.
+  if (model && value && !model.thinkingLevels.some((level) => level === value) && !inherit)
+    chooseOption(select, value, `${value} (will be clamped to model capabilities)`);
+  select.value =
+    inherit && (!value || !model?.thinkingLevels.some((level) => level === value))
+      ? ""
+      : value || model?.defaultThinkingLevel || "";
+  select.disabled = !model;
+}
+
+const defaultModel = element("default-model", HTMLSelectElement);
+const modelThinkingDefault = element("model-thinking-default", HTMLSelectElement);
+function fillModelDefault(): void {
+  modelThinkingDefault.replaceChildren();
+  chooseOption(modelThinkingDefault, "", "Use global default");
+  const model = defaultModel.value ? catalog.models[Number(defaultModel.value)] : undefined;
+  for (const level of model?.thinkingLevels ?? []) chooseOption(modelThinkingDefault, level, level);
+  const saved = model && editingSettings?.modelThinkingLevels[`${model.provider}/${model.modelId}`];
+  // Keep a configured unsupported level visible: Pi will clamp it when starting.
+  if (saved && !model?.thinkingLevels.includes(saved))
+    chooseOption(modelThinkingDefault, saved, `${saved} (clamped by model)`);
+  modelThinkingDefault.value = saved ?? "";
+  modelThinkingDefault.disabled = !model;
+}
+defaultModel.onchange = fillModelDefault;
+function openGlobalSettings(): void {
+  closePopovers();
+  if (!globalSettings) return;
+  editingSettings = globalSettings;
+  globalPreferences.querySelector(".dialog-error")?.remove();
+  defaultModel.replaceChildren();
+  chooseOption(
+    defaultModel,
+    "",
+    globalSettings.model
+      ? `Keep configured model: ${globalSettings.model.provider}/${globalSettings.model.modelId} (keep)`
+      : "No configured default (keep)",
+  );
+  catalog.models.forEach((model, index) =>
+    chooseOption(defaultModel, String(index), `${model.provider} / ${model.name}`),
+  );
+  const index = catalog.models.findIndex(
+    (model) =>
+      model.provider === globalSettings?.model?.provider &&
+      model.modelId === globalSettings.model.modelId,
+  );
+  defaultModel.value = index >= 0 ? String(index) : "";
+  fillModelDefault();
+  const fields = element("global-settings-fields", HTMLDivElement);
+  fields.replaceChildren();
+  let group = "";
+  let parent: HTMLElement = fields;
+  for (const field of settingFields) {
+    if (field.group !== group) {
+      group = field.group;
+      const details = document.createElement("details");
+      details.open = group === "New sessions";
+      const summary = document.createElement("summary");
+      summary.textContent = group;
+      details.append(summary);
+      fields.append(details);
+      parent = details;
+    }
+    const label = document.createElement("label");
+    const caption = document.createElement("span");
+    caption.textContent = field.label;
+    const input =
+      "choices" in field || field.type === "boolean"
+        ? document.createElement("select")
+        : document.createElement("input");
+    input.id = `default-${field.key}`;
+    input.name = field.key;
+    if (input instanceof HTMLSelectElement) {
+      const choices = "choices" in field ? field.choices : ["true", "false"];
+      for (const choice of choices)
+        chooseOption(input, choice, choice === "true" ? "On" : choice === "false" ? "Off" : choice);
+    } else {
+      input.type = "number";
+      input.min = "0";
+      input.step = "1";
+      input.readOnly = true;
+    }
+    input.value = String(globalSettings.values[field.key]);
+    label.append(caption, input);
+    parent.append(label);
+  }
+  globalPreferences.showModal();
+}
+element("global-settings", HTMLButtonElement).onclick = openGlobalSettings;
+element("picker-defaults", HTMLButtonElement).onclick = openGlobalSettings;
+element("close-global-settings", HTMLButtonElement).onclick = () => globalPreferences.close();
+element("global-settings-form", HTMLFormElement).onsubmit = (event) => {
+  event.preventDefault();
+  const values: Record<string, string | boolean> = {};
+  for (const field of settingFields) {
+    if ("readonly" in field) continue;
+    const value = element(`default-${field.key}`, HTMLSelectElement).value;
+    if (value !== String(editingSettings?.values[field.key]))
+      values[field.key] = "choices" in field ? value : value === "true";
+  }
+  const selected = defaultModel.value ? catalog.models[Number(defaultModel.value)] : undefined;
+  const modelChanged =
+    selected &&
+    (selected.provider !== editingSettings?.model?.provider ||
+      selected.modelId !== editingSettings.model.modelId);
+  const overrideChanged =
+    selected &&
+    modelThinkingDefault.value !==
+      (editingSettings?.modelThinkingLevels[`${selected.provider}/${selected.modelId}`] ?? "");
+  const button = element("save-global-settings", HTMLButtonElement);
+  button.disabled = true;
+  void api<GlobalSettings>("/api/settings", {
+    values,
+    ...(selected && (modelChanged || overrideChanged)
+      ? {
+          model: selected,
+          ...(overrideChanged ? { modelThinkingLevel: modelThinkingDefault.value || null } : {}),
+        }
+      : {}),
+  })
+    .then(async (saved) => {
+      globalSettings = saved;
+      // An explicit default change should be reflected in the new-session picker.
+      if (modelChanged) {
+        models.value = "";
+        newThinking.value = "";
+      }
+      await refresh();
+      globalPreferences.close();
+    })
+    .catch(report)
+    .finally(() => {
+      button.disabled = false;
+    });
+};
+
 element("settings", HTMLButtonElement).onclick = () => {
   closePopovers();
   preferences.querySelector(".dialog-error")?.remove();
   const agent = latest?.view.docs["pi.agent"] as AgentState | undefined;
   element("session-name", HTMLInputElement).value = latest?.session.name ?? "";
   sessionModel.replaceChildren();
+  chooseOption(
+    sessionModel,
+    "",
+    agent?.model
+      ? `${agent.model.provider} / ${agent.model.modelId} (unavailable)`
+      : "Select a model",
+    true,
+  );
   catalog.models.forEach((model, index) =>
     chooseOption(sessionModel, String(index), `${model.provider} / ${model.name}`),
   );
@@ -1404,12 +1583,14 @@ element("settings", HTMLButtonElement).onclick = () => {
         model.provider === agent?.model?.provider && model.modelId === agent?.model?.modelId,
     ),
   );
-  thinking.value = agent?.thinkingLevel ?? "off";
+  fillThinking(thinking, sessionModel, agent?.thinkingLevel ?? "off");
   instructions.value = agent?.instructions ?? "";
   preferences.showModal();
 };
+sessionModel.onchange = () => fillThinking(thinking, sessionModel);
 element("close-settings", HTMLButtonElement).onclick = () => preferences.close();
 element("save-settings", HTMLButtonElement).onclick = () => {
+  if (!sessionModel.value || !thinking.value) return report("Select an available model.");
   const id = active;
   const branch = conversation;
   const renameURL = endpoint("rename");
@@ -1861,6 +2042,7 @@ document.addEventListener("keydown", (event) => {
     event.shiftKey ||
     !(event.metaKey || event.ctrlKey) ||
     preferences.open ||
+    globalPreferences.open ||
     picker.open ||
     usageDialog.open
   )

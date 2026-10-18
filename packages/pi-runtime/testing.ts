@@ -14,7 +14,7 @@ export const model = { provider: "faux", modelId: "faux-1" };
 export async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "pi-runtime-state-"));
   const workspace = await mkdtemp(join(tmpdir(), "pi-runtime-work-"));
-  const faux = fauxProvider();
+  const faux = fauxProvider({ models: [{ id: "faux-1", reasoning: true }] });
   const models = createModels();
   models.setProvider(faux.provider);
   const binding = { provider: "local", target: workspace, cwd: workspace };

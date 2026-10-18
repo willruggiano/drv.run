@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,12 +10,17 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { fixture, model, waitFor } from "../pi-runtime/testing.ts";
 import { browserFlow, serve, snapshot, post } from "./testing.ts";
-import { parseOptions } from "./server.ts";
+import { GlobalSettingsStore, parseOptions } from "./server.ts";
 import { benchmark, benchmarkFixture, benchmarkOptions } from "./benchmark.ts";
 import { buildAssets } from "./build.ts";
+
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { Sessions } from "../pi-runtime/index.ts";
+import { chromium } from "playwright";
+import type { GlobalSettings } from "./settings.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -522,4 +527,253 @@ await test("HTTPS proxy origin is explicit and forwarded headers cannot bypass o
     parseOptions(["--origin", "https://pi.example/"]).publicOrigin,
     "https://pi.example",
   );
+});
+
+await test("global settings persist through Pi, preserve unrelated keys, and drive live Durable policy", async (t) => {
+  const f = await fixture(t);
+  await f.sessions.close();
+  const agentDir = join(f.workspace, "agent");
+  const path = join(agentDir, "settings.json");
+  await mkdir(agentDir);
+  await mkdir(join(f.workspace, ".pi"));
+  await writeFile(
+    join(f.workspace, ".pi", "settings.json"),
+    JSON.stringify({ defaultThinkingLevel: "off", shellPath: "/untrusted" }),
+  );
+  await writeFile(
+    path,
+    JSON.stringify({
+      defaultProvider: model.provider,
+      defaultModel: model.modelId,
+      theme: "light",
+      shellPath: "/trusted",
+      compaction: { reserveTokens: 12345, modelOverrides: { "faux/faux-1": { reserveTokens: 1 } } },
+      retry: { maxRetries: 7, provider: { maxRetries: 0 } },
+    }),
+  );
+  const store = new GlobalSettingsStore(
+    SettingsManager.create(f.workspace, agentDir, { projectTrusted: false }),
+  );
+  const options = store.bind(f.options);
+  const sessions = await Sessions.open(options);
+  t.after(() => sessions.close());
+  const base = await serve(t, sessions, undefined, "127.0.0.1", undefined, store);
+  const current = await sessions.create(randomUUID(), f.binding, model);
+  assert.equal((await current.info()).thinkingLevel, "medium");
+  assert.equal(options.settings?.compaction?.reserveTokens, 12345);
+  assert.equal(options.settings?.stream?.maxRetries, 0);
+  const get = () =>
+    fetch(base + "/api/settings").then((response) => response.json()) as Promise<GlobalSettings>;
+  assert.equal((await get()).values.defaultThinkingLevel, "medium");
+  const before = await get();
+  for (const data of [
+    { values: { defaultThinkingLevel: "wrong" } },
+    { values: { "retry.enabled": "false" } },
+    { values: { "retry.maxRetries": -1 } },
+    { values: { shellPath: "/not-allowed" } },
+    { values: { hideThinkingBlock: true }, model: { provider: "missing", modelId: "missing" } },
+    { modelThinkingLevel: "high" },
+    { unknown: true },
+  ]) {
+    assert.equal((await post(base + "/api/settings", data)).status, 400);
+    assert.deepEqual(await get(), before);
+  }
+  const result = await post(base + "/api/settings", {
+    model,
+    modelThinkingLevel: "high",
+    values: {
+      defaultThinkingLevel: "low",
+      "compaction.enabled": false,
+      "retry.enabled": false,
+      steeringMode: "all",
+      followUpMode: "all",
+      transport: "sse",
+      hideThinkingBlock: true,
+      "terminal.showImages": false,
+    },
+  });
+  assert.equal(result.status, 200);
+  const persisted = SettingsManager.create(f.workspace, agentDir, { projectTrusted: false });
+  assert.equal(persisted.getDefaultThinkingLevel(), "low");
+  assert.equal(persisted.getModelThinkingLevel(model.provider, model.modelId), "high");
+  assert.equal(persisted.getTheme(), "light");
+  assert.equal(persisted.getShellPath(), "/trusted");
+  assert.equal(persisted.getCompactionReserveTokens(), 12345);
+  assert.equal(
+    persisted.getCompactionReserveTokens({ provider: model.provider, id: model.modelId }),
+    1,
+  );
+  assert.equal(options.settings?.retry?.enabled, false);
+  assert.equal(options.settings?.retry?.maxRetries, 7);
+  assert.equal(options.settings?.steeringMode, "all");
+  assert.equal(options.settings?.followUpMode, "all");
+  assert.equal(options.settings?.stream?.transport, "sse");
+  const view = await snapshot(base + "/api/sessions/" + current.id + "/events");
+  assert.equal(view.context.autoCompact, false);
+  assert.equal((await current.info()).thinkingLevel, "medium");
+  const created = await post(base + "/api/sessions", {
+    id: randomUUID(),
+    binding: f.binding,
+    model,
+  });
+  assert.equal(created.status, 201);
+  assert.equal((await created.json()).thinkingLevel, "high");
+  const override = await post(base + "/api/sessions", {
+    id: randomUUID(),
+    binding: f.binding,
+    model,
+    thinkingLevel: "off",
+  });
+  assert.equal((await override.json()).thinkingLevel, "off");
+  const invalid = await post(base + "/api/sessions", {
+    id: randomUUID(),
+    binding: f.binding,
+    model,
+    thinkingLevel: "invalid",
+  });
+  assert.equal(invalid.status, 400);
+  const configured = await post(base + "/api/sessions/" + current.id + "/configure", {
+    model,
+    thinkingLevel: "max",
+    instructions: "",
+  });
+  assert.equal(configured.status, 200);
+  assert.equal((await current.info()).thinkingLevel, "high");
+  assert.equal(
+    (await post(base + "/api/settings", { model, modelThinkingLevel: null })).status,
+    200,
+  );
+  assert.equal((await sessions.catalog()).models[0].defaultThinkingLevel, "low");
+  // Verify the actual generation receives the policy, not only our settings object.
+  f.faux.setResponses([
+    (_context, stream) => {
+      assert.equal(stream?.transport, "sse");
+      assert.equal(stream?.maxRetries, 0);
+      return fauxAssistantMessage("Configured.");
+    },
+  ]);
+  await current.prompt("Run with current policy.", randomUUID());
+  await current.root.waitForIdle(context);
+  assert.equal(f.faux.state.callCount, 1);
+});
+
+await test("settings persistence failures are reported and never silently acknowledged", async (t) => {
+  const f = await fixture(t);
+  let raw = "{}";
+  const manager = SettingsManager.fromStorage(
+    {
+      withLock(scope, change) {
+        const next = change(scope === "global" ? raw : undefined);
+        if (next !== undefined) throw new Error("Read-only settings");
+      },
+    },
+    { projectTrusted: false },
+  );
+  const store = new GlobalSettingsStore(manager);
+  await assert.rejects(store.update({ values: { hideThinkingBlock: true } }, f.sessions));
+  assert.equal(store.read().values.hideThinkingBlock, false);
+  assert.deepEqual(JSON.parse(raw), {});
+});
+
+await test("mobile browser edits shared defaults and keeps session settings independent", async (t) => {
+  const f = await fixture(t);
+  await f.sessions.close();
+  const plain = fauxProvider({ provider: "plain", models: [{ id: "plain", reasoning: false }] });
+  f.options.models.setProvider(plain.provider);
+  const store = new GlobalSettingsStore(
+    SettingsManager.inMemory({
+      defaultProvider: model.provider,
+      defaultModel: model.modelId,
+    }),
+  );
+  const sessions = await Sessions.open(store.bind(f.options));
+  t.after(() => sessions.close());
+  const assets = join(f.workspace, "assets");
+  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  const base = await serve(t, sessions, assets, "127.0.0.1", undefined, store);
+  const browser = await chromium.launch({
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const errors: Error[] = [];
+  page.on("pageerror", (error) => errors.push(error));
+  await page.goto(base);
+  await page.waitForSelector("#picker[open]");
+  assert.equal(await page.locator("#models").inputValue(), "0");
+  assert.equal(
+    await page.locator("#new-thinking option").first().textContent(),
+    "Default (medium)",
+  );
+  await page.selectOption("#models", "1");
+  assert.equal(await page.locator("#new-thinking option").first().textContent(), "Default (off)");
+  assert.deepEqual(
+    await page
+      .locator("#new-thinking option")
+      .evaluateAll((nodes) => nodes.map((node) => (node as HTMLOptionElement).value)),
+    ["", "off"],
+  );
+  await page.click("#refresh");
+  await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#create")?.disabled);
+  assert.equal(await page.locator("#models").inputValue(), "1");
+  await page.selectOption("#models", "0");
+  await page.click("#picker-defaults");
+  await page.selectOption("#default-model", "0");
+  await page.selectOption("#model-thinking-default", "high");
+  await page.selectOption('[name="defaultThinkingLevel"]', "low");
+  await page.locator("#global-settings-fields summary").filter({ hasText: "Display" }).click();
+  await page.selectOption('[name="hideThinkingBlock"]', "true");
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.equal(
+      await page
+        .locator("#global-preferences")
+        .evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth),
+      true,
+    );
+    if (process.env.PI_SCREENSHOT_DIR) {
+      await mkdir(process.env.PI_SCREENSHOT_DIR, { recursive: true });
+      await page.screenshot({ path: join(process.env.PI_SCREENSHOT_DIR, `defaults-${width}.png`) });
+    }
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.click("#save-global-settings");
+  await page.waitForSelector("#global-preferences", { state: "hidden" });
+  assert.equal(await page.locator("#new-thinking option").first().textContent(), "Default (high)");
+  assert.equal(
+    await page.locator("body").evaluate((node) => node.classList.contains("hide-thinking")),
+    true,
+  );
+  await page.click("#create");
+  await page.waitForFunction(() => new URL(location.href).searchParams.has("session"));
+  const id = new URL(page.url()).searchParams.get("session")!;
+  const session = await sessions.get(id);
+  assert.equal((await session.info()).thinkingLevel, "high");
+  await page.waitForFunction(
+    () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
+  );
+  await page.click("#title");
+  await page.click("#settings");
+  assert.deepEqual(
+    await page
+      .locator("#thinking option")
+      .evaluateAll((nodes) => nodes.map((node) => node.textContent)),
+    ["off", "minimal", "low", "medium", "high"],
+  );
+  await page.selectOption("#thinking", "off");
+  await page.click("#save-settings");
+  await page.waitForSelector("#preferences", { state: "hidden" });
+  assert.equal((await session.info()).thinkingLevel, "off");
+  assert.equal(store.read().values.defaultThinkingLevel, "low");
+  assert.equal(store.read().modelThinkingLevels["faux/faux-1"], "high");
+  await page.reload();
+  await page.waitForFunction(
+    () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
+  );
+  assert.equal(
+    await page.locator("body").evaluate((node) => node.classList.contains("hide-thinking")),
+    true,
+  );
+  assert.equal((await session.info()).thinkingLevel, "off");
+  assert.deepEqual(errors, []);
 });

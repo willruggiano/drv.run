@@ -10,8 +10,10 @@ import type {
   Models,
   ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import {
   DEFAULT_COMPACTION_POLICY,
+  type HarnessSettings,
   type AgentState,
   createRegistry,
   defineDoc,
@@ -33,6 +35,9 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+
+// pi-coding-agent/core/defaults is not exported by Pi's public API.
+export const DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "medium";
 
 const context = BACKGROUND_CONTEXT;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -167,7 +172,13 @@ export type Snapshot = {
 export type Catalog = {
   targets: ExecutionTarget[];
   sessions: SessionInfo[];
-  models: { provider: string; modelId: string; name: string }[];
+  models: {
+    provider: string;
+    modelId: string;
+    name: string;
+    thinkingLevels: ModelThinkingLevel[];
+    defaultThinkingLevel: ModelThinkingLevel;
+  }[];
   defaultModel?: ModelRef;
 };
 export type SessionOptions = {
@@ -176,6 +187,8 @@ export type SessionOptions = {
   integrations: readonly Integration[];
   defaultModel?: ModelRef;
   thinkingLevel?: ModelThinkingLevel;
+  modelThinkingLevels?: Record<string, ModelThinkingLevel>;
+  settings?: HarnessSettings;
   onReport?: (error: unknown) => void;
 };
 
@@ -266,9 +279,23 @@ export class Sessions {
         provider: model.provider,
         modelId: model.id,
         name: model.name,
+        thinkingLevels: getSupportedThinkingLevels(model),
+        defaultThinkingLevel: this.resolveThinking({ provider: model.provider, modelId: model.id }),
       })),
       defaultModel: this.options.defaultModel,
     };
+  }
+
+  resolveThinking(ref: ModelRef, requested?: ModelThinkingLevel): ModelThinkingLevel {
+    const model = this.options.models.getModel(ref.provider, ref.modelId);
+    if (!model) throw new SessionError("invalid", "Model is unavailable.");
+    return clampThinkingLevel(
+      model,
+      requested ??
+        this.options.modelThinkingLevels?.[`${ref.provider}/${ref.modelId}`] ??
+        this.options.thinkingLevel ??
+        DEFAULT_THINKING_LEVEL,
+    );
   }
 
   async get(id: string): Promise<ManagedSession> {
@@ -288,7 +315,7 @@ export class Sessions {
 
   private open(
     id: string,
-    create?: { binding: ExecutionBinding; model: ModelRef },
+    create?: { binding: ExecutionBinding; model: ModelRef; thinkingLevel: ModelThinkingLevel },
   ): Promise<ManagedSession> {
     if (this.closing) return Promise.reject(new SessionError("closing", "Runtime is stopping."));
     const opened = ManagedSession.open(this, id, create);
@@ -297,7 +324,12 @@ export class Sessions {
     return opened;
   }
 
-  async create(id: string, binding: ExecutionBinding, model: ModelRef): Promise<ManagedSession> {
+  async create(
+    id: string,
+    binding: ExecutionBinding,
+    model: ModelRef,
+    thinkingLevel?: ModelThinkingLevel,
+  ): Promise<ManagedSession> {
     if (!uuid.test(id) || !validBinding(binding))
       throw new SessionError("invalid", "Invalid session or execution binding.");
     if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
@@ -317,7 +349,14 @@ export class Sessions {
     } catch (error) {
       if (!(error instanceof SessionError && error.code === "not_found")) throw error;
     }
-    const session = found ?? (await (this.opened.get(id) ?? this.open(id, { binding, model })));
+    const session =
+      found ??
+      (await (this.opened.get(id) ??
+        this.open(id, {
+          binding,
+          model,
+          thinkingLevel: this.resolveThinking(model, thinkingLevel),
+        })));
     const info = await session.info();
     if (
       !sameBinding(info.binding, binding) ||
@@ -373,7 +412,7 @@ export class ManagedSession {
   static async open(
     owner: Sessions,
     id: string,
-    create?: { binding: ExecutionBinding; model: ModelRef },
+    create?: { binding: ExecutionBinding; model: ModelRef; thinkingLevel: ModelThinkingLevel },
   ): Promise<ManagedSession> {
     const registry = createRegistry();
     registry.install(CodingTools);
@@ -401,6 +440,7 @@ export class ManagedSession {
       await openNodeSqliteStorage(join(owner.options.directory, `${id}.sqlite`)),
       {
         models: owner.options.models,
+        settings: owner.options.settings,
         registry,
         env: async () => {
           assert(managed, "Session initialization must finish before tools run.");
@@ -418,7 +458,7 @@ export class ManagedSession {
               agent: {
                 model: create.model,
                 cwd: create.binding.cwd,
-                thinkingLevel: owner.options.thinkingLevel ?? "off",
+                thinkingLevel: create.thinkingLevel,
               },
               init: async (tx, conversationId) => {
                 const metadata = await tx.doc(Metadata, conversationId);
@@ -546,7 +586,8 @@ fi`,
     }
     return {
       window: model?.contextWindow ?? null,
-      autoCompact: DEFAULT_COMPACTION_POLICY.enabled,
+      autoCompact:
+        this.owner.options.settings?.compaction?.enabled ?? DEFAULT_COMPACTION_POLICY.enabled,
       lastResponse,
     };
   }

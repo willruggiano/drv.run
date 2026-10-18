@@ -4,7 +4,11 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+} from "@earendil-works/pi-ai/providers/faux";
 import { defineExtension, section, type Conversation } from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -625,4 +629,57 @@ await test("footer context uses the selected model and active context, not lifet
     context,
   );
   assert.equal((await status()).lastResponse, null);
+});
+
+await test("thinking defaults follow Pi precedence and model capabilities, and persist per conversation", async (t) => {
+  const f = await fixture(t);
+  const initial = await f.create();
+  assert.equal((await initial.info()).thinkingLevel, "medium");
+  await f.sessions.close();
+  const sessions = await Sessions.open({
+    ...f.options,
+    thinkingLevel: "low",
+    modelThinkingLevels: { "faux/faux-1": "high" },
+  });
+  t.after(() => sessions.close());
+  const catalog = await sessions.catalog();
+  assert.equal(catalog.models[0].defaultThinkingLevel, "high");
+  assert.deepEqual(catalog.models[0].thinkingLevels, ["off", "minimal", "low", "medium", "high"]);
+  const perModel = await sessions.create(randomUUID(), f.binding, model);
+  assert.equal((await perModel.info()).thinkingLevel, "high");
+  const explicit = await sessions.create(randomUUID(), f.binding, model, "off");
+  assert.equal((await explicit.info()).thinkingLevel, "off");
+  const clamped = await sessions.create(randomUUID(), f.binding, model, "max");
+  assert.equal((await clamped.info()).thinkingLevel, "high");
+  assert.equal((await (await sessions.get(initial.id)).info()).thinkingLevel, "medium");
+  await sessions.close();
+  await f.reopen();
+  assert.equal((await (await f.sessions.get(perModel.id)).info()).thinkingLevel, "high");
+  assert.equal((await (await f.sessions.get(explicit.id)).info()).thinkingLevel, "off");
+});
+
+await test("thinking choices include max only when supported and non-reasoning models stay off", async (t) => {
+  const f = await fixture(t);
+  const available = f.options.models.getModel(model.provider, model.modelId);
+  assert(available);
+  available.thinkingLevelMap = { max: "max", xhigh: "xhigh", minimal: null };
+  assert.deepEqual((await f.sessions.catalog()).models[0].thinkingLevels, [
+    "off",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
+  assert.equal(f.sessions.resolveThinking(model, "minimal"), "low");
+  const maximum = await f.sessions.create(randomUUID(), f.binding, model, "max");
+  assert.equal((await maximum.info()).thinkingLevel, "max");
+  const plain = fauxProvider({ provider: "plain", models: [{ id: "plain", reasoning: false }] });
+  f.options.models.setProvider(plain.provider);
+  const ref = { provider: "plain", modelId: "plain" };
+  const entry = (await f.sessions.catalog()).models.find((item) => item.provider === "plain");
+  assert.deepEqual(entry?.thinkingLevels, ["off"]);
+  assert.equal(entry.defaultThinkingLevel, "off");
+  const session = await f.sessions.create(randomUUID(), f.binding, ref, "high");
+  assert.equal((await session.info()).thinkingLevel, "off");
 });

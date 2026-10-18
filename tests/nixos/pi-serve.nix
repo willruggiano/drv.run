@@ -43,7 +43,7 @@
     const instance = process.argv[2];
     const untrusted = process.argv[3] === "untrusted";
     const directory = await mkdtemp("/home/operator/pi-serve-test-");
-    const faux = fauxProvider();
+    const faux = fauxProvider({ models: [{ id: "faux-1", reasoning: true }] });
     const models = createModels();
     models.setProvider(faux.provider);
     faux.setResponses(untrusted ? [

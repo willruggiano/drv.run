@@ -22,6 +22,7 @@
     <button id="export" disabled>Export JSON</button>
   </div>
   <div id="app-menu" popover aria-label="App menu">
+    <button id="global-settings" hidden>Defaults and preferences</button>
     <button id="wrap-code" aria-pressed="false">Wrap code <span aria-hidden="true">Off</span></button>
     <button id="install" hidden>Install app</button>
   </div>
@@ -70,15 +71,19 @@
       <label><span>Target</span><select id="targets" aria-label="Target"></select></label>
       <label><span>Model</span><select id="models" aria-label="Model"></select></label>
     </div>
+    <label><span>Thinking for new session</span><select id="new-thinking"></select></label>
+    <p id="defaults-hint">Model: current selection → configured default → sole available model. Thinking: per-model preference → global default → medium, limited by the model.</p>
+    <div class="actions"><button id="picker-defaults" hidden>Defaults…</button></div>
     <div class="actions"><button id="create" type="button" disabled>New session</button><span class="spacer"></span><button id="refresh" class="icon" type="button" aria-label="Refresh targets">↻</button></div>
     <input id="session-filter" type="search" aria-label="Filter sessions" placeholder="Filter sessions…">
     <div id="sessions" aria-label="Sessions"></div><p id="sessions-empty" hidden>No sessions</p>
   </dialog>
   <dialog id="preferences" aria-labelledby="preferences-title">
-    <div class="dialog-heading"><h2 id="preferences-title">Settings</h2><button id="close-settings" class="icon" aria-label="Close settings">×</button></div>
+    <div class="dialog-heading"><h2 id="preferences-title">Session settings</h2><button id="close-settings" class="icon" aria-label="Close settings">×</button></div>
+    <p>Model, thinking and instructions apply to this conversation only. They do not change new-session defaults.</p>
     <label><span>Session name</span><input id="session-name" maxlength="120" placeholder="Untitled session"></label>
     <label><span>Model</span><select id="session-model"></select></label>
-    <label><span>Thinking</span><select id="thinking"><option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option></select></label>
+    <label><span>Thinking</span><select id="thinking"></select></label>
     <label><span>Additional instructions</span><textarea id="instructions" rows="2" maxlength="100000"></textarea></label>
     <div class="actions"><button id="save-settings">Save</button></div>
     <details><summary>Context</summary>
@@ -86,6 +91,16 @@
       <div class="actions"><button id="compact">Compact</button><button id="reset">Reset…</button></div>
       <p>Reset clears model context, not history.</p>
     </details>
+  </dialog>
+  <dialog id="global-preferences" aria-labelledby="global-preferences-title">
+    <div class="dialog-heading"><h2 id="global-preferences-title">Defaults and preferences</h2><button id="close-global-settings" class="icon" aria-label="Close defaults">×</button></div>
+    <label><span>Default model</span><select id="default-model"></select></label>
+    <label><span>Thinking override for this model</span><select id="model-thinking-default"></select></label>
+    <form id="global-settings-form">
+      <div id="global-settings-fields"></div>
+      <details><summary>Scope and limitations</summary><p>Queue delivery controls how many queued messages are consumed, not whether Send steers or follows up. Wrap code is browser-local. Hiding thinking or images only affects display, not model input.</p><p>Durable retains its background compaction policy. Per-model compaction thresholds, custom thinking budgets, image resizing/blocking, cache warming, enabledModels cycling, CLI tools/extensions/skills, branch summaries and terminal-only controls are not mapped by this frontend.</p></details>
+      <div class="actions"><button id="save-global-settings" type="submit">Save defaults</button></div>
+    </form>
   </dialog>
   <dialog id="usage-dialog" aria-labelledby="usage-title">
     <div class="dialog-heading"><h2 id="usage-title">Conversation stats</h2><button id="close-usage" class="icon" aria-label="Close statistics">×</button></div>

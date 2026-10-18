@@ -21,6 +21,7 @@
       ./package-lock.json
       ./tsconfig.json
       ./server.ts
+      ./settings.ts
       ./key-mappings.ts
       ./key-mappings.test.ts
       ./client.ts
@@ -62,7 +63,7 @@ in
       runHook preInstall
       mkdir -p "$out/lib/pi-serve" "$out/bin"
       cp pi-serve/package.json "$out/lib/pi-serve/"
-      cp dist/pi-serve/{index.html,styles.css,design-system.html,sw.js,icon-192.png,icon-512.png,server.js,client.js,highlight.js} "$out/lib/pi-serve/"
+      cp dist/pi-serve/{index.html,styles.css,design-system.html,sw.js,icon-192.png,icon-512.png,server.js,settings.js,client.js,highlight.js} "$out/lib/pi-serve/"
       ln -s ${pi-workspace}/node_modules "$out/lib/pi-serve/node_modules"
       ln -s ${pi-runtime}/lib/pi-runtime "$out/lib/pi-runtime"
       makeWrapper ${nodejs}/bin/node "$out/bin/pi-serve" \
