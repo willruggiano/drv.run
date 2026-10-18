@@ -713,10 +713,33 @@ await test("mobile browser edits shared defaults and keeps session settings inde
       .evaluateAll((nodes) => nodes.map((node) => (node as HTMLOptionElement).value)),
     ["", "off"],
   );
+  const oldOption = await page.locator("#models option").last().elementHandle();
+  assert(oldOption);
   await page.click("#refresh");
-  await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#create")?.disabled);
+  await page.waitForFunction((option) => !option.isConnected, oldOption);
   assert.equal(await page.locator("#models").inputValue(), "1");
+
+  // Change models while a refresh is pending. Its response must not restore
+  // the selection from before the request.
+  const requested = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  await page.route("**/api/catalog", async (route) => {
+    requested.resolve();
+    await release.promise;
+    await route.continue();
+  });
+  const pendingOption = await page.locator("#models option").last().elementHandle();
+  assert(pendingOption);
+  await page.click("#refresh");
+  await requested.promise;
   await page.selectOption("#models", "0");
+  release.resolve();
+  await page.waitForFunction((option) => !option.isConnected, pendingOption);
+  await page.unroute("**/api/catalog");
+  assert.equal(await page.locator("#models").inputValue(), "0");
+  assert.equal(await page.locator("#new-thinking").inputValue(), "");
+
   await page.click("#picker-defaults");
   await page.selectOption("#default-model", "0");
   await page.selectOption("#model-thinking-default", "high");

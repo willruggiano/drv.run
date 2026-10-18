@@ -226,12 +226,13 @@ function chooseOption(
   select.add(option);
 }
 async function refresh(): Promise<void> {
-  const previousTarget = targets.value;
-  const previousModel = models.value ? catalog?.models[Number(models.value)] : undefined;
   const [next, defaults] = await Promise.all([
     api<Catalog>("/api/catalog"),
     api<GlobalSettings | null>("/api/settings"),
   ]);
+  // Preserve choices made while the catalog request was pending.
+  const previousTarget = targets.value;
+  const previousModel = models.value ? catalog?.models[Number(models.value)] : undefined;
   globalSettings = defaults;
   for (const id of ["global-settings", "picker-defaults"])
     element(id, HTMLButtonElement).hidden = !defaults;
