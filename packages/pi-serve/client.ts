@@ -431,9 +431,17 @@ async function refreshBranches(): Promise<void> {
   if (!id) return;
   const records = await api<ConversationRecord[]>(endpoint("conversations"));
   if (current !== generation) return;
-  branches.replaceChildren();
+  // Keep existing buttons connected so a pending refresh cannot drop keyboard focus.
+  const existing = new Map(
+    Array.from(branches.querySelectorAll<HTMLButtonElement>("button")).map((button) => [
+      button.dataset.conversation,
+      button,
+    ]),
+  );
   records.forEach((record, index) => {
-    const button = document.createElement("button");
+    const key = String(record.id);
+    const button = existing.get(key) ?? document.createElement("button");
+    existing.delete(key);
     button.type = "button";
     button.className = "session";
     button.dataset.conversation = String(record.id);
@@ -443,7 +451,7 @@ async function refreshBranches(): Promise<void> {
     );
     const name = document.createElement("strong");
     name.textContent = index === 0 ? "Main" : `Branch ${record.id}`;
-    button.append(name);
+    button.replaceChildren(name);
     if (record.parent) {
       const detail = document.createElement("small");
       detail.textContent = `From ${record.parent.conversationId}`;
@@ -452,8 +460,10 @@ async function refreshBranches(): Promise<void> {
     button.onclick = () => {
       void selectSession(id, index === 0 ? undefined : record.id);
     };
-    branches.append(button);
+    if (branches.children[index] !== button)
+      branches.insertBefore(button, branches.children[index] ?? null);
   });
+  for (const button of existing.values()) button.remove();
 }
 
 // Arguments may be incomplete while streaming. Never parse display previews (in

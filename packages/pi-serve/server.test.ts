@@ -1063,6 +1063,57 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
   }
 });
 
+await test("mobile browser branch refresh preserves keyboard focus while loading new conversations", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  await session.root.reset(undefined, context);
+  const last = (await session.history()).at(-1);
+  assert(last);
+  const assets = join(f.workspace, "assets");
+  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  const base = await serve(t, f.sessions, assets);
+  const browser = await chromium.launch({
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.goto(`${base}/?session=${session.id}`);
+  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#branches button", { state: "attached" });
+  const original = await page.locator("#branches button").first().elementHandle();
+  assert(original);
+  const requested = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  await page.route("**/conversations", async (route) => {
+    requested.resolve();
+    await release.promise;
+    await route.continue();
+  });
+  await page.fill("#prompt", "/fork");
+  await page.press("#prompt", "Control+Enter");
+  await requested.promise;
+  await page.keyboard.press("Control+j");
+  assert.equal(await original.evaluate((node) => node === document.activeElement), true);
+  const branch = await session.root.fork(last.id, { ownership: { kind: "ownerless" } }, context);
+  release.resolve();
+  await page.waitForFunction(() => document.querySelectorAll("#branches button").length === 2);
+  assert.equal(
+    await original.evaluate((node) => node.isConnected && node === document.activeElement),
+    true,
+  );
+  await page.keyboard.press("Control+k");
+  assert.equal(
+    await page
+      .locator("#branches button")
+      .last()
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+  await page.keyboard.press("Enter");
+  await page.waitForURL((url) => url.searchParams.get("conversation") === String(branch.id));
+});
+
 await test("mobile browser navigation never automatically focuses controls", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
