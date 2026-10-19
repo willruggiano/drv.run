@@ -28,6 +28,8 @@
       ./key-mappings.ts
       ./key-mappings.test.ts
       ./client.ts
+      ./workflow-panels.ts
+      ./workflows.test.ts
       ./highlight.ts
       ./build.ts
       ./benchmark.ts
@@ -59,7 +61,7 @@ in
     checkPhase = ''
       runHook preCheck
       # Browser tests run locally, not in the Nix build sandbox.
-      node --test --test-skip-pattern='^mobile browser ' pi-serve/server.test.ts pi-serve/completions.test.ts pi-serve/base-directory.test.ts
+      node --test --test-skip-pattern='^mobile browser ' pi-serve/server.test.ts pi-serve/completions.test.ts pi-serve/base-directory.test.ts pi-serve/workflows.test.ts
       runHook postCheck
     '';
     installPhase = ''

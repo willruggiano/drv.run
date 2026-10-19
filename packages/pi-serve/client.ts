@@ -1,3 +1,4 @@
+import { workflowPanels } from "./workflow-panels.ts";
 import { settingFields, type GlobalSettings } from "./settings.ts";
 import { commands, installCompletions } from "./completions.ts";
 import {
@@ -150,7 +151,23 @@ async function api<T>(path: string, data?: unknown): Promise<T> {
   if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
   return result as T;
 }
+const workflows = workflowPanels({
+  request: (action, data) => api(endpoint(action), data),
+  navigate: (id) => {
+    if (active) void selectSession(active, id).catch(report);
+  },
+  showConversation: () => navigate("conversation"),
+  report,
+  newId: requestId,
+  scope: () => (active ? `${active}/${conversation ?? "root"}` : undefined),
+  paths: (query) =>
+    api(
+      `${endpoint("completions")}${conversation === undefined ? "?" : "&"}query=${encodeURIComponent(query)}`,
+    ),
+});
+
 function controls(): void {
+  workflows.connection(connected);
   const isCommand = prompt.value.startsWith("/");
   send.disabled =
     sending || !prompt.value.trim() || (!isCommand && (!active || !connected || recovering));
@@ -962,6 +979,9 @@ export function render(snapshot: Snapshot): void {
   title.title = `${snapshot.session.binding.provider} / ${snapshot.session.binding.target} · ${agent?.model?.modelId ?? snapshot.session.model.modelId}`;
   const activity = element("activity", HTMLDivElement);
   activity.textContent =
+    (snapshot.workflows?.asks.some((ask) => ask.actionable)
+      ? "Waiting for your input"
+      : undefined) ??
     live?.compactionFailure?.error ??
     live?.generation?.retry?.error ??
     (live?.compactions?.length
@@ -1176,6 +1196,9 @@ export function render(snapshot: Snapshot): void {
       rendered.delete(key);
     }
   }
+  workflows.render(snapshot);
+  if (workflows.root.childElementCount) ordered.push(workflows.root);
+  else workflows.root.remove();
   let previousRole: string | undefined;
   ordered.forEach((node, index) => {
     // Tool output belongs to the assistant visually; context markers break a group.
@@ -1207,6 +1230,7 @@ export function render(snapshot: Snapshot): void {
 }
 
 function attach(id: string, branch?: number): void {
+  workflows.reset();
   completions.close();
   saveDraft();
   closePopovers();
@@ -1410,6 +1434,12 @@ async function runCommand(text: string): Promise<boolean> {
   } else if (name === "stop") {
     if (!busy) throw new Error("There is no running response to stop.");
     await api(endpoint("stop"), {});
+  } else if (name === "review") {
+    closePopovers();
+    await workflows.openReview();
+  } else if (name === "end-review") {
+    closePopovers();
+    await workflows.endReview();
   } else if (name === "search") return navigate("search");
   else if (name === "fork") return navigate("fork");
   else if (name === "model" || name === "settings") return navigate("settings", name === "model");

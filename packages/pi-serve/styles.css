@@ -209,11 +209,11 @@ body.stacked-layout { display: grid; grid-template-rows: auto minmax(0, 1fr) aut
 #app-footer { grid-row: 4; }
 #main-area { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .pane { grid-row: 1; min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 12px max(20px, calc((100% - 820px)/2)) 20px; }
-:is(.pane, #new-options) label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: start; gap: 16px; margin: 0; padding: 2px 0; }
-:is(.pane, #new-options) label > span { margin: 0; padding: 7px 0; font-size: 12px; text-align: left; }
-:is(.pane, #new-options) label > :is(input, select, textarea) { min-width: 0; width: 100%; padding: 6px 0; background: transparent; border-color: transparent; border-radius: 0; text-align: right; }
-:is(.pane, #new-options) select { appearance: none; text-align-last: right; }
-:is(.pane, #new-options) option { background: var(--surface); }
+:is(#preferences, #global-preferences, #new-options) label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: start; gap: 16px; margin: 0; padding: 2px 0; }
+:is(#preferences, #global-preferences, #new-options) label > span { margin: 0; padding: 7px 0; font-size: 12px; text-align: left; }
+:is(#preferences, #global-preferences, #new-options) label > :is(input, select, textarea) { min-width: 0; width: 100%; padding: 6px 0; background: transparent; border-color: transparent; border-radius: 0; text-align: right; }
+:is(#preferences, #global-preferences, #new-options) select { appearance: none; text-align-last: right; }
+:is(#preferences, #global-preferences, #new-options) option { background: var(--surface); }
 .pane textarea { min-height: 44px; }
 .settings-group + .settings-group, #app-settings { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .settings-group h2 { font-size: 13px; margin: 0 0 4px; }
@@ -260,3 +260,41 @@ body.stacked-layout { display: grid; grid-template-rows: auto minmax(0, 1fr) aut
 #message-menu { width: auto; max-width: calc(100% - 16px); padding: 4px; border-radius: 9px; inset: auto; }
 #message-menu:popover-open { display: flex; flex-wrap: wrap; gap: 2px; }
 #message-menu > button { width: 40px; min-width: 40px; height: 40px; min-height: 40px; padding: 0; justify-content: center; }
+/* Durable interactions share the transcript, but retain their DOM while streaming. */
+#workflows { margin: 16px 0; }
+.workflow-panel { border: 1px solid var(--border-focus); border-radius: 10px; background: var(--surface); padding: 16px; margin: 16px 0; }
+.workflow-panel > summary { color: var(--accent); font-weight: 600; cursor: pointer; }
+.workflow-panel h2 { margin: 0; font-size: 18px; }
+.workflow-panel h3 { font-size: 14px; }
+.workflow-panel h4 { margin-bottom: 4px; }
+.workflow-panel p { white-space: pre-wrap; }
+.workflow-panel fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.workflow-panel .ask-question { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); }
+.ask-question legend { font-weight: 600; padding: 0 8px 0 0; }
+.workflow-panel label, #review-setup label { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+.workflow-panel .choice-label { flex-direction: row; align-items: baseline; gap: 10px; cursor: pointer; }
+.workflow-panel .choice-label > span { font-size: 14px; color: var(--fg); }
+.workflow-panel input[type=checkbox], .workflow-panel input[type=radio] { width: 16px; height: 16px; flex: 0 0 16px; accent-color: var(--accent); }
+.workflow-panel textarea, #review-setup textarea, #review-setup input, #review-setup select { width: 100%; padding: 8px; }
+.ask-option { border: 1px solid var(--line); border-radius: 6px; padding: 4px 12px 10px; margin: 10px 0; }
+.ask-option:has(input:checked) { border-color: var(--border-focus); background: var(--selected); }
+.ask-option small { margin-left: auto; color: var(--accent); }
+.ask-option details, .ask-question > details { color: var(--muted); font-size: 12px; }
+.ask-preview { max-height: 240px; }
+.workflow-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.workflow-actions button { min-height: 40px; }
+.workflow-error { color: var(--danger); }
+.workflow-meta, .review-finding > code { color: var(--muted); font-size: 12px; }
+.review-finding { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 8px; }
+.finding-priority { font-size: 11px; color: var(--warning); }
+.finding-priority[data-priority=P0], .finding-priority[data-priority=P1] { color: var(--danger); }
+.review-callouts { border-left: 2px solid var(--warning); padding-left: 12px; margin-top: 20px; }
+.workflow-completions { background: var(--popover-bg); border: 1px solid var(--border-overlay); border-radius: 6px; max-height: 180px; overflow: auto; }
+.workflow-completions [role=option] { padding: 4px 10px; cursor: pointer; }
+.workflow-completions [aria-selected=true] { background: var(--selected); }
+@media (max-width: 650px) {
+  .workflow-panel { padding: 12px; }
+  .workflow-panel textarea, #review-setup input, #review-setup textarea, #review-setup select { font-size: 16px; }
+  .workflow-panel .choice-label { flex-wrap: wrap; }
+  .ask-option small { margin-left: 26px; }
+}

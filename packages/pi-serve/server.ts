@@ -1,3 +1,4 @@
+import { WorkflowError } from "../pi-runtime/workflows.ts";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
@@ -237,15 +238,21 @@ async function stream(
   response: ServerResponse,
   conversation: Conversation,
 ): Promise<void> {
-  const watch = await conversation.watch(context);
+  const features = await session.watchWorkflows(conversation);
+  const watch = await conversation.watch(context).catch(async (error: unknown) => {
+    await features.stop();
+    throw error;
+  });
   const cleanup = () => {
     void watch.stop();
+    void features.stop();
   };
   response.once("close", cleanup);
   try {
     const history = await session.history(conversation);
     if (response.destroyed) {
       await watch.stop();
+      await features.stop();
       return;
     }
     response.writeHead(200, { "Content-Type": "text/event-stream", "X-Accel-Buffering": "no" });
@@ -254,6 +261,7 @@ async function stream(
         session: await session.info(),
         view,
         context: session.contextStatus(view),
+        workflows: await session.workflows(conversation),
         ...(initial ? { history: initial } : {}),
       };
       if (response.destroyed) return;
@@ -265,9 +273,17 @@ async function stream(
       response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
     };
     await send(watch.value, history);
-    watch.start(async (value) => {
-      await send(value);
-    });
+    let sending = Promise.resolve();
+    const update = () => {
+      sending = sending
+        .then(() => send(watch.value))
+        .catch(() => {
+          response.destroy();
+        });
+      return sending;
+    };
+    watch.start(update);
+    features.start(update);
     const heartbeat = setInterval(() => {
       if (response.writableLength > 1024 * 1024) response.destroy();
       else response.write(": heartbeat\n\n");
@@ -275,6 +291,7 @@ async function stream(
     response.once("close", () => clearInterval(heartbeat));
   } catch (error) {
     await watch.stop();
+    await features.stop();
     throw error;
   }
 }
@@ -374,7 +391,7 @@ export function httpServer(
         return json(response, 201, await session.info());
       }
       const match =
-        /^\/api\/sessions\/([^/]+)\/(events|prompt|resume|stop|configure|compact|reset|cancel|fork|conversations|export|rename|repository|completions)$/.exec(
+        /^\/api\/sessions\/([^/]+)\/(events|answer|review|end-review|prompt|resume|stop|configure|compact|reset|cancel|fork|conversations|export|rename|repository|completions)$/.exec(
           url.pathname,
         );
       if (match) {
@@ -400,7 +417,16 @@ export function httpServer(
           return await stream(session, response, conversation);
         if (request.method === "POST" && match[2] !== "events") {
           const data = await body(request, match[2] === "prompt" ? 8 * 1024 * 1024 : 128 * 1024);
-          if (match[2] === "prompt") {
+          if (match[2] === "answer") {
+            if (!Number.isSafeInteger(data.id)) throw new RequestError(400, "Invalid question ID.");
+            await session.answer(data.id as number, data.response, conversation);
+          } else if (match[2] === "review") {
+            const reviewer = await session.startReview(data, conversation);
+            return json(response, 201, { id: reviewer.id });
+          } else if (match[2] === "end-review") {
+            const origin = await session.finishReview(data, conversation);
+            return json(response, 200, { id: origin.id });
+          } else if (match[2] === "prompt") {
             const requestId = string(data.requestId, 36);
             if (!uuid.test(requestId)) throw new RequestError(400, "Invalid request ID.");
             const mode = data.mode ?? "reject";
@@ -577,7 +603,7 @@ export function httpServer(
         json(response, 409, { error: "Conversation is busy. Choose Steer or Follow up." });
       else if (error instanceof RequestError)
         json(response, error.status, { error: error.message });
-      else if (error instanceof SessionError) {
+      else if (error instanceof SessionError || error instanceof WorkflowError) {
         const statuses = {
           invalid: 400,
           not_found: 404,

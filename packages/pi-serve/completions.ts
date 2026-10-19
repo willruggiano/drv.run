@@ -4,6 +4,8 @@ export const commands = [
   { name: "settings", description: "Session settings" },
   { name: "model", description: "Choose a model" },
   { name: "fork", description: "Open branches" },
+  { name: "review", description: "Start a fresh-context review" },
+  { name: "end-review", description: "Return, hand off, or fix selected findings" },
   { name: "compact", description: "Compact context · optional instructions" },
   { name: "reset", description: "Reset context · optional handoff (asks for confirmation)" },
   { name: "stop", description: "Stop the current run" },
@@ -22,8 +24,8 @@ export type Completion = { label: string; description?: string; value: string };
 
 export function completionToken(text: string, caret: number): CompletionToken | undefined {
   const before = text.slice(0, caret);
-  if (/^\/[a-z]*$/i.test(before)) {
-    const rest = text.slice(caret).match(/^[a-z]*/i)![0];
+  if (/^\/[a-z-]*$/i.test(before)) {
+    const rest = text.slice(caret).match(/^[a-z-]*/i)![0];
     return { kind: "command", query: before.slice(1), start: 0, end: caret + rest.length };
   }
   const match = /(?:^|\s)@("(?:\\.|[^"\\])*|[^\s"@]*)$/.exec(before);

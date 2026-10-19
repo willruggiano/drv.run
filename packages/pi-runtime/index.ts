@@ -19,6 +19,9 @@ import {
   defineDoc,
   defineExtension,
   Harness,
+  LiveDoc,
+  InboxDoc,
+  type TaskId,
   section,
   type Conversation,
   type ConversationView,
@@ -35,6 +38,20 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+
+import {
+  AskExtension,
+  ReviewExtension,
+  ReportTool,
+  Workflows,
+  WorkflowError,
+  answerQuestion,
+  prepareReview,
+  reportText,
+  validate,
+  ReviewFinishSchema,
+  type WorkflowView,
+} from "./workflows.ts";
 
 // pi-coding-agent/core/defaults is not exported by Pi's public API.
 export const DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "medium";
@@ -181,6 +198,7 @@ export type Snapshot = {
   view: ConversationView;
   context: ContextStatus;
   history?: readonly EntryRecord[];
+  workflows?: WorkflowView;
 };
 export type Catalog = {
   targets: ExecutionTarget[];
@@ -539,12 +557,16 @@ export class ManagedSession {
         ],
       }),
     );
+    registry.install(AskExtension);
+    const defaults = [...(owner.options.settings?.extensions ?? registry.snapshot().installed())];
+    if (!defaults.includes(AskExtension)) defaults.push(AskExtension);
+    registry.install(ReviewExtension);
     let managed: ManagedSession | undefined;
     const harness = await Harness.open(
       await openNodeSqliteStorage(join(owner.options.directory, `${id}.sqlite`)),
       {
         models: owner.options.models,
-        settings: owner.options.settings,
+        settings: { ...owner.options.settings, extensions: defaults },
         registry,
         env: async ({ cwd }) => {
           assert(managed, "Session initialization must finish before tools run.");
@@ -578,8 +600,10 @@ export class ManagedSession {
         "Session has no execution binding.",
       );
       // Install only this session's integration, never another provider's prompt or tools.
-      for (const extension of owner.integration(metadata.binding.provider)?.extensions ?? [])
+      for (const extension of owner.integration(metadata.binding.provider)?.extensions ?? []) {
         registry.install(extension);
+        if (!defaults.some((item) => item.name === extension.name)) defaults.push(extension);
+      }
       managed = new ManagedSession(
         owner,
         id,
@@ -793,6 +817,158 @@ fi`,
       cursor = page.next;
     } while (cursor !== undefined);
     return entries;
+  }
+
+  async watchWorkflows(conversation = this.root) {
+    await conversation.commit(async (tx) => {
+      await tx.doc(Workflows, conversation.id);
+    }, context);
+    const watch = await this.harness.watchDoc(Workflows, conversation.id, context);
+    assert(watch);
+    return watch;
+  }
+
+  async workflows(conversation = this.root): Promise<WorkflowView> {
+    const state = await this.harness.snapshot(Workflows, conversation.id, context);
+    return {
+      asks: await Promise.all(
+        Object.entries(state?.asks ?? {}).map(async ([id, ask]) => {
+          const task = ask.response
+            ? undefined
+            : await this.harness.getTask(Number(id) as TaskId, context);
+          return {
+            ...ask,
+            id: Number(id),
+            actionable:
+              !ask.response &&
+              !!task &&
+              !task.abortRequested &&
+              ["pending", "running", "waiting"].includes(task.state.status),
+          };
+        }),
+      ),
+      ...(state?.review ? { review: state.review } : {}),
+    };
+  }
+
+  private async requireWorkflowExecution(): Promise<void> {
+    if (this.closed) throw new SessionError("closing", "Session is closed.");
+    if (this.needsResume) throw new SessionError("conflict", "Resume interrupted work first.");
+    await this.owner.requireTarget(this.binding);
+  }
+
+  private async requireIdle(conversation: Conversation): Promise<void> {
+    await conversation.commit(async (tx) => {
+      const live = await tx.doc(LiveDoc, conversation.id);
+      const inbox = await tx.doc(InboxDoc, conversation.id);
+      if (live.run || inbox.items.length)
+        throw new SessionError("conflict", "Conversation is busy.");
+    }, context);
+  }
+
+  async answer(taskId: number, response: unknown, conversation = this.root): Promise<void> {
+    await this.requireWorkflowExecution();
+    await conversation.commit(
+      (tx) => answerQuestion(tx, conversation.id, taskId, response),
+      context,
+    );
+  }
+
+  async startReview(input: unknown, conversation = this.root): Promise<Conversation> {
+    await this.requireWorkflowExecution();
+    await this.requireIdle(conversation);
+    if ((await this.harness.snapshot(Workflows, conversation.id, context))?.review)
+      throw new WorkflowError("conflict", "Nested reviews are not supported.");
+    const agent = await conversation.agent(context);
+    const prepared = await prepareReview(await this.environment(agent.cwd), input);
+    const history = await conversation.entries({}, 1, undefined, context);
+    const reviewer = await this.harness.createConversation(
+      {
+        ownership: { kind: "ownerless" },
+        agent: {
+          model: agent.model,
+          thinkingLevel: agent.thinkingLevel,
+          cwd: agent.cwd,
+          extensions: [...agent.extensions, ReviewExtension],
+          tools: [...new Set([...agent.tools, ...agent.callable, ...agent.deferred, ReportTool])],
+          modelTools: [...agent.tools, ReportTool],
+          instructions: agent.instructions,
+        },
+        init: async (tx, id) => {
+          // Recheck admission atomically with creation, after asynchronous target resolution.
+          const live = await tx.doc(LiveDoc, conversation.id);
+          const inbox = await tx.doc(InboxDoc, conversation.id);
+          if (live.run || inbox.items.length)
+            throw new SessionError("conflict", "Conversation is busy.");
+          const state = await tx.doc(Workflows, id);
+          state.review = {
+            ...prepared,
+            origin: conversation.id,
+            ...(history.items.length ? { originEntry: history.items[0].id } : {}),
+          };
+        },
+      },
+      context,
+    );
+    await reviewer.submit({ type: "input", content: prepared.scope, whenBusy: "reject" }, context);
+    return reviewer;
+  }
+
+  async finishReview(input: unknown, conversation = this.root): Promise<Conversation> {
+    const command = validate(ReviewFinishSchema, input);
+    const review = (await this.harness.snapshot(Workflows, conversation.id, context))?.review;
+    if (!review) throw new WorkflowError("conflict", "Not a review conversation.");
+    const origin = await this.conversation(review.origin);
+    if (command.action === "return") return origin;
+    await this.requireWorkflowExecution();
+    await this.requireIdle(origin);
+    if (!review.report) throw new WorkflowError("conflict", "No review report has been submitted.");
+    const selected = review.report.findings.filter((item) => command.findings.includes(item.id));
+    if (
+      selected.length !== command.findings.length ||
+      (command.action === "fix" && !selected.length)
+    )
+      throw new WorkflowError("invalid", "Select existing findings to fix.");
+    const report =
+      command.action === "fix" ? { ...review.report, findings: selected } : review.report;
+    const text = `Workspace: ${review.cwd}\nTarget: ${JSON.stringify(review.target)}\nResolved revisions: ${JSON.stringify(review.resolved)}\n\n${reportText(report)}`;
+    if (command.action === "fix" && (await origin.agent(context)).cwd !== review.cwd)
+      throw new WorkflowError(
+        "conflict",
+        "Origin directory changed. Restore it or start a new review before fixing.",
+      );
+    if (command.action === "handoff") {
+      await origin.submit(
+        {
+          type: "write",
+          requestId: command.requestId,
+          entry: {
+            kind: "app.review",
+            data: { reviewer: conversation.id, report },
+            model: [
+              {
+                role: "user",
+                content: `Review handoff (informational; no fix run requested):\n\n${text}`,
+                timestamp: Date.now(),
+              },
+            ],
+          },
+        },
+        context,
+      );
+    } else {
+      await origin.submit(
+        {
+          type: "input",
+          requestId: command.requestId,
+          whenBusy: "reject",
+          entry: { kind: "app.review-fix", data: { reviewer: conversation.id, report } },
+          content: `Implement and verify only the selected findings below. Human callouts are informational, not fix tasks. Do not start an automatic re-review loop. Review cwd: ${review.cwd}\n\n${text}`,
+        },
+        context,
+      );
+    }
+    return origin;
   }
 
   async prompt(
