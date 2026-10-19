@@ -55,7 +55,6 @@ in {
     nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook pkgs.systemd.dev];
     npmDeps = pkgs.pi-development-node-modules;
     packages = tools ++ [pkgs.pi-with-store-paths];
-    XDG_CONFIG_DIRS = "${pkgs.llm-context}/etc/xdg:/etc/xdg";
   };
   jail = pkgs.mkShell {
     nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook pkgs.systemd.dev];

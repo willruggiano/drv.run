@@ -4,16 +4,10 @@
 
 - Usability improvements:
   - Key mapping
-    - [ ] (ctrl+k menu) `t` opens the target picker, `m` opens the model picker,
-          `n` open a new session
-    - [ ] (ctrl+k menu) `/` focuses the filter sessions form
-    - [ ] (ctrl+k menu) `ctrl+j/k` (which should be "globals" for move/select
-          next/previous) select next/previous session
   - [ ] Automate the host deployment
   - [ ] (pi-serve) web worker?
-  - [ ] (pi-serve) @ mentions and / commands
   - [ ] git push
-  - [ ] Automate post exposure (see below "HTTP proxy")
+  - [ ] Automate port exposure (see below "HTTP proxy")
   - [ ] Add an owner-scoped host command that obtains the guest connection FD
         from systemd-ssh-proxy
         (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
@@ -22,6 +16,7 @@
 - [ ] [[security.md]]
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
 - [ ] HTTP proxy / expose guest services over HTTP
+  - [ ] Secrets injection (pi-gondolin style) using mitmproxy?
 - [ ] Make the host-basic check work on aarch64? (note: it does, it just doesn't
       work on the rock5b because it lacks nested kvm)
 - [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better

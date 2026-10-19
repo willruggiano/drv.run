@@ -1,24 +1,4 @@
-# Engineering posture
-
-This repository is a work in progress. There is _no_ backwards compatibility
-requirement.
-
-- **Think first:** Verify behavior against the upstream sources. State
-  consequential assumptions and ask when interpretation changes the task. Work
-  backwards from the user when designing the solution.
-- **Keep it simple:** Implement only what is needed. Avoid speculative features,
-  premature optimization, and clever control flow. Shared abstractions are only
-  acceptable when multiple consumers/implementations exist.
-- **Stay strict:** Write idiomatic, strictly typed code. Do not suppress check
-  failures without precise justification and user approval. Assert aggressively.
-- **Be surgical:** Touch only relevant code, match existing style, remove what
-  your change makes obsolete, and report unrelated issues instead of widening
-  scope.
-- **Verify outcomes:** Run relevant tests and static checks. Measure before and
-  after performance work.
-- **Make Ken Thompson proud:** Follow the "Unix Philosophy".
-
-## Unix Philosophy [^1]
+# Unix Philosophy [^1]
 
 The "Unix philosophy" originated with Ken Thompson's early meditations on how to
 design a small but capable operating system with a clean service interface. It
