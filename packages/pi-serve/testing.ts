@@ -182,6 +182,7 @@ async function openMessageActions(page: Page, actions: Locator): Promise<void> {
   const point = await actions.evaluate(async (node) => {
     const target =
       node.closest(".tool-call")?.querySelector(":scope > summary") ??
+      node.closest("article")?.querySelector(".user-message > summary") ??
       node.closest("article")?.querySelector(":scope > .text") ??
       node.closest("article");
     if (!target) throw new Error("Missing long-press target");
@@ -192,7 +193,9 @@ async function openMessageActions(page: Page, actions: Locator): Promise<void> {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
     const box = target.getBoundingClientRect();
-    return { x: box.left + 2, y: box.top + 2 };
+    const pane = target.closest("#transcript, #tool-transcript")!.getBoundingClientRect();
+    // Long messages can exceed the independently scrolling pane's height.
+    return { x: Math.max(box.left, pane.left) + 2, y: Math.max(box.top, pane.top) + 2 };
   });
   const touch = await page.context().newCDPSession(page);
   try {
@@ -346,7 +349,7 @@ export async function browserFlow(
   const emptyPrompt = await page.locator("#prompt").boundingBox();
   assert(emptyPrompt);
   assert(emptyPrompt.height >= 42);
-  assert(emptyPrompt.y > 844 / 2);
+  assert(emptyPrompt.y > 844 / 3 && emptyPrompt.y < 844 / 2);
   await page.locator("#prompt").tap();
   assert.deepEqual(await page.locator("#prompt").boundingBox(), emptyPrompt);
   assert.equal(await page.evaluate(() => scrollY), 0);
@@ -405,7 +408,7 @@ export async function browserFlow(
     ["2px", "10px", "0px", "0px", true],
   );
   assert.equal((await page.locator("#prompt").boundingBox())!.height, emptyPrompt.height);
-  assert.equal(await page.locator('article[data-role="toolResult"]').count(), 0);
+  assert.equal(await page.locator('#transcript article[data-role="toolResult"]').count(), 0);
   assert.equal(await page.locator('.tool-call[data-state="completed"] .tool-result').count(), 1);
   await page.locator(".tool-call > summary").click();
   assert.equal(await page.locator(".tool-result pre").first().isVisible(), true);
@@ -838,7 +841,7 @@ export async function browserFlow(
   assert.equal(await firstCall.locator(".tool-result").isVisible(), true);
 
   assert.equal(await secondCall.locator(".tool-result").count(), 1);
-  assert.equal(await reconnected.locator('article[data-role="toolResult"]').count(), 1); // unmatched legacy result only
+  assert.equal(await reconnected.locator('#transcript article[data-role="toolResult"]').count(), 0);
   await reconnected.reload();
   await reconnected.waitForSelector(
     '.tool-call[data-call-id="parallel-second"][data-state="failed"]',
@@ -1241,7 +1244,10 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#search-next").isDisabled(), true);
     await page.press("#search", "Escape");
     assert.equal(await page.locator("#search-bar").isVisible(), false);
-    await openMessageActions(page, page.locator("article .message-actions").last());
+    await openMessageActions(
+      page,
+      page.locator("#transcript article > header > .message-actions").last(),
+    );
     await shot(page, `${size}-message-menu`);
     await page.click("#quote-message");
     assert.equal(
@@ -1477,7 +1483,10 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
 
   // Fork history is isolated and survives a browser reload.
   const originalEntries = await session.history();
-  await openMessageActions(reconnected, reconnected.locator("article .message-actions").last());
+  await openMessageActions(
+    reconnected,
+    reconnected.locator("#transcript article > header > .message-actions").last(),
+  );
   await reconnected.click("#fork-message");
   await reconnected.waitForFunction(() => new URL(location.href).searchParams.has("conversation"));
   const branchId = Number(new URL(reconnected.url()).searchParams.get("conversation"));
@@ -1912,7 +1921,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await branch.waitForIdle(context);
   await desktopCodeContext.close();
 
-  // Exercise every thinking/tool adjacency within and across assistant messages.
+  // Tool-only and mixed assistant messages all produce the same compact tool stream.
   f.faux.setResponses([
     ...Array.from({ length: 5 }, (_, index) =>
       fauxAssistantMessage(
@@ -1954,18 +1963,14 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       await reconnected.setViewportSize({ width, height: 900 });
       for (let index = 0; index < 5; index++) {
         const call = calls.nth(index);
-        assert.equal(await call.locator(":scope > header > .speaker").isVisible(), index === 0);
-        assert.equal(
-          await call.locator(":scope > header > .message-time").isVisible(),
-          index === 0,
-        );
+        assert.equal(await call.locator(":scope > header, .thinking").count(), 0);
         if (index > 0) {
           assert.equal(await call.evaluate((node) => getComputedStyle(node).borderTopWidth), "0px");
           if (index === 1) assert((await call.boundingBox())!.height < 36);
         }
         assert.equal(
           await call
-            .locator(":scope > header > .message-actions")
+            .locator(":scope > .tool-call > .message-actions")
             .evaluate((node) => getComputedStyle(node).opacity),
           "0",
         );
@@ -1988,22 +1993,13 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
             gap: block.getBoundingClientRect().top - blocks[index].getBoundingClientRect().bottom,
           }));
         });
-        assert.deepEqual([...new Set(gaps.map(({ pair }) => pair))].sort(), [
-          "thinking → thinking",
-          "thinking → tool-call",
-          "tool-call → thinking",
-          "tool-call → tool-call",
-        ]);
+        assert.deepEqual([...new Set(gaps.map(({ pair }) => pair))], ["tool-call → tool-call"]);
         for (const { pair, gap } of gaps)
           assert.equal(gap, 6, `${phase}, ${width}px, open=${open}: ${pair} gap`);
-        // The prose after the final tool keeps normal message spacing.
+        // Prose remains in the upper stream, never after a tool in this pane.
         assert.equal(
-          await calls.last().evaluate((node) => {
-            const tool = node.querySelector(":scope > .tool-call")!.getBoundingClientRect();
-            const prose = node.nextElementSibling!.querySelector(".text")!.getBoundingClientRect();
-            return prose.top - tool.bottom;
-          }),
-          24,
+          await reconnected.locator("#transcript > article").last().locator(".text").textContent(),
+          "All five reads completed.",
         );
         await calls.first().evaluate((node) => node.previousElementSibling?.scrollIntoView());
         await shot(reconnected, `speaker-groups-${width}-${phase}-${open ? "open" : "closed"}`);

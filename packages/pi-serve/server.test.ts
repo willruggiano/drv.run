@@ -1126,3 +1126,172 @@ await test("mobile browser navigation never automatically focuses controls", asy
   );
   assert.deepEqual(await page.evaluate(() => Reflect.get(window, "automaticFocus")), []);
 });
+
+await test("mobile browser conversation pins composer between independent message and tool streams", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const assets = join(f.workspace, "assets");
+  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  const base = await serve(t, f.sessions, assets);
+  const browser = await chromium.launch({
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  });
+  t.after(() => browser.close());
+  for (const width of [390, 1440]) {
+    const page = await browser.newPage({
+      viewport: { width, height: 844 },
+      hasTouch: width === 390,
+    });
+    t.after(() => page.close());
+    const errors: Error[] = [];
+    page.on("pageerror", (error) => errors.push(error));
+    await page.goto(`${base}/?session=${session.id}`);
+    await page.waitForSelector("#status[data-state=ready]");
+    const frontend = await page.evaluateHandle<{
+      render: (state: import("../pi-runtime/index.ts").Snapshot) => void;
+    }>("import('/client.js')");
+    const state = benchmarkFixture(20);
+    state.session = await session.info();
+    const user = state.view.entries[0].model![0];
+    assert.equal(user.role, "user");
+    user.content = "A long user message ".repeat(30) + "\nSecond line with details.";
+    const render = () =>
+      page.evaluate(({ frontend, data }) => frontend.render(JSON.parse(data)), {
+        frontend,
+        data: JSON.stringify(state),
+      });
+    await render();
+    assert.equal(await page.locator("#transcript > article").count(), 40);
+    assert.equal(await page.locator("#tool-transcript > article").count(), 20);
+    assert.equal(await page.locator("#transcript .tool-call").count(), 0);
+    assert.equal(
+      await page.locator("#tool-transcript article:not([data-role=toolResult])").count(),
+      0,
+    );
+    const box = (id: string) => page.locator(id).boundingBox();
+    const composer = (await box("#composer"))!;
+    assert(composer.y > 844 / 3 && composer.y < 844 / 2);
+    assert((await box("#transcript"))!.y < composer.y);
+    assert((await box("#tool-transcript"))!.y >= composer.y + composer.height);
+
+    const disclosure = page.locator(".user-message").first();
+    assert.equal(await disclosure.evaluate((node: HTMLDetailsElement) => node.open), false);
+    const preview = disclosure.locator(".user-preview");
+    assert.equal(await preview.evaluate((node) => getComputedStyle(node).whiteSpace), "nowrap");
+    assert.equal(await preview.evaluate((node) => node.scrollWidth > node.clientWidth), true);
+    await disclosure.locator("summary").click();
+    assert.equal(await disclosure.locator(".text").isVisible(), true);
+    assert.equal(await disclosure.locator(".text").textContent(), user.content);
+
+    const tool = page.locator('.tool-call[data-call-id="call0"]');
+    await tool.locator(":scope > summary").click();
+    assert.equal(await tool.locator(".tool-result").isVisible(), true);
+    assert.deepEqual(await box("#composer"), composer);
+    await page.click("#prompt");
+    assert.deepEqual(await box("#composer"), composer);
+    assert.equal(await page.evaluate(() => scrollY), 0);
+    await page.locator("#prompt").evaluate((node: HTMLTextAreaElement) => node.blur());
+
+    state.view = {
+      ...state.view,
+      docs: {
+        ...state.view.docs,
+        "pi.inbox": {
+          items: [{ id: "queued", mode: "followUp", content: "Queued follow-up" }],
+        },
+      },
+    };
+    await render();
+    const queue = (await box("#queue"))!;
+    assert(queue.y + queue.height <= composer.y);
+    assert.deepEqual(await box("#composer"), composer);
+    assert.equal(await disclosure.evaluate((node: HTMLDetailsElement) => node.open), true);
+    assert.equal(await tool.evaluate((node: HTMLDetailsElement) => node.open), true);
+    await page.locator("#transcript").evaluate((node) => {
+      node.scrollTop = 0;
+    });
+    await page.locator("#tool-transcript").evaluate((node) => {
+      node.scrollTop = 80;
+    });
+    assert.equal(await page.locator("#transcript").evaluate((node) => node.scrollTop), 0);
+    const toolScroll = await page.locator("#tool-transcript").evaluate((node) => node.scrollTop);
+    assert(toolScroll > 0);
+
+    // Streaming and committed tool results stay below the composer; disclosure
+    // state survives the partial entry being replaced by its historical entry.
+    const partial = fauxAssistantMessage([
+      { type: "text", text: "Streaming response" },
+      {
+        type: "toolCall",
+        id: "stream-call",
+        name: "bash",
+        arguments: { command: "echo streaming" },
+      },
+    ]);
+    state.view = {
+      ...state.view,
+      docs: {
+        ...state.view.docs,
+        "pi.live": { generation: { message: JSON.parse(JSON.stringify(partial)) } },
+      },
+    };
+    await render();
+    assert.equal(await page.locator("#transcript").evaluate((node) => node.scrollTop), 0);
+    assert.equal(
+      await page.locator("#tool-transcript").evaluate((node) => node.scrollTop),
+      toolScroll,
+    );
+    const streaming = page.locator('#tool-transcript .tool-call[data-call-id="stream-call"]');
+    await streaming.locator(":scope > summary").click();
+    assert.equal(await streaming.evaluate((node: HTMLDetailsElement) => node.open), true);
+    state.view = {
+      ...state.view,
+      docs: { ...state.view.docs, "pi.live": {} },
+      entries: [
+        ...state.view.entries,
+        {
+          ...state.view.entries[1],
+          id: 100 as (typeof state.view.entries)[number]["id"],
+          model: [
+            partial,
+            {
+              role: "toolResult",
+              toolCallId: "stream-call",
+              toolName: "bash",
+              content: [{ type: "text", text: "streaming" }],
+              isError: false,
+              timestamp: partial.timestamp + 1,
+            },
+          ],
+        },
+      ],
+    };
+    await render();
+    assert.equal(await streaming.count(), 1);
+    assert.equal(await streaming.getAttribute("data-state"), "completed");
+    assert.equal(await streaming.locator(".tool-result").textContent(), "streaming");
+    assert.equal(await streaming.evaluate((node: HTMLDetailsElement) => node.open), true);
+    assert.deepEqual(await box("#composer"), composer);
+
+    await page.keyboard.press("Control+f");
+    await page.fill("#search", "module0");
+    assert.equal(await page.locator("#tool-transcript").isVisible(), false);
+    assert.equal(await page.locator("#transcript .tool-call").count(), 21);
+    assert.equal(await page.locator("#search-count").textContent(), "1 / 1");
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("#transcript .tool-call").count(), 0);
+    assert.equal(await page.locator("#tool-transcript .tool-call").count(), 21);
+    assert.deepEqual(await box("#composer"), composer);
+    assert.equal(
+      await page.locator("#prompt").evaluate((node) => node === document.activeElement),
+      false,
+    );
+    await page.click("#menu-toggle");
+    assert.equal(await page.locator("#tool-transcript").isVisible(), false);
+    await page.click("#close-view");
+    assert.equal(await page.locator("#tool-transcript").isVisible(), true);
+    assert.deepEqual(await box("#composer"), composer);
+    assert.deepEqual(errors, []);
+    await frontend.dispose();
+  }
+});
