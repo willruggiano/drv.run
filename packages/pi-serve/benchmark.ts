@@ -145,6 +145,7 @@ export function benchmarkFixture(turns: number): Snapshot {
       needsResume: false,
     },
     context: { window: 200_000, autoCompact: true, lastResponse: null },
+    inspection: { state: "unavailable", conversation: ROOT_CONVERSATION_ID },
     view: { conversation: { id: ROOT_CONVERSATION_ID }, entries, docs: { "pi.live": {} } },
   };
 }

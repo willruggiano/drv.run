@@ -7,6 +7,7 @@ import {
   navigationDirection,
   moveFocus,
 } from "./key-mappings.ts";
+import type { ContextPart } from "../pi-runtime/inspection.ts";
 import type { ImageContent, Message } from "@earendil-works/pi-ai";
 import type {
   AgentState,
@@ -16,13 +17,7 @@ import type {
   LiveState,
   UsageState,
 } from "@earendil-works/pi-durable";
-import type {
-  Catalog,
-  ExecutionBinding,
-  RepositoryStatus,
-  SessionInfo,
-  Snapshot,
-} from "../pi-runtime/index.ts";
+import type { Catalog, ExecutionBinding, SessionInfo, Snapshot } from "../pi-runtime/index.ts";
 
 function element<T extends HTMLElement>(id: string, type: { new (): T }): T {
   const found = document.getElementById(id);
@@ -49,10 +44,8 @@ const globalPreferences = element("global-preferences", HTMLElement);
 const newThinking = element("new-thinking", HTMLSelectElement);
 let globalSettings: GlobalSettings | null = null;
 let editingSettings: GlobalSettings | null = null;
-const usageDialog = element("usage-dialog", HTMLElement);
+const contextView = element("context-view", HTMLElement);
 const bottomLine = element("bottom-line", HTMLElement);
-let repository: RepositoryStatus | undefined;
-let repositoryRequest: string | undefined;
 const sessionModel = element("session-model", HTMLSelectElement);
 const thinking = element("thinking", HTMLSelectElement);
 const instructions = element("instructions", HTMLTextAreaElement);
@@ -982,7 +975,6 @@ function content(
 // A stable module export lets benchmarks exercise the minified renderer.
 export function render(snapshot: Snapshot): void {
   const wasEmpty = !transcript.childElementCount;
-  const directoryChanged = repositoryKey() !== repositoryKey(snapshot);
   latest = snapshot;
   const agent = snapshot.view.docs["pi.agent"] as AgentState | undefined;
   const queue = element("queue", HTMLDivElement);
@@ -1015,7 +1007,6 @@ export function render(snapshot: Snapshot): void {
   for (const entry of [...(snapshot.history ?? []), ...snapshot.view.entries])
     entries.set(entry.id, entry);
   const live = snapshot.view.docs["pi.live"] as LiveState | undefined;
-  const wasBusy = busy;
   busy = !!live?.run;
   recovering = snapshot.session.needsResume;
   title.textContent = sessionTitle(snapshot.session);
@@ -1029,8 +1020,6 @@ export function render(snapshot: Snapshot): void {
     live?.generation?.retry?.error ??
     (live?.generation?.deferred ? "Waiting for provider…" : "");
   activity.hidden = !activity.textContent;
-  if (directoryChanged) repository = undefined;
-  if (directoryChanged || (wasBusy && !busy)) void refreshRepository();
   document.title = `${busy ? "Working · " : ""}${sessionTitle(snapshot.session)}`;
   const wanted = new Set<string>();
   const ordered: HTMLElement[] = [];
@@ -1311,6 +1300,7 @@ export function render(snapshot: Snapshot): void {
   if (!searchBar.hidden) updateSearch();
   updateLatest();
   renderFooter();
+  if (view === "context") renderContext();
   controls();
 }
 
@@ -1326,7 +1316,8 @@ function attach(id: string, branch?: number): void {
   images = [];
   showAttachments();
   latest = undefined;
-  repository = undefined;
+  contextView.replaceChildren();
+  contextRevision = "";
   bottomLine.hidden = true;
   generation++;
   active = id;
@@ -1347,7 +1338,6 @@ function attach(id: string, branch?: number): void {
     `/?session=${encodeURIComponent(id)}${branch === undefined ? "" : `&conversation=${branch}`}`,
   );
   void refreshBranches().catch(report);
-  void refreshRepository();
   for (const button of sessions.querySelectorAll("button"))
     button.setAttribute("aria-current", String(button.dataset.session === id));
   connectEvents();
@@ -1632,7 +1622,6 @@ resume.onclick = () => {
 };
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
-    void refreshRepository();
     void refresh().catch(report);
   }
 });
@@ -2094,7 +2083,7 @@ const panes = {
   sessions: picker,
   settings: preferences,
   global: globalPreferences,
-  stats: usageDialog,
+  context: contextView,
   fork: element("branch-picker", HTMLElement),
   search: transcript,
 };
@@ -2109,7 +2098,7 @@ function updateViewTitle(): void {
     sessions: "Sessions",
     settings: "Session settings",
     global: "Defaults and preferences",
-    stats: "Conversation stats",
+    context: "Context",
     fork: "Branches",
     search: `Search in “${title.textContent}”`,
   };
@@ -2132,6 +2121,7 @@ function setView(next: View): void {
   const queue = element("queue", HTMLDivElement);
   queue.hidden = !queue.childElementCount || (next !== "conversation" && next !== "search");
   composer.hidden = next === "sessions" || next === "search";
+  element("app-footer", HTMLElement).hidden = next === "context";
   element("session-filter-bar", HTMLDivElement).hidden = next !== "sessions";
   searchBar.hidden = next !== "search";
   view = next;
@@ -2140,12 +2130,13 @@ function setView(next: View): void {
   resizePrompt();
   if (next === "conversation") transcript.scrollTop = conversationScroll;
   if (next === "search") updateSearch();
+  if (next === "context") renderContext();
   updateLatest();
 }
 async function navigate(next: View): Promise<boolean> {
   const request = ++navigation;
   if (!(await flushSettings()) || request !== navigation) return false;
-  if (["settings", "stats", "fork", "search"].includes(next) && !latest) return false;
+  if (["settings", "context", "fork", "search"].includes(next) && !latest) return false;
   if (view !== next) {
     if (next === "settings") prepareSessionSettings();
     if (next === "global") prepareGlobalSettings();
@@ -2153,7 +2144,6 @@ async function navigate(next: View): Promise<boolean> {
   setView(next);
   if (next === "sessions") void refresh().catch(report);
   if (next === "fork") void refreshBranches().catch(report);
-  if (next === "stats") void refreshRepository();
   return true;
 }
 async function selectSession(id: string, branch?: number): Promise<void> {
@@ -2465,6 +2455,155 @@ function compactTokens(value: number): string {
   if (value < 1_000_000) return `${Math.round(value / 1000)}k`;
   return `${(value / 1_000_000).toFixed(value < 10_000_000 ? 1 : 0)}M`;
 }
+let contextRevision = "";
+function renderContext(): void {
+  const data = latest?.inspection;
+  const revision = JSON.stringify(data);
+  if (revision === contextRevision) return;
+  contextRevision = revision;
+  const span = (className: string, text = "") => {
+    const node = document.createElement("span");
+    node.className = className;
+    node.textContent = text;
+    return node;
+  };
+  const count = (n: number) =>
+    n < 1000 ? String(n) : `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  contextView.replaceChildren();
+  delete contextView.dataset.conversation;
+  delete contextView.dataset.tail;
+  delete contextView.dataset.tokens;
+  if (!data || data.state === "unavailable" || data.conversation !== latest?.view.conversation.id) {
+    contextView.append(span("ctx-state", "Context unavailable"));
+    return;
+  }
+  contextView.dataset.conversation = String(data.conversation);
+  contextView.dataset.tail = String(data.tail ?? "");
+  contextView.dataset.tokens = String(data.tokens);
+  const usage = document.createElement("section");
+  usage.setAttribute("aria-label", "Context usage");
+  const summary = document.createElement("div");
+  summary.className = "ctx-usage";
+  const total = span("ctx-big", `~${count(data.tokens)} `);
+  total.append(span("", `/ ${data.window === null ? "?" : count(data.window)}`));
+  const capacity = document.createElement("div");
+  capacity.className = "ctx-capacity";
+  capacity.append(
+    span("ctx-percent", data.fraction === null ? "—" : `${(data.fraction * 100).toFixed(1)}%`),
+    span("ctx-remaining", data.remaining === null ? "" : `${count(data.remaining)} remaining`),
+  );
+  summary.append(total, capacity);
+  usage.append(summary);
+  const position = (n: number) => `${Math.max(0, Math.min(100, (n / data.window!) * 100))}%`;
+  if (data.window !== null) {
+    const window = document.createElement("div");
+    window.className = "ctx-window";
+    window.setAttribute("role", "img");
+    window.setAttribute(
+      "aria-label",
+      `Estimated context: ${data.tokens.toLocaleString()} of ${data.window.toLocaleString()} tokens.`,
+    );
+    const track = document.createElement("div");
+    track.className = "ctx-track";
+    for (const role of data.roles) {
+      const segment = span("ctx-segment");
+      segment.dataset.role = role.role;
+      segment.style.width = position(role.tokens);
+      track.append(segment);
+    }
+    window.append(track);
+    usage.append(window);
+    if (data.policy.enabled) {
+      const threshold = data.policy.backgroundTokens > 0 ? data.backgroundAt! : data.blockingAt!;
+      const marker = span("ctx-threshold");
+      marker.style.left = position(threshold);
+      const reserved = span("ctx-reserved");
+      reserved.style.width = position(data.policy.reserveTokens);
+      window.append(marker, reserved);
+      window.setAttribute(
+        "aria-label",
+        `${window.getAttribute("aria-label")} Automatic compaction threshold: ${threshold.toLocaleString()} tokens. Reserved headroom: ${data.policy.reserveTokens.toLocaleString()} tokens.`,
+      );
+      const ruler = document.createElement("div");
+      ruler.className = "ctx-ruler";
+      ruler.setAttribute("aria-hidden", "true");
+      const label = span("ctx-auto", `~${compactTokens(threshold)}`);
+      label.style.left = position(threshold);
+      ruler.append(label);
+      const reserve = document.createElement("div");
+      reserve.className = "ctx-reserve-caption";
+      reserve.append(span("ctx-reserve-key"), `${count(data.policy.reserveTokens)} reserved`);
+      usage.append(ruler, reserve);
+    }
+  }
+  const legend = document.createElement("ul");
+  legend.className = "ctx-legend";
+  legend.setAttribute("aria-label", "Message roles");
+  for (const role of data.roles) {
+    const item = document.createElement("li");
+    item.dataset.role = role.role;
+    item.append(span("ctx-swatch"), span("", role.role), span("ctx-tokens", count(role.tokens)));
+    legend.append(item);
+  }
+  usage.append(legend);
+  const inventory = document.createElement("section");
+  inventory.className = "ctx-inventory";
+  inventory.setAttribute("aria-label", "Context messages in provider order");
+  const messages = document.createElement("ol");
+  messages.className = "ctx-messages";
+  const fields = (parts: ContextPart[], nested = false): HTMLOListElement => {
+    const list = document.createElement("ol");
+    list.className = nested ? "ctx-fields ctx-files" : "ctx-fields";
+    for (const part of parts) {
+      const item = document.createElement("li");
+      const row = document.createElement("div");
+      row.className = "ctx-field";
+      const main = span("ctx-field-main");
+      main.append(span(nested ? "ctx-field-value" : "ctx-field-name", part.name));
+      if (part.value !== undefined) main.append(span("ctx-field-value", part.value));
+      row.append(main, span("ctx-tokens", count(part.tokens)));
+      item.append(row);
+      if (part.children?.length) item.append(fields(part.children, true));
+      list.append(item);
+    }
+    return list;
+  };
+  for (const [index, message] of data.messages.entries()) {
+    const item = document.createElement("li");
+    item.className = "ctx-message";
+    item.dataset.order = String(index);
+    item.dataset.role = message.role;
+    item.dataset.tokens = String(message.tokens);
+    if (message.source) {
+      item.dataset.entry = String(message.source.entry);
+      item.dataset.kind = message.source.kind;
+    }
+    const heading = document.createElement("div");
+    heading.className = "ctx-message-heading";
+    const main = span("ctx-heading-main");
+    main.append(span("ctx-role", message.role));
+    if (message.source?.kind === "pi.compaction" || message.source?.kind === "pi.reset")
+      main.append(span("ctx-provenance", message.source.kind));
+    if (message.toolName !== undefined) main.append(span("ctx-tool-name", message.toolName));
+    heading.append(span("ctx-swatch"), main, span("ctx-tokens", count(message.tokens)));
+    item.append(heading);
+    // A simple text result is already represented by its message, as in the mock.
+    if (
+      message.parts.length &&
+      !(
+        message.role === "toolResult" &&
+        message.parts.length === 1 &&
+        message.parts[0]!.name === "text"
+      )
+    )
+      item.append(fields(message.parts));
+    messages.append(item);
+  }
+  inventory.append(messages);
+  if (!data.messages.length) inventory.append(span("ctx-state", "No context"));
+  contextView.append(usage, inventory);
+}
+
 function renderFooter(): void {
   if (!latest) return;
   bottomLine.hidden = false;
@@ -2481,10 +2620,6 @@ function renderFooter(): void {
     totals.reduce((value, item) => value + item[key], 0);
   const cost = totals.reduce((value, item) => value + item.cost.total, 0);
   const binding = latest.session.binding;
-  const workspace =
-    binding.provider === "local"
-      ? (agent?.cwd ?? binding.cwd)
-      : `${binding.provider}/${binding.target} · ${agent?.cwd ?? binding.cwd}`;
   const set = (id: string, text: string) => {
     element(id, HTMLElement).textContent = text;
   };
@@ -2498,9 +2633,7 @@ function renderFooter(): void {
     node.textContent = `${prefix}${compactTokens(value)}`;
     node.dataset.value = String(value);
     node.title = `${field === "read" ? "Cache " : ""}${field}: ${value.toLocaleString()} tokens`;
-    set(`usage-${field}`, value.toLocaleString());
   }
-  set("usage-write", sum("cacheWrite").toLocaleString());
   const { window: limit, lastResponse, autoCompact } = latest.context;
   const hit = lastResponse?.cacheHit;
   const tokens = lastResponse?.tokens;
@@ -2523,61 +2656,15 @@ function renderFooter(): void {
   costNode.textContent = `$${cost.toFixed(3)}`;
   costNode.dataset.value = String(cost);
   costNode.title = "Estimated cost (USD)";
-  set("usage-workspace", workspace);
   set(
     "footer-instance",
     `${binding.provider === "local" ? "local" : binding.target} · ${agent?.cwd ?? binding.cwd}`,
   );
-  set(
-    "usage-repository",
-    repository?.state === "repository"
-      ? `${repository.branch ?? "Detached HEAD"}${repository.revision ? ` · ${repository.revision}` : " · no commits"}`
-      : repository?.state === "none"
-        ? "Not a Git repository"
-        : repository?.state === "unavailable"
-          ? "Unavailable"
-          : "Checking…",
-  );
-  set("usage-model", `${model.provider} / ${model.modelId}`);
-  set("usage-thinking", thinking);
-  set("usage-hit", hit == null ? "Unknown" : `${hit.toFixed(1)}%`);
-  set("usage-cost", `$${cost.toFixed(3)}`);
-  set(
-    "usage-context",
-    tokens === undefined
-      ? "Unknown until a response in this context"
-      : `${tokens.toLocaleString()} tokens${percent === undefined ? "" : ` · ${percent.toFixed(1)}%`}`,
-  );
-  set("usage-window", limit ? `${limit.toLocaleString()} tokens` : "Unknown");
-  set("usage-auto", autoCompact ? "On" : "Off");
-}
-function repositoryKey(snapshot = latest): string {
-  const agent = snapshot?.view.docs["pi.agent"] as AgentState | undefined;
-  return JSON.stringify([generation, agent?.cwd ?? snapshot?.session.binding.cwd]);
-}
-async function refreshRepository(): Promise<void> {
-  const current = repositoryKey();
-  if (!active || !latest || document.hidden || repositoryRequest === current) return;
-  repositoryRequest = current;
-  try {
-    const result = await api<RepositoryStatus>(endpoint("repository"));
-    if (current !== repositoryKey()) return;
-    repository = result;
-  } catch {
-    if (current !== repositoryKey()) return;
-    repository = { state: "unavailable" };
-  } finally {
-    if (repositoryRequest === current) repositoryRequest = undefined;
-  }
-  renderFooter();
 }
 for (const id of ["footer-stats", "footer-context"])
   element(id, HTMLButtonElement).onclick = () => {
-    void navigate("stats");
+    void navigate("context");
   };
 element("footer-model", HTMLButtonElement).onclick = () => {
   void navigate("settings");
 };
-setInterval(() => {
-  if (active && connected && !document.hidden) void refreshRepository();
-}, 30_000);

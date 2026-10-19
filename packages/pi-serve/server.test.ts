@@ -610,6 +610,9 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   assert.equal(options.settings?.stream?.transport, "sse");
   const view = await snapshot(base + "/api/sessions/" + current.id + "/events");
   assert.equal(view.context.autoCompact, false);
+  assert(view.inspection.state === "available");
+  assert.equal(view.inspection.policy.enabled, false);
+  assert.equal(view.inspection.policy.reserveTokens, 12345);
   assert.equal((await current.info()).thinkingLevel, "medium");
   const created = await post(base + "/api/sessions", {
     id: randomUUID(),
@@ -930,7 +933,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     await page.click("#footer-context");
     assert.equal(await page.locator("body").getAttribute("data-view"), "settings");
     selectRelease.resolve();
-    await page.waitForSelector("#usage-dialog:not([hidden])");
+    await page.waitForSelector("#context-view:not([hidden])");
     assert.equal((await session.root.agent(context)).thinkingLevel, "high");
     await page.unroute("**/configure*");
 
@@ -944,14 +947,16 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
         return fauxAssistantMessage(`Background response ${width}`);
       },
     ]);
+    await page.click("#close-view");
     await page.fill("#prompt", "Run in the background.");
     await page.press("#prompt", "Control+Enter");
     await started.promise;
     await page.waitForSelector("#status[data-state=working]", { state: "attached" });
-    assert.equal(await page.locator("body").getAttribute("data-view"), "stats");
     await page.fill("#prompt", "Queued text ".repeat(200));
     await page.press("#prompt", "Control+Enter");
     await page.waitForSelector("#queue button", { state: "attached" });
+    await page.click("#footer-context");
+    assert.equal(await page.locator("body").getAttribute("data-view"), "context");
     assert.equal(await page.locator("#queue").isHidden(), true);
     await page.click("#close-view");
     const queue = await page.locator("#queue").evaluate((node) => ({
@@ -967,7 +972,8 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     finish.resolve();
     await session.root.waitForIdle(context);
     await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
-    assert.equal(await page.locator("body").getAttribute("data-view"), "stats");
+    assert.equal(await page.locator("body").getAttribute("data-view"), "context");
+    await page.click("#close-view");
     await page.fill("#prompt", "/fork");
     await page.press("#prompt", "Control+Enter");
     await page.waitForSelector("#branches button");
@@ -1003,14 +1009,15 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     await page.click("#close-view");
     await page.waitForSelector("#title", { state: "visible" });
     assert.equal(store.read().values.defaultThinkingLevel, width === 390 ? "high" : "low");
-    await page.click("#footer-context");
     await page.fill("#prompt", "Keep through reconnect");
+    await page.click("#footer-context");
     await page.context().setOffline(true);
-    await page.waitForSelector('#bottom-line[data-connected="false"]');
+    await page.waitForSelector('#bottom-line[data-connected="false"]', { state: "attached" });
     await page.context().setOffline(false);
-    await page.waitForSelector('#bottom-line[data-connected="true"]');
-    assert.equal(await page.locator("body").getAttribute("data-view"), "stats");
+    await page.waitForSelector('#bottom-line[data-connected="true"]', { state: "attached" });
+    assert.equal(await page.locator("body").getAttribute("data-view"), "context");
     assert.equal(await page.inputValue("#prompt"), "Keep through reconnect");
+    await page.click("#close-view");
 
     // Creation can finish while a new edit is saving. It must not switch the
     // form binding or repaint the new session with the old rename/configure result.

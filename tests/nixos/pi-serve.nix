@@ -106,6 +106,18 @@
           ["write", "ok"], ["edit", "ok"], ["read", "ok"], ["bash", "ok"],
         ]);
       }
+      const watch = await session.root.watch(BACKGROUND_CONTEXT);
+      try {
+        const inspection = await session.inspectContext(watch.value);
+        assert.equal(inspection.state, "available");
+        assert.equal(inspection.conversation, session.root.id);
+        assert.equal(inspection.tokens, inspection.messages.reduce((sum, message) => sum + message.tokens, 0));
+        if (!untrusted) {
+          assert(inspection.messages.some(message => message.parts.some(part => part.name === "sections.context" && part.children?.some(file => file.name === "/workspace/README.md"))));
+        }
+      } finally {
+        await watch.stop();
+      }
       assert.equal(faux.state.callCount, untrusted ? 0 : 7);
     } finally {
       await sessions.close();

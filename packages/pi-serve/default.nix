@@ -34,6 +34,7 @@
       ./build.ts
       ./benchmark.ts
       ./server.test.ts
+      ./context.test.ts
       ./testing.ts
       ./index.html
       ./styles.css
@@ -61,7 +62,7 @@ in
     checkPhase = ''
       runHook preCheck
       # Browser tests run locally, not in the Nix build sandbox.
-      node --test --test-skip-pattern='^mobile browser ' pi-serve/server.test.ts pi-serve/completions.test.ts pi-serve/base-directory.test.ts pi-serve/workflows.test.ts
+      node --test --test-skip-pattern='^mobile browser ' pi-serve/server.test.ts pi-serve/context.test.ts pi-serve/completions.test.ts pi-serve/base-directory.test.ts pi-serve/workflows.test.ts
       runHook postCheck
     '';
     installPhase = ''

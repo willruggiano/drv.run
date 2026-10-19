@@ -43,23 +43,7 @@
       <label id="wrap-field"><span>Wrap code</span><select id="wrap-code"><option value="false">Off</option><option value="true">On</option></select></label>
       <section class="settings-group" id="app-settings" aria-label="App" hidden><button id="install" hidden>Install app</button></section>
     </section>
-    <section id="usage-dialog" class="pane" aria-labelledby="view-title" hidden>
-      <dl>
-      <dt>Workspace</dt><dd id="usage-workspace"></dd>
-      <dt>Repository</dt><dd id="usage-repository"></dd>
-      <dt>Model</dt><dd id="usage-model"></dd>
-      <dt>Thinking</dt><dd id="usage-thinking"></dd>
-      <dt>Input tokens</dt><dd id="usage-input"></dd>
-      <dt>Output tokens</dt><dd id="usage-output"></dd>
-      <dt>Cache read</dt><dd id="usage-read"></dd>
-      <dt>Cache write</dt><dd id="usage-write"></dd>
-      <dt>Cache hit · last response</dt><dd id="usage-hit"></dd>
-      <dt>Estimated cost · USD</dt><dd id="usage-cost"></dd>
-      <dt>Context · last response</dt><dd id="usage-context"></dd>
-      <dt>Context window</dt><dd id="usage-window"></dd>
-      <dt>Auto compaction</dt><dd id="usage-auto"></dd>
-      </dl>
-    </section>
+    <section id="context-view" class="pane" aria-labelledby="view-title" hidden></section>
     <section id="branch-picker" class="pane" aria-labelledby="view-title" hidden>
       <div id="branches" aria-label="Branches"></div>
     </section>
@@ -95,7 +79,7 @@
       <div id="bottom-line" aria-label="Conversation statistics" hidden>
       <div class="footer-row">
         <span id="footer-instance"></span>
-        <button id="footer-stats" type="button" aria-label="Token and cost breakdown">
+        <button id="footer-stats" type="button" aria-label="Context">
           <span id="footer-input"></span><span id="footer-output"></span><span id="footer-read" class="footer-cache"></span><span id="footer-hit" class="footer-cache"></span><span id="footer-cost"></span>
         </button>
         <button id="footer-model" type="button" aria-label="Model and thinking settings"><span id="footer-model-name"></span><span class="footer-dot" aria-hidden="true"></span><span id="footer-effort"></span></button>

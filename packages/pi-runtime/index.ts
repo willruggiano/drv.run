@@ -40,6 +40,8 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
 import { createContextExtension, withContextValidation } from "./context.ts";
+import { describeContext, type ContextInspection } from "./inspection.ts";
+export type { ContextInspection } from "./inspection.ts";
 import {
   AskExtension,
   ReviewExtension,
@@ -198,6 +200,7 @@ export type Snapshot = {
   session: SessionInfo;
   view: ConversationView;
   context: ContextStatus;
+  inspection: ContextInspection;
   history?: readonly EntryRecord[];
   /** Durable compaction task durations, keyed by the resulting entry. */
   contextDurations?: Record<number, number>;
@@ -510,6 +513,10 @@ export class ManagedSession {
   readonly binding: Readonly<ExecutionBinding>;
   readonly created: number;
   private readonly sandbox: CodemodeSandbox;
+  private readonly inspections = new Map<
+    number,
+    { key: string; result: Promise<ContextInspection> }
+  >();
 
   private constructor(
     owner: Sessions,
@@ -575,7 +582,9 @@ export class ManagedSession {
       await openNodeSqliteStorage(join(owner.options.directory, `${id}.sqlite`)),
       {
         models: withContextValidation(owner.options.models),
-        settings: { ...owner.options.settings, extensions: defaults },
+        get settings() {
+          return { ...owner.options.settings, extensions: defaults };
+        },
         registry,
         env: async ({ cwd }) => {
           assert(managed, "Session initialization must finish before tools run.");
@@ -710,6 +719,38 @@ fi`,
       // A disconnected guest must not break the transcript or fall back to host Git.
       return { state: "unavailable" };
     }
+  }
+
+  /** Capture at the supplied watch boundary, including its agent configuration.
+   * Live-document updates reuse this result without scanning the transcript. */
+  inspectContext(view: ConversationView): Promise<ContextInspection> {
+    const id = view.conversation.id;
+    const model = (view.docs["pi.agent"] as AgentState | undefined)?.model ?? null;
+    const capacity = model
+      ? (this.owner.options.models.getModel(model.provider, model.modelId)?.contextWindow ?? null)
+      : null;
+    const policy = { ...DEFAULT_COMPACTION_POLICY, ...this.owner.options.settings?.compaction };
+    const first = view.entries[0]?.id;
+    const last = view.entries.at(-1)?.id;
+    const tail = first !== undefined && (last === undefined || first > last) ? first : last;
+    const key = JSON.stringify([tail, model, capacity, policy]);
+    const cached = this.inspections.get(id);
+    if (cached?.key === key) return cached.result;
+    const result = (async (): Promise<ContextInspection> => {
+      try {
+        const projection =
+          tail === undefined
+            ? { head: undefined, entries: [], contributions: [], messages: [] }
+            : await (await this.conversation(id)).context(context, { at: tail });
+        return describeContext(projection, id, model, capacity, policy);
+      } catch {
+        // Do not cache failures or show the preceding conversation as current.
+        if (this.inspections.get(id)?.key === key) this.inspections.delete(id);
+        return { state: "unavailable", conversation: id };
+      }
+    })();
+    this.inspections.set(id, { key, result });
+    return result;
   }
 
   contextStatus(view: ConversationView): ContextStatus {

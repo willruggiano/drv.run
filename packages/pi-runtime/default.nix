@@ -13,7 +13,7 @@ stdenv.mkDerivation {
   version = (lib.importJSON ./package.json).version;
   src = lib.fileset.toSource {
     root = ./.;
-    fileset = lib.fileset.unions [./index.ts ./context.ts ./context.test.ts ./workflows.ts ./review-instructions.ts ./testing.ts ./runtime.test.ts ./workflows.test.ts ./package.json ./tsconfig.json];
+    fileset = lib.fileset.unions [./index.ts ./inspection.ts ./inspection.test.ts ./context.ts ./context.test.ts ./workflows.ts ./review-instructions.ts ./testing.ts ./runtime.test.ts ./workflows.test.ts ./package.json ./tsconfig.json];
   };
   npmDeps = pi-development-node-modules;
   nativeBuildInputs = [importNpmLock.hooks.linkNodeModulesHook nodejs typescript git];
@@ -25,13 +25,13 @@ stdenv.mkDerivation {
   doCheck = true;
   checkPhase = ''
     runHook preCheck
-    node --test runtime.test.ts context.test.ts workflows.test.ts
+    node --test runtime.test.ts context.test.ts inspection.test.ts workflows.test.ts
     runHook postCheck
   '';
   installPhase = ''
     runHook preInstall
     mkdir -p "$out/lib/pi-runtime"
-    cp dist/{index,context,workflows,review-instructions}.js package.json "$out/lib/pi-runtime/"
+    cp dist/{index,context,inspection,workflows,review-instructions}.js package.json "$out/lib/pi-runtime/"
     ln -s ${pi-workspace}/node_modules "$out/lib/pi-runtime/node_modules"
     runHook postInstall
   '';

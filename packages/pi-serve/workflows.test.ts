@@ -165,9 +165,13 @@ await test("workflow HTTP validates scope, admission, answers and review actions
   const { id } = (await started.json()) as { id: number };
   const reviewer = await session.conversation(id);
   await reviewer.waitForIdle(context);
+  const reviewSnapshot = await snapshot(`${url}/events?conversation=${id}`);
+  assert.deepEqual(reviewSnapshot.workflows?.review?.report, report);
+  assert(reviewSnapshot.inspection.state === "available");
+  assert.equal(reviewSnapshot.inspection.conversation, reviewer.id);
   assert.deepEqual(
-    (await snapshot(`${url}/events?conversation=${id}`)).workflows?.review?.report,
-    report,
+    reviewSnapshot.inspection.messages.map((message) => message.role),
+    (await reviewer.context(context)).messages.map((message) => message.role),
   );
   assert.equal(
     (

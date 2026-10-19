@@ -92,7 +92,7 @@ async function assertHeaderStatus(page: Page, state: string, label: string): Pro
   };
   if (colors[state]) assert.equal(style.color, colors[state]);
   assert.equal(
-    await page.locator("#conversation-menu #status, #app-menu p, #usage-dialog p").count(),
+    await page.locator("#conversation-menu #status, #app-menu p, #context-view p").count(),
     0,
   );
 }
@@ -882,9 +882,6 @@ export async function browserFlow(
   ]);
   await reconnected.fill("#prompt", "Initialize the workspace repository.");
   await reconnected.click("#send");
-  await reconnected.waitForFunction(() =>
-    document.querySelector("#usage-repository")?.textContent?.startsWith("pi-pwa · "),
-  );
   await session.root.waitForIdle(context);
   assert.equal(await historicalTool.evaluate((node) => node.isConnected), true);
   assert.equal(await historicalOutput.evaluate((node) => node.isConnected), true);
@@ -950,7 +947,6 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   const expectedInput = buckets.reduce((sum, usage) => sum + usage.input, 0);
   const expectedOutput = buckets.reduce((sum, usage) => sum + usage.output, 0);
   const expectedRead = buckets.reduce((sum, usage) => sum + usage.cacheRead, 0);
-  const expectedWrite = buckets.reduce((sum, usage) => sum + usage.cacheWrite, 0);
   const expectedContext = (await snapshot(`${base}/api/sessions/${id}/events`)).context;
   // Exercise secondary controls in both pointer/keyboard and touch layouts.
   const shot = async (page: Page, name: string) => {
@@ -968,25 +964,27 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     );
     const composerAlignment = await page
       .locator(".compose-box:visible > .actions")
-      .evaluate((row) => {
-        const buttons = Array.from(row.querySelectorAll("button")).filter((button) =>
-          button.checkVisibility(),
-        );
-        return buttons.map((button) => {
-          const box = button.getBoundingClientRect();
-          const text = document.createRange();
-          text.selectNodeContents(button);
-          const label = text.getBoundingClientRect();
-          return {
-            id: button.id,
-            height: box.height,
-            width: box.width,
-            fontSize: getComputedStyle(button).fontSize,
-            center: box.top + box.height / 2,
-            labelCenter: label.top + label.height / 2,
-          };
-        });
-      });
+      .evaluateAll((rows) =>
+        rows.flatMap((row) => {
+          const buttons = Array.from(row.querySelectorAll("button")).filter((button) =>
+            button.checkVisibility(),
+          );
+          return buttons.map((button) => {
+            const box = button.getBoundingClientRect();
+            const text = document.createRange();
+            text.selectNodeContents(button);
+            const label = text.getBoundingClientRect();
+            return {
+              id: button.id,
+              height: box.height,
+              width: box.width,
+              fontSize: getComputedStyle(button).fontSize,
+              center: box.top + box.height / 2,
+              labelCenter: label.top + label.height / 2,
+            };
+          });
+        }),
+      );
     for (const button of composerAlignment) {
       assert.equal(button.height, compactComposer ? 32 : 40, `${name}: ${button.id} height`);
       if (["input-toggle", "send", "stop"].includes(button.id)) {
@@ -1135,9 +1133,6 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await page.locator("#transcript").evaluate((node) => {
       node.scrollTop = node.scrollHeight;
     });
-    await page.waitForFunction(() =>
-      document.querySelector("#usage-repository")?.textContent?.startsWith("pi-pwa · "),
-    );
     await shot(page, `${size}-conversation`);
     for (const tool of ["bash", "edit"]) {
       const call = page.locator(`.tool-call[data-tool="${tool}"]`).last();
@@ -1189,10 +1184,14 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
         : ["footer-model", "footer-context"],
     );
     await page.click(size === "desktop" ? "#footer-stats" : "#footer-context");
-    await page.waitForSelector("#usage-dialog:not([hidden])");
-    assert.equal(await page.locator("#usage-input").textContent(), expectedInput.toLocaleString());
-    assert.equal(await page.locator("#usage-thinking").textContent(), "high");
-    assert.equal(await page.locator("#usage-write").textContent(), expectedWrite.toLocaleString());
+    await page.waitForSelector("#context-view:not([hidden])");
+    assert.equal(await page.locator("#view-title").textContent(), "Context");
+    const inspection = (await snapshot(`${base}/api/sessions/${id}/events`)).inspection;
+    assert(inspection.state === "available");
+    assert.equal(
+      Number(await page.locator("#context-view").getAttribute("data-tokens")),
+      inspection.tokens,
+    );
     await shot(page, `${size}-footer-breakdown`);
     await page.keyboard.press("Escape");
     await page.click("#footer-model");
@@ -1200,7 +1199,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#thinking").inputValue(), "high");
     assert.equal(
       await page.locator("#footer-model").getAttribute("title"),
-      `${await page.locator("#usage-model").textContent()} · thinking high`,
+      "faux / faux-1 · thinking high",
     );
     await page.keyboard.press("Escape");
     assert.equal(await page.locator("#stop").isVisible(), false);

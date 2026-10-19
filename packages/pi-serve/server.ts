@@ -32,6 +32,14 @@ import { settingFields, thinkingLevels, type GlobalSettings } from "./settings.t
 export class GlobalSettingsStore {
   readonly manager: SettingsManager;
   private writes: Promise<void> = Promise.resolve();
+  private readonly observers = new Set<() => void>();
+
+  watch(observer: () => void): () => void {
+    this.observers.add(observer);
+    return () => {
+      this.observers.delete(observer);
+    };
+  }
 
   constructor(manager: SettingsManager) {
     this.manager = manager;
@@ -179,6 +187,7 @@ export class GlobalSettingsStore {
       await s.reload();
       throw errors[0].error;
     }
+    for (const observer of this.observers) observer();
     return this.read();
   }
 }
@@ -238,13 +247,16 @@ async function stream(
   session: ManagedSession,
   response: ServerResponse,
   conversation: Conversation,
+  settings?: GlobalSettingsStore,
 ): Promise<void> {
   const features = await session.watchWorkflows(conversation);
   const watch = await conversation.watch(context).catch(async (error: unknown) => {
     await features.stop();
     throw error;
   });
+  let unwatchSettings: (() => void) | undefined;
   const cleanup = () => {
+    unwatchSettings?.();
     void watch.stop();
     void features.stop();
   };
@@ -306,6 +318,7 @@ async function stream(
         session: await session.info(),
         view,
         context: session.contextStatus(view),
+        inspection: await session.inspectContext(view),
         contextDurations,
         workflows: await session.workflows(conversation),
         ...(initial ? { history: initial } : {}),
@@ -319,6 +332,7 @@ async function stream(
       response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
     };
     await send(watch.value, history);
+    if (response.destroyed) return;
     let sending = Promise.resolve();
     const update = () => {
       sending = sending
@@ -330,6 +344,9 @@ async function stream(
     };
     watch.start(update);
     features.start(update);
+    unwatchSettings = settings?.watch(() => {
+      void update();
+    });
     const heartbeat = setInterval(() => {
       if (response.writableLength > 1024 * 1024) response.destroy();
       else response.write(": heartbeat\n\n");
@@ -460,7 +477,7 @@ export function httpServer(
         if (request.method === "GET" && match[2] === "export")
           return json(response, 200, await session.history(conversation));
         if (request.method === "GET" && match[2] === "events")
-          return await stream(session, response, conversation);
+          return await stream(session, response, conversation, settings);
         if (request.method === "POST" && match[2] !== "events") {
           const data = await body(request, match[2] === "prompt" ? 8 * 1024 * 1024 : 128 * 1024);
           if (match[2] === "answer") {
