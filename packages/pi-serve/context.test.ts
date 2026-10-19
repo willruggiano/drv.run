@@ -18,7 +18,7 @@ import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import type { EntryDraft, ConversationView } from "@earendil-works/pi-durable";
 import { chromium } from "playwright";
 import { fixture, model } from "../pi-runtime/testing.ts";
-import { serve, snapshot, post } from "./testing.ts";
+import { chromiumExecutable, serve, snapshot, post } from "./testing.ts";
 import { buildAssets } from "./build.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -201,7 +201,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
   const initial = await snapshot(`${base}/api/sessions/${session.id}/events`);
   assert(initial.inspection.state === "available");
   const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    executablePath: chromiumExecutable(),
   });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1180, height: 1100 } });

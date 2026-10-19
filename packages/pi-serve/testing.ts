@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -20,6 +20,23 @@ import { httpServer, type GlobalSettingsStore } from "./server.ts";
 import { buildAssets } from "./build.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+export function chromiumExecutable(searchPath = process.env.PATH ?? ""): string {
+  for (const directory of searchPath.split(delimiter)) {
+    const candidate = resolve(directory, "chromium");
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return candidate;
+    } catch (error) {
+      if (
+        !(error instanceof Error && "code" in error) ||
+        !["ENOENT", "ENOTDIR", "EACCES"].includes(String(error.code))
+      )
+        throw error;
+    }
+  }
+  throw new Error("Chromium is required on PATH for browser tests; use nix develop.");
+}
 
 export async function serve(
   t: TestContext,
@@ -228,14 +245,7 @@ export async function browserFlow(
   if (screenshots) await mkdir(screenshots, { recursive: true });
   await buildAssets(source, assets);
   const base = await serve(t, f.sessions, assets);
-  const executablePath =
-    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ??
-    (process.env.PATH ?? "")
-      .split(delimiter)
-      .map((path) => join(path, "chromium"))
-      .find(existsSync);
-  assert(executablePath, "Chromium is required for browser tests; use nix develop.");
-  const browser = await chromium.launch({ executablePath });
+  const browser = await chromium.launch({ executablePath: chromiumExecutable() });
   t.after(() => browser.close());
   const browserContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -874,7 +884,7 @@ export async function browserFlow(
     fauxAssistantMessage(
       fauxToolCall("bash", {
         command:
-          "git init --initial-branch=pi-pwa && git -c user.name=Pi -c user.email=pi@example.invalid commit --allow-empty -m Initial",
+          "git init --initial-branch=pi-pwa && git -c user.name=Pi -c user.email=pi@example.invalid commit --no-gpg-sign --allow-empty -m Initial",
       }),
       { stopReason: "toolUse" },
     ),

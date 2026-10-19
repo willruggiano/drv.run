@@ -233,11 +233,11 @@ await test("review targets resolve Git identities and paths without changing the
   await git("config", "user.email", "test@example.test");
   await writeFile(join(f.workspace, "preferences.ts"), "export const value = 1;\n");
   await git("add", ".");
-  await git("commit", "-m", "Initial");
+  await git("commit", "--no-gpg-sign", "-m", "Initial");
   const root = (await git("rev-parse", "HEAD")).stdout.trim();
   await git("branch", "base");
   await writeFile(join(f.workspace, "preferences.ts"), "export const value = 2;\n");
-  await git("commit", "-am", "Update");
+  await git("commit", "--no-gpg-sign", "-am", "Update");
   const head = (await git("rev-parse", "HEAD")).stdout.trim();
   const env = new NodeExecutionEnv({ cwd: f.workspace });
   t.after(() => env.cleanup(context));

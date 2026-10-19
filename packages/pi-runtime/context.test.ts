@@ -432,30 +432,32 @@ await test("fresh review discovers baseline context without the parent's CONTRIB
   const { f, environment, run } = await configured(t);
   const env = environment();
   t.after(() => env.cleanup(context));
-  assert.equal(
-    getOrThrow(await env.exec(["git", "init", "--initial-branch=main"], undefined, context))
-      .exitCode,
-    0,
-  );
-  assert.equal(
-    getOrThrow(
+  const git = async (...args: string[]) => {
+    let output = "";
+    const result = getOrThrow(
       await env.exec(
-        [
-          "git",
-          "-c",
-          "user.name=Pi",
-          "-c",
-          "user.email=pi@example.invalid",
-          "commit",
-          "--allow-empty",
-          "-m",
-          "Initial",
-        ],
-        undefined,
+        ["git", ...args],
+        {
+          onOutput: (text) => {
+            output += text;
+          },
+        },
         context,
       ),
-    ).exitCode,
-    0,
+    );
+    assert.equal(result.exitCode, 0, `git ${args.join(" ")} failed:\n${output}`);
+  };
+  await git("init", "--initial-branch=main");
+  await git(
+    "-c",
+    "user.name=Pi",
+    "-c",
+    "user.email=pi@example.invalid",
+    "commit",
+    "--no-gpg-sign",
+    "--allow-empty",
+    "-m",
+    "Initial",
   );
   await writeFile(join(f.workspace, "README.md"), "Project.");
   await writeFile(join(f.workspace, "CONTRIBUTING.md"), "Contribute.");

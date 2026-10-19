@@ -10,7 +10,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { fixture } from "../pi-runtime/testing.ts";
 import { commandCompletions, completionToken, pathCompletion } from "./completions.ts";
 import { buildAssets } from "./build.ts";
-import { serve } from "./testing.ts";
+import { chromiumExecutable, serve } from "./testing.ts";
 
 await test("completion tokens respect boundaries, quoting and cursor position", () => {
   for (const text of [
@@ -99,7 +99,7 @@ await test("HTTP path completion uses the session workspace and validates paths"
 
 async function browser(t: TestContext) {
   const instance = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    executablePath: chromiumExecutable(),
   });
   t.after(() => instance.close());
   return instance.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });

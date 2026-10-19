@@ -90,8 +90,7 @@ in
           ln -s ${pi-runtime}/lib/pi-runtime "$out/lib/pi-runtime"
           ln -s ${pi-development-node-modules}/node_modules "$out/lib/pi-serve/node_modules"
           makeWrapper ${nodejs}/bin/node "$out/bin/pi-serve-bench-render" \
-            --set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ${lib.getExe chromium} \
-            --prefix PATH : ${lib.makeBinPath [esbuild]} \
+            --prefix PATH : ${lib.makeBinPath [chromium esbuild]} \
             --add-flags "$out/lib/pi-serve/benchmark.js"
           runHook postInstall
         '';

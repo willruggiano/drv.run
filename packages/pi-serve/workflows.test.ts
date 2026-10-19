@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -12,7 +11,7 @@ import { chromium, type Page } from "playwright";
 import { fixture, waitFor } from "../pi-runtime/testing.ts";
 import type { AskRequest, ReviewReport } from "../pi-runtime/workflows.ts";
 import type { Snapshot } from "../pi-runtime/index.ts";
-import { post, serve, snapshot } from "./testing.ts";
+import { chromiumExecutable, post, serve, snapshot } from "./testing.ts";
 import { buildAssets } from "./build.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -206,14 +205,7 @@ await test(
     t.after(() => rm(assets, { recursive: true, force: true }));
     await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
     const base = await serve(t, f.sessions, assets);
-    const executablePath =
-      process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ??
-      (process.env.PATH ?? "")
-        .split(delimiter)
-        .map((path) => join(path, "chromium"))
-        .find(existsSync);
-    assert(executablePath, "Chromium is required for browser tests.");
-    const browser = await chromium.launch({ executablePath });
+    const browser = await chromium.launch({ executablePath: chromiumExecutable() });
     t.after(() => browser.close());
     const desktop = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     const mobile = await browser.newContext({

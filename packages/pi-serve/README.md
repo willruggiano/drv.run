@@ -9,10 +9,10 @@ dialog. Ctrl+J/K moves to the next/previous filtered session (wrapping at the
 ends); Enter opens it. The same keys navigate menu items, select options, and
 conversation search matches when those controls have focus.
 
-Focused browser tests (with Chromium available):
+Focused browser tests (with Chromium on PATH):
 
 ```sh
-PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$(command -v chromium) node --test packages/pi-serve/key-mappings.test.ts
+node --test packages/pi-serve/key-mappings.test.ts
 ```
 
 ## Base directory
@@ -53,7 +53,7 @@ closed.
 Run the focused tests with Chromium and esbuild on PATH:
 
 ```sh
-PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$(command -v chromium) node --test packages/pi-serve/completions.test.ts
+node --test packages/pi-serve/completions.test.ts
 ```
 
 ## Benchmarks

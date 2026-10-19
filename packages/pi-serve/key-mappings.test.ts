@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { test, type TestContext } from "node:test";
 import { chromium, type Page } from "playwright";
+import { chromiumExecutable } from "./testing.ts";
 
 async function focused(page: Page, id: string) {
   assert.equal(
@@ -13,7 +14,7 @@ async function focused(page: Page, id: string) {
 
 async function setup(t: TestContext): Promise<Page> {
   const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    executablePath: chromiumExecutable(),
   });
   t.after(() => browser.close());
   const page = await browser.newPage();

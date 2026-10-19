@@ -31,7 +31,7 @@ const usage = `Usage: node packages/pi-serve/benchmark.ts [options]
                  Parent directory for unique artifact folder (default cwd; requires --profile)
   --assets DIR   Frontend sources or compiled assets (default: alongside this script)
   --chromium FILE
-                 Chromium executable (otherwise PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH or PATH)
+                 Chromium executable (otherwise found on PATH)
   --help         Show this help on stderr
 Outputs one JSON object with raw millisecond samples, workload and environment.
 Each run measures initial history, 40 streaming updates and 10 busy/idle transitions.
@@ -75,7 +75,6 @@ export function benchmarkOptions(args: string[]) {
     assets: resolve(values.assets ?? dirname(fileURLToPath(import.meta.url))),
     executablePath:
       values.chromium ??
-      process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ??
       (process.env.PATH ?? "")
         .split(delimiter)
         .map((path) => join(path, "chromium"))

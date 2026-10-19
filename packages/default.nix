@@ -88,6 +88,7 @@ in {
         network
         readonly-runtime-args
         (add-pkg-deps (shell.nativeBuildInputs ++ [shell.npmDeps]))
+        (bind-pkg "/etc/fonts/fonts.conf" (pkgs.makeFontsConf {fontDirectories = [pkgs.dejavu_fonts];}))
         (dbus {talk = ["org.freedesktop.Notifications"];})
         (let
           rockctl = pkgs.writeShellApplication {
@@ -119,6 +120,7 @@ in {
             echo "rockctl $*: exit code $status"
           '')
         (readwrite (noescape "~/.pi"))
+        (ro-bind "${lib.getExe' pkgs.coreutils "env"}" "/usr/bin/env")
         (set-env "NQDIR" "/tmp")
       ]);
     prompt = pkgs.writeTextDir "share/youve-been-jailed.txt" ''

@@ -6,13 +6,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { fixture, model, waitFor } from "../pi-runtime/testing.ts";
-import { browserFlow, serve, snapshot, post } from "./testing.ts";
+import { browserFlow, chromiumExecutable, serve, snapshot, post } from "./testing.ts";
 import { GlobalSettingsStore, parseOptions } from "./server.ts";
 import { benchmark, benchmarkFixture, benchmarkOptions } from "./benchmark.ts";
 import { buildAssets } from "./build.ts";
@@ -23,6 +23,29 @@ import { chromium } from "playwright";
 import type { GlobalSettings } from "./settings.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+await test("browser executable lookup follows PATH and rejects unusable candidates", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-serve-browser-path-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const missing = join(directory, "missing");
+  const blocked = join(directory, "non-executable");
+  const folder = join(directory, "directory");
+  const first = join(directory, "first executable");
+  const second = join(directory, "second");
+  for (const path of [blocked, folder, first, second]) await mkdir(path);
+  await writeFile(join(blocked, "chromium"), "", { mode: 0o600 });
+  await mkdir(join(folder, "chromium"));
+  for (const path of [first, second])
+    await writeFile(join(path, "chromium"), "#!/bin/sh\n", { mode: 0o700 });
+  const notDirectory = join(first, "chromium");
+  const unusable = [missing, blocked, folder, notDirectory];
+  assert.equal(
+    chromiumExecutable([...unusable, first, second].join(delimiter)),
+    join(first, "chromium"),
+  );
+  assert.equal(chromiumExecutable([second, first].join(delimiter)), join(second, "chromium"));
+  assert.throws(() => chromiumExecutable(unusable.join(delimiter)));
+});
 
 await test("CLI starts standalone without host commands and loads only explicit integrations", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pi-serve-cli-"));
@@ -695,7 +718,7 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
   const base = await serve(t, sessions, assets, "127.0.0.1", undefined, store);
   const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    executablePath: chromiumExecutable(),
   });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -815,7 +838,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
   await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
   const base = await serve(t, f.sessions, assets, "127.0.0.1", undefined, store);
   const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    executablePath: chromiumExecutable(),
   });
   t.after(() => browser.close());
   f.faux.setResponses([fauxAssistantMessage("Searchable history.\n".repeat(80))]);
@@ -1080,7 +1103,7 @@ await test("mobile browser branch refresh preserves keyboard focus while loading
   await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
   const base = await serve(t, f.sessions, assets);
   const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    executablePath: chromiumExecutable(),
   });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -1128,7 +1151,7 @@ await test("mobile browser navigation never automatically focuses controls", asy
   await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
   const base = await serve(t, f.sessions, assets);
   const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    executablePath: chromiumExecutable(),
   });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
@@ -1203,7 +1226,7 @@ await test("mobile browser compaction and reset archive unchanged conversation n
   await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
   const base = await serve(t, sessions, assets);
   const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    executablePath: chromiumExecutable(),
   });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });

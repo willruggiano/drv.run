@@ -10,7 +10,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { localIntegration, SessionError, type Integration } from "../pi-runtime/index.ts";
 import { fixture, model } from "../pi-runtime/testing.ts";
 import { buildAssets } from "./build.ts";
-import { post, serve } from "./testing.ts";
+import { chromiumExecutable, post, serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -123,7 +123,7 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   await buildAssets(fileURLToPath(new URL(".", import.meta.url)), assets);
   const base = await serve(t, f.sessions, assets);
   const browser = await chromium.launch({
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+    executablePath: chromiumExecutable(),
   });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });

@@ -556,6 +556,7 @@ await test("footer repository inspection follows the bound directory without run
     "-c",
     "user.email=pi@example.invalid",
     "commit",
+    "--no-gpg-sign",
     "--allow-empty",
     "-m",
     "Initial",
