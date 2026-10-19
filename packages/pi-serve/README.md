@@ -40,10 +40,10 @@ bounded to 5,000 entries per directory and 50 suggestions.
 
 Type `/` at the start of a message for commands: `/sessions`, `/new`,
 `/settings`, `/model`, `/compact [instructions]`, `/reset [handoff]`, `/stop`,
-`/resume`, `/export`, `/search`, and `/help`. `/new` uses the target and model
-selected in Sessions. Reset asks for confirmation and preserves history. Unknown
-commands and failed operations leave the draft intact; commands are never
-submitted as model prompts.
+`/resume`, `/export`, and `/search`. `/new` uses the target and model selected
+in Sessions. Reset asks for confirmation and preserves history. Unknown commands
+and failed operations leave the draft intact; commands are never submitted as
+model prompts.
 
 Use ↑/↓ or Ctrl+J/K to navigate suggestions, Enter/Tab or a tap to select, and
 Escape to dismiss. Selecting a command only inserts it; use Send or Ctrl/⌘+Enter

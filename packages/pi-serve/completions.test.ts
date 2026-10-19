@@ -57,6 +57,7 @@ await test("completion tokens respect boundaries, quoting and cursor position", 
     ["/model "],
   );
   assert.deepEqual(commandCompletions("unknown"), []);
+  assert.deepEqual(commandCompletions("help"), []);
 });
 
 await test("HTTP path completion uses the session workspace and validates paths", async (t) => {
@@ -272,10 +273,6 @@ await test("mobile browser composer runs commands without sending prompts and pr
   await run("/reset New context");
   await page.waitForFunction(
     () => (document.querySelector("#prompt") as HTMLTextAreaElement).value === "",
-  );
-  await run("/help");
-  await page.waitForFunction(() =>
-    document.querySelector("#notice")!.textContent.includes("workspace paths"),
   );
   assert.equal(prompts, 0);
   assert.equal(f.faux.state.callCount, 0);

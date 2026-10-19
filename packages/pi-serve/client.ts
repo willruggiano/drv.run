@@ -174,10 +174,6 @@ function controls(): void {
   modeToggle.disabled = !active || !connected || recovering || sending;
   modeToggle.textContent = submissionMode === "steer" ? "Steer" : "Follow up";
   modeToggle.dataset.mode = submissionMode;
-  modeToggle.title =
-    submissionMode === "steer"
-      ? "Steer at the next opportunity. Click to switch to Follow up."
-      : "Queue after the current run. Click to switch to Steer.";
   modeToggle.setAttribute(
     "aria-label",
     `${modeToggle.textContent}. Switch to ${submissionMode === "steer" ? "Follow up" : "Steer"}`,
@@ -1272,11 +1268,7 @@ function selectedTarget() {
 function updateDirectoryField(): void {
   const root = selectedTarget()?.directoryRoot;
   element("new-directory-field", HTMLLabelElement).hidden = !root;
-  if (root) {
-    element("new-directory", HTMLInputElement).placeholder = `${root} (default)`;
-    element("new-directory-hint", HTMLElement).textContent =
-      `Relative to ${root}, even with a leading slash.`;
-  }
+  if (root) element("new-directory", HTMLInputElement).placeholder = `${root} (default)`;
 }
 
 // Native datalists keep the path editable and provide keyboard/touch completion.
@@ -1366,16 +1358,10 @@ async function runCommand(text: string): Promise<boolean> {
   const name = text.slice(1).split(/\s/, 1)[0];
   const argument = text.slice(name.length + 1).trim();
   if (!commands.some((command) => command.name === name))
-    throw new Error(`Unknown command /${name}. Type / for available commands.`);
+    throw new Error(`Unknown command /${name}.`);
   if (images.length) throw new Error("Remove attached images before running a command.");
   if (argument && name !== "compact" && name !== "reset")
     throw new Error(`/${name} does not accept arguments.`);
-  if (name === "help") {
-    notice.textContent =
-      "@ completes workspace paths (references, not file uploads). / lists commands. Use ↑/↓ or Ctrl+J/K, Enter/Tab to select, Escape to dismiss. Ctrl/⌘+Enter or Send runs a command.";
-    notice.hidden = false;
-    return true;
-  }
   if (name === "sessions") {
     openPicker();
     return true;
@@ -1742,11 +1728,7 @@ element("settings", HTMLButtonElement).onclick = () => {
   directory.disabled = !root;
   const cwd = agent?.cwd ?? latest?.session.binding.cwd;
   directory.value = root && cwd?.startsWith(root + "/") ? cwd.slice(root.length + 1) : "";
-  if (root) {
-    directory.placeholder = `${root} (default)`;
-    element("session-directory-hint", HTMLElement).textContent =
-      `Relative to ${root}, even with a leading slash. Empty uses ${root}.`;
-  }
+  if (root) directory.placeholder = `${root} (default)`;
   element("session-directories", HTMLDataListElement).replaceChildren();
   preferences.showModal();
 };
@@ -2311,7 +2293,7 @@ function renderFooter(): void {
   const costNode = element("footer-cost", HTMLSpanElement);
   costNode.textContent = `$${cost.toFixed(3)}`;
   costNode.dataset.value = String(cost);
-  costNode.title = "Estimated cost (USD), not a subscription balance";
+  costNode.title = "Estimated cost (USD)";
   set("usage-workspace", workspace);
   set(
     "usage-repository",

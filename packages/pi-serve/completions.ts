@@ -9,7 +9,6 @@ export const commands = [
   { name: "resume", description: "Resume interrupted work" },
   { name: "export", description: "Export conversation JSON" },
   { name: "search", description: "Find in conversation" },
-  { name: "help", description: "Show composer help" },
 ] as const;
 
 export type CompletionToken = {

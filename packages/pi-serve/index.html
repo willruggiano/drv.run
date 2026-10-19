@@ -46,7 +46,7 @@
     <form id="composer">
       <div class="compose-box">
         <div id="completions" role="listbox" aria-label="Message completions" hidden></div>
-        <textarea id="prompt" aria-label="Message" rows="1" placeholder="Ask Pi… (@ files, / commands)" maxlength="100000"></textarea>
+        <textarea id="prompt" aria-label="Message" rows="1" placeholder="Ask Pi…" maxlength="100000"></textarea>
         <div id="attachments" aria-label="Attached images"></div>
         <div class="actions"><button id="input-toggle" class="icon" type="button" popovertarget="input-menu" aria-label="Upload attachments">+</button><button id="input-mode" type="button" hidden>Follow up</button><span class="spacer"></span><button id="stop" class="icon" type="button" hidden disabled aria-label="Stop" title="Stop"><span aria-hidden="true">×</span></button><button id="send" class="icon" type="submit" disabled aria-label="Send" title="Send (Ctrl/⌘ Enter)"><span aria-hidden="true">↑</span></button></div>
       </div>
@@ -72,10 +72,9 @@
       <label><span>Target</span><select id="targets" aria-label="Target"></select></label>
       <label><span>Model</span><select id="models" aria-label="Model"></select></label>
     </div>
-    <label id="new-directory-field" hidden><span>Base directory</span><input id="new-directory" list="new-directories" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/workspace (default)" aria-describedby="new-directory-hint"><small id="new-directory-hint">Relative to /workspace, even with a leading slash.</small></label>
+    <label id="new-directory-field" hidden><span>Base directory</span><input id="new-directory" list="new-directories" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/workspace (default)"></label>
     <datalist id="new-directories"></datalist>
     <label><span>Thinking for new session</span><select id="new-thinking"></select></label>
-    <p id="defaults-hint">Model: current selection → configured default → sole available model. Thinking: per-model preference → global default → medium, limited by the model.</p>
     <div class="actions"><button id="picker-defaults" hidden>Defaults…</button></div>
     <div class="actions"><button id="create" type="button" disabled>New session</button><span class="spacer"></span><button id="refresh" class="icon" type="button" aria-label="Refresh targets">↻</button></div>
     <input id="session-filter" type="search" aria-label="Filter sessions" placeholder="Filter sessions…">
@@ -83,18 +82,16 @@
   </dialog>
   <dialog id="preferences" aria-labelledby="preferences-title">
     <div class="dialog-heading"><h2 id="preferences-title">Session settings</h2><button id="close-settings" class="icon" aria-label="Close settings">×</button></div>
-    <p>Model, thinking, base directory and instructions apply to this conversation only. They do not change new-session defaults.</p>
     <label><span>Session name</span><input id="session-name" maxlength="120" placeholder="Untitled session"></label>
     <label><span>Model</span><select id="session-model"></select></label>
     <label><span>Thinking</span><select id="thinking"></select></label>
-    <label id="session-directory-field" hidden><span>Base directory</span><input id="session-directory" list="session-directories" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/workspace (default)" aria-describedby="session-directory-hint"><small id="session-directory-hint">Relative to /workspace, even with a leading slash. Empty uses /workspace.</small></label>
+    <label id="session-directory-field" hidden><span>Base directory</span><input id="session-directory" list="session-directories" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/workspace (default)"></label>
     <datalist id="session-directories"></datalist>
     <label><span>Additional instructions</span><textarea id="instructions" rows="2" maxlength="100000"></textarea></label>
     <div class="actions"><button id="save-settings">Save</button></div>
     <details><summary>Context</summary>
       <label><span>Compaction instructions / reset handoff</span><textarea id="handoff" rows="2" maxlength="100000" placeholder="Optional"></textarea></label>
       <div class="actions"><button id="compact">Compact</button><button id="reset">Reset…</button></div>
-      <p>Reset clears model context, not history.</p>
     </details>
   </dialog>
   <dialog id="global-preferences" aria-labelledby="global-preferences-title">
@@ -103,7 +100,6 @@
     <label><span>Thinking override for this model</span><select id="model-thinking-default"></select></label>
     <form id="global-settings-form">
       <div id="global-settings-fields"></div>
-      <details><summary>Scope and limitations</summary><p>Queue delivery controls how many queued messages are consumed, not whether Send steers or follows up. Wrap code is browser-local. Hiding thinking or images only affects display, not model input.</p><p>Durable retains its background compaction policy. Per-model compaction thresholds, custom thinking budgets, image resizing/blocking, cache warming, enabledModels cycling, CLI tools/extensions/skills, branch summaries and terminal-only controls are not mapped by this frontend.</p></details>
       <div class="actions"><button id="save-global-settings" type="submit">Save defaults</button></div>
     </form>
   </dialog>
