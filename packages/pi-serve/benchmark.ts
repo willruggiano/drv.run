@@ -326,7 +326,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
           };
         }, frontend);
         await frontend.dispose();
-        await page.locator("#close-picker").click();
+        await page.locator("#close-view").click();
         const cdp = await page.context().newCDPSession(page);
         await cdp.send("Emulation.setCPUThrottlingRate", { rate: options.cpuRate });
         if (profiling) {

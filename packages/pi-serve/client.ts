@@ -42,13 +42,13 @@ const {
 } = await import(highlighterURL);
 const modeToggle = element("input-mode", HTMLButtonElement);
 let submissionMode: "followUp" | "steer" = "followUp";
-const branches = element("branches", HTMLSelectElement);
-const preferences = element("preferences", HTMLDialogElement);
-const globalPreferences = element("global-preferences", HTMLDialogElement);
+const branches = element("branches", HTMLDivElement);
+const preferences = element("preferences", HTMLElement);
+const globalPreferences = element("global-preferences", HTMLElement);
 const newThinking = element("new-thinking", HTMLSelectElement);
 let globalSettings: GlobalSettings | null = null;
 let editingSettings: GlobalSettings | null = null;
-const usageDialog = element("usage-dialog", HTMLDialogElement);
+const usageDialog = element("usage-dialog", HTMLElement);
 const bottomLine = element("bottom-line", HTMLElement);
 let repository: RepositoryStatus | undefined;
 let repositoryRequest: string | undefined;
@@ -72,13 +72,11 @@ const status = element("status", HTMLSpanElement);
 const title = element("title", HTMLButtonElement);
 const create = element("create", HTMLButtonElement);
 const recovery = element("recovery", HTMLDivElement);
-const picker = element("picker", HTMLDialogElement);
-const menu = element("conversation-menu", HTMLDivElement);
-const appMenu = element("app-menu", HTMLDivElement);
+const picker = element("picker", HTMLElement);
 const messageMenu = element("message-menu", HTMLDivElement);
 const inputMenu = element("input-menu", HTMLDivElement);
-const sessionFilter = element("session-filter", HTMLInputElement);
-const search = element("search", HTMLInputElement);
+const sessionFilter = element("session-filter", HTMLTextAreaElement);
+const search = element("search", HTMLTextAreaElement);
 const searchBar = element("search-bar", HTMLDivElement);
 let matches: HTMLElement[] = [];
 let matchIndex = -1;
@@ -134,18 +132,6 @@ function report(error: unknown): void {
     : error instanceof Error
       ? error.message
       : String(error);
-  const dialog = [globalPreferences, picker, preferences].find((dialog) => dialog.open);
-  if (dialog) {
-    let local = dialog.querySelector<HTMLParagraphElement>(".dialog-error");
-    if (!local) {
-      local = document.createElement("p");
-      local.className = "dialog-error error";
-      local.setAttribute("role", "alert");
-      dialog.querySelector(".dialog-heading")?.after(local);
-    }
-    local.textContent = message;
-    return;
-  }
   notice.textContent = message;
   notice.hidden = false;
 }
@@ -180,10 +166,8 @@ function controls(): void {
   );
   resume.disabled = !active || !connected || !recovering;
   recovery.hidden = !recovering;
-  for (const id of ["settings", "export", "find", "footer-model"])
-    element(id, HTMLButtonElement).disabled = !active || !connected || recovering;
+  element("footer-model", HTMLButtonElement).disabled = !active || !connected || recovering;
   document.body.classList.toggle("offline", !navigator.onLine);
-  branches.disabled = !active;
   bottomLine.dataset.connected = String(connected);
   const action = busy && !recovering ? (submissionMode === "steer" ? "Steer" : "Queue") : "Send";
   send.setAttribute("aria-label", action);
@@ -233,8 +217,6 @@ async function refresh(): Promise<void> {
   const previousTarget = targets.value;
   const previousModel = models.value ? catalog?.models[Number(models.value)] : undefined;
   globalSettings = defaults;
-  for (const id of ["global-settings", "picker-defaults"])
-    element(id, HTMLButtonElement).hidden = !defaults;
   document.body.classList.toggle("hide-thinking", defaults?.values.hideThinkingBlock === true);
   document.body.classList.toggle("hide-images", defaults?.values["terminal.showImages"] === false);
   catalog = next;
@@ -311,7 +293,9 @@ function renderSessions(): void {
     detail.textContent = `${label} · ${new Date(session.created).toLocaleDateString()}${target?.available ? "" : " · unavailable"}`;
     button.title = detail.textContent;
     button.append(name, detail);
-    button.onclick = () => attach(session.id);
+    button.onclick = () => {
+      void selectSession(session.id);
+    };
     sessions.append(button);
   }
   const empty = element("sessions-empty", HTMLParagraphElement);
@@ -388,20 +372,34 @@ function endpoint(action: string): string {
   return `/api/sessions/${active}/${action}${conversation === undefined ? "" : `?conversation=${conversation}`}`;
 }
 async function refreshBranches(): Promise<void> {
+  const current = generation;
   const id = active;
+  if (!id) return;
   const records = await api<ConversationRecord[]>(endpoint("conversations"));
-  if (active !== id) return;
+  if (current !== generation) return;
   branches.replaceChildren();
-  records.forEach((record, index) =>
-    chooseOption(
-      branches,
-      String(record.id),
-      index === 0
-        ? "Main"
-        : `Branch ${record.id}${record.parent ? ` · from ${record.parent.conversationId}` : ""}`,
-    ),
-  );
-  if (conversation !== undefined) branches.value = String(conversation);
+  records.forEach((record, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "session";
+    button.dataset.conversation = String(record.id);
+    button.setAttribute(
+      "aria-current",
+      String(conversation === undefined ? index === 0 : conversation === record.id),
+    );
+    const name = document.createElement("strong");
+    name.textContent = index === 0 ? "Main" : `Branch ${record.id}`;
+    button.append(name);
+    if (record.parent) {
+      const detail = document.createElement("small");
+      detail.textContent = `From ${record.parent.conversationId}`;
+      button.append(detail);
+    }
+    button.onclick = () => {
+      void selectSession(id, index === 0 ? undefined : record.id);
+    };
+    branches.append(button);
+  });
 }
 
 // Arguments may be incomplete while streaming. Never parse display previews (in
@@ -673,7 +671,9 @@ function messageActions(
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.copy = label;
-      button.textContent = label;
+      button.setAttribute("aria-label", label);
+      button.title = label;
+      button.append(element("copy-message", HTMLButtonElement).firstElementChild!.cloneNode(true));
       button.onclick = () => copyText(text);
       return button;
     });
@@ -925,6 +925,7 @@ export function render(snapshot: Snapshot): void {
   latest = snapshot;
   const agent = snapshot.view.docs["pi.agent"] as AgentState | undefined;
   const queue = element("queue", HTMLDivElement);
+  const queueScroll = queue.scrollTop;
   queue.replaceChildren();
   for (const item of (snapshot.view.docs["pi.inbox"] as InboxState | undefined)?.items ?? []) {
     const row = document.createElement("div");
@@ -945,9 +946,10 @@ export function render(snapshot: Snapshot): void {
     }
     queue.append(row);
   }
-  queue.hidden = !queue.childElementCount;
+  queue.hidden = !queue.childElementCount || (view !== "conversation" && view !== "search");
+  queue.scrollTop = queueScroll;
   const stick =
-    searchBar.hidden &&
+    view === "conversation" &&
     transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
   for (const entry of [...(snapshot.history ?? []), ...snapshot.view.entries])
     entries.set(entry.id, entry);
@@ -956,6 +958,7 @@ export function render(snapshot: Snapshot): void {
   busy = !!live?.run;
   recovering = snapshot.session.needsResume;
   title.textContent = sessionTitle(snapshot.session);
+  if (view === "search") updateViewTitle();
   title.title = `${snapshot.session.binding.provider} / ${snapshot.session.binding.target} · ${agent?.model?.modelId ?? snapshot.session.model.modelId}`;
   const activity = element("activity", HTMLDivElement);
   activity.textContent =
@@ -1208,7 +1211,7 @@ function attach(id: string, branch?: number): void {
   saveDraft();
   closePopovers();
   selectedMessage = undefined;
-  closeSearch();
+  clearSearch();
   source?.close();
   conversation = branch;
   images = [];
@@ -1216,7 +1219,6 @@ function attach(id: string, branch?: number): void {
   latest = undefined;
   repository = undefined;
   bottomLine.hidden = true;
-  usageDialog.close();
   generation++;
   active = id;
   prompt.value = loadDraft();
@@ -1227,8 +1229,9 @@ function attach(id: string, branch?: number): void {
   entries.clear();
   rendered.clear();
   transcript.replaceChildren();
+  element("queue", HTMLDivElement).replaceChildren();
+  element("queue", HTMLDivElement).hidden = true;
   resizePrompt();
-  picker.close();
   history.replaceState(
     null,
     "",
@@ -1238,6 +1241,12 @@ function attach(id: string, branch?: number): void {
   void refreshRepository();
   for (const button of sessions.querySelectorAll("button"))
     button.setAttribute("aria-current", String(button.dataset.session === id));
+  connectEvents();
+  controls();
+}
+
+function connectEvents(): void {
+  source?.close();
   const currentGeneration = generation;
   source = new EventSource(endpoint("events"));
   source.onopen = () => {
@@ -1317,7 +1326,8 @@ models.onchange = () => {
   fillThinking(newThinking, models, "", true);
   create.disabled = !targets.value || !models.value;
 };
-async function newSession(commandText?: string): Promise<void> {
+async function newSession(commandText?: string): Promise<boolean> {
+  if (!(await flushSettings())) return false;
   create.disabled = true;
   const current = generation;
   try {
@@ -1330,11 +1340,26 @@ async function newSession(commandText?: string): Promise<void> {
       model: models.value ? catalog.models[Number(models.value)] : undefined,
       thinkingLevel: newThinking.value || undefined,
     });
-    if (commandText !== undefined && current === generation && prompt.value === commandText)
-      prompt.value = "";
+    // Edits can begin while creation is in flight. Flush those too before
+    // leaving, and never replace a session explicitly selected in the meantime.
+    if (current !== generation) {
+      void refresh().catch(report);
+      return true;
+    }
+    if (!(await flushSettings())) {
+      void refresh().catch(report);
+      return false;
+    }
+    if (current !== generation) {
+      void refresh().catch(report);
+      return true;
+    }
+    if (commandText !== undefined && prompt.value === commandText) prompt.value = "";
     sessionFilter.value = "";
     attach(session.id);
+    setView("conversation");
     void refresh().catch(report);
+    return true;
   } finally {
     create.disabled = !targets.value || !models.value;
   }
@@ -1363,13 +1388,11 @@ async function runCommand(text: string): Promise<boolean> {
   if (argument && name !== "compact" && name !== "reset")
     throw new Error(`/${name} does not accept arguments.`);
   if (name === "sessions") {
-    openPicker();
-    return true;
+    return navigate("sessions");
   }
   if (name === "new") {
     if (create.disabled) throw new Error("Choose an available target and model in Sessions first.");
-    await newSession(text);
-    return true;
+    return newSession(text);
   }
   if (!active || !connected) throw new Error("Connect to a session first.");
   if (recovering && name !== "resume") throw new Error("Resume interrupted work first.");
@@ -1387,11 +1410,10 @@ async function runCommand(text: string): Promise<boolean> {
   } else if (name === "stop") {
     if (!busy) throw new Error("There is no running response to stop.");
     await api(endpoint("stop"), {});
-  } else if (name === "search") openSearch();
-  else if (name === "model" || name === "settings") {
-    element("settings", HTMLButtonElement).click();
-    if (name === "model") sessionModel.focus();
-  } else if (name === "export") await exportConversation();
+  } else if (name === "search") return navigate("search");
+  else if (name === "fork") return navigate("fork");
+  else if (name === "model" || name === "settings") return navigate("settings", name === "model");
+  else if (name === "export") await exportConversation();
   return true;
 }
 
@@ -1493,9 +1515,6 @@ async function resumeSession(): Promise<void> {
 resume.onclick = () => {
   void resumeSession().catch(report);
 };
-element("refresh", HTMLButtonElement).onclick = () => {
-  void refresh().catch(report);
-};
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     void refreshRepository();
@@ -1506,7 +1525,7 @@ window.addEventListener("pagehide", () => {
   source?.close();
 });
 window.addEventListener("pageshow", (event) => {
-  if (event.persisted && active) attach(active, conversation);
+  if (event.persisted && active) connectEvents();
 });
 void refresh()
   .then(() => {
@@ -1514,7 +1533,7 @@ void refresh()
     if (id && catalog.sessions.some((session) => session.id === id)) {
       const branch = new URL(location.href).searchParams.get("conversation");
       attach(id, branch === null ? undefined : Number(branch));
-    } else picker.showModal();
+    } else void navigate("sessions");
   })
   .catch(report);
 controls();
@@ -1539,19 +1558,14 @@ function loadDraft(): string {
 notice.onclick = () => {
   notice.hidden = true;
 };
-branches.onchange = () => {
-  if (active) {
-    closePopovers();
-    attach(active, Number(branches.value));
-  }
-};
 function fillThinking(
   select: HTMLSelectElement,
   modelSelect: HTMLSelectElement,
   value?: string,
   inherit = false,
 ): void {
-  const model = modelSelect.value ? catalog.models[Number(modelSelect.value)] : undefined;
+  const choices = modelSelect === sessionModel ? settingsModels : catalog.models;
+  const model = modelSelect.value ? choices[Number(modelSelect.value)] : undefined;
   select.replaceChildren();
   if (inherit)
     chooseOption(
@@ -1576,7 +1590,7 @@ const modelThinkingDefault = element("model-thinking-default", HTMLSelectElement
 function fillModelDefault(): void {
   modelThinkingDefault.replaceChildren();
   chooseOption(modelThinkingDefault, "", "Use global default");
-  const model = defaultModel.value ? catalog.models[Number(defaultModel.value)] : undefined;
+  const model = defaultModel.value ? settingsModels[Number(defaultModel.value)] : undefined;
   for (const level of model?.thinkingLevels ?? []) chooseOption(modelThinkingDefault, level, level);
   const saved = model && editingSettings?.modelThinkingLevels[`${model.provider}/${model.modelId}`];
   // Keep a configured unsupported level visible: Pi will clamp it when starting.
@@ -1585,121 +1599,25 @@ function fillModelDefault(): void {
   modelThinkingDefault.value = saved ?? "";
   modelThinkingDefault.disabled = !model;
 }
-defaultModel.onchange = fillModelDefault;
-function openGlobalSettings(): void {
-  closePopovers();
-  if (!globalSettings) return;
-  editingSettings = globalSettings;
-  globalPreferences.querySelector(".dialog-error")?.remove();
-  defaultModel.replaceChildren();
-  chooseOption(
-    defaultModel,
-    "",
-    globalSettings.model
-      ? `Keep configured model: ${globalSettings.model.provider}/${globalSettings.model.modelId} (keep)`
-      : "No configured default (keep)",
-  );
-  catalog.models.forEach((model, index) =>
-    chooseOption(defaultModel, String(index), `${model.provider} / ${model.name}`),
-  );
-  const index = catalog.models.findIndex(
-    (model) =>
-      model.provider === globalSettings?.model?.provider &&
-      model.modelId === globalSettings.model.modelId,
-  );
-  defaultModel.value = index >= 0 ? String(index) : "";
-  fillModelDefault();
-  const fields = element("global-settings-fields", HTMLDivElement);
-  fields.replaceChildren();
-  let group = "";
-  let parent: HTMLElement = fields;
-  for (const field of settingFields) {
-    if (field.group !== group) {
-      group = field.group;
-      const details = document.createElement("details");
-      details.open = group === "New sessions";
-      const summary = document.createElement("summary");
-      summary.textContent = group;
-      details.append(summary);
-      fields.append(details);
-      parent = details;
-    }
-    const label = document.createElement("label");
-    const caption = document.createElement("span");
-    caption.textContent = field.label;
-    const input =
-      "choices" in field || field.type === "boolean"
-        ? document.createElement("select")
-        : document.createElement("input");
-    input.id = `default-${field.key}`;
-    input.name = field.key;
-    if (input instanceof HTMLSelectElement) {
-      const choices = "choices" in field ? field.choices : ["true", "false"];
-      for (const choice of choices)
-        chooseOption(input, choice, choice === "true" ? "On" : choice === "false" ? "Off" : choice);
-    } else {
-      input.type = "number";
-      input.min = "0";
-      input.step = "1";
-      input.readOnly = true;
-    }
-    input.value = String(globalSettings.values[field.key]);
-    label.append(caption, input);
-    parent.append(label);
-  }
-  globalPreferences.showModal();
+// Forms are initialized only on entry. Streamed snapshots never overwrite edits.
+let settingsModels: Catalog["models"] = [];
+let sessionBaseline: ReturnType<typeof sessionSettings> | undefined;
+let settingsBinding: { configure: string; rename: string; generation: number } | undefined;
+let savingSettings: Promise<boolean> | undefined;
+function sessionSettings() {
+  return {
+    name: element("session-name", HTMLInputElement).value,
+    model: sessionModel.value ? settingsModels[Number(sessionModel.value)] : undefined,
+    thinkingLevel: thinking.value,
+    instructions: instructions.value,
+    baseDirectory: latest?.session.directoryRoot
+      ? element("session-directory", HTMLInputElement).value
+      : undefined,
+  };
 }
-element("global-settings", HTMLButtonElement).onclick = openGlobalSettings;
-element("picker-defaults", HTMLButtonElement).onclick = openGlobalSettings;
-element("close-global-settings", HTMLButtonElement).onclick = () => globalPreferences.close();
-element("global-settings-form", HTMLFormElement).onsubmit = (event) => {
-  event.preventDefault();
-  const values: Record<string, string | boolean> = {};
-  for (const field of settingFields) {
-    if ("readonly" in field) continue;
-    const value = element(`default-${field.key}`, HTMLSelectElement).value;
-    if (value !== String(editingSettings?.values[field.key]))
-      values[field.key] = "choices" in field ? value : value === "true";
-  }
-  const selected = defaultModel.value ? catalog.models[Number(defaultModel.value)] : undefined;
-  const modelChanged =
-    selected &&
-    (selected.provider !== editingSettings?.model?.provider ||
-      selected.modelId !== editingSettings.model.modelId);
-  const overrideChanged =
-    selected &&
-    modelThinkingDefault.value !==
-      (editingSettings?.modelThinkingLevels[`${selected.provider}/${selected.modelId}`] ?? "");
-  const button = element("save-global-settings", HTMLButtonElement);
-  button.disabled = true;
-  void api<GlobalSettings>("/api/settings", {
-    values,
-    ...(selected && (modelChanged || overrideChanged)
-      ? {
-          model: selected,
-          ...(overrideChanged ? { modelThinkingLevel: modelThinkingDefault.value || null } : {}),
-        }
-      : {}),
-  })
-    .then(async (saved) => {
-      globalSettings = saved;
-      // An explicit default change should be reflected in the new-session picker.
-      if (modelChanged) {
-        models.value = "";
-        newThinking.value = "";
-      }
-      await refresh();
-      globalPreferences.close();
-    })
-    .catch(report)
-    .finally(() => {
-      button.disabled = false;
-    });
-};
-
-element("settings", HTMLButtonElement).onclick = () => {
-  closePopovers();
-  preferences.querySelector(".dialog-error")?.remove();
+function prepareSessionSettings(): void {
+  settingsModels = catalog.models;
+  settingsBinding = { configure: endpoint("configure"), rename: endpoint("rename"), generation };
   const agent = latest?.view.docs["pi.agent"] as AgentState | undefined;
   element("session-name", HTMLInputElement).value = latest?.session.name ?? "";
   sessionModel.replaceChildren();
@@ -1711,15 +1629,13 @@ element("settings", HTMLButtonElement).onclick = () => {
       : "Select a model",
     true,
   );
-  catalog.models.forEach((model, index) =>
+  settingsModels.forEach((model, index) =>
     chooseOption(sessionModel, String(index), `${model.provider} / ${model.name}`),
   );
-  sessionModel.value = String(
-    catalog.models.findIndex(
-      (model) =>
-        model.provider === agent?.model?.provider && model.modelId === agent?.model?.modelId,
-    ),
+  const index = settingsModels.findIndex(
+    (model) => model.provider === agent?.model?.provider && model.modelId === agent?.model?.modelId,
   );
+  sessionModel.value = index < 0 ? "" : String(index);
   fillThinking(thinking, sessionModel, agent?.thinkingLevel ?? "off");
   instructions.value = agent?.instructions ?? "";
   const root = latest?.session.directoryRoot;
@@ -1730,51 +1646,185 @@ element("settings", HTMLButtonElement).onclick = () => {
   directory.value = root && cwd?.startsWith(root + "/") ? cwd.slice(root.length + 1) : "";
   if (root) directory.placeholder = `${root} (default)`;
   element("session-directories", HTMLDataListElement).replaceChildren();
-  preferences.showModal();
+  sessionBaseline = sessionSettings();
+}
+function prepareGlobalSettings(): void {
+  settingsModels = catalog?.models ?? [];
+  editingSettings = globalSettings;
+  defaultModel.replaceChildren();
+  chooseOption(
+    defaultModel,
+    "",
+    globalSettings?.model
+      ? `Keep configured model: ${globalSettings.model.provider}/${globalSettings.model.modelId} (keep)`
+      : "No configured default (keep)",
+  );
+  settingsModels.forEach((model, index) =>
+    chooseOption(defaultModel, String(index), `${model.provider} / ${model.name}`),
+  );
+  const index = settingsModels.findIndex(
+    (model) =>
+      model.provider === globalSettings?.model?.provider &&
+      model.modelId === globalSettings.model.modelId,
+  );
+  defaultModel.value = index < 0 ? "" : String(index);
+  fillModelDefault();
+  const fields = element("global-settings-fields", HTMLDivElement);
+  const modelGroup = element("model-defaults", HTMLElement);
+  const wrapField = element("wrap-field", HTMLLabelElement);
+  wrapField.remove();
+  fields.replaceChildren(modelGroup);
+  modelGroup.querySelector("[data-generated]")?.remove();
+  modelGroup.hidden = !globalSettings;
+  let group = "Model / thinking";
+  let parent = modelGroup;
+  for (const field of globalSettings ? settingFields : []) {
+    if (field.group !== group) {
+      group = field.group;
+      parent = document.createElement("section");
+      parent.className = "settings-group";
+      const heading = document.createElement("h2");
+      heading.textContent = group;
+      parent.append(heading);
+      fields.append(parent);
+    }
+    const label = document.createElement("label");
+    label.dataset.generated = "";
+    const caption = document.createElement("span");
+    caption.textContent = field.label;
+    const input =
+      "choices" in field || field.type === "boolean"
+        ? document.createElement("select")
+        : document.createElement("input");
+    input.id = `default-${field.key}`;
+    input.name = field.key;
+    if (input instanceof HTMLSelectElement) {
+      for (const choice of "choices" in field ? field.choices : ["true", "false"])
+        chooseOption(input, choice, choice === "true" ? "On" : choice === "false" ? "Off" : choice);
+    } else {
+      input.type = "number";
+      input.readOnly = true;
+    }
+    input.value = String(globalSettings!.values[field.key]);
+    label.append(caption, input);
+    parent.append(label);
+  }
+  if (!globalSettings) {
+    parent = document.createElement("section");
+    parent.className = "settings-group";
+    const heading = document.createElement("h2");
+    heading.textContent = "Display";
+    parent.append(heading);
+    fields.append(parent);
+  }
+  parent.append(wrapField);
+}
+
+// Serialize autosaves, then read the form again: edits made during a request
+// are persisted before any navigation completes. URLs and catalog choices are
+// captured when opening the form, not taken from a later session/catalog.
+function flushSettings(): Promise<boolean> {
+  if (savingSettings) return savingSettings;
+  const form =
+    view === "settings" ? preferences : view === "global" ? globalPreferences : undefined;
+  form?.setAttribute("aria-busy", "true");
+  savingSettings = (async () => {
+    try {
+      while (view === "settings" && sessionBaseline && settingsBinding) {
+        const binding = settingsBinding;
+        const next = sessionSettings();
+        const { name, ...configure } = next;
+        const { name: oldName, ...oldConfigure } = sessionBaseline;
+        const changed = JSON.stringify(configure) !== JSON.stringify(oldConfigure);
+        if (!changed && name === oldName) break;
+        if (changed) {
+          if (!configure.model || !configure.thinkingLevel)
+            throw new Error("Select an available model.");
+          await api(binding.configure, configure);
+          if (generation !== binding.generation || settingsBinding !== binding) return false;
+          sessionBaseline = { ...next, name: oldName };
+        }
+        if (name !== oldName) {
+          const session = await api<SessionInfo>(binding.rename, { name });
+          if (generation !== binding.generation || settingsBinding !== binding) return false;
+          sessionBaseline = { ...next };
+          if (latest) render({ ...latest, session });
+          if (catalog)
+            catalog.sessions = catalog.sessions.map((item) =>
+              item.id === session.id ? session : item,
+            );
+        }
+        notice.hidden = true;
+      }
+      while (view === "global" && editingSettings) {
+        const values: Record<string, string | boolean> = {};
+        for (const field of settingFields) {
+          if ("readonly" in field) continue;
+          const value = element(`default-${field.key}`, HTMLSelectElement).value;
+          if (value !== String(editingSettings.values[field.key]))
+            values[field.key] = "choices" in field ? value : value === "true";
+        }
+        const selected = defaultModel.value
+          ? settingsModels[Number(defaultModel.value)]
+          : undefined;
+        const modelChanged =
+          selected &&
+          (selected.provider !== editingSettings.model?.provider ||
+            selected.modelId !== editingSettings.model.modelId);
+        const overrideChanged =
+          selected &&
+          modelThinkingDefault.value !==
+            (editingSettings.modelThinkingLevels[`${selected.provider}/${selected.modelId}`] ?? "");
+        if (!Object.keys(values).length && !modelChanged && !overrideChanged) break;
+        const saved = await api<GlobalSettings>("/api/settings", {
+          values,
+          ...(selected && (modelChanged || overrideChanged)
+            ? {
+                model: selected,
+                ...(overrideChanged
+                  ? { modelThinkingLevel: modelThinkingDefault.value || null }
+                  : {}),
+              }
+            : {}),
+        });
+        globalSettings = editingSettings = saved;
+        if (modelChanged) {
+          models.value = "";
+          newThinking.value = "";
+        }
+        await refresh();
+        notice.hidden = true;
+      }
+      return true;
+    } catch (error) {
+      report(error);
+      return false;
+    }
+  })().finally(() => {
+    savingSettings = undefined;
+    form?.removeAttribute("aria-busy");
+  });
+  return savingSettings;
+}
+defaultModel.onchange = () => {
+  fillModelDefault();
 };
-sessionModel.onchange = () => fillThinking(thinking, sessionModel);
-element("close-settings", HTMLButtonElement).onclick = () => preferences.close();
-element("save-settings", HTMLButtonElement).onclick = () => {
-  if (!sessionModel.value || !thinking.value) return report("Select an available model.");
-  const id = active;
-  const branch = conversation;
-  const renameURL = endpoint("rename");
-  const name = element("session-name", HTMLInputElement).value;
-  const save = element("save-settings", HTMLButtonElement);
-  save.disabled = true;
-  void api(endpoint("configure"), {
-    model: catalog.models[Number(sessionModel.value)],
-    thinkingLevel: thinking.value,
-    instructions: instructions.value,
-    baseDirectory: latest?.session.directoryRoot
-      ? element("session-directory", HTMLInputElement).value
-      : undefined,
-  })
-    .then(() => api<SessionInfo>(renameURL, { name }))
-    .then((session) => {
-      if (active === id && conversation === branch && latest) render({ ...latest, session });
-      preferences.close();
-      return refresh();
-    })
-    .catch(report)
-    .finally(() => {
-      save.disabled = false;
-    });
+sessionModel.onchange = () => {
+  fillThinking(thinking, sessionModel);
 };
-for (const action of ["compact", "reset"])
-  element(action, HTMLButtonElement).onclick = () => {
-    if (action === "reset" && !confirm("Start a new model context? History is preserved.")) return;
-    const text = element("handoff", HTMLTextAreaElement).value.trim();
-    void api(
-      endpoint(action),
-      text ? { [action === "reset" ? "handoff" : "instructions"]: text } : {},
+for (const form of [preferences, globalPreferences]) {
+  form.addEventListener("change", (event) => {
+    if (!form.hidden && event.target instanceof HTMLSelectElement) void flushSettings();
+  });
+  form.addEventListener("focusout", (event) => {
+    if (
+      !form.hidden &&
+      (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)
     )
-      .then(() => preferences.close())
-      .catch((error) => {
-        preferences.close();
-        report(error);
-      });
-  };
+      void flushSettings();
+  });
+}
+
 async function exportConversation(): Promise<void> {
   const filename = `pi-${active}-${conversation ?? "main"}.json`;
   const records = await api<EntryRecord[]>(endpoint("export"));
@@ -1787,15 +1837,13 @@ async function exportConversation(): Promise<void> {
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-element("export", HTMLButtonElement).onclick = () => {
-  void exportConversation().catch(report);
-};
 window.addEventListener("offline", () => {
   connected = false;
   controls();
 });
 window.addEventListener("online", () => {
-  if (active) attach(active, conversation);
+  // Reconnect without resetting the current view, draft or attachments.
+  if (active) connectEvents();
   void refresh()
     .then(() => {
       if (active) return;
@@ -1830,12 +1878,14 @@ window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
   const install = element("install", HTMLButtonElement);
   install.hidden = false;
+  element("app-settings", HTMLElement).hidden = false;
   install.onclick = () => {
     void (event as InstallEvent)
       .prompt()
       .then(() => (event as InstallEvent).userChoice)
       .then(() => {
         install.hidden = true;
+        element("app-settings", HTMLElement).hidden = true;
       })
       .catch(report);
   };
@@ -1922,28 +1972,122 @@ function resizePrompt(): void {
   prompt.style.height = `${prompt.scrollHeight}px`;
 }
 function closePopovers(): void {
-  for (const popover of [menu, appMenu, messageMenu, inputMenu]) popover.hidePopover();
+  for (const popover of [messageMenu, inputMenu]) popover.hidePopover();
 }
-function openPicker(): void {
+const panes = {
+  conversation: transcript,
+  sessions: picker,
+  settings: preferences,
+  global: globalPreferences,
+  stats: usageDialog,
+  fork: element("branch-picker", HTMLElement),
+  search: transcript,
+};
+type View = keyof typeof panes;
+let view: View = "conversation";
+let conversationScroll = 0;
+let navigation = 0;
+const viewTitle = element("view-title", HTMLSpanElement);
+function updateViewTitle(): void {
+  const titles = {
+    conversation: "",
+    sessions: "Sessions",
+    settings: "Session settings",
+    global: "Defaults and preferences",
+    stats: "Conversation stats",
+    fork: "Branches",
+    search: `Search in “${title.textContent}”`,
+  };
+  viewTitle.textContent = titles[view];
+}
+function setView(next: View): void {
+  if (view === "conversation" && next !== view) conversationScroll = transcript.scrollTop;
+  if (view === "search" && next !== view) clearSearch();
+  completions.close();
   closePopovers();
-  picker.querySelector(".dialog-error")?.remove();
-  picker.showModal();
-  void refresh().catch(report);
+  for (const pane of new Set(Object.values(panes))) pane.hidden = pane !== panes[next];
+  title.hidden =
+    status.hidden =
+    element("menu-toggle", HTMLButtonElement).hidden =
+      next !== "conversation";
+  viewTitle.hidden = element("close-view", HTMLButtonElement).hidden = next === "conversation";
+  element("new-options", HTMLElement).hidden =
+    next !== "sessions" ||
+    element("new-options-toggle", HTMLButtonElement).getAttribute("aria-expanded") !== "true";
+  const queue = element("queue", HTMLDivElement);
+  queue.hidden = !queue.childElementCount || (next !== "conversation" && next !== "search");
+  composer.hidden = next === "sessions" || next === "search";
+  element("session-filter-bar", HTMLDivElement).hidden = next !== "sessions";
+  searchBar.hidden = next !== "search";
+  view = next;
+  document.body.dataset.view = view;
+  updateViewTitle();
+  resizePrompt();
+  if (next === "conversation") transcript.scrollTop = conversationScroll;
+  const focus =
+    next === "sessions"
+      ? sessionFilter
+      : next === "search"
+        ? search
+        : next === "conversation"
+          ? prompt
+          : viewTitle;
+  focus.focus({ preventScroll: true });
+  if (next === "search") {
+    updateSearch();
+    search.select();
+  }
+  updateLatest();
 }
-element("workspace", HTMLButtonElement).onclick = openPicker;
-element("close-picker", HTMLButtonElement).onclick = () => picker.close();
+async function navigate(next: View, focusModel = false): Promise<boolean> {
+  const request = ++navigation;
+  if (!(await flushSettings()) || request !== navigation) return false;
+  if (["settings", "stats", "fork", "search"].includes(next) && !latest) return false;
+  if (view !== next) {
+    if (next === "settings") prepareSessionSettings();
+    if (next === "global") prepareGlobalSettings();
+  }
+  setView(next);
+  if (focusModel) sessionModel.focus();
+  if (next === "sessions") void refresh().catch(report);
+  if (next === "fork") void refreshBranches().catch(report);
+  if (next === "stats") void refreshRepository();
+  return true;
+}
+async function selectSession(id: string, branch?: number): Promise<void> {
+  const request = ++navigation;
+  if (!(await flushSettings()) || request !== navigation) return;
+  if (active !== id || conversation !== branch) {
+    attach(id, branch);
+    conversationScroll = 0;
+  }
+  setView("conversation");
+}
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-view]")) {
+  button.onclick = () => {
+    const next = button.dataset.view;
+    if (next && next in panes) void navigate(next as View);
+  };
+}
+function showNewOptions(expanded: boolean): void {
+  element("new-options-toggle", HTMLButtonElement).setAttribute("aria-expanded", String(expanded));
+  element("new-options", HTMLElement).hidden = !expanded || view !== "sessions";
+}
+element("new-options-toggle", HTMLButtonElement).onclick = () =>
+  showNewOptions(!!element("new-options", HTMLElement).hidden);
 sessionFilter.oninput = renderSessions;
-installPickerKeyMappings(picker);
+sessionFilter.onkeydown = (event) => {
+  if (event.key === "Enter" && !event.isComposing) event.preventDefault();
+};
+installPickerKeyMappings(
+  document,
+  () => view === "sessions",
+  () => showNewOptions(true),
+);
 installSelectKeyMappings(document);
-for (const popover of [menu, appMenu, inputMenu])
-  popover.addEventListener("click", (event) => {
-    if (
-      event.target instanceof Element &&
-      event.target.closest("button")?.id !== "wrap-code" &&
-      event.target.closest("button")
-    )
-      popover.hidePopover();
-  });
+inputMenu.addEventListener("click", (event) => {
+  if (event.target instanceof Element && event.target.closest("button")) inputMenu.hidePopover();
+});
 // Manual dismissal keeps the release of a long press from immediately closing
 // the menu (automatic popover light-dismiss runs on that same pointer release).
 document.addEventListener("pointerdown", (event) => {
@@ -1955,15 +2099,14 @@ document.addEventListener("pointerdown", (event) => {
   )
     messageMenu.hidePopover();
 });
-for (const popover of [menu, appMenu, inputMenu])
-  popover.addEventListener("beforetoggle", (event) => {
-    if (event.newState === "open") messageMenu.hidePopover();
-  });
+inputMenu.addEventListener("beforetoggle", (event) => {
+  if (event.newState === "open") messageMenu.hidePopover();
+});
 messageMenu.addEventListener("toggle", () => {
   if (!messageMenu.matches(":popover-open"))
     selectedMessage?.trigger.setAttribute("aria-expanded", "false");
 });
-for (const popover of [menu, appMenu, messageMenu, inputMenu])
+for (const popover of [messageMenu, inputMenu])
   popover.addEventListener("keydown", (event) => {
     const direction = navigationDirection(event);
     if (
@@ -2033,6 +2176,7 @@ element("quote-message", HTMLButtonElement).onclick = () => {
     return report("Quote exceeds the message limit.");
   prompt.value += `${prompt.value ? "\n\n" : ""}${quoted}\n\n`;
   messageMenu.hidePopover();
+  if (view === "search") void navigate("conversation");
   resizePrompt();
   prompt.focus();
   saveDraft();
@@ -2051,24 +2195,22 @@ element("fork-message", HTMLButtonElement).onclick = () => {
   void api<{ id: number }>(endpoint("fork"), { entry: selected.entry })
     .then((result) => {
       if (active === selected.session && conversation === selected.branch)
-        attach(selected.session, result.id);
+        void selectSession(selected.session, result.id);
     })
     .catch(report);
 };
-const wrap = element("wrap-code", HTMLButtonElement);
+const wrap = element("wrap-code", HTMLSelectElement);
 function setWrap(value: boolean): void {
   document.body.classList.toggle("wrap-code", value);
-  wrap.setAttribute("aria-pressed", String(value));
-  const indicator = wrap.querySelector("span");
-  if (indicator) indicator.textContent = value ? "On" : "Off";
+  wrap.value = String(value);
 }
 try {
   setWrap(localStorage.getItem("pi.wrapCode") === "true");
 } catch {
   /* Browser storage may be disabled. */
 }
-wrap.onclick = () => {
-  const value = !document.body.classList.contains("wrap-code");
+wrap.onchange = () => {
+  const value = wrap.value === "true";
   setWrap(value);
   try {
     localStorage.setItem("pi.wrapCode", String(value));
@@ -2078,6 +2220,7 @@ wrap.onclick = () => {
 };
 function updateLatest(): void {
   element("latest", HTMLButtonElement).hidden =
+    view !== "conversation" ||
     transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
 }
 transcript.addEventListener("scroll", updateLatest);
@@ -2092,8 +2235,6 @@ function updateSearch(): void {
   const ranges: Range[] = [];
   for (const article of transcript.querySelectorAll("article")) {
     const found = !searchBar.hidden && !!query && (article.dataset.search ?? "").includes(query);
-    article.classList.toggle("search-hit", found);
-    article.classList.remove("search-current");
     if (found) {
       matches.push(article);
       // Keep syntax markup intact while highlighting matching text.
@@ -2123,7 +2264,6 @@ function updateSearch(): void {
     0,
     matches.findIndex((node) => node === current),
   );
-  matches[matchIndex]?.classList.add("search-current");
   element("search-count", HTMLSpanElement).textContent = query
     ? `${matches.length ? matchIndex + 1 : 0} / ${matches.length}`
     : "";
@@ -2132,30 +2272,19 @@ function updateSearch(): void {
 }
 function goToMatch(direction: number): void {
   if (!matches.length) return;
-  matches[matchIndex]?.classList.remove("search-current");
   matchIndex = (matchIndex + direction + matches.length) % matches.length;
   const node = matches[matchIndex];
-  node.classList.add("search-current");
   for (const details of node.querySelectorAll("details"))
     if (details.textContent?.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase()))
       details.open = true;
   node.scrollIntoView({ block: "center" });
   element("search-count", HTMLSpanElement).textContent = `${matchIndex + 1} / ${matches.length}`;
 }
-function openSearch(): void {
-  if (!active) return;
-  closePopovers();
-  searchBar.hidden = false;
-  search.focus();
-  search.select();
-  updateSearch();
-}
-function closeSearch(): void {
+function clearSearch(): void {
   searchBar.hidden = true;
   search.value = "";
   updateSearch();
 }
-element("find", HTMLButtonElement).onclick = openSearch;
 search.oninput = () => {
   updateSearch();
   goToMatch(0);
@@ -2169,8 +2298,7 @@ search.onkeydown = (event) => {
   }
   if (event.key === "Escape") {
     event.preventDefault();
-    closeSearch();
-    prompt.focus();
+    void navigate("conversation");
   }
   if (event.key === "Enter") {
     event.preventDefault();
@@ -2179,40 +2307,38 @@ search.onkeydown = (event) => {
 };
 element("search-prev", HTMLButtonElement).onclick = () => goToMatch(-1);
 element("search-next", HTMLButtonElement).onclick = () => goToMatch(1);
-element("search-close", HTMLButtonElement).onclick = () => {
-  closeSearch();
-  prompt.focus();
-};
 document.addEventListener("keydown", (event) => {
   if (
     event.defaultPrevented ||
     event.isComposing ||
     event.altKey ||
     event.shiftKey ||
-    !(event.metaKey || event.ctrlKey) ||
-    preferences.open ||
-    globalPreferences.open ||
-    picker.open ||
-    usageDialog.open
+    !(event.metaKey || event.ctrlKey)
   )
     return;
+  const direction = view === "fork" ? navigationDirection(event) : 0;
+  if (direction) {
+    event.preventDefault();
+    moveFocus(Array.from(branches.querySelectorAll<HTMLButtonElement>("button")), direction);
+    return;
+  }
   if (event.key.toLowerCase() === "k") {
     event.preventDefault();
-    openPicker();
+    void navigate("sessions");
   }
   if (event.key.toLowerCase() === "f" && active) {
     event.preventDefault();
-    openSearch();
+    void navigate("search");
   }
 });
 
-for (const popover of [menu, appMenu, inputMenu])
-  popover.addEventListener("toggle", () => {
-    if (popover.matches(":popover-open"))
-      popover.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])")?.focus();
-  });
+inputMenu.addEventListener("toggle", () => {
+  if (inputMenu.matches(":popover-open"))
+    inputMenu.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])")?.focus();
+});
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && messageMenu.matches(":popover-open")) {
+  if (event.defaultPrevented || event.isComposing || event.key !== "Escape") return;
+  if (messageMenu.matches(":popover-open")) {
     event.preventDefault();
     messageMenu.hidePopover();
     const trigger = selectedMessage?.trigger;
@@ -2226,9 +2352,18 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-const findShortcut = element("find", HTMLButtonElement).querySelector("kbd");
-if (findShortcut)
-  findShortcut.textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ F" : "Ctrl F";
+document.addEventListener("keydown", (event) => {
+  if (event.defaultPrevented || event.isComposing || event.key !== "Escape") return;
+  if (inputMenu.matches(":popover-open")) {
+    event.preventDefault();
+    inputMenu.hidePopover();
+    return;
+  }
+  if (view !== "conversation") {
+    event.preventDefault();
+    void navigate("conversation");
+  }
+});
 
 function compactTokens(value: number): string {
   if (value < 1000) return String(value);
@@ -2296,6 +2431,10 @@ function renderFooter(): void {
   costNode.title = "Estimated cost (USD)";
   set("usage-workspace", workspace);
   set(
+    "footer-instance",
+    `${binding.provider === "local" ? "local" : binding.target} · ${agent?.cwd ?? binding.cwd}`,
+  );
+  set(
     "usage-repository",
     repository?.state === "repository"
       ? `${repository.branch ?? "Detached HEAD"}${repository.revision ? ` · ${repository.revision}` : " · no commits"}`
@@ -2340,13 +2479,11 @@ async function refreshRepository(): Promise<void> {
 }
 for (const id of ["footer-stats", "footer-context"])
   element(id, HTMLButtonElement).onclick = () => {
-    closePopovers();
-    usageDialog.showModal();
-    void refreshRepository();
+    void navigate("stats");
   };
-element("footer-model", HTMLButtonElement).onclick = () =>
-  element("settings", HTMLButtonElement).click();
-element("close-usage", HTMLButtonElement).onclick = () => usageDialog.close();
+element("footer-model", HTMLButtonElement).onclick = () => {
+  void navigate("settings");
+};
 setInterval(() => {
   if (active && connected && !document.hidden) void refreshRepository();
 }, 30_000);

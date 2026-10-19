@@ -130,7 +130,8 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
   await page.goto(base);
-  await page.waitForSelector("#picker[open]");
+  await page.waitForSelector("#picker:not([hidden])");
+  await page.click("#new-options-toggle");
   const remote = JSON.stringify([f.binding.provider, f.binding.target, f.binding.cwd]);
   await page.selectOption("#targets", remote);
   await page.waitForSelector("#new-directory-field", { state: "visible" });
@@ -148,14 +149,14 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   );
   await page.fill("#new-directory", "/one/");
   await page.click("#create");
-  await page.waitForSelector("#picker[open]", { state: "hidden" });
+  await page.waitForSelector("#picker:not([hidden])", { state: "hidden" });
   const id = new URL(page.url()).searchParams.get("session");
   assert(id);
   const session = await f.sessions.get(id);
   assert.equal((await session.root.agent(context)).cwd, join(f.workspace, "one"));
   await page.fill("#prompt", "/settings");
   await page.keyboard.press("Control+Enter");
-  await page.waitForSelector("#preferences[open]");
+  await page.waitForSelector("#preferences:not([hidden])");
   assert.equal(await page.inputValue("#session-directory"), "one");
   await page.fill("#session-directory", "t");
   await page.waitForFunction(
@@ -164,24 +165,25 @@ await test("mobile browser exposes remote directory suggestions for new sessions
       "two/",
   );
   await page.fill("#session-directory", "/two");
-  await page.click("#save-settings");
-  await page.waitForSelector("#preferences[open]", { state: "hidden" });
+  await page.click("#close-view");
+  await page.waitForSelector("#preferences:not([hidden])", { state: "hidden" });
   assert.equal((await session.root.agent(context)).cwd, join(f.workspace, "two"));
   await page.reload();
   await page.waitForFunction(
-    () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
+    () => !document.querySelector<HTMLButtonElement>("#footer-model")?.disabled,
   );
   await page.fill("#prompt", "/settings");
   await page.keyboard.press("Control+Enter");
-  await page.waitForSelector("#preferences[open]");
+  await page.waitForSelector("#preferences:not([hidden])");
   assert.equal(await page.inputValue("#session-directory"), "two");
   await page.fill("#session-directory", "");
-  await page.click("#save-settings");
-  await page.waitForSelector("#preferences[open]", { state: "hidden" });
+  await page.click("#close-view");
+  await page.waitForSelector("#preferences:not([hidden])", { state: "hidden" });
   assert.equal((await session.root.agent(context)).cwd, f.workspace);
   await page.fill("#prompt", "/sessions");
   await page.keyboard.press("Control+Enter");
-  await page.waitForSelector("#picker[open]");
+  await page.waitForSelector("#picker:not([hidden])");
+  await page.click("#new-options-toggle");
   await page.selectOption("#targets", JSON.stringify(["local", f.workspace, f.workspace]));
   assert.equal(await page.locator("#new-directory-field").isVisible(), false);
   assert.deepEqual(errors, []);

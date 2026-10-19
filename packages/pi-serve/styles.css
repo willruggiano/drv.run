@@ -48,7 +48,7 @@
 body { margin: 0; height: 100dvh; display: flex; flex-direction: column; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 button, select, textarea, input { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 button, select { min-height: 30px; padding: 3px 9px; }
-button { cursor: pointer; } button:hover { background: var(--hover); border-color: var(--border-hover); }
+button { cursor: pointer; } button:hover { background: var(--hover); }
 button:disabled { opacity: .4; cursor: default; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .icon { min-width: 32px; padding: 3px 6px; background: transparent; border-color: transparent; }
@@ -63,10 +63,7 @@ h1 { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; margin: 0; overfl
 .session-status[data-state=working] { background: var(--link); }
 .session-status[data-state=reconnecting] { background: var(--warning); }
 .session-status[data-state=offline], .session-status[data-state=interrupted] { background: var(--danger); }
-#branches { width: 100%; }
 #transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; padding: 12px max(20px, calc((100% - 820px)/2)); scrollbar-gutter: stable; }
-#transcript:empty { flex: none; padding-top: clamp(16px, 6svh, 64px); }
-#transcript:empty ~ .composer-area #prompt { min-height: clamp(140px, 24svh, 240px); max-height: 40svh; }
 article { padding: 14px 0; scroll-margin: 16px; } article + article { border-top: 1px solid var(--surface-subtle); }
 article > header { color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; min-height: 24px; }
 article[data-role=user] > header { color: var(--muted); }
@@ -148,7 +145,7 @@ input { padding: 7px 10px; width: 100%; min-width: 0; }
 #bottom-line[data-connected=false] { opacity: .65; }
 #usage-dialog dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 6px 18px; margin: 10px 0; font-size: 13px; } #usage-dialog dt { color: var(--muted); } #usage-dialog dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 #composer { padding-bottom: 5px; }
-#search-bar { display: flex; gap: 6px; align-items: center; padding: 6px max(16px, calc((100% - 820px)/2)); border-bottom: 1px solid var(--line); } #search-count { white-space: nowrap; font-size: 11px; color: var(--muted); } article.search-hit { border-left: 2px solid var(--search-border); padding-left: 10px; } article.search-current { border-left-color: var(--accent); background: var(--search-current); }
+#search-bar { display: flex; gap: 6px; align-items: center; padding: 6px max(16px, calc((100% - 820px)/2)); border-bottom: 1px solid var(--line); } #search-count { white-space: nowrap; font-size: 11px; color: var(--muted); }
 ::highlight(pi-search) { background: var(--search-highlight); color: var(--search-text); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 a { color: var(--link); } [hidden] { display: none !important; }
@@ -202,3 +199,64 @@ a { color: var(--link); } [hidden] { display: none !important; }
 #completions [role=status] { padding: 10px; }
 
 body.hide-thinking .thinking, body.hide-images #transcript img { display: none; }
+
+/* Stacked main views. */
+body.stacked-layout { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; overflow: hidden; }
+#app-header, #main-area, #queue, #app-footer { min-width: 0; }
+#app-header { grid-row: 1; }
+#main-area { grid-row: 2; }
+#queue { grid-row: 3; }
+#app-footer { grid-row: 4; }
+#main-area { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+.pane { grid-row: 1; min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 12px max(20px, calc((100% - 820px)/2)) 20px; }
+:is(.pane, #new-options) label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: start; gap: 16px; margin: 0; padding: 2px 0; }
+:is(.pane, #new-options) label > span { margin: 0; padding: 7px 0; font-size: 12px; text-align: left; }
+:is(.pane, #new-options) label > :is(input, select, textarea) { min-width: 0; width: 100%; padding: 6px 0; background: transparent; border-color: transparent; border-radius: 0; text-align: right; }
+:is(.pane, #new-options) select { appearance: none; text-align-last: right; }
+:is(.pane, #new-options) option { background: var(--surface); }
+.pane textarea { min-height: 44px; }
+.settings-group + .settings-group, #app-settings { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.settings-group h2 { font-size: 13px; margin: 0 0 4px; }
+#new-options { grid-row: 2; max-height: 45dvh; overflow-y: auto; padding: 0 max(20px, calc((100% - 820px)/2)); }
+#new-options > div { border-top: 1px solid var(--line); padding: 4px 0; }
+#new-options-toggle .options-close, #new-options-toggle[aria-expanded=true] .options-cog { display: none; }
+#new-options-toggle[aria-expanded=true] .options-close { display: inline; }
+#queue { min-height: 0; max-height: min(20dvh, 180px); overflow-y: auto; padding: 0 max(20px, calc((100% - 820px)/2)); }
+#queue:empty { display: none; }
+.pane .actions { margin: 16px 0; }
+#sessions, #branches { max-height: none; overflow: visible; display: grid; gap: 4px; }
+#app-footer { position: relative; background: var(--bg); }
+.stacked-layout #bottom-line { padding-bottom: 8px; }
+.stacked-layout #bottom-line .footer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 16px; }
+#footer-instance { grid-area: 1 / 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stacked-layout #footer-model { grid-area: 1 / 2; display: flex; align-items: center; justify-self: end; gap: 6px; white-space: nowrap; }
+.stacked-layout #footer-stats { grid-area: 2 / 1; }
+.stacked-layout #footer-context { grid-area: 2 / 2; justify-self: end; }
+.stacked-layout #footer-model .footer-dot { display: block; width: 2px; height: 2px; border-radius: 50%; background: currentColor; }
+#session-filter-bar, #search-bar { display: block; padding: 8px max(20px, calc((100% - 820px)/2)) 5px; border: 0; }
+#session-filter, #search { margin: 0; resize: none; min-height: 42px; max-height: 25dvh; background: transparent; border: none; outline: none; }
+#new-options-toggle, #create, #search-prev, #search-next { width: 40px; padding: 0; font-size: 20px; flex-shrink: 0; }
+#create, #search-next { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
+#search-count { padding-left: 6px; }
+.glyph { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
+.bar > .icon { display: inline-flex; align-items: center; justify-content: center; }
+#close-view { margin-left: auto; }
+#view-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#menu-toggle { margin-left: 0; }
+#branches .session[aria-current=true] { background: var(--selected); }
+@media (max-width: 650px) {
+  .pane { padding: 8px 16px 16px; }
+  #new-options, #queue { padding: 0 16px; }
+  #session-filter-bar, #search-bar { padding: 6px 10px 4px; }
+  .stacked-layout #bottom-line .footer-row { display: flex; gap: 6px; }
+  #footer-instance, .stacked-layout #footer-stats { display: none; }
+}
+@media (min-width: 651px) and (hover: hover) and (pointer: fine) {
+  #new-options-toggle, #create, #search-prev, #search-next { width: 32px; font-size: 18px; }
+}
+#queue > div > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* Message actions remain transient; every action retains its accessible name. */
+#message-menu { width: auto; max-width: calc(100% - 16px); padding: 4px; border-radius: 9px; inset: auto; }
+#message-menu:popover-open { display: flex; flex-wrap: wrap; gap: 2px; }
+#message-menu > button { width: 40px; min-width: 40px; height: 40px; min-height: 40px; padding: 0; justify-content: center; }

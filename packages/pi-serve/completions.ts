@@ -3,6 +3,7 @@ export const commands = [
   { name: "new", description: "Create a session with the selected target/model" },
   { name: "settings", description: "Session settings" },
   { name: "model", description: "Choose a model" },
+  { name: "fork", description: "Open branches" },
   { name: "compact", description: "Compact context · optional instructions" },
   { name: "reset", description: "Reset context · optional handoff (asks for confirmation)" },
   { name: "stop", description: "Stop the current run" },

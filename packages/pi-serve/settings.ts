@@ -18,7 +18,7 @@ export const settingFields = [
     key: "defaultThinkingLevel",
     label: "Default thinking",
     choices: thinkingLevels,
-    group: "New sessions",
+    group: "Model / thinking",
   },
   {
     key: "transport",

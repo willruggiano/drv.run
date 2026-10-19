@@ -208,24 +208,24 @@ await test("mobile browser composer runs commands without sending prompts and pr
     await page.keyboard.press("Control+Enter");
   };
   await run("/settings");
-  await page.waitForSelector("#preferences[open]");
-  await page.click("#close-settings");
+  await page.waitForSelector("#preferences:not([hidden])");
+  await page.click("#close-view");
   await run("/model");
-  await page.waitForSelector("#preferences[open]");
+  await page.waitForSelector("#preferences:not([hidden])");
   assert.equal(
     await page.locator("#session-model").evaluate((node) => node === document.activeElement),
     true,
   );
-  await page.click("#close-settings");
+  await page.click("#close-view");
   await run("/search");
   await page.waitForSelector("#search-bar", { state: "visible" });
-  await page.click("#search-close");
+  await page.click("#close-view");
   const download = page.waitForEvent("download");
   await run("/export");
   assert.match((await download).suggestedFilename(), /\.json$/);
   await run("/sessions");
-  await page.waitForSelector("#picker[open]");
-  await page.click("#close-picker");
+  await page.waitForSelector("#picker:not([hidden])");
+  await page.click("#close-view");
   for (const [command, message] of [
     ["/stop", "no running response"],
     ["/resume", "does not need to be resumed"],

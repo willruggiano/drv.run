@@ -27,7 +27,7 @@ async function setup(t: TestContext): Promise<Page> {
       source.replace(/export /g, "") +
       `
     const picker = document.querySelector('#picker');
-    installPickerKeyMappings(picker);
+    installPickerKeyMappings(document, () => !picker.hidden, () => { document.querySelector("#new-options").hidden = false; });
     installSelectKeyMappings(document);
     for (const id of ['targets', 'models']) {
       const select = document.getElementById(id);
@@ -37,7 +37,10 @@ async function setup(t: TestContext): Promise<Page> {
     const create = document.getElementById('create');
     create.disabled = false;
     create.onclick = () => { create.dataset.clicks = String(Number(create.dataset.clicks || 0) + 1); };
-    picker.showModal();
+    picker.hidden = false;
+    document.querySelector("#new-options").hidden = false;
+    document.querySelector("#session-filter-bar").hidden = false;
+    document.querySelector("#close-view").hidden = false;
   `,
   });
   return page;
@@ -49,12 +52,12 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
     ["t", "targets"],
     ["m", "models"],
   ]) {
-    await page.focus("#close-picker");
+    await page.focus("#close-view");
     await page.keyboard.press(key);
     await focused(page, id);
     assert.equal(await page.locator(`#${id}`).getAttribute("data-opened"), "true");
   }
-  await page.focus("#close-picker");
+  await page.focus("#close-view");
   await page.keyboard.press("n");
   assert.equal(await page.locator("#create").getAttribute("data-clicks"), "1");
   await page.locator("#create").evaluate((node) => {
@@ -70,14 +73,14 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
     await page.keyboard.press("n");
     await focused(page, id);
   }
-  await page.focus("#close-picker");
+  await page.focus("#close-view");
   for (const key of ["Control+t", "Alt+m", "Shift+N", "Meta+n"]) {
     await page.keyboard.press(key);
-    await focused(page, "close-picker");
+    await focused(page, "close-view");
   }
   assert.equal(
     await page.evaluate(() => {
-      const button = document.getElementById("close-picker")!;
+      const button = document.getElementById("close-view")!;
       return [{ repeat: true }, { isComposing: true }].every((extra) =>
         button.dispatchEvent(
           new KeyboardEvent("keydown", { key: "t", bubbles: true, cancelable: true, ...extra }),
@@ -91,7 +94,7 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
 await test("browser key mappings: slash focuses session filter without inserting text", async (t) => {
   const page = await setup(t);
   await page.fill("#session-filter", "existing");
-  await page.focus("#close-picker");
+  await page.focus("#close-view");
   await page.keyboard.press("/");
   await focused(page, "session-filter");
   assert.equal(await page.inputValue("#session-filter"), "existing");
@@ -102,9 +105,9 @@ await test("browser key mappings: slash focuses session filter without inserting
   await page.focus("#targets");
   await page.keyboard.press("/");
   await focused(page, "targets");
-  await page.focus("#close-picker");
+  await page.focus("#close-view");
   await page.keyboard.press("Control+/");
-  await focused(page, "close-picker");
+  await focused(page, "close-view");
 });
 
 await test("browser key mappings: Ctrl+J/K navigate visible sessions and Enter activates", async (t) => {

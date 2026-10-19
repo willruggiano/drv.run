@@ -699,7 +699,8 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
   await page.goto(base);
-  await page.waitForSelector("#picker[open]");
+  await page.waitForSelector("#picker:not([hidden])");
+  await page.click("#new-options-toggle");
   assert.equal(await page.locator("#models").inputValue(), "0");
   assert.equal(
     await page.locator("#new-thinking option").first().textContent(),
@@ -715,7 +716,8 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   );
   const oldOption = await page.locator("#models option").last().elementHandle();
   assert(oldOption);
-  await page.click("#refresh");
+  await page.click("#close-view");
+  await page.click("#title");
   await page.waitForFunction((option) => !option.isConnected, oldOption);
   assert.equal(await page.locator("#models").inputValue(), "1");
 
@@ -731,7 +733,8 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   });
   const pendingOption = await page.locator("#models option").last().elementHandle();
   assert(pendingOption);
-  await page.click("#refresh");
+  await page.click("#close-view");
+  await page.click("#title");
   await requested.promise;
   await page.selectOption("#models", "0");
   release.resolve();
@@ -740,11 +743,11 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   assert.equal(await page.locator("#models").inputValue(), "0");
   assert.equal(await page.locator("#new-thinking").inputValue(), "");
 
-  await page.click("#picker-defaults");
+  await page.click("#close-view");
+  await page.click("#menu-toggle");
   await page.selectOption("#default-model", "0");
   await page.selectOption("#model-thinking-default", "high");
   await page.selectOption('[name="defaultThinkingLevel"]', "low");
-  await page.locator("#global-settings-fields summary").filter({ hasText: "Display" }).click();
   await page.selectOption('[name="hideThinkingBlock"]', "true");
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
@@ -760,23 +763,23 @@ await test("mobile browser edits shared defaults and keeps session settings inde
     }
   }
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.click("#save-global-settings");
+  await page.click("#close-view");
   await page.waitForSelector("#global-preferences", { state: "hidden" });
   assert.equal(await page.locator("#new-thinking option").first().textContent(), "Default (high)");
   assert.equal(
     await page.locator("body").evaluate((node) => node.classList.contains("hide-thinking")),
     true,
   );
+  await page.click("#title");
   await page.click("#create");
   await page.waitForFunction(() => new URL(location.href).searchParams.has("session"));
   const id = new URL(page.url()).searchParams.get("session")!;
   const session = await sessions.get(id);
   assert.equal((await session.info()).thinkingLevel, "high");
   await page.waitForFunction(
-    () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
+    () => !document.querySelector<HTMLButtonElement>("#footer-model")?.disabled,
   );
-  await page.click("#title");
-  await page.click("#settings");
+  await page.click("#footer-model");
   assert.deepEqual(
     await page
       .locator("#thinking option")
@@ -784,14 +787,14 @@ await test("mobile browser edits shared defaults and keeps session settings inde
     ["off", "minimal", "low", "medium", "high"],
   );
   await page.selectOption("#thinking", "off");
-  await page.click("#save-settings");
+  await page.click("#close-view");
   await page.waitForSelector("#preferences", { state: "hidden" });
   assert.equal((await session.info()).thinkingLevel, "off");
   assert.equal(store.read().values.defaultThinkingLevel, "low");
   assert.equal(store.read().modelThinkingLevels["faux/faux-1"], "high");
   await page.reload();
   await page.waitForFunction(
-    () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
+    () => !document.querySelector<HTMLButtonElement>("#footer-model")?.disabled,
   );
   assert.equal(
     await page.locator("body").evaluate((node) => node.classList.contains("hide-thinking")),
@@ -799,4 +802,263 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   );
   assert.equal((await session.info()).thinkingLevel, "off");
   assert.deepEqual(errors, []);
+});
+
+await test("mobile browser stacked views preserve input and scroll, serialize autosaves and isolate background work", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const store = new GlobalSettingsStore(SettingsManager.inMemory());
+  const assets = join(f.workspace, "assets");
+  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  const base = await serve(t, f.sessions, assets, "127.0.0.1", undefined, store);
+  const browser = await chromium.launch({
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  });
+  t.after(() => browser.close());
+  f.faux.setResponses([fauxAssistantMessage("Searchable history.\n".repeat(80))]);
+  await session.prompt("Seed history.", randomUUID());
+  await session.root.waitForIdle(context);
+  for (const width of [390, 1440]) {
+    const page = await browser.newPage({
+      viewport: { width, height: 900 },
+      hasTouch: width === 390,
+    });
+    const errors: Error[] = [];
+    page.on("pageerror", (error) => errors.push(error));
+    page.setDefaultTimeout(10_000);
+    await page.goto(`${base}/?session=${session.id}`);
+    await page.waitForSelector("#status[data-state=ready]");
+    await page.fill("#prompt", "Unsent draft");
+    await page.setInputFiles("#images", {
+      name: "pixel.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    });
+    await page.waitForSelector("#attachments button");
+    const scroll = await page.locator("#transcript").evaluate((node) => {
+      node.scrollTop = 120;
+      return node.scrollTop;
+    });
+    await page.click("#footer-model");
+    await page.fill("#session-name", `Session ${width}`);
+    await page.focus("#instructions");
+    await waitFor(async () => (await session.info()).name === `Session ${width}`);
+    assert.equal(await page.locator("body").getAttribute("data-view"), "settings");
+
+    // A blur starts a save; leaving during that request must wait and fail closed.
+    const requested = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    let fail = true;
+    await page.route("**/configure*", async (route) => {
+      requested.resolve();
+      await release.promise;
+      if (fail)
+        await route.fulfill({ status: 503, json: { error: "Settings storage unavailable" } });
+      else await route.continue();
+    });
+    await page.fill("#instructions", `Instructions ${width}`);
+    await page.click("#close-view");
+    await requested.promise;
+    assert.equal(await page.locator("body").getAttribute("data-view"), "settings");
+    assert.equal(await page.locator("#preferences").getAttribute("aria-busy"), "true");
+    release.resolve();
+    await page.waitForSelector("#preferences:not([aria-busy])");
+    assert.equal(await page.locator("#notice").isVisible(), true);
+    assert.equal(await page.inputValue("#instructions"), `Instructions ${width}`);
+    assert.equal(await page.inputValue("#prompt"), "Unsent draft");
+    const failed = page.waitForResponse(
+      (response) => response.url().includes("/configure") && response.status() === 503,
+    );
+    await page.keyboard.press("Control+k");
+    await failed;
+    await page.waitForSelector("#preferences:not([aria-busy])");
+    assert.equal(await page.locator("body").getAttribute("data-view"), "settings");
+    fail = false;
+    await page.keyboard.press("Control+k");
+    await page.waitForSelector("#picker:not([hidden])");
+    assert.equal((await session.root.agent(context)).instructions, `Instructions ${width}`);
+    assert.equal(await page.locator("#attachments button").count(), 1);
+    assert.equal(await page.locator("#new-options").isHidden(), true);
+    await page.click("#new-options-toggle");
+    assert.equal(await page.locator("#new-options").isVisible(), true);
+    assert.equal(
+      await page.locator("#new-options-toggle .options-close").textContent(),
+      await page.locator("#stop span").textContent(),
+    );
+    await page.fill("#session-filter", "not a session");
+    assert.equal(await page.locator("#sessions button").count(), 0);
+    await page.fill("#session-filter", `Session ${width}`);
+    assert.equal(await page.locator("#sessions button").count(), 1);
+    await page.keyboard.press("Control+f");
+    await page.waitForSelector("#search-bar:not([hidden])");
+    assert.equal(await page.locator("#view-title").textContent(), `Search in “Session ${width}”`);
+    const articleStyles = () =>
+      page.locator("#transcript article").evaluateAll((nodes) =>
+        nodes.map((node) => {
+          const css = getComputedStyle(node);
+          return [css.paddingLeft, css.borderLeftWidth, css.backgroundColor];
+        }),
+      );
+    const before = await articleStyles();
+    await page.fill("#search", "Searchable");
+    assert.deepEqual(await articleStyles(), before);
+    assert(await page.evaluate(() => (CSS.highlights.get("pi-search")?.size ?? 0) > 0));
+    await page.click("#close-view");
+    await page.waitForSelector("#composer:not([hidden])");
+    assert.equal(await page.locator("#transcript").evaluate((node) => node.scrollTop), scroll);
+    assert.equal(await page.inputValue("#prompt"), "Unsent draft");
+    await page.locator("#attachments button").click();
+
+    // Saving immediately on selects includes edits made while a save is pending.
+    const selectRequested = Promise.withResolvers<void>();
+    const selectRelease = Promise.withResolvers<void>();
+    t.after(() => selectRelease.resolve());
+    await page.unroute("**/configure*");
+    await page.route("**/configure*", async (route) => {
+      selectRequested.resolve();
+      await selectRelease.promise;
+      await route.continue();
+    });
+    await page.click("#footer-model");
+    await page.selectOption("#thinking", "low");
+    await selectRequested.promise;
+    await page.selectOption("#thinking", "high");
+    await page.click("#footer-context");
+    assert.equal(await page.locator("body").getAttribute("data-view"), "settings");
+    selectRelease.resolve();
+    await page.waitForSelector("#usage-dialog:not([hidden])");
+    assert.equal((await session.root.agent(context)).thinkingLevel, "high");
+    await page.unroute("**/configure*");
+
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    t.after(() => finish.resolve());
+    f.faux.setResponses([
+      async () => {
+        started.resolve();
+        await finish.promise;
+        return fauxAssistantMessage(`Background response ${width}`);
+      },
+    ]);
+    await page.fill("#prompt", "Run in the background.");
+    await page.press("#prompt", "Control+Enter");
+    await started.promise;
+    await page.waitForSelector("#status[data-state=working]", { state: "attached" });
+    assert.equal(await page.locator("body").getAttribute("data-view"), "stats");
+    await page.fill("#prompt", "Queued text ".repeat(200));
+    await page.press("#prompt", "Control+Enter");
+    await page.waitForSelector("#queue button", { state: "attached" });
+    assert.equal(await page.locator("#queue").isHidden(), true);
+    await page.click("#close-view");
+    const queue = await page.locator("#queue").evaluate((node) => ({
+      height: node.getBoundingClientRect().height,
+      scroll: node.scrollHeight,
+      client: node.clientHeight,
+    }));
+    assert(queue.height > 0 && queue.height <= 180);
+    assert(queue.scroll > queue.client);
+    await page.locator("#queue button").click();
+    await page.waitForSelector("#queue", { state: "hidden" });
+    await page.click("#footer-context");
+    finish.resolve();
+    await session.root.waitForIdle(context);
+    await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
+    assert.equal(await page.locator("body").getAttribute("data-view"), "stats");
+    await page.fill("#prompt", "/fork");
+    await page.press("#prompt", "Control+Enter");
+    await page.waitForSelector("#branches button");
+    assert.equal(await page.locator("#branches button").count(), 1);
+    await page.locator("#branches button").click();
+    await page.waitForSelector("#title", { state: "visible" });
+
+    // Global save failures use the same bar and transition guard, not a dialog.
+    await page.click("#menu-toggle");
+    fail = true;
+    await page.route("**/api/settings", async (route) => {
+      if (fail && route.request().method() === "POST")
+        await route.fulfill({ status: 503, json: { error: "Defaults storage unavailable" } });
+      else await route.continue();
+    });
+    await page.selectOption('[name="defaultThinkingLevel"]', width === 390 ? "high" : "low");
+    await page.waitForSelector("#notice", { state: "visible" });
+    await page.waitForSelector("#global-preferences:not([aria-busy])");
+    const failedGlobal = page.waitForResponse(
+      (response) => response.url().endsWith("/api/settings") && response.status() === 503,
+    );
+    await page.click("#close-view");
+    await failedGlobal;
+    await page.waitForSelector("#global-preferences:not([aria-busy])");
+    assert.equal(await page.locator("body").getAttribute("data-view"), "global");
+    if (process.env.PI_SCREENSHOT_DIR) {
+      await mkdir(process.env.PI_SCREENSHOT_DIR, { recursive: true });
+      await page.screenshot({
+        path: join(process.env.PI_SCREENSHOT_DIR, `autosave-failure-${width}.png`),
+      });
+    }
+    fail = false;
+    await page.click("#close-view");
+    await page.waitForSelector("#title", { state: "visible" });
+    assert.equal(store.read().values.defaultThinkingLevel, width === 390 ? "high" : "low");
+    await page.click("#footer-context");
+    await page.fill("#prompt", "Keep through reconnect");
+    await page.context().setOffline(true);
+    await page.waitForSelector('#bottom-line[data-connected="false"]');
+    await page.context().setOffline(false);
+    await page.waitForSelector('#bottom-line[data-connected="true"]');
+    assert.equal(await page.locator("body").getAttribute("data-view"), "stats");
+    assert.equal(await page.inputValue("#prompt"), "Keep through reconnect");
+
+    // Creation can finish while a new edit is saving. It must not switch the
+    // form binding or repaint the new session with the old rename/configure result.
+    const creating = Promise.withResolvers<void>();
+    const createRelease = Promise.withResolvers<void>();
+    const configuring = Promise.withResolvers<void>();
+    const configureRelease = Promise.withResolvers<void>();
+    t.after(() => {
+      createRelease.resolve();
+      configureRelease.resolve();
+    });
+    await page.route("**/api/sessions", async (route) => {
+      creating.resolve();
+      await createRelease.promise;
+      await route.continue();
+    });
+    await page.route("**/configure*", async (route) => {
+      configuring.resolve();
+      await configureRelease.promise;
+      await route.continue();
+    });
+    await page.click("#footer-model");
+    await page.fill("#prompt", "/new");
+    await page.press("#prompt", "Control+Enter");
+    await creating.promise;
+    await page.fill("#instructions", `Before creating ${width}`);
+    await page.focus("#session-name");
+    await configuring.promise;
+    await page.fill("#session-name", `Old session ${width}`);
+    const created = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/sessions") && response.request().method() === "POST",
+    );
+    createRelease.resolve();
+    const newSession = await (await created).json();
+    assert.equal(await page.locator("body").getAttribute("data-view"), "settings");
+    assert.equal(new URL(page.url()).searchParams.get("session"), session.id);
+    configureRelease.resolve();
+    await page.waitForURL((url) => url.searchParams.get("session") === newSession.id);
+    await page.waitForSelector("#status[data-state=ready]");
+    assert.equal((await session.root.agent(context)).instructions, `Before creating ${width}`);
+    assert.equal((await session.info()).name, `Old session ${width}`);
+    assert.equal(
+      (await (await f.sessions.get(newSession.id)).root.agent(context)).instructions,
+      undefined,
+    );
+    assert.equal(await page.locator("#title").textContent(), f.workspace.split("/").at(-1));
+    assert.deepEqual(errors, []);
+    await page.close();
+  }
 });

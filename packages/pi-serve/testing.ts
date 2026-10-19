@@ -82,8 +82,8 @@ async function assertHeaderStatus(page: Page, state: string, label: string): Pro
       color: css.backgroundColor,
     };
   });
-  assert.equal(style.width, 8);
-  assert.equal(style.height, 8);
+  assert.equal(style.width, (await dot.isVisible()) ? 8 : 0);
+  assert.equal(style.height, (await dot.isVisible()) ? 8 : 0);
   assert.equal(style.radius, "50%");
   const colors: Record<string, string> = {
     ready: "rgb(175, 214, 188)",
@@ -156,7 +156,7 @@ async function assertTouchMenuPosition(page: Page, point: { x: number; y: number
   assert(layout.right <= layout.rightLimit + 1);
   assert(layout.bottom <= layout.bottomLimit + 1);
   assert(layout.width <= 260);
-  for (const height of layout.targets) assert(height >= 44);
+  for (const height of layout.targets) assert.equal(height, 40);
   // Prefer above the finger; flip below when there's insufficient space above.
   if (point.y - 12 - layout.height >= layout.topLimit)
     assert(Math.abs(layout.bottom - (point.y - 12)) <= 1);
@@ -179,13 +179,18 @@ async function openMessageActions(page: Page, actions: Locator): Promise<void> {
     return;
   }
   assert.equal(await actions.evaluate((node) => getComputedStyle(node).opacity), "0");
-  const point = await actions.evaluate((node) => {
+  const point = await actions.evaluate(async (node) => {
     const target =
       node.closest(".tool-call")?.querySelector(":scope > summary") ??
       node.closest("article")?.querySelector(":scope > .text") ??
       node.closest("article");
     if (!target) throw new Error("Missing long-press target");
     target.scrollIntoView({ block: "center" });
+    // Deliver the programmatic scroll before starting a hold. A scroll during
+    // the gesture intentionally cancels it, just as it does for a real finger.
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
     const box = target.getBoundingClientRect();
     return { x: box.left + 2, y: box.top + 2 };
   });
@@ -318,6 +323,7 @@ export async function browserFlow(
   await page.waitForFunction(
     () => document.querySelector<HTMLSelectElement>("#models")?.options.length === 2,
   );
+  await page.click("#new-options-toggle");
   await page.selectOption(
     "#targets",
     JSON.stringify([f.binding.provider, f.binding.target, f.binding.cwd]),
@@ -329,7 +335,7 @@ export async function browserFlow(
   const id = new URL(url).searchParams.get("session");
   assert(id);
   await page.waitForFunction(
-    () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
+    () => !document.querySelector<HTMLButtonElement>("#footer-model")?.disabled,
   );
   assert.equal(
     await page
@@ -339,8 +345,8 @@ export async function browserFlow(
   );
   const emptyPrompt = await page.locator("#prompt").boundingBox();
   assert(emptyPrompt);
-  assert(emptyPrompt.height >= 140);
-  assert(emptyPrompt.y + emptyPrompt.height < 844 / 2);
+  assert(emptyPrompt.height >= 42);
+  assert(emptyPrompt.y > 844 / 2);
   await page.locator("#prompt").tap();
   assert.deepEqual(await page.locator("#prompt").boundingBox(), emptyPrompt);
   assert.equal(await page.evaluate(() => scrollY), 0);
@@ -398,7 +404,7 @@ export async function browserFlow(
       }),
     ["2px", "10px", "0px", "0px", true],
   );
-  assert((await page.locator("#prompt").boundingBox())!.height < emptyPrompt.height);
+  assert.equal((await page.locator("#prompt").boundingBox())!.height, emptyPrompt.height);
   assert.equal(await page.locator('article[data-role="toolResult"]').count(), 0);
   assert.equal(await page.locator('.tool-call[data-state="completed"] .tool-result').count(), 1);
   await page.locator(".tool-call > summary").click();
@@ -490,7 +496,8 @@ export async function browserFlow(
           await page
             .locator("#message-menu")
             .evaluate((node) => node.scrollHeight > node.clientHeight),
-          true,
+          false,
+          "Compact action rows fit above the software keyboard",
         );
       await page.keyboard.press("Escape");
     }
@@ -515,8 +522,11 @@ export async function browserFlow(
   await page.getByRole("button", { name: "Copy output", exact: true }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), toolOutput);
   await openMessageActions(page, page.locator(".tool-call > .message-actions"));
-  await page.locator(".bar").tap({ position: { x: 200, y: 2 } });
+  // Header padding can hit the session button through native touch targeting.
+  // The composer dismisses the popup without intentionally navigating away.
+  await page.locator("#prompt").tap();
   assert.equal(await page.locator("#message-menu").isVisible(), false);
+  assert.equal(await page.locator("#transcript").isVisible(), true);
   await openMessageActions(page, page.locator(".tool-call > .message-actions"));
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("#message-menu").isVisible(), false);
@@ -707,8 +717,7 @@ export async function browserFlow(
     JSON.parse(rawText),
   );
   await reconnected.locator("#notice").click();
-  await reconnected.click("#title");
-  await reconnected.click("#find");
+  await reconnected.keyboard.press("Control+f");
   await reconnected.fill("#search", "example");
   await rawCode.locator(".hljs-attr").first().waitFor();
   assert.equal(await rawDetails.evaluate((node) => node.hasAttribute("open")), true);
@@ -916,14 +925,13 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   assert((await reconnected.locator(".hljs-keyword").count()) > 0);
   assert((await reconnected.locator(".hljs-deletion").count()) > 0);
   // Settings persist in the actual agent document, not just in the form.
-  await reconnected.click("#title");
-  await reconnected.click("#settings");
+  await reconnected.click("#footer-model");
   await reconnected.selectOption("#thinking", "high");
   await reconnected.fill("#session-name", "Counter cleanup");
   await reconnected.fill("#instructions", "Keep changes small and verify them.");
-  await reconnected.click("#save-settings");
+  await reconnected.click("#close-view");
   await reconnected.waitForFunction(
-    () => !document.querySelector<HTMLDialogElement>("#preferences")?.open,
+    () => document.querySelector<HTMLElement>("#preferences")?.hidden,
   );
   assert.equal((await session.root.agent(context)).thinkingLevel, "high");
   assert.equal((await session.info()).name, "Counter cleanup");
@@ -950,25 +958,27 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     const compactComposer = await page.evaluate(
       () => matchMedia("(min-width: 651px) and (hover: hover) and (pointer: fine)").matches,
     );
-    const composerAlignment = await page.locator(".compose-box > .actions").evaluate((row) => {
-      const buttons = Array.from(row.querySelectorAll("button")).filter((button) =>
-        button.checkVisibility(),
-      );
-      return buttons.map((button) => {
-        const box = button.getBoundingClientRect();
-        const text = document.createRange();
-        text.selectNodeContents(button);
-        const label = text.getBoundingClientRect();
-        return {
-          id: button.id,
-          height: box.height,
-          width: box.width,
-          fontSize: getComputedStyle(button).fontSize,
-          center: box.top + box.height / 2,
-          labelCenter: label.top + label.height / 2,
-        };
+    const composerAlignment = await page
+      .locator(".compose-box:visible > .actions")
+      .evaluate((row) => {
+        const buttons = Array.from(row.querySelectorAll("button")).filter((button) =>
+          button.checkVisibility(),
+        );
+        return buttons.map((button) => {
+          const box = button.getBoundingClientRect();
+          const text = document.createRange();
+          text.selectNodeContents(button);
+          const label = text.getBoundingClientRect();
+          return {
+            id: button.id,
+            height: box.height,
+            width: box.width,
+            fontSize: getComputedStyle(button).fontSize,
+            center: box.top + box.height / 2,
+            labelCenter: label.top + label.height / 2,
+          };
+        });
       });
-    });
     for (const button of composerAlignment) {
       assert.equal(button.height, compactComposer ? 32 : 40, `${name}: ${button.id} height`);
       if (["input-toggle", "send", "stop"].includes(button.id)) {
@@ -1012,10 +1022,15 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
         );
       };
       return footers.flatMap((footer) => {
-        const groups = Array.from(footer.querySelectorAll(".footer-row"), (row) =>
-          Array.from(row.querySelectorAll("button")).filter((node) => node.checkVisibility()),
-        );
-        return groups.map(([left, right]) => textCenter(left) - textCenter(right));
+        const rows = new Map<number, Element[]>();
+        for (const button of footer.querySelectorAll("button")) {
+          if (!button.checkVisibility()) continue;
+          const top = Math.round(button.getBoundingClientRect().top);
+          rows.set(top, [...(rows.get(top) ?? []), button]);
+        }
+        return [...rows.values()]
+          .filter((row) => row.length > 1)
+          .map((row) => textCenter(row[0]) - textCenter(row[1]));
       });
     });
     for (const offset of offsets)
@@ -1039,7 +1054,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
             return {
               width: dot.width,
               height: dot.height,
-              offset: dot.top + dot.height / 2 - (box.top + box.height / 2),
+              offset: dot.top + dot.height / 2 - (model.top + model.height / 2),
               radius: getComputedStyle(node).borderRadius,
             };
           }),
@@ -1051,8 +1066,8 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       });
       assert.equal(
         layout.height,
-        28,
-        `${name}: mobile footer must remain one line without padding`,
+        36,
+        `${name}: mobile footer must remain one line with bottom padding`,
       );
       assert(Math.abs(layout.offset) <= 1, `${name}: mobile footer must be centered`);
       assert.equal(layout.dots.length, 2);
@@ -1071,11 +1086,10 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   };
   const gallery = async (page: Page, size: string) => {
     await assertHeaderStatus(page, "ready", "Ready");
-    assert.equal(await page.locator(".bar button").count(), 2);
-    assert.equal(await page.locator(".bar .icon, .bar select, .bar svg, .bar img").count(), 0);
+    assert.equal(await page.locator(".bar button:visible").count(), 2);
+    assert.equal(await page.locator("#menu-toggle svg").isVisible(), true);
     assert.equal(await page.locator("#title").textContent(), "Counter cleanup");
-    assert.equal(await page.locator("#menu-toggle").textContent(), "···");
-    assert.equal(await page.locator("#menu-toggle").getAttribute("aria-label"), "App menu");
+    assert.equal(await page.locator("#menu-toggle").getAttribute("aria-label"), "Global settings");
     const originalTitle = await page.locator("#title").textContent();
     await page.locator("#title").evaluate((node) => {
       node.textContent = "Very long session name ".repeat(30);
@@ -1100,17 +1114,14 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       node.textContent = name;
     }, originalTitle);
     await page.click("#title");
-    assert.equal(await page.locator("#settings").isVisible(), true);
-    assert.equal(await page.locator("#branches").isVisible(), true);
-    assert.equal(await page.locator("#wrap-code").isVisible(), false);
-    await shot(page, `${size}-session-menu`);
-    await page.click("#workspace");
-    await page.waitForSelector("#picker[open]");
-    await page.keyboard.press("Escape");
+    await page.waitForSelector("#picker:not([hidden])");
+    assert.equal(await page.locator("#title").isVisible(), false);
+    assert.equal(await page.locator("#menu-toggle").isVisible(), false);
+    await shot(page, `${size}-sessions`);
+    await page.click("#close-view");
     await page.click("#menu-toggle");
+    await page.waitForSelector("#global-preferences:not([hidden])");
     assert.equal(await page.locator("#wrap-code").isVisible(), true);
-    assert.equal(await page.locator("#settings").isVisible(), false);
-    assert.equal(await page.locator("#branches").isVisible(), false);
     await page.keyboard.press("Escape");
 
     await page.locator("#transcript").evaluate((node) => {
@@ -1151,7 +1162,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       expectedContext.lastResponse?.tokens,
     );
     assert.equal(await page.locator("#footer-read").isVisible(), size === "desktop");
-    assert.equal(await page.locator("#footer-model-name").isVisible(), size !== "desktop");
+    assert.equal(await page.locator("#footer-model-name").isVisible(), true);
     assert.equal(await page.locator("#footer-effort").textContent(), "high");
     assert.deepEqual(
       await page
@@ -1165,22 +1176,19 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
         .evaluateAll((nodes) =>
           nodes.filter((node) => node.checkVisibility()).map((node) => node.id),
         ),
-      size === "desktop" ? ["footer-stats", "footer-context"] : ["footer-model", "footer-context"],
+      size === "desktop"
+        ? ["footer-stats", "footer-model", "footer-context"]
+        : ["footer-model", "footer-context"],
     );
     await page.click(size === "desktop" ? "#footer-stats" : "#footer-context");
-    await page.waitForSelector("#usage-dialog[open]");
+    await page.waitForSelector("#usage-dialog:not([hidden])");
     assert.equal(await page.locator("#usage-input").textContent(), expectedInput.toLocaleString());
     assert.equal(await page.locator("#usage-thinking").textContent(), "high");
     assert.equal(await page.locator("#usage-write").textContent(), expectedWrite.toLocaleString());
     await shot(page, `${size}-footer-breakdown`);
     await page.keyboard.press("Escape");
-    if (size === "desktop") {
-      await page.click("#title");
-      await page.click("#settings");
-    } else {
-      await page.click("#footer-model");
-    }
-    await page.waitForSelector("#preferences[open]");
+    await page.click("#footer-model");
+    await page.waitForSelector("#preferences:not([hidden])");
     assert.equal(await page.locator("#thinking").inputValue(), "high");
     assert.equal(
       await page.locator("#footer-model").getAttribute("title"),
@@ -1194,68 +1202,29 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#stop [aria-hidden=true]").textContent(), "×");
     assert.equal(await page.locator('label[for="prompt"]').count(), 0);
     await page.click("#menu-toggle");
-    await page.waitForFunction(() => document.querySelector("#app-menu")?.matches(":popover-open"));
-    if (size === "mobile") {
-      const menuBox = await page.locator("#app-menu").boundingBox();
-      assert(menuBox);
-      assert.equal(menuBox.x + menuBox.width, page.viewportSize()!.width - 10);
-      assert(menuBox.y >= 50 && menuBox.y < 80);
-    }
-    await shot(page, `${size}-menu`);
-    await page.keyboard.press("End");
-    assert.equal(
-      await page.locator("#wrap-code").evaluate((node) => node === document.activeElement),
-      true,
-    );
-    await page.keyboard.press("Enter");
+    await page.selectOption("#wrap-code", "true");
+    await shot(page, `${size}-global`);
     assert.equal(
       await page.locator("body").evaluate((node) => node.classList.contains("wrap-code")),
       true,
     );
     await page.keyboard.press("Escape");
-    assert.equal(
-      await page.locator("#menu-toggle").evaluate((node) => node === document.activeElement),
-      true,
-    );
-    await page.click("#title");
-    await page.waitForFunction(
-      () =>
-        document.activeElement ===
-        document.querySelector("#conversation-menu button:not(:disabled):not([hidden])"),
-    );
-    const firstMenuItem = await page.evaluate(() => document.activeElement?.id);
-    await page.keyboard.press("Control+j");
-    assert.notEqual(await page.evaluate(() => document.activeElement?.id), firstMenuItem);
-    await page.keyboard.press("Control+k");
-    assert.equal(await page.evaluate(() => document.activeElement?.id), firstMenuItem);
-    assert.equal(await page.locator("#picker").isVisible(), false);
-    await page.click("#find");
+    await page.keyboard.press("Control+f");
     await page.fill("#search", "counter");
-    assert.equal(await page.locator("article.search-hit").count(), 2);
+    assert.equal(await page.locator("#search-count").textContent(), "1 / 2");
     assert(await page.evaluate(() => (CSS.highlights.get("pi-search")?.size ?? 0) > 0));
-    const before = await page
-      .locator("article.search-current")
-      .evaluate((node) => node.dataset.role);
+    assert.equal(await page.locator("article.search-hit, article.search-current").count(), 0);
     await page.keyboard.press("Control+j");
-    assert.notEqual(
-      await page.locator("article.search-current").evaluate((node) => node.dataset.role),
-      before,
-    );
+    assert.equal(await page.locator("#search-count").textContent(), "2 / 2");
     await page.keyboard.press("Control+k");
-    assert.equal(
-      await page.locator("article.search-current").evaluate((node) => node.dataset.role),
-      before,
-    );
+    assert.equal(await page.locator("#search-count").textContent(), "1 / 2");
     assert.equal(await page.locator("#picker").isVisible(), false);
     await page.click("#search-next");
-    assert.notEqual(
-      await page.locator("article.search-current").evaluate((node) => node.dataset.role),
-      before,
-    );
+    assert.equal(await page.locator("#search-count").textContent(), "2 / 2");
     await shot(page, `${size}-search`);
     await page.fill("#search", "Successfully");
-    assert.equal(await page.locator("article.search-hit").count(), 2);
-    assert((await page.locator("article.search-current details[open]").count()) > 0);
+    assert.equal(await page.locator("#search-count").textContent(), "1 / 2");
+    assert((await page.locator("#transcript details[open]").count()) > 0);
     await shot(page, `${size}-tool-search`);
     await page.fill("#search", "[");
     assert.equal(await page.locator("#notice").isVisible(), false);
@@ -1283,7 +1252,8 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await shot(page, `${size}-input-menu`);
     await page.keyboard.press("Escape");
     await page.keyboard.press("Control+k");
-    await page.waitForSelector("#picker[open]");
+    await page.waitForSelector("#picker:not([hidden])");
+    await page.focus("#close-view");
     await page.keyboard.press("/");
     assert.equal(
       await page.locator("#session-filter").evaluate((node) => node === document.activeElement),
@@ -1314,8 +1284,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#sessions-empty").isVisible(), true);
     await page.fill("#session-filter", "");
     await page.keyboard.press("Escape");
-    await page.click("#title");
-    await page.click("#settings");
+    await page.click("#footer-model");
     assert.equal(await page.locator("#session-name").inputValue(), "Counter cleanup");
     if (size === "mobile")
       assert.equal(
@@ -1334,7 +1303,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       true,
     );
     await page.click("#menu-toggle");
-    await page.click("#wrap-code");
+    await page.selectOption("#wrap-code", "false");
     await page.keyboard.press("Escape");
     await page.locator("#transcript").evaluate((node) => {
       node.scrollTop = 0;
@@ -1429,10 +1398,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     "Fix the counter and show me the change.",
   );
   await desktopPage.keyboard.press("Control+k");
-  assert.equal(
-    await desktopPage.locator("#picker").evaluate((node) => node.hasAttribute("open")),
-    true,
-  );
+  assert.equal(await desktopPage.locator("#picker").isVisible(), true);
   await desktopPage.keyboard.press("Escape");
   await desktopPage.keyboard.press("Control+f");
   assert.equal(
@@ -1530,7 +1496,31 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.waitForFunction(
     () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "Unsent branch draft",
   );
-  await reconnected.fill("#prompt", "");
+  await reconnected.fill("#prompt", "/fork");
+  await reconnected.press("#prompt", "Control+Enter");
+  await reconnected.waitForSelector("#branches button");
+  assert.equal(await reconnected.locator("#branches button").count(), 2);
+  await reconnected.keyboard.press("Control+j");
+  assert.equal(
+    await reconnected
+      .locator("#branches button")
+      .first()
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+  await reconnected.keyboard.press("Control+k");
+  await reconnected.keyboard.press("Enter");
+  await reconnected.waitForSelector("#title", { state: "visible" });
+  assert.equal(Number(new URL(reconnected.url()).searchParams.get("conversation")), branchId);
+  await reconnected.click("#footer-model");
+  await reconnected.fill("#instructions", "Branch-only instructions.");
+  await reconnected.click("#close-view");
+  await reconnected.waitForSelector("#preferences", { state: "hidden" });
+  assert.equal((await branch.agent(context)).instructions, "Branch-only instructions.");
+  assert.equal(
+    (await session.root.agent(context)).instructions,
+    "Keep changes small and verify them.",
+  );
 
   // Queue both modes behind a deterministic provider barrier; cancel one.
   let release!: () => void;
@@ -1715,16 +1705,14 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     true,
   );
 
-  // Context reset preserves history, and export returns the selected branch.
-  await reconnected.click("#title");
-  await reconnected.click("#settings");
+  // Context commands retain their behavior, without settings buttons.
   reconnected.once("dialog", (dialog) => {
     void dialog.accept();
   });
-  await reconnected.getByText("Context", { exact: true }).click();
-  await reconnected.click("#reset");
+  await reconnected.fill("#prompt", "/reset");
+  await reconnected.press("#prompt", "Control+Enter");
   await reconnected.waitForFunction(
-    () => !document.querySelector<HTMLDialogElement>("#preferences")?.open,
+    () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
   );
   assert((await session.history(branch)).some((entry) => entry.kind === "pi.reset"));
   assert.equal((await branch.context(context)).messages.length, 0);
@@ -1734,8 +1722,8 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   assert(Number(await reconnected.locator("#footer-input").getAttribute("data-value")) > 0);
   await shot(reconnected, "mobile-footer-reset");
   const download = reconnected.waitForEvent("download");
-  await reconnected.click("#title");
-  await reconnected.click("#export");
+  await reconnected.fill("#prompt", "/export");
+  await reconnected.press("#prompt", "Control+Enter");
   assert(await (await download).path());
 
   // Offline reload serves only the shell. It never replays writes or cached API data.
@@ -1751,7 +1739,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await shot(reconnected, "mobile-offline");
   await browserContext.setOffline(false);
   await reconnected.waitForFunction(
-    () => !document.querySelector<HTMLButtonElement>("#settings")?.disabled,
+    () => !document.querySelector<HTMLButtonElement>("#footer-model")?.disabled,
   );
   assert.equal(errors.length, 0);
   // Real codemode: the faux provider selects the tool, but QuickJS, nested

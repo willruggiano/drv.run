@@ -53,25 +53,27 @@ export function installSelectKeyMappings(root: Document): void {
   });
 }
 
-// Unmodified mnemonic keys belong to the sessions dialog, never to text entry
-// or native select type-ahead. Keep native controls in charge of their own keys.
-export function installPickerKeyMappings(picker: HTMLDialogElement): void {
-  picker.addEventListener("keydown", (event) => {
+// The list and its footer input share bindings across separate layout regions.
+// Native controls retain type-ahead; mnemonics reveal collapsed options first.
+export function installPickerKeyMappings(
+  root: Document,
+  isOpen: () => boolean,
+  openOptions: () => void,
+): void {
+  root.addEventListener("keydown", (event) => {
     const direction = navigationDirection(event);
-    if (picker.open && direction && !(event.target instanceof HTMLSelectElement)) {
+    if (isOpen() && direction && !(event.target instanceof HTMLSelectElement)) {
       event.preventDefault();
       moveFocus(
         Array.from(
-          picker.querySelectorAll<HTMLButtonElement>(
-            "#sessions button:not(:disabled):not([hidden])",
-          ),
+          root.querySelectorAll<HTMLButtonElement>("#sessions button:not(:disabled):not([hidden])"),
         ),
         direction,
       );
       return;
     }
     if (
-      !picker.open ||
+      !isOpen() ||
       event.defaultPrevented ||
       event.isComposing ||
       event.repeat ||
@@ -87,12 +89,13 @@ export function installPickerKeyMappings(picker: HTMLDialogElement): void {
       return;
     const id = { t: "targets", m: "models", n: "create", "/": "session-filter" }[event.key];
     if (!id) return;
-    const control = picker.querySelector<HTMLSelectElement | HTMLButtonElement | HTMLInputElement>(
+    const control = root.querySelector<HTMLSelectElement | HTMLButtonElement | HTMLTextAreaElement>(
       `#${id}`,
     );
     if (!control || control.disabled) return;
     event.preventDefault();
     if (control instanceof HTMLSelectElement) {
+      openOptions();
       control.focus();
       // Older browsers lack showPicker; focus still permits native keyboard use.
       try {
@@ -100,7 +103,7 @@ export function installPickerKeyMappings(picker: HTMLDialogElement): void {
       } catch {
         /* Unsupported platform or activation. */
       }
-    } else if (control instanceof HTMLInputElement) control.focus();
+    } else if (control instanceof HTMLTextAreaElement) control.focus();
     else control.click();
   });
 }
