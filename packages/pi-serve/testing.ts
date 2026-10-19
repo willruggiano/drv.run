@@ -459,6 +459,14 @@ export async function browserFlow(
     { width: 320, height: 220 },
   ]) {
     await page.setViewportSize(viewport);
+    // Deliver resize and layout scroll events before starting a hold: either
+    // event intentionally cancels an in-progress gesture.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
     await page.locator("#message-menu").evaluate((node) => {
       node.style.setProperty("--menu-safe-top", "24px");
       node.style.setProperty("--menu-safe-right", "12px");

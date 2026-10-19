@@ -17,7 +17,9 @@ await test("mobile browser uses the optional drv.run integration and reconnects"
 
 await test("ask and fresh review use the drv.run pi-env lease without a host fallback", async (t) => {
   const f = await remoteFixture(t);
-  const session = await f.sessions.create(randomUUID(), f.binding, model);
+  // The real daemon runs locally; use a temporary workspace instead of guest /workspace.
+  await f.reopen([{ ...f.integration, directoryRoot: f.workspace }]);
+  const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "");
   const request = {
     questions: [{ id: "confirm", prompt: "Review this workspace?", type: "single", options: [] }],
   };
@@ -41,7 +43,7 @@ await test("ask and fresh review use the drv.run pi-env lease without a host fal
   ]);
   const reviewer = await session.startReview({ target: { kind: "paths", paths: ["."] } });
   await reviewer.waitForIdle(BACKGROUND_CONTEXT);
-  assert.equal((await reviewer.agent(BACKGROUND_CONTEXT)).cwd, "/workspace");
+  assert.equal((await reviewer.agent(BACKGROUND_CONTEXT)).cwd, f.workspace);
   assert.deepEqual((await session.workflows(reviewer)).review?.report, report);
   const results = (await session.history(reviewer))
     .flatMap((entry) => entry.model ?? [])
