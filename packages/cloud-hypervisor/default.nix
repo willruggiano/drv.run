@@ -35,24 +35,22 @@ rustPlatform.buildRustPackage (finalAttrs: {
   env.OPENSSL_NO_VENDOR = true;
   env.ZSTD_SYS_USE_PKG_CONFIG = true;
 
-  cargoTestFlags =
-    [
-      "--workspace"
-      "--exclude"
-      "hypervisor" # /dev/kvm
-      "--exclude"
-      "net_util" # /dev/net/tun
-      "--exclude"
-      "vmm" # /dev/kvm
-      "--"
-      # io_uring syscalls are blocked by the Lix sandbox
-      "--skip=formats"
-      "--skip=io_impl::async_io::uring_data_io"
-    ]
-    ++ lib.optionals (stdenv.buildPlatform != stdenv.hostPlatform) [
-      "--skip=io_impl::async_io::aio_data_io::tests::aio_injected_completion_uses_completion_path"
-      "--skip=io_impl::async_io::aio_data_io::tests::aio_rejects_duplicate_user_data_for_metadata_ops"
-    ];
+  cargoTestFlags = [
+    "--workspace"
+    "--exclude"
+    "hypervisor" # /dev/kvm
+    "--exclude"
+    "net_util" # /dev/net/tun
+    "--exclude"
+    "vmm" # /dev/kvm
+    "--"
+    # io_uring syscalls are blocked by the Lix sandbox
+    "--skip=formats"
+    "--skip=io_impl::async_io::uring_data_io"
+    # AIO fails when building cross/under emulation
+    "--skip=io_impl::async_io::aio_data_io::tests::aio_injected_completion_uses_completion_path"
+    "--skip=io_impl::async_io::aio_data_io::tests::aio_rejects_duplicate_user_data_for_metadata_ops"
+  ];
 
   nativeInstallCheckInputs = [
     versionCheckHook
