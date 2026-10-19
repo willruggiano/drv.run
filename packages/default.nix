@@ -27,9 +27,10 @@
       inherit (pi) meta;
     };
 
-  store-paths = pkgs.writeTextDir "share/nix-store-paths.txt" ''
+  llm-context = pkgs.writeTextDir "etc/xdg/llms.txt" ''
     Nix store paths:
-    drv.run source -> ${inputs.self.outPath}
+    deploy-rs -> ${inputs.deploy-rs.outPath}
+    drv.run -> ${inputs.self.outPath}
     impermanence -> ${inputs.impermanence.outPath}
     jail.nix -> ${inputs.jail.outPath}
     microvm.nix -> ${inputs.microvm.outPath}
@@ -37,7 +38,8 @@
                `-- docs -> /doc
                `-- nixos manual -> /nixos/doc/manual
     nix -> ${pkgs.nix.doc}
-    deploy-rs -> ${inputs.deploy-rs.outPath}
+    pi -> ${inputs.pi.outPath}
+                 `-- pi-durable -> /packages/durable/README.md
     sops-nix -> ${inputs.sops-nix.outPath}
 
     Man pages (read with `man -l`, ignore locale warnings):
@@ -45,6 +47,7 @@
     systemd -> ${pkgs.systemd.man}
   '';
 in {
+  inherit llm-context;
   bench = pkgs.callPackage ./bench {};
   # TODO: Remove once https://github.com/NixOS/nixpkgs/pull/574147 is merged.
   cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {};
@@ -74,7 +77,7 @@ in {
     ]
   );
   # base pi + core extensions + a system prompt with handy nix store links
-  pi-with-store-paths = appendSystemPrompt pkgs.pi-with-extensions "${store-paths}/share/nix-store-paths.txt";
+  pi-with-store-paths = appendSystemPrompt pkgs.pi-with-extensions "${llm-context}/etc/xdg/llms.txt";
   # that^ but in jail, suitable for quick local iterations
   pi-jailed = let
     jail = inputs.jail.lib.init pkgs;

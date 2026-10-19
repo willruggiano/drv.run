@@ -97,6 +97,8 @@ await test("lease pins the owner route and host key, uses /workspace and cleans 
 
 await test("faux turns use the daemon for read/write/edit; extension removal preserves history and forbids local fallback", async (t) => {
   const f = await remoteFixture(t);
+  // The local daemon needs an existing cwd even when tool paths are absolute.
+  await f.reopen([{ ...f.integration, directoryRoot: f.workspace }]);
   const file = join(f.workspace, "remote.json");
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("write", { path: file, content: "1" }), {
@@ -108,7 +110,7 @@ await test("faux turns use the daemon for read/write/edit; extension removal pre
     fauxAssistantMessage(fauxToolCall("read", { path: file }), { stopReason: "toolUse" }),
     fauxAssistantMessage("Done."),
   ]);
-  const session = await f.sessions.create(randomUUID(), f.binding, model);
+  const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "");
   assert(
     (await session.root.agent(context)).extensions.some(
       (extension) => extension.name === "drv.run",
@@ -135,6 +137,7 @@ await test("faux turns use the daemon for read/write/edit; extension removal pre
 
 await test("codemode nested tools use the bound remote daemon", async (t) => {
   const f = await remoteFixture(t);
+  await f.reopen([{ ...f.integration, directoryRoot: f.workspace }]);
   const file = join(f.workspace, "codemode-remote.json");
   f.faux.setResponses([
     fauxAssistantMessage(
@@ -149,7 +152,7 @@ await test("codemode nested tools use the bound remote daemon", async (t) => {
     ),
     fauxAssistantMessage("Done."),
   ]);
-  const session = await f.sessions.create(randomUUID(), f.binding, model);
+  const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "");
   await session.prompt("Use codemode in the guest.", randomUUID());
   await session.root.waitForIdle(context);
   const results = (await session.history())
@@ -173,7 +176,7 @@ await test("stopping an instance blocks existing sessions without opening anothe
   assert.equal((await session.history()).length, 0);
 });
 
-await test("transport failure returns a failed tool result without touching local files", async (t) => {
+await test("transport failure blocks context and model dispatch without touching local files", async (t) => {
   const f = await remoteFixture(t);
   const integration = createDrvRunIntegration({
     ...f.options,
@@ -197,8 +200,8 @@ await test("transport failure returns a failed tool result without touching loca
   const results = (await session.history())
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
-  assert.equal(results.length, 1);
-  assert.equal(results[0].isError, true);
+  assert.equal(results.length, 0);
+  assert.equal(f.faux.state.callCount, 0);
 });
 
 await test("repository inspection uses the guest environment and fails closed when stopped", async (t) => {

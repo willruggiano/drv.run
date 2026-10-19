@@ -159,7 +159,7 @@ await test("integration leases are lazy, shared by concurrent tools, scoped and 
   await assert.rejects(f.create(), code("closing"));
 });
 
-await test("integration acquisition failure is a tool error, never a local fallback; a later attempt can retry", async (t) => {
+await test("integration acquisition failure blocks context and model dispatch; a later attempt can retry", async (t) => {
   const f = await fixture(t);
   let attempts = 0;
   const base = localIntegration(f.workspace);
@@ -168,8 +168,7 @@ await test("integration acquisition failure is a tool error, never a local fallb
       ...base,
       open(binding) {
         attempts++;
-        // Generation also asks for an environment, but ignores acquisition failure.
-        if (attempts <= 2) throw new Error("Connection unavailable.");
+        if (attempts === 1) throw new Error("Connection unavailable.");
         return base.open(binding);
       },
     },
@@ -186,8 +185,8 @@ await test("integration acquisition failure is a tool error, never a local fallb
   const results = (await session.history())
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
-  assert.equal(results.length, 1);
-  assert.equal(results[0].isError, true);
+  assert.equal(results.length, 0);
+  assert.equal(f.faux.state.callCount, 0);
   assert.equal(await exists(join(f.workspace, "never.json")), false);
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("write", { path: "retry.json", content: "2" }), {

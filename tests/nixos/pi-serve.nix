@@ -52,7 +52,26 @@
       }), { stopReason: "toolUse" }),
       fauxAssistantMessage("Failed."),
     ] : [
-      fauxAssistantMessage(fauxToolCall("write", { path: "pi-serve-result.json", content: "41" }), { stopReason: "toolUse" }),
+      ({ messages }) => {
+        const section = messages.filter(message => message.role === "system" && message.sections?.context).at(-1);
+        const prepared = JSON.parse(section.sections.context);
+        assert.deepEqual(prepared.files.map(file => [file.level, file.path]), [
+          ["system", "/etc/xdg/llms.txt"],
+          ["user", "/root/.config/llms.txt"],
+          ["repo", "/workspace/README.md"],
+        ]);
+        assert.equal(prepared.contributing, false);
+        return fauxAssistantMessage(fauxToolCall("write", { path: "pi-serve-result.json", content: "41" }), { stopReason: "toolUse" });
+      },
+      ({ messages }) => {
+        const section = messages.filter(message => message.role === "system" && message.sections?.context).at(-1);
+        const prepared = JSON.parse(section.sections.context);
+        assert.deepEqual(prepared.files.at(-1), {
+          level: "repo", path: "/workspace/CONTRIBUTING.md", content: "Use structured edits.",
+        });
+        assert.equal(prepared.contributing, true);
+        return fauxAssistantMessage(fauxToolCall("write", { path: "pi-serve-result.json", content: "41" }), { stopReason: "toolUse" });
+      },
       fauxAssistantMessage(fauxToolCall("edit", { path: "pi-serve-result.json", oldText: "41", newText: "42" }), { stopReason: "toolUse" }),
       fauxAssistantMessage(fauxToolCall("read", { path: "pi-serve-result.json" }), { stopReason: "toolUse" }),
       fauxAssistantMessage(fauxToolCall("bash", {
@@ -77,15 +96,17 @@
       await session.root.waitForIdle(BACKGROUND_CONTEXT);
       assert.equal((await session.harness.inspect(BACKGROUND_CONTEXT)).tasks.length, 0);
       const results = (await session.history()).flatMap((entry) => entry.model ?? []).filter((message) => message.role === "toolResult");
-      assert.equal(results.length, untrusted ? 1 : 5);
-      assert(results.every((result) => result.isError === untrusted));
+      // Context must be read through the pinned guest connection before any model call.
+      assert.equal(results.length, untrusted ? 0 : 6);
       if (!untrusted) {
+        assert.equal(results[0].isError, true);
+        assert(results.slice(1).every((result) => !result.isError));
         assert.equal(results.at(-1).toolName, "codemode");
         assert.deepEqual(results.at(-1).details.calls.map((call) => [call.name, call.status]), [
           ["write", "ok"], ["edit", "ok"], ["read", "ok"], ["bash", "ok"],
         ]);
       }
-      assert.equal(faux.state.callCount, untrusted ? 2 : 6);
+      assert.equal(faux.state.callCount, untrusted ? 0 : 7);
     } finally {
       await sessions.close();
       await rm(directory, { recursive: true });
@@ -242,7 +263,15 @@ in
           client.wait_until_succeeds(f"curl -fsS http://{lan_ip}:8787/api/catalog")
           operator("systemctl --user stop pi.service")
 
-      with subtest("host pi-durable executes tools through pi-env in the guest flake environment"):
+      with subtest("host pi-durable loads context and gates mutations in the guest flake environment"):
+          guest("test -r /etc/xdg/llms.txt")
+          guest("python3 -c " + shlex.quote(
+              "from pathlib import Path; "
+              "Path('/root/.config').mkdir(exist_ok=True); "
+              "Path('/root/.config/llms.txt').write_text('Guest user instructions.'); "
+              "Path('/workspace/README.md').write_text('Guest project.'); "
+              "Path('/workspace/CONTRIBUTING.md').write_text('Use structured edits.')"
+          ))
           operator("${pkgs.nodejs}/bin/node ${probe} " + shlex.quote(instance_id))
           guest("python3 -c " + shlex.quote("import json; from pathlib import Path; assert json.loads(Path('/workspace/pi-serve-result.json').read_text()) == 42"))
           host.fail("test -e /workspace/pi-serve-result.json")

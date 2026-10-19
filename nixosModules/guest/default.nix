@@ -46,6 +46,7 @@
   environment.etc."udev/udev.conf.d/10-drv-run.conf".text = ''
     children_max=${toString (2 * config.microvm.vcpu)}
   '';
+  environment.etc."xdg/llms.txt".source = "${pkgs.llm-context}/etc/xdg/llms.txt";
   environment.persistence."/persist" = {
     directories = [
       # /nix is mounted in the initrd, before its nested store mounts.

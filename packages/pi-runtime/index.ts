@@ -39,6 +39,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 
+import { createContextExtension, withContextValidation } from "./context.ts";
 import {
   AskExtension,
   ReviewExtension,
@@ -546,15 +547,21 @@ export class ManagedSession {
       defineExtension({
         name: "coding",
         sections: [
-          // FIXME: this is so fucking stupid LMAO
           section(
             "preamble",
             () =>
-              "You are Pi, a coding agent. Inspect the project and its AGENTS.md instructions before changing files. Never claim an operation succeeded without checking its result.",
+              "You are Pi, a coding agent. Follow the supplied context files in order: system, user, then repository documentation; more-specific guidance takes precedence on conflicts. Use edit/write for file mutations. CONTRIBUTING.md is supplied before mutations when present. Never claim an operation succeeded without checking its result.",
             { tag: false },
           ),
           section("cwd", (input) => input.env?.cwd),
         ],
+      }),
+    );
+    registry.install(
+      createContextExtension(async (id, context) => {
+        const conversation = await harness.conversation(id, context);
+        assert(conversation, "Context conversation must exist.");
+        return conversation;
       }),
     );
     registry.install(AskExtension);
@@ -565,7 +572,7 @@ export class ManagedSession {
     const harness = await Harness.open(
       await openNodeSqliteStorage(join(owner.options.directory, `${id}.sqlite`)),
       {
-        models: owner.options.models,
+        models: withContextValidation(owner.options.models),
         settings: { ...owner.options.settings, extensions: defaults },
         registry,
         env: async ({ cwd }) => {
