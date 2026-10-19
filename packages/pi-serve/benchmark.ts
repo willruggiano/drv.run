@@ -346,7 +346,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         const initialMs = await stage("initial", measure);
         assert.equal(await page.locator("#transcript > article").count(), options.turns * 2);
         assert.equal(await page.locator(".tool-call").count(), options.turns);
-        const initialDomElements = await page.locator("#transcript *, #tool-transcript *").count();
+        const initialDomElements = await page.locator("#transcript *").count();
         const assistant = fauxAssistantMessage("", { timestamp: timestamp + 3 });
         const partial = {
           role: assistant.role,

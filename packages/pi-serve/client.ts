@@ -63,7 +63,6 @@ const targets = element("targets", HTMLSelectElement);
 const models = element("models", HTMLSelectElement);
 const sessions = element("sessions", HTMLDivElement);
 const transcript = element("transcript", HTMLDivElement);
-const toolTranscript = element("tool-transcript", HTMLDivElement);
 const composer = element("composer", HTMLFormElement);
 const prompt = element("prompt", HTMLTextAreaElement);
 const send = element("send", HTMLButtonElement);
@@ -726,7 +725,6 @@ function messageActions(
 function touchActions(target: EventTarget | null): HTMLButtonElement | undefined {
   if (
     !(target instanceof Element) ||
-    !target.closest("#transcript, #tool-transcript") ||
     target.closest("a, button, input, textarea, select, pre, code, img, [contenteditable]")
   )
     return;
@@ -755,8 +753,7 @@ function cancelLongPress(): void {
 function openHeldActions(actions: HTMLButtonElement): void {
   const point = longPress && { x: longPress.x, y: longPress.y };
   cancelLongPress();
-  if (!actions.isConnected || ![transcript, toolTranscript].some((pane) => pane.contains(actions)))
-    return;
+  if (!actions.isConnected || !transcript.contains(actions)) return;
   heldActions = actions;
   touchMenuAnchor = point;
   try {
@@ -765,7 +762,7 @@ function openHeldActions(actions: HTMLButtonElement): void {
     touchMenuAnchor = undefined;
   }
 }
-document.addEventListener("pointerdown", (event) => {
+transcript.addEventListener("pointerdown", (event) => {
   cancelLongPress();
   heldActions = undefined;
   if (event.pointerType !== "touch" || !event.isPrimary) return;
@@ -796,19 +793,18 @@ function dismissTouchMenu(): void {
   cancelLongPress();
   messageMenu.hidePopover();
 }
-for (const pane of [transcript, toolTranscript])
-  pane.addEventListener("scroll", dismissTouchMenu, { passive: true });
+transcript.addEventListener("scroll", dismissTouchMenu, { passive: true });
 visualViewport?.addEventListener("resize", dismissTouchMenu);
 visualViewport?.addEventListener("scroll", dismissTouchMenu);
 window.addEventListener("blur", cancelLongPress);
 document.addEventListener("visibilitychange", cancelLongPress);
-document.addEventListener("contextmenu", (event) => {
+transcript.addEventListener("contextmenu", (event) => {
   const actions = touchActions(event.target);
   if (!actions || (!longPress && !matchMedia("(pointer: coarse)").matches)) return;
   event.preventDefault();
   if (longPress?.actions === actions) openHeldActions(actions);
 });
-document.addEventListener(
+transcript.addEventListener(
   "click",
   (event) => {
     // A completed hold must not also toggle the tool disclosure on release.
@@ -840,6 +836,11 @@ function content(
   node: HTMLElement,
   message: Message,
   call?: { name: string; arguments: Record<string, unknown> },
+  renderTool?: (call: {
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  }) => HTMLElement,
   embedded = false,
 ): void {
   if (message.role === "system") return;
@@ -882,11 +883,21 @@ function content(
         details.append(summary, codeBlock(block.text));
         node.append(details);
       } else node.append(markdown(block.text));
+    } else if (block.type === "toolCall" && renderTool) {
+      node.append(renderTool(block));
     } else if (block.type === "thinking") {
       const thinking = document.createElement("div");
       thinking.className = "thinking";
       thinking.textContent = block.thinking || "Thinking…";
       node.append(thinking);
+    } else if (block.type === "toolCall") {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = toolLabel(block.name, block.arguments);
+      details.className = "tool-call";
+      const input = toolInput(block.name, block.arguments);
+      details.append(summary, codeBlock(input.text, input.language));
+      node.append(details);
     } else if (
       block.type === "image" &&
       ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(block.mimeType)
@@ -924,10 +935,6 @@ function content(
 // A stable module export lets benchmarks exercise the minified renderer.
 export function render(snapshot: Snapshot): void {
   const wasEmpty = !transcript.childElementCount;
-  const sticking = [transcript, toolTranscript].filter(
-    (pane) =>
-      view === "conversation" && pane.scrollHeight - pane.scrollTop - pane.clientHeight < 80,
-  );
   const directoryChanged = repositoryKey() !== repositoryKey(snapshot);
   latest = snapshot;
   const agent = snapshot.view.docs["pi.agent"] as AgentState | undefined;
@@ -955,6 +962,9 @@ export function render(snapshot: Snapshot): void {
   }
   queue.hidden = !queue.childElementCount || (view !== "conversation" && view !== "search");
   queue.scrollTop = queueScroll;
+  const stick =
+    view === "conversation" &&
+    transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 80;
   for (const entry of [...(snapshot.history ?? []), ...snapshot.view.entries])
     entries.set(entry.id, entry);
   const live = snapshot.view.docs["pi.live"] as LiveState | undefined;
@@ -985,11 +995,9 @@ export function render(snapshot: Snapshot): void {
   // A streamed assistant entry can be replaced by its committed entry. Keep
   // disclosure state by call ID across that transition as well as live updates.
   const disclosureState = new Map(
-    Array.from(
-      document.querySelectorAll<HTMLDetailsElement>(
-        "#transcript details[data-disclosure], #tool-transcript details[data-disclosure]",
-      ),
-    ).map((detail) => [detail.dataset.disclosure, detail.open]),
+    Array.from(transcript.querySelectorAll<HTMLDetailsElement>("details[data-disclosure]")).map(
+      (detail) => [detail.dataset.disclosure, detail.open],
+    ),
   );
   const item = (key: string, value: unknown, build: (node: HTMLElement) => void) => {
     wanted.add(key);
@@ -1059,7 +1067,7 @@ export function render(snapshot: Snapshot): void {
     if (result) {
       const output = document.createElement("div");
       output.className = "tool-result";
-      content(output, result.message, call, true);
+      content(output, result.message, call, undefined, true);
       details.append(output);
     } else if (slot) {
       if (slot.output) details.append(codeBlock(slot.output));
@@ -1111,64 +1119,6 @@ export function render(snapshot: Snapshot): void {
             ),
           ])
       : undefined;
-  const renderMessage = (key: string, message: Message, entry?: number) => {
-    if (message.role === "system") return;
-    if (message.role === "toolResult") {
-      if (calls.has(message.toolCallId)) return;
-      item(key, message, (node) => {
-        node.dataset.role = "toolResult";
-        node.append(buildTool({ id: message.toolCallId, name: message.toolName, arguments: {} }));
-        node.dataset.search = messageText(message).toLocaleLowerCase();
-      });
-      return;
-    }
-    const textMessage =
-      message.role === "assistant"
-        ? { ...message, content: message.content.filter((block) => block.type !== "toolCall") }
-        : message;
-    if (
-      textMessage.content.length ||
-      (textMessage.role === "assistant" && textMessage.errorMessage)
-    )
-      item(key, textMessage, (node) => {
-        content(node, textMessage);
-        node.dataset.search = messageText(textMessage).toLocaleLowerCase();
-        const heading = node.querySelector("header");
-        if (entry !== undefined)
-          heading?.insertBefore(
-            messageActions(entry, textMessage),
-            heading.querySelector(".message-time"),
-          );
-        if (textMessage.role === "user") {
-          const details = document.createElement("details");
-          details.className = "user-message";
-          details.dataset.disclosure = `user:${key}`;
-          const summary = document.createElement("summary");
-          const preview = document.createElement("span");
-          preview.className = "user-preview";
-          preview.textContent = messageText(textMessage).replace(/\s+/g, " ");
-          summary.setAttribute("aria-label", "User message");
-          summary.append(preview);
-          details.append(summary);
-          for (const child of Array.from(node.children))
-            if (child !== heading) details.append(child);
-          node.append(details);
-        }
-      });
-    if (message.role === "assistant" && message.content.some((block) => block.type === "toolCall"))
-      item(`${key}:tools`, [message, toolState(message)], (node) => {
-        node.dataset.role = "toolResult";
-        const searchText: string[] = [];
-        for (const block of message.content) {
-          if (block.type !== "toolCall") continue;
-          node.append(buildTool(block));
-          searchText.push(block.name, JSON.stringify(block.arguments));
-          const result = results.get(block.id);
-          if (result) searchText.push(messageText(result.message));
-        }
-        node.dataset.search = searchText.join("\n").toLocaleLowerCase();
-      });
-  };
   for (const entry of [...entries.values()].sort((a, b) => a.id - b.id)) {
     if (entry.kind === "pi.reset" || entry.kind === "pi.compaction")
       item(`context:${entry.id}`, entry, (node) => {
@@ -1181,11 +1131,38 @@ export function render(snapshot: Snapshot): void {
         );
         node.append(details);
       });
-    entry.model?.forEach((message, index) =>
-      renderMessage(`${entry.id}:${index}`, message, entry.id),
-    );
+    entry.model?.forEach((message, index) => {
+      if (message.role === "toolResult" && calls.has(message.toolCallId)) return;
+      if (message.role !== "system")
+        item(`${entry.id}:${index}`, [message, toolState(message)], (node) => {
+          if (message.role === "toolResult") {
+            node.dataset.role = "toolResult";
+            node.append(
+              buildTool({ id: message.toolCallId, name: message.toolName, arguments: {} }),
+            );
+          } else content(node, message, undefined, buildTool);
+          const resultText =
+            message.role === "assistant"
+              ? message.content
+                  .flatMap((block) => {
+                    const result = block.type === "toolCall" ? results.get(block.id) : undefined;
+                    return result ? [messageText(result.message)] : [];
+                  })
+                  .join("\n")
+              : "";
+          node.dataset.search = `${messageText(message)}\n${resultText}`.toLocaleLowerCase();
+          const heading = node.querySelector("header");
+          heading?.insertBefore(
+            messageActions(entry.id, message),
+            heading.querySelector(".message-time"),
+          );
+        });
+    });
   }
-  if (partial) renderMessage("partial", partial);
+  if (partial)
+    item("partial", [partial, toolState(partial)], (node) =>
+      content(node, partial, undefined, buildTool),
+    );
   for (const tool of slots) {
     if (calls.has(tool.callId) || results.has(tool.callId)) continue;
     if (
@@ -1213,26 +1190,30 @@ export function render(snapshot: Snapshot): void {
   workflows.render(snapshot);
   if (workflows.root.childElementCount) ordered.push(workflows.root);
   else workflows.root.remove();
-  // Search reunites both streams in chronological order; conversation keeps
-  // each stream independently scrollable without cloning interactive nodes.
-  for (const pane of [transcript, toolTranscript]) {
-    const nodes = ordered.filter(
-      (node) =>
-        (view !== "search" && node.dataset.role === "toolResult" ? toolTranscript : transcript) ===
-        pane,
-    );
-    let previousRole: string | undefined;
-    nodes.forEach((node, index) => {
-      const role = node.dataset.role;
-      const sameSpeaker = role !== undefined && role === previousRole;
-      if (node.classList.contains("same-speaker") !== sameSpeaker)
-        node.classList.toggle("same-speaker", sameSpeaker);
-      previousRole = role;
-      if (pane.children[index] !== node) pane.insertBefore(node, pane.children[index] ?? null);
-    });
-  }
+  let previousRole: string | undefined;
+  ordered.forEach((node, index) => {
+    // Tool output belongs to the assistant visually; context markers break a group.
+    const role = node.dataset.role === "toolResult" ? "assistant" : node.dataset.role;
+    const sameSpeaker = role !== undefined && role === previousRole;
+    if (node.classList.contains("same-speaker") !== sameSpeaker)
+      node.classList.toggle("same-speaker", sameSpeaker);
+    previousRole = role;
+    // A sibling :has() selector invalidates the whole transcript on each
+    // streamed child mutation. Record this relationship only when it changes.
+    const next = ordered[index + 1];
+    const nextRole = next?.dataset.role === "toolResult" ? "assistant" : next?.dataset.role;
+    const traceContinues =
+      role !== undefined &&
+      role === nextRole &&
+      !!node.lastElementChild?.matches(".tool-call, .thinking") &&
+      !!next?.querySelector(":scope > :is(.tool-call, .thinking):is(:first-child, header + *)");
+    if (node.classList.contains("trace-continues") !== traceContinues)
+      node.classList.toggle("trace-continues", traceContinues);
+    if (transcript.children[index] !== node)
+      transcript.insertBefore(node, transcript.children[index] ?? null);
+  });
   if (wasEmpty !== !transcript.childElementCount) resizePrompt();
-  for (const pane of sticking) pane.scrollTop = pane.scrollHeight;
+  if (stick) transcript.scrollTop = transcript.scrollHeight;
   if (!searchBar.hidden) updateSearch();
   updateLatest();
   renderFooter();
@@ -1263,7 +1244,6 @@ function attach(id: string, branch?: number): void {
   entries.clear();
   rendered.clear();
   transcript.replaceChildren();
-  toolTranscript.replaceChildren();
   element("queue", HTMLDivElement).replaceChildren();
   element("queue", HTMLDivElement).hidden = true;
   resizePrompt();
@@ -2027,7 +2007,6 @@ const panes = {
 type View = keyof typeof panes;
 let view: View = "conversation";
 let conversationScroll = 0;
-let toolScroll = 0;
 let navigation = 0;
 const viewTitle = element("view-title", HTMLSpanElement);
 function updateViewTitle(): void {
@@ -2043,11 +2022,7 @@ function updateViewTitle(): void {
   viewTitle.textContent = titles[view];
 }
 function setView(next: View): void {
-  if (view === "conversation" && next !== view) {
-    conversationScroll = transcript.scrollTop;
-    toolScroll = toolTranscript.scrollTop;
-  }
-  const rearrange = (view === "search") !== (next === "search");
+  if (view === "conversation" && next !== view) conversationScroll = transcript.scrollTop;
   if (view === "search" && next !== view) clearSearch();
   completions.close();
   closePopovers();
@@ -2065,16 +2040,11 @@ function setView(next: View): void {
   composer.hidden = next === "sessions" || next === "search";
   element("session-filter-bar", HTMLDivElement).hidden = next !== "sessions";
   searchBar.hidden = next !== "search";
-  toolTranscript.hidden = next !== "conversation";
   view = next;
   document.body.dataset.view = view;
   updateViewTitle();
   resizePrompt();
-  if (rearrange && latest) render(latest);
-  if (next === "conversation") {
-    transcript.scrollTop = conversationScroll;
-    toolTranscript.scrollTop = toolScroll;
-  }
+  if (next === "conversation") transcript.scrollTop = conversationScroll;
   if (next === "search") updateSearch();
   updateLatest();
 }
@@ -2098,11 +2068,10 @@ async function selectSession(id: string, branch?: number): Promise<void> {
   if (active !== id || conversation !== branch) {
     attach(id, branch);
     conversationScroll = 0;
-    toolScroll = 0;
   }
   setView("conversation");
 }
-for (const button of document.querySelectorAll<HTMLButtonElement>("button[data-view]")) {
+for (const button of document.querySelectorAll<HTMLButtonElement>("[data-view]")) {
   button.onclick = () => {
     const next = button.dataset.view;
     if (next && next in panes) void navigate(next as View);
