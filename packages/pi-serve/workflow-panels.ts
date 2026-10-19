@@ -5,6 +5,7 @@ import { installCompletions } from "./completions.ts";
 type Host = {
   request(action: string, data: unknown): Promise<{ id?: number }>;
   navigate(id: number): void;
+  showConversation(): Promise<boolean>;
   report(error: unknown): void;
   scope(): string | undefined;
   newId(): string;
@@ -140,32 +141,22 @@ export function workflowPanels(host: Host) {
         controls();
       });
   };
-  const openReview = () => {
+  const openReview = async () => {
+    if (!(await host.showConversation())) return;
     if (start.disabled)
       throw new Error("Connect to an idle coding conversation before starting a review.");
     setupError.hidden = true;
     dialog.showModal();
     target.focus();
   };
-  const endReview = () => {
+  const endReview = async () => {
+    if (!(await host.showConversation())) return;
     if (!snapshot?.workflows?.review) throw new Error("Not a review conversation.");
     reviewPanel?.scrollIntoView({ block: "start" });
     reviewPanel?.querySelector<HTMLButtonElement>("button")?.focus();
   };
-  start.onclick = () => {
-    try {
-      openReview();
-    } catch (error) {
-      host.report(error);
-    }
-  };
-  end.onclick = () => {
-    try {
-      endReview();
-    } catch (error) {
-      host.report(error);
-    }
-  };
+  start.onclick = () => void openReview().catch((error: unknown) => host.report(error));
+  end.onclick = () => void endReview().catch((error: unknown) => host.report(error));
 
   function controls() {
     const disabled = !connected || !snapshot || snapshot.session.needsResume;

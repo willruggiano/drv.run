@@ -1,5 +1,5 @@
 // Only the public application shell is cached. Never cache API data or conversations.
-const CACHE = "pi-shell-v20";
+const CACHE = "pi-shell-v21";
 const SHELL = ["/", "/styles.css", "/client.js", "/highlight.js", "/icon.svg", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest"];
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));

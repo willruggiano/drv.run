@@ -365,6 +365,12 @@ await test(
     await page.fill("#prompt", "/review");
     await page.click("#send");
     await page.waitForSelector("#review-setup[open]");
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.click("#footer-model");
+    await page.waitForSelector("#preferences:visible");
+    await page.click("#review-start");
+    await page.waitForSelector("#review-setup[open]");
+    assert.equal(await page.locator("#transcript").isVisible(), true);
     await page.selectOption("#review-target", "paths");
     await page.fill("#review-paths", "preferences.ts");
     await page.fill(
@@ -417,6 +423,10 @@ await test(
     await page.waitForSelector(".review-panel");
     await page.fill("#prompt", "/end-review");
     await page.click("#send");
+    await page.click("#footer-model");
+    await page.waitForSelector("#preferences:visible");
+    await page.click("#review-end");
+    await page.waitForSelector("#transcript:visible");
     await page.getByRole("button", { name: "Return to origin", exact: true }).click();
     await page.waitForURL(
       (url) => Number(url.searchParams.get("conversation")) === session.root.id,
