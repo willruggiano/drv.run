@@ -1246,7 +1246,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await page.click("#quote-message");
     assert.equal(
       await page.locator("#prompt").evaluate((node) => document.activeElement === node),
-      true,
+      false,
     );
     assert.equal(
       (await page.locator("#prompt").inputValue()).startsWith("> Updated the counter."),
@@ -1411,7 +1411,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await desktopPage.keyboard.press("Control+f");
   assert.equal(
     await desktopPage.locator("#search").evaluate((node) => document.activeElement === node),
-    true,
+    false,
   );
   await desktop.close();
   await gallery(reconnected, "mobile");

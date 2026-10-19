@@ -146,14 +146,17 @@ export function workflowPanels(host: Host) {
     if (start.disabled)
       throw new Error("Connect to an idle coding conversation before starting a review.");
     setupError.hidden = true;
+    // Do not let the native dialog remember an editor to refocus on close,
+    // or choose an initial control (and open a touch keyboard) on entry.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    dialog.inert = true;
     dialog.showModal();
-    target.focus();
+    dialog.inert = false;
   };
   const endReview = async () => {
     if (!(await host.showConversation())) return;
     if (!snapshot?.workflows?.review) throw new Error("Not a review conversation.");
     reviewPanel?.scrollIntoView({ block: "start" });
-    reviewPanel?.querySelector<HTMLButtonElement>("button")?.focus();
   };
   start.onclick = () => void openReview().catch((error: unknown) => host.report(error));
   end.onclick = () => void endReview().catch((error: unknown) => host.report(error));

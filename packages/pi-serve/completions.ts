@@ -118,7 +118,6 @@ export function installCompletions(
     input.setRangeText(item.value, token.start, token.end, "end");
     close();
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.focus();
   }
   function render(message?: string) {
     popup.replaceChildren();

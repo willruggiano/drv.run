@@ -717,9 +717,6 @@ function messageActions(
       messageMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - messageMenu.offsetHeight - 8))}px`;
       messageMenu.style.right = `${Math.max(8, Math.min(innerWidth - rect.right, innerWidth - messageMenu.offsetWidth - 8))}px`;
     }
-    messageMenu
-      .querySelector<HTMLButtonElement>("button:not([hidden]):not(:disabled)")
-      ?.focus({ preventScroll: true });
   };
   return actions;
 }
@@ -1002,10 +999,6 @@ export function render(snapshot: Snapshot): void {
       (detail) => [detail.dataset.disclosure, detail.open],
     ),
   );
-  const focusedDisclosure =
-    document.activeElement?.tagName === "SUMMARY"
-      ? (document.activeElement.parentElement as HTMLElement | null)?.dataset.disclosure
-      : undefined;
   const item = (key: string, value: unknown, build: (node: HTMLElement) => void) => {
     wanted.add(key);
     const signature = JSON.stringify(value);
@@ -1028,8 +1021,6 @@ export function render(snapshot: Snapshot): void {
           (detail.dataset.disclosure
             ? disclosureState.get(detail.dataset.disclosure)
             : open.get(`detail:${index}`)) ?? detail.open;
-        if (focusedDisclosure && detail.dataset.disclosure === focusedDisclosure)
-          detail.querySelector<HTMLElement>(":scope > summary")?.focus({ preventScroll: true });
       });
       existing.signature = signature;
     }
@@ -1442,7 +1433,7 @@ async function runCommand(text: string): Promise<boolean> {
     await workflows.endReview();
   } else if (name === "search") return navigate("search");
   else if (name === "fork") return navigate("fork");
-  else if (name === "model" || name === "settings") return navigate("settings", name === "model");
+  else if (name === "model" || name === "settings") return navigate("settings");
   else if (name === "export") await exportConversation();
   return true;
 }
@@ -2054,22 +2045,10 @@ function setView(next: View): void {
   updateViewTitle();
   resizePrompt();
   if (next === "conversation") transcript.scrollTop = conversationScroll;
-  const focus =
-    next === "sessions"
-      ? sessionFilter
-      : next === "search"
-        ? search
-        : next === "conversation"
-          ? prompt
-          : viewTitle;
-  focus.focus({ preventScroll: true });
-  if (next === "search") {
-    updateSearch();
-    search.select();
-  }
+  if (next === "search") updateSearch();
   updateLatest();
 }
-async function navigate(next: View, focusModel = false): Promise<boolean> {
+async function navigate(next: View): Promise<boolean> {
   const request = ++navigation;
   if (!(await flushSettings()) || request !== navigation) return false;
   if (["settings", "stats", "fork", "search"].includes(next) && !latest) return false;
@@ -2078,7 +2057,6 @@ async function navigate(next: View, focusModel = false): Promise<boolean> {
     if (next === "global") prepareGlobalSettings();
   }
   setView(next);
-  if (focusModel) sessionModel.focus();
   if (next === "sessions") void refresh().catch(report);
   if (next === "fork") void refreshBranches().catch(report);
   if (next === "stats") void refreshRepository();
@@ -2208,7 +2186,6 @@ element("quote-message", HTMLButtonElement).onclick = () => {
   messageMenu.hidePopover();
   if (view === "search") void navigate("conversation");
   resizePrompt();
-  prompt.focus();
   saveDraft();
   controls();
 };
@@ -2362,23 +2339,11 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-inputMenu.addEventListener("toggle", () => {
-  if (inputMenu.matches(":popover-open"))
-    inputMenu.querySelector<HTMLButtonElement>("button:not(:disabled):not([hidden])")?.focus();
-});
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || event.isComposing || event.key !== "Escape") return;
   if (messageMenu.matches(":popover-open")) {
     event.preventDefault();
     messageMenu.hidePopover();
-    const trigger = selectedMessage?.trigger;
-    if (matchMedia("(hover: hover) and (pointer: fine)").matches) trigger?.focus();
-    else {
-      const summary = trigger
-        ?.closest(".tool-call")
-        ?.querySelector<HTMLElement>(":scope > summary");
-      (summary ?? transcript).focus({ preventScroll: true });
-    }
   }
 });
 

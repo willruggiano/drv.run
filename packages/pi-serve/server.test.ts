@@ -1062,3 +1062,67 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     await page.close();
   }
 });
+
+await test("mobile browser navigation never automatically focuses controls", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const assets = join(f.workspace, "assets");
+  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  const base = await serve(t, f.sessions, assets);
+  const browser = await chromium.launch({
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  // Catch transient focus too, not just the active element after a transition.
+  await page.addInitScript(() => {
+    const calls: string[] = [];
+    Object.assign(window, { automaticFocus: calls });
+    const focus = Reflect.get(HTMLElement.prototype, "focus") as HTMLElement["focus"];
+    HTMLElement.prototype.focus = function (...args) {
+      calls.push(this.id || this.tagName);
+      focus.apply(this, args);
+    };
+  });
+  await page.goto(`${base}/?session=${session.id}`);
+  await page.waitForFunction(
+    () => !document.querySelector<HTMLButtonElement>("#footer-model")?.disabled,
+  );
+  assert.equal(
+    await page.locator("#prompt").evaluate((node) => node === document.activeElement),
+    false,
+  );
+  for (const initiallyFocused of [false, true]) {
+    if (initiallyFocused) await page.click("#prompt");
+    await page.click("#menu-toggle");
+    await page.waitForSelector("#global-preferences", { state: "visible" });
+    await page.click("#close-view");
+    await page.waitForSelector("#global-preferences", { state: "hidden" });
+    assert.equal(
+      await page.locator("#prompt").evaluate((node) => node === document.activeElement),
+      false,
+    );
+  }
+  for (const trigger of ["#footer-model", "#title"]) {
+    await page.click(trigger);
+    await page.waitForSelector("#close-view", { state: "visible" });
+    await page.keyboard.press("Escape");
+    await page.waitForSelector("#close-view", { state: "hidden" });
+  }
+  await page.click("#prompt");
+  await page.keyboard.type("/review");
+  await page.keyboard.press("Control+Enter");
+  await page.waitForSelector("#review-setup[open]");
+  assert.equal(
+    await page.locator("#review-setup").evaluate((node) => node.contains(document.activeElement)),
+    false,
+  );
+  await page.click("#review-instructions");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("#review-setup", { state: "hidden" });
+  assert.equal(
+    await page.locator("#prompt").evaluate((node) => node === document.activeElement),
+    false,
+  );
+  assert.deepEqual(await page.evaluate(() => Reflect.get(window, "automaticFocus")), []);
+});

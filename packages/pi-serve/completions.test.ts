@@ -224,7 +224,7 @@ await test("mobile browser composer runs commands without sending prompts and pr
   await page.waitForSelector("#preferences:not([hidden])");
   assert.equal(
     await page.locator("#session-model").evaluate((node) => node === document.activeElement),
-    true,
+    false,
   );
   await page.click("#close-view");
   await run("/search");
