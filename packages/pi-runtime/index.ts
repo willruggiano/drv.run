@@ -65,15 +65,20 @@ export type ExecutionBinding = {
 export type ExecutionTarget = ExecutionBinding & {
   label: string;
   available: boolean;
+  directoryRoot?: string;
 };
 export type EnvironmentLease = {
   env: ExecutionEnv;
+  /** Immutable cwd views sharing the lease's connection and lifetime. */
+  atDirectory?(cwd: string): ExecutionEnv;
   close(): void | Promise<void>;
 };
 
 /** Application integration, not the coding-agent ExtensionAPI. Factories do no I/O. */
 export interface Integration {
   readonly id: string;
+  /** Opt in to workspace-relative base directories. */
+  readonly directoryRoot?: string;
   readonly extensions?: readonly Extension[];
   targets(): Promise<ExecutionTarget[]>;
   /** Check every execution, including already-open leases. Throw to fail closed. */
@@ -155,6 +160,8 @@ export type SessionInfo = {
   id: string;
   name: string;
   binding: ExecutionBinding;
+  cwd: string;
+  directoryRoot?: string;
   created: number;
   model: ModelRef;
   needsResume: boolean;
@@ -224,6 +231,56 @@ function sameBinding(a: ExecutionBinding, b: ExecutionBinding): boolean {
   return a.provider === b.provider && a.target === b.target && a.cwd === b.cwd;
 }
 
+/** Resolve user input beneath a root, including leading-slash input. Not a filesystem sandbox. */
+export function resolveBaseDirectory(root: string, value: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length > 4096 ||
+    hasControlCharacters(value) ||
+    value.split("/").includes("..")
+  )
+    throw new SessionError("invalid", "Expected a workspace-relative directory without '..'.");
+  return posix.resolve(root, `./${value}`);
+}
+
+async function completePaths(
+  env: ExecutionEnv,
+  query: string,
+  directoriesOnly = false,
+): Promise<string[]> {
+  const slash = query.lastIndexOf("/");
+  const directory = query.slice(0, slash + 1);
+  const prefix = query.slice(slash + 1).toLowerCase();
+  const opened = await env.openDirReader(posix.join(env.cwd, directory), context);
+  if (!opened.ok) {
+    if (["not_found", "not_directory"].includes(opened.error.code)) return [];
+    throw new SessionError("unavailable", "Cannot list paths in this workspace.");
+  }
+  const paths: string[] = [];
+  try {
+    // Bound both scanning and the response; completion must not walk entire trees.
+    for (let count = 0; count < 5000; count += 100) {
+      const page = await opened.value.next(100, context);
+      if (!page.ok) throw new SessionError("unavailable", "Cannot list paths in this workspace.");
+      for (const file of page.value.entries) {
+        if (directoriesOnly && file.kind !== "directory") continue;
+        const name = posix.basename(file.path);
+        if (
+          !name.toLowerCase().startsWith(prefix) ||
+          (!prefix.startsWith(".") && name.startsWith(".")) ||
+          hasControlCharacters(name)
+        )
+          continue;
+        paths.push(directory + name + (file.kind === "directory" ? "/" : ""));
+      }
+      if (page.value.done) break;
+    }
+  } finally {
+    await opened.value.close(context);
+  }
+  return paths.sort((a, b) => a.localeCompare(b)).slice(0, 50);
+}
+
 export class Sessions {
   readonly options: SessionOptions;
   readonly opened = new Map<string, Promise<ManagedSession>>();
@@ -274,7 +331,10 @@ export class Sessions {
               target.provider === integration.id && validBinding(target),
               "Invalid execution target.",
             );
-          return targets;
+          return targets.map((target) => ({
+            ...target,
+            ...(integration.directoryRoot ? { directoryRoot: integration.directoryRoot } : {}),
+          }));
         }),
       )
     ).flat();
@@ -290,6 +350,29 @@ export class Sessions {
       })),
       defaultModel: this.options.defaultModel,
     };
+  }
+
+  baseDirectory(binding: ExecutionBinding, value: string): string {
+    const root = this.integrations.get(binding.provider)?.directoryRoot;
+    if (!root) throw new SessionError("invalid", "This target does not support base directories.");
+    return resolveBaseDirectory(root, value);
+  }
+
+  /** Browse a target before a session exists, using the integration, never host I/O. */
+  async completeDirectories(binding: ExecutionBinding, query: string): Promise<string[]> {
+    if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
+    if (!validBinding(binding)) throw new SessionError("invalid", "Invalid execution binding.");
+    const root = this.baseDirectory(binding, "");
+    this.baseDirectory(binding, query);
+    const integration = await this.requireTarget(binding);
+    const lease = await integration.open(binding);
+    try {
+      const env = root === lease.env.cwd ? lease.env : lease.atDirectory?.(root);
+      if (!env) throw new SessionError("unavailable", "Integration cannot change directories.");
+      return await completePaths(env, query, true);
+    } finally {
+      await lease.close();
+    }
   }
 
   resolveThinking(ref: ModelRef, requested?: ModelThinkingLevel): ModelThinkingLevel {
@@ -321,7 +404,12 @@ export class Sessions {
 
   private open(
     id: string,
-    create?: { binding: ExecutionBinding; model: ModelRef; thinkingLevel: ModelThinkingLevel },
+    create?: {
+      binding: ExecutionBinding;
+      model: ModelRef;
+      thinkingLevel: ModelThinkingLevel;
+      cwd: string;
+    },
   ): Promise<ManagedSession> {
     if (this.closing) return Promise.reject(new SessionError("closing", "Runtime is stopping."));
     const opened = ManagedSession.open(this, id, create);
@@ -335,6 +423,7 @@ export class Sessions {
     binding: ExecutionBinding,
     model: ModelRef,
     thinkingLevel?: ModelThinkingLevel,
+    baseDirectory?: string,
   ): Promise<ManagedSession> {
     if (!uuid.test(id) || !validBinding(binding))
       throw new SessionError("invalid", "Invalid session or execution binding.");
@@ -342,6 +431,8 @@ export class Sessions {
     // Snapshot caller-owned values before yielding.
     binding = { ...binding };
     model = { ...model };
+    const cwd =
+      baseDirectory === undefined ? binding.cwd : this.baseDirectory(binding, baseDirectory);
     await this.requireTarget(binding);
     const available = await this.options.models.getAvailable();
     if (!available.some((item) => item.provider === model.provider && item.id === model.modelId))
@@ -362,10 +453,12 @@ export class Sessions {
           binding,
           model,
           thinkingLevel: this.resolveThinking(model, thinkingLevel),
+          cwd,
         })));
     const info = await session.info();
     if (
       !sameBinding(info.binding, binding) ||
+      info.cwd !== cwd ||
       info.model.provider !== model.provider ||
       info.model.modelId !== model.modelId
     )
@@ -418,7 +511,12 @@ export class ManagedSession {
   static async open(
     owner: Sessions,
     id: string,
-    create?: { binding: ExecutionBinding; model: ModelRef; thinkingLevel: ModelThinkingLevel },
+    create?: {
+      binding: ExecutionBinding;
+      model: ModelRef;
+      thinkingLevel: ModelThinkingLevel;
+      cwd: string;
+    },
   ): Promise<ManagedSession> {
     const registry = createRegistry();
     registry.install(CodingTools);
@@ -448,9 +546,9 @@ export class ManagedSession {
         models: owner.options.models,
         settings: owner.options.settings,
         registry,
-        env: async () => {
+        env: async ({ cwd }) => {
           assert(managed, "Session initialization must finish before tools run.");
-          return managed.environment();
+          return managed.environment(cwd);
         },
         onReport: owner.options.onReport,
       },
@@ -463,7 +561,7 @@ export class ManagedSession {
           ? {
               agent: {
                 model: create.model,
-                cwd: create.binding.cwd,
+                cwd: create.cwd,
                 thinkingLevel: create.thinkingLevel,
               },
               init: async (tx, conversationId) => {
@@ -504,20 +602,35 @@ export class ManagedSession {
     }
   }
 
-  private async environment(): Promise<ExecutionEnv> {
+  private async environment(cwd = this.binding.cwd): Promise<ExecutionEnv> {
     const integration = await this.owner.requireTarget(this.binding);
+    if (
+      cwd !== this.binding.cwd &&
+      (!integration.directoryRoot ||
+        cwd !==
+          resolveBaseDirectory(
+            integration.directoryRoot,
+            posix.relative(integration.directoryRoot, cwd),
+          ))
+    )
+      throw new SessionError("invalid", "Invalid execution directory.");
     // The viewer and sibling tools share a lease; validation still runs on every use.
     this.lease ??= Promise.resolve().then(() => integration.open(this.binding));
+    let lease: EnvironmentLease;
     try {
-      return (await this.lease).env;
+      lease = await this.lease;
     } catch (error) {
       this.lease = undefined;
       throw error;
     }
+    if (cwd === lease.env.cwd) return lease.env;
+    if (!lease.atDirectory)
+      throw new SessionError("unavailable", "Integration cannot change directories.");
+    return lease.atDirectory(cwd);
   }
 
   /** Complete relative paths in the bound environment, never the server's filesystem. */
-  async completePaths(query: string): Promise<string[]> {
+  async completePaths(query: string, conversation = this.root): Promise<string[]> {
     if (this.closed) throw new SessionError("closing", "Session is closed.");
     if (
       query.length > 4096 ||
@@ -526,43 +639,14 @@ export class ManagedSession {
       query.split("/").includes("..")
     )
       throw new SessionError("invalid", "Expected a workspace-relative path.");
-    const env = await this.environment();
-    const slash = query.lastIndexOf("/");
-    const directory = query.slice(0, slash + 1);
-    const prefix = query.slice(slash + 1).toLowerCase();
-    const opened = await env.openDirReader(posix.join(this.binding.cwd, directory), context);
-    if (!opened.ok) {
-      if (["not_found", "not_directory"].includes(opened.error.code)) return [];
-      throw new SessionError("unavailable", "Cannot list paths in this workspace.");
-    }
-    const paths: string[] = [];
-    try {
-      // Bound both scanning and the response; completion must not walk entire trees.
-      for (let count = 0; count < 5000; count += 100) {
-        const page = await opened.value.next(100, context);
-        if (!page.ok) throw new SessionError("unavailable", "Cannot list paths in this workspace.");
-        for (const file of page.value.entries) {
-          const name = posix.basename(file.path);
-          if (
-            !name.toLowerCase().startsWith(prefix) ||
-            (!prefix.startsWith(".") && name.startsWith(".")) ||
-            hasControlCharacters(name)
-          )
-            continue;
-          paths.push(directory + name + (file.kind === "directory" ? "/" : ""));
-        }
-        if (page.value.done) break;
-      }
-    } finally {
-      await opened.value.close(context);
-    }
-    return paths.sort((a, b) => a.localeCompare(b)).slice(0, 50);
+    const env = await this.environment((await conversation.agent(context)).cwd);
+    return completePaths(env, query);
   }
 
-  async repository(): Promise<RepositoryStatus> {
+  async repository(conversation = this.root): Promise<RepositoryStatus> {
     if (this.closed) return { state: "unavailable" };
     try {
-      const env = await this.environment();
+      const env = await this.environment((await conversation.agent(context)).cwd);
       let output = "";
       const result = await env.exec(
         `if ! command -v git >/dev/null 2>&1; then
@@ -575,7 +659,7 @@ else
   git rev-parse --verify --short HEAD 2>/dev/null || true
 fi`,
         {
-          cwd: this.binding.cwd,
+          cwd: env.cwd,
           timeout: 3,
           env: { GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
           onOutput(text, _context, info) {
@@ -649,6 +733,8 @@ fi`,
       id: this.id,
       name: metadata?.name ?? "",
       binding: { ...this.binding },
+      cwd: agent.cwd ?? this.binding.cwd,
+      directoryRoot: this.owner.integration(this.binding.provider)?.directoryRoot,
       created: this.created,
       model: agent.model,
       needsResume: this.needsResume,

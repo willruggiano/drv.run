@@ -279,6 +279,11 @@ async function stream(
   }
 }
 
+function directoryInput(value: unknown): string {
+  if (typeof value !== "string") throw new RequestError(400, "Invalid base directory.");
+  return value;
+}
+
 export function httpServer(
   sessions: Sessions,
   host: string,
@@ -329,6 +334,23 @@ export function httpServer(
       }
       if (request.method === "GET" && url.pathname === "/api/catalog")
         return json(response, 200, await sessions.catalog());
+      if (request.method === "POST" && url.pathname === "/api/directories") {
+        const data = await body(request);
+        const binding = object(data.binding);
+        if (typeof data.query !== "string") throw new RequestError(400, "Invalid directory query.");
+        return json(
+          response,
+          200,
+          await sessions.completeDirectories(
+            {
+              provider: string(binding.provider, 200),
+              target: string(binding.target, 4096),
+              cwd: string(binding.cwd, 4096),
+            },
+            data.query,
+          ),
+        );
+      }
       if (request.method === "POST" && url.pathname === "/api/sessions") {
         const data = await body(request);
         const model = object(data.model);
@@ -347,6 +369,7 @@ export function httpServer(
             modelId: string(model.modelId, 300),
           },
           data.thinkingLevel,
+          data.baseDirectory === undefined ? undefined : directoryInput(data.baseDirectory),
         );
         return json(response, 201, await session.info());
       }
@@ -365,10 +388,10 @@ export function httpServer(
           return json(
             response,
             200,
-            await session.completePaths(url.searchParams.get("query") ?? ""),
+            await session.completePaths(url.searchParams.get("query") ?? "", conversation),
           );
         if (request.method === "GET" && match[2] === "repository")
-          return json(response, 200, await session.repository());
+          return json(response, 200, await session.repository(conversation));
         if (request.method === "GET" && match[2] === "conversations")
           return json(response, 200, await session.conversations());
         if (request.method === "GET" && match[2] === "export")
@@ -437,6 +460,14 @@ export function httpServer(
                   model: { provider: selected.provider, modelId: selected.modelId },
                   thinkingLevel: sessions.resolveThinking(selected, thinking),
                   instructions: data.instructions,
+                  ...(data.baseDirectory === undefined
+                    ? {}
+                    : {
+                        cwd: sessions.baseDirectory(
+                          session.binding,
+                          directoryInput(data.baseDirectory),
+                        ),
+                      }),
                 },
                 context,
               );

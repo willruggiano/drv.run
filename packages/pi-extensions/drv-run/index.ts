@@ -69,13 +69,15 @@ export async function listInstances(options: Options): Promise<Instance[]> {
 export function createDrvRunIntegration(options: Options): Integration {
   return {
     id: "drv.run",
+    directoryRoot: "/workspace",
     extensions: [
       defineExtension({
         name: "drv.run",
         sections: [
           section(
             "execution",
-            () => "File and command tools run in the selected drv.run guest, in /workspace.",
+            (input) =>
+              `File and command tools run in the selected drv.run guest, in ${input.env?.cwd ?? "/workspace"}.`,
           ),
         ],
       }),
@@ -122,11 +124,22 @@ export function createDrvRunIntegration(options: Options): Integration {
         hostKeyAlias: host,
       });
       const env = new RemoteExecutionEnv({ connection, id: host, cwd: binding.cwd });
+      const environments = new Map([[binding.cwd, env]]);
       return {
         env,
+        atDirectory(cwd) {
+          let view = environments.get(cwd);
+          if (!view) {
+            view = new RemoteExecutionEnv({ connection, id: host, cwd });
+            environments.set(cwd, view);
+          }
+          return view;
+        },
         async close() {
           try {
-            await env.cleanup(BACKGROUND_CONTEXT);
+            await Promise.all(
+              [...environments.values()].map((env) => env.cleanup(BACKGROUND_CONTEXT)),
+            );
           } finally {
             connection.close();
           }

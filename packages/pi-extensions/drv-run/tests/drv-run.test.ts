@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { Connection, RemoteExecutionEnv, sshArguments } from "@earendil-works/pi-env";
-import { localIntegration } from "../../../pi-runtime/index.ts";
+import { localIntegration, resolveBaseDirectory } from "../../../pi-runtime/index.ts";
 import { code, exists, model } from "../../../pi-runtime/testing.ts";
 import { createDrvRunIntegration, listInstances } from "../index.ts";
 import { remoteFixture } from "./fixture.ts";
@@ -213,4 +213,111 @@ await test("repository inspection uses the guest environment and fails closed wh
   await writeFile(f.states, JSON.stringify({ test1: "inactive" }));
   assert.deepEqual(await session.repository(), { state: "unavailable" });
   assert.equal(exec.mock.callCount(), 1);
+});
+
+await test("base directory input is always workspace-relative and invalid paths fail closed", async (t) => {
+  const f = await remoteFixture(t);
+  for (const [input, expected] of [
+    ["", "/workspace"],
+    ["/", "/workspace"],
+    [".", "/workspace"],
+    ["foo", "/workspace/foo"],
+    ["/foo", "/workspace/foo"],
+    ["//foo/./bar/", "/workspace/foo/bar"],
+    ["/workspace/foo", "/workspace/workspace/foo"],
+    ["space name", "/workspace/space name"],
+  ])
+    assert.equal(resolveBaseDirectory("/workspace", input), expected);
+  for (const input of ["../", "foo/../bar", "a\0b", "a\nb", "x".repeat(4097)]) {
+    await assert.rejects(
+      f.sessions.create(randomUUID(), f.binding, model, undefined, input),
+      code("invalid"),
+    );
+    await assert.rejects(f.sessions.completeDirectories(f.binding, input), code("invalid"));
+  }
+  for (const input of [undefined, "", "foo", "/foo"]) {
+    const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, input);
+    assert.equal((await session.root.agent(context)).cwd, input ? "/workspace/foo" : "/workspace");
+    assert.equal((await session.info()).directoryRoot, "/workspace");
+    assert.deepEqual(session.binding, f.binding);
+  }
+  assert.equal(f.connections.length, 0);
+});
+
+await test("native Durable cwd drives remote tools, forks, completions and restart without changing the target", async (t) => {
+  const f = await remoteFixture(t);
+  // A temporary guest workspace makes the real daemon test independent of /workspace permissions.
+  await f.reopen([{ ...f.integration, directoryRoot: f.workspace }]);
+  for (const path of ["one", "two", "space name", ".hidden", "one/nested"])
+    await mkdir(join(f.workspace, path));
+  await writeFile(join(f.workspace, "file.txt"), "not a directory");
+  assert.deepEqual(await f.sessions.completeDirectories(f.binding, ""), [
+    "one/",
+    "space name/",
+    "two/",
+  ]);
+  assert.deepEqual(await f.sessions.completeDirectories(f.binding, "/o"), ["/one/"]);
+  assert.deepEqual(await f.sessions.completeDirectories(f.binding, "one/n"), ["one/nested/"]);
+  assert.deepEqual(await f.sessions.completeDirectories(f.binding, "."), [".hidden/"]);
+  assert.deepEqual(await f.sessions.completeDirectories(f.binding, "absent/"), []);
+  const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "/one");
+  f.faux.setResponses([
+    (input) => {
+      assert(
+        JSON.stringify(input.messages.filter((message) => message.role === "system")).includes(
+          `in ${join(f.workspace, "one")}.`,
+        ),
+      );
+      return fauxAssistantMessage(fauxToolCall("write", { path: "root.txt", content: "root" }), {
+        stopReason: "toolUse",
+      });
+    },
+    fauxAssistantMessage(fauxToolCall("bash", { command: "pwd > cwd.txt" }), {
+      stopReason: "toolUse",
+    }),
+    fauxAssistantMessage("Done."),
+  ]);
+  await session.prompt("Write relative to the base directory.", randomUUID());
+  await session.root.waitForIdle(context);
+  assert.equal(await readFile(join(f.workspace, "one/root.txt"), "utf8"), "root");
+  assert.equal(
+    (await readFile(join(f.workspace, "one/cwd.txt"), "utf8")).trim(),
+    join(f.workspace, "one"),
+  );
+  const history = await session.history();
+  const fork = await session.root.fork(
+    history.at(-1)!.id,
+    { ownership: { kind: "ownerless" } },
+    context,
+  );
+  assert.equal((await fork.agent(context)).cwd, join(f.workspace, "one"));
+  await fork.configure({ cwd: f.sessions.baseDirectory(f.binding, "/two") }, context);
+  f.faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("codemode", {
+        code: 'await tools.write({ path: "branch.txt", content: "branch" });',
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Done."),
+  ]);
+  const before = f.connections.length;
+  await session.prompt("Write in the fork.", randomUUID(), "reject", fork);
+  await fork.waitForIdle(context);
+  assert.equal(await readFile(join(f.workspace, "two/branch.txt"), "utf8"), "branch");
+  assert.deepEqual(await session.completePaths("root"), ["root.txt"]);
+  assert.deepEqual(await session.completePaths("branch", fork), ["branch.txt"]);
+  assert.equal(f.connections.length, before, "cwd views share a single SSH connection");
+  const exec = t.mock.method(RemoteExecutionEnv.prototype, "exec");
+  await session.repository(fork);
+  assert.equal(exec.mock.calls[0].arguments[1]?.cwd, join(f.workspace, "two"));
+  await f.reopen([{ ...f.integration, directoryRoot: f.workspace }]);
+  const restored = await f.sessions.get(session.id);
+  assert.equal((await restored.info()).cwd, join(f.workspace, "one"));
+  const restoredFork = await restored.conversation(fork.id);
+  assert.equal((await restoredFork.agent(context)).cwd, join(f.workspace, "two"));
+  assert.deepEqual(await restored.completePaths("branch", restoredFork), ["branch.txt"]);
+  await writeFile(f.states, "{}");
+  await assert.rejects(restored.completePaths("branch", restoredFork), code("unavailable"));
+  await assert.rejects(f.sessions.completeDirectories(f.binding, ""), code("unavailable"));
 });

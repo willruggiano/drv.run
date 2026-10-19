@@ -15,6 +15,21 @@ Focused browser tests (with Chromium available):
 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$(command -v chromium) node --test packages/pi-serve/key-mappings.test.ts
 ```
 
+## Base directory
+
+For drv.run targets, **Base directory** in Sessions sets the new session's
+working path. Session settings can change it for the current conversation. Empty
+means `/workspace`; both `foo` and `/foo` mean `/workspace/foo` (even
+`/workspace/foo` means `/workspace/workspace/foo`). `..` components are
+rejected. This sets the working directory, not a filesystem sandbox; symlinks
+and tools' explicit absolute paths retain their normal behavior.
+
+Suggestions list directories in the selected guest, including nested paths; type
+`.` to include hidden directories. The setting uses Durable's native `cwd`, so
+it persists across restarts and is inherited by forks. File tools, commands, `@`
+completion, and repository status all use the current conversation's directory.
+Local targets keep their existing launch-directory behavior.
+
 ## Mentions and commands
 
 Type `@` at a word boundary to browse paths in the session's workspace (local or

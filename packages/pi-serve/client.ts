@@ -51,7 +51,7 @@ let editingSettings: GlobalSettings | null = null;
 const usageDialog = element("usage-dialog", HTMLDialogElement);
 const bottomLine = element("bottom-line", HTMLElement);
 let repository: RepositoryStatus | undefined;
-let repositoryRequest = -1;
+let repositoryRequest: string | undefined;
 const sessionModel = element("session-model", HTMLSelectElement);
 const thinking = element("thinking", HTMLSelectElement);
 const instructions = element("instructions", HTMLTextAreaElement);
@@ -279,6 +279,7 @@ async function refresh(): Promise<void> {
   if (selected) models.value = String(catalog.models.indexOf(selected));
   else if (catalog.models.length === 1) models.value = "0";
   fillThinking(newThinking, models, newThinking.value, true);
+  updateDirectoryField();
   renderSessions();
   create.disabled = !targets.value || !models.value;
 }
@@ -295,7 +296,9 @@ function renderSessions(): void {
   const query = sessionFilter.value.trim().toLocaleLowerCase();
   for (const session of catalog.sessions) {
     const target = catalog.targets.find((item) => targetKey(item) === targetKey(session.binding));
-    const label = target?.label ?? session.binding.target;
+    const label =
+      (target?.label ?? session.binding.target) +
+      (session.cwd && session.cwd !== session.binding.cwd ? ` · ${session.cwd}` : "");
     if (
       query &&
       !`${sessionTitle(session)} ${label} ${session.id}`.toLocaleLowerCase().includes(query)
@@ -922,6 +925,7 @@ function content(
 // A stable module export lets benchmarks exercise the minified renderer.
 export function render(snapshot: Snapshot): void {
   const wasEmpty = !transcript.childElementCount;
+  const directoryChanged = repositoryKey() !== repositoryKey(snapshot);
   latest = snapshot;
   const agent = snapshot.view.docs["pi.agent"] as AgentState | undefined;
   const queue = element("queue", HTMLDivElement);
@@ -967,7 +971,8 @@ export function render(snapshot: Snapshot): void {
         ? "Waiting for provider…"
         : "");
   activity.hidden = !activity.textContent;
-  if (wasBusy && !busy) void refreshRepository();
+  if (directoryChanged) repository = undefined;
+  if (directoryChanged || (wasBusy && !busy)) void refreshRepository();
   document.title = `${busy ? "Working · " : ""}${sessionTitle(snapshot.session)}`;
   const wanted = new Set<string>();
   const ordered: HTMLElement[] = [];
@@ -1261,7 +1266,59 @@ function attach(id: string, branch?: number): void {
   controls();
 }
 
+function selectedTarget() {
+  return catalog.targets.find((target) => targetKey(target) === targets.value);
+}
+function updateDirectoryField(): void {
+  const root = selectedTarget()?.directoryRoot;
+  element("new-directory-field", HTMLLabelElement).hidden = !root;
+  if (root) {
+    element("new-directory", HTMLInputElement).placeholder = `${root} (default)`;
+    element("new-directory-hint", HTMLElement).textContent =
+      `Relative to ${root}, even with a leading slash.`;
+  }
+}
+
+// Native datalists keep the path editable and provide keyboard/touch completion.
+// Debounce remote listings and discard responses after input or target changes.
+for (const scope of ["new", "session"] as const) {
+  const input = element(`${scope}-directory`, HTMLInputElement);
+  const list = element(`${scope}-directories`, HTMLDataListElement);
+  let revision = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const binding = () => (scope === "new" ? selectedTarget() : latest?.session.binding);
+  const identity = () => JSON.stringify([binding(), scope === "new" ? targets.value : generation]);
+  const suggest = () => {
+    clearTimeout(timer);
+    const current = ++revision;
+    const key = identity();
+    const query = input.value;
+    list.replaceChildren();
+    timer = setTimeout(() => {
+      if (input.disabled || !binding()) return;
+      void api<string[]>("/api/directories", { binding: binding(), query })
+        .then((paths) => {
+          if (current !== revision || key !== identity() || query !== input.value) return;
+          list.replaceChildren(...paths.map((path) => new Option(path, path)));
+        })
+        .catch(() => {
+          // Completion is optional; saving still surfaces validation/connection errors.
+          if (current === revision) list.replaceChildren();
+        });
+    }, 150);
+  };
+  input.addEventListener("input", suggest);
+  input.addEventListener("focus", suggest);
+  if (scope === "new")
+    targets.addEventListener("change", () => {
+      ++revision;
+      clearTimeout(timer);
+      list.replaceChildren();
+    });
+}
+
 targets.onchange = () => {
+  updateDirectoryField();
   create.disabled = !targets.value || !models.value;
 };
 models.onchange = () => {
@@ -1274,7 +1331,10 @@ async function newSession(commandText?: string): Promise<void> {
   try {
     const session = await api<SessionInfo>("/api/sessions", {
       id: requestId(),
-      binding: catalog.targets.find((target) => targetKey(target) === targets.value),
+      binding: selectedTarget(),
+      baseDirectory: selectedTarget()?.directoryRoot
+        ? element("new-directory", HTMLInputElement).value
+        : undefined,
       model: models.value ? catalog.models[Number(models.value)] : undefined,
       thinkingLevel: newThinking.value || undefined,
     });
@@ -1676,6 +1736,18 @@ element("settings", HTMLButtonElement).onclick = () => {
   );
   fillThinking(thinking, sessionModel, agent?.thinkingLevel ?? "off");
   instructions.value = agent?.instructions ?? "";
+  const root = latest?.session.directoryRoot;
+  const directory = element("session-directory", HTMLInputElement);
+  element("session-directory-field", HTMLLabelElement).hidden = !root;
+  directory.disabled = !root;
+  const cwd = agent?.cwd ?? latest?.session.binding.cwd;
+  directory.value = root && cwd?.startsWith(root + "/") ? cwd.slice(root.length + 1) : "";
+  if (root) {
+    directory.placeholder = `${root} (default)`;
+    element("session-directory-hint", HTMLElement).textContent =
+      `Relative to ${root}, even with a leading slash. Empty uses ${root}.`;
+  }
+  element("session-directories", HTMLDataListElement).replaceChildren();
   preferences.showModal();
 };
 sessionModel.onchange = () => fillThinking(thinking, sessionModel);
@@ -1692,6 +1764,9 @@ element("save-settings", HTMLButtonElement).onclick = () => {
     model: catalog.models[Number(sessionModel.value)],
     thinkingLevel: thinking.value,
     instructions: instructions.value,
+    baseDirectory: latest?.session.directoryRoot
+      ? element("session-directory", HTMLInputElement).value
+      : undefined,
   })
     .then(() => api<SessionInfo>(renameURL, { name }))
     .then((session) => {
@@ -2197,8 +2272,8 @@ function renderFooter(): void {
   const binding = latest.session.binding;
   const workspace =
     binding.provider === "local"
-      ? binding.cwd
-      : `${binding.provider}/${binding.target} · ${binding.cwd}`;
+      ? (agent?.cwd ?? binding.cwd)
+      : `${binding.provider}/${binding.target} · ${agent?.cwd ?? binding.cwd}`;
   const set = (id: string, text: string) => {
     element(id, HTMLElement).textContent = text;
   };
@@ -2261,19 +2336,23 @@ function renderFooter(): void {
   set("usage-window", limit ? `${limit.toLocaleString()} tokens` : "Unknown");
   set("usage-auto", autoCompact ? "On" : "Off");
 }
+function repositoryKey(snapshot = latest): string {
+  const agent = snapshot?.view.docs["pi.agent"] as AgentState | undefined;
+  return JSON.stringify([generation, agent?.cwd ?? snapshot?.session.binding.cwd]);
+}
 async function refreshRepository(): Promise<void> {
-  const current = generation;
-  if (!active || document.hidden || repositoryRequest === current) return;
+  const current = repositoryKey();
+  if (!active || !latest || document.hidden || repositoryRequest === current) return;
   repositoryRequest = current;
   try {
     const result = await api<RepositoryStatus>(endpoint("repository"));
-    if (current !== generation) return;
+    if (current !== repositoryKey()) return;
     repository = result;
   } catch {
-    if (current !== generation) return;
+    if (current !== repositoryKey()) return;
     repository = { state: "unavailable" };
   } finally {
-    if (repositoryRequest === current) repositoryRequest = -1;
+    if (repositoryRequest === current) repositoryRequest = undefined;
   }
   renderFooter();
 }

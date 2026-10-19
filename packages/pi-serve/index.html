@@ -72,6 +72,8 @@
       <label><span>Target</span><select id="targets" aria-label="Target"></select></label>
       <label><span>Model</span><select id="models" aria-label="Model"></select></label>
     </div>
+    <label id="new-directory-field" hidden><span>Base directory</span><input id="new-directory" list="new-directories" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/workspace (default)" aria-describedby="new-directory-hint"><small id="new-directory-hint">Relative to /workspace, even with a leading slash.</small></label>
+    <datalist id="new-directories"></datalist>
     <label><span>Thinking for new session</span><select id="new-thinking"></select></label>
     <p id="defaults-hint">Model: current selection → configured default → sole available model. Thinking: per-model preference → global default → medium, limited by the model.</p>
     <div class="actions"><button id="picker-defaults" hidden>Defaults…</button></div>
@@ -81,10 +83,12 @@
   </dialog>
   <dialog id="preferences" aria-labelledby="preferences-title">
     <div class="dialog-heading"><h2 id="preferences-title">Session settings</h2><button id="close-settings" class="icon" aria-label="Close settings">×</button></div>
-    <p>Model, thinking and instructions apply to this conversation only. They do not change new-session defaults.</p>
+    <p>Model, thinking, base directory and instructions apply to this conversation only. They do not change new-session defaults.</p>
     <label><span>Session name</span><input id="session-name" maxlength="120" placeholder="Untitled session"></label>
     <label><span>Model</span><select id="session-model"></select></label>
     <label><span>Thinking</span><select id="thinking"></select></label>
+    <label id="session-directory-field" hidden><span>Base directory</span><input id="session-directory" list="session-directories" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="/workspace (default)" aria-describedby="session-directory-hint"><small id="session-directory-hint">Relative to /workspace, even with a leading slash. Empty uses /workspace.</small></label>
+    <datalist id="session-directories"></datalist>
     <label><span>Additional instructions</span><textarea id="instructions" rows="2" maxlength="100000"></textarea></label>
     <div class="actions"><button id="save-settings">Save</button></div>
     <details><summary>Context</summary>

@@ -138,6 +138,7 @@ export function benchmarkFixture(turns: number): Snapshot {
       id: "benchmark",
       name: "Profile",
       binding: { provider: "local", target: "local", cwd: "/tmp" },
+      cwd: "/tmp",
       created: timestamp,
       model: { provider: "faux", modelId: "faux-1" },
       thinkingLevel: "off",
