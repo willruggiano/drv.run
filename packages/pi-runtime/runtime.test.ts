@@ -14,6 +14,7 @@ import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import {
   Sessions,
+  SessionError,
   localIntegration,
   loadIntegrations,
   stateDirectory,
@@ -629,6 +630,63 @@ await test("footer context uses the selected model and active context, not lifet
     context,
   );
   assert.equal((await status()).lastResponse, null);
+});
+
+await test("path completion uses remote leases, bounds scanning and closes failed readers", async (t) => {
+  const f = await fixture(t);
+  const binding = { provider: "remote", target: "guest", cwd: "/remote/work" };
+  let available = true;
+  let fail = false;
+  let pages = 0;
+  let closes = 0;
+  const env = new NodeExecutionEnv({ cwd: binding.cwd });
+  env.openDirReader = async (path) => {
+    assert.equal(path, "/remote/work/src/");
+    return {
+      ok: true,
+      value: {
+        async next(limit) {
+          assert.equal(limit, 100);
+          if (fail) throw new Error("Disconnected");
+          const entries = Array.from({ length: limit }, (_, index) => ({
+            name: `remote-${pages * 100 + index}.ts`,
+            path: `${path}remote-${pages * 100 + index}.ts`,
+            kind: "file" as const,
+            size: 0,
+            mtimeMs: 0,
+          }));
+          pages++;
+          return { ok: true, value: { entries, done: false } };
+        },
+        async close() {
+          closes++;
+        },
+      },
+    };
+  };
+  await f.reopen([
+    {
+      id: "remote",
+      targets: async () => [{ ...binding, label: "Guest", available }],
+      async validate() {
+        if (!available) throw new SessionError("unavailable", "Guest disconnected");
+      },
+      open: () => ({ env, close: () => env.cleanup(context) }),
+    },
+  ]);
+  const session = await f.sessions.create(randomUUID(), binding, model);
+  const paths = await session.completePaths("src/remote");
+  assert.equal(paths.length, 50);
+  assert(paths.every((path) => path.startsWith("src/remote-")));
+  assert.equal(pages, 50);
+  assert.equal(closes, 1);
+  fail = true;
+  await assert.rejects(session.completePaths("src/"), /Disconnected/);
+  assert.equal(closes, 2);
+  available = false;
+  await assert.rejects(session.completePaths("src/"), code("unavailable"));
+  assert.equal(closes, 2);
+  assert.equal(f.faux.state.callCount, 0);
 });
 
 await test("thinking defaults follow Pi precedence and model capabilities, and persist per conversation", async (t) => {

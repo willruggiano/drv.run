@@ -45,7 +45,8 @@
     <button id="latest" hidden>↓ Latest</button>
     <form id="composer">
       <div class="compose-box">
-        <textarea id="prompt" aria-label="Message" rows="1" placeholder="Ask Pi…" maxlength="100000"></textarea>
+        <div id="completions" role="listbox" aria-label="Message completions" hidden></div>
+        <textarea id="prompt" aria-label="Message" rows="1" placeholder="Ask Pi… (@ files, / commands)" maxlength="100000"></textarea>
         <div id="attachments" aria-label="Attached images"></div>
         <div class="actions"><button id="input-toggle" class="icon" type="button" popovertarget="input-menu" aria-label="Upload attachments">+</button><button id="input-mode" type="button" hidden>Follow up</button><span class="spacer"></span><button id="stop" class="icon" type="button" hidden disabled aria-label="Stop" title="Stop"><span aria-hidden="true">×</span></button><button id="send" class="icon" type="submit" disabled aria-label="Send" title="Send (Ctrl/⌘ Enter)"><span aria-hidden="true">↑</span></button></div>
       </div>

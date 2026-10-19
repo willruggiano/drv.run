@@ -22,6 +22,8 @@
       ./tsconfig.json
       ./server.ts
       ./settings.ts
+      ./completions.ts
+      ./completions.test.ts
       ./key-mappings.ts
       ./key-mappings.test.ts
       ./client.ts
@@ -56,7 +58,7 @@ in
     checkPhase = ''
       runHook preCheck
       # Browser tests run locally, not in the Nix build sandbox.
-      node --test --test-skip-pattern='^mobile browser ' pi-serve/server.test.ts
+      node --test --test-skip-pattern='^mobile browser ' pi-serve/server.test.ts pi-serve/completions.test.ts
       runHook postCheck
     '';
     installPhase = ''

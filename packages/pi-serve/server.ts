@@ -351,7 +351,7 @@ export function httpServer(
         return json(response, 201, await session.info());
       }
       const match =
-        /^\/api\/sessions\/([^/]+)\/(events|prompt|resume|stop|configure|compact|reset|cancel|fork|conversations|export|rename|repository)$/.exec(
+        /^\/api\/sessions\/([^/]+)\/(events|prompt|resume|stop|configure|compact|reset|cancel|fork|conversations|export|rename|repository|completions)$/.exec(
           url.pathname,
         );
       if (match) {
@@ -361,6 +361,12 @@ export function httpServer(
             ? Number(url.searchParams.get("conversation"))
             : undefined,
         );
+        if (request.method === "GET" && match[2] === "completions")
+          return json(
+            response,
+            200,
+            await session.completePaths(url.searchParams.get("query") ?? ""),
+          );
         if (request.method === "GET" && match[2] === "repository")
           return json(response, 200, await session.repository());
         if (request.method === "GET" && match[2] === "conversations")

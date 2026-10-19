@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
@@ -41,6 +41,12 @@ export const DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "medium";
 
 const context = BACKGROUND_CONTEXT;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function hasControlCharacters(text: string): boolean {
+  return Array.from(text).some(
+    (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+  );
+}
 
 export class SessionError extends Error {
   readonly code: "invalid" | "not_found" | "unavailable" | "conflict" | "closing";
@@ -508,6 +514,49 @@ export class ManagedSession {
       this.lease = undefined;
       throw error;
     }
+  }
+
+  /** Complete relative paths in the bound environment, never the server's filesystem. */
+  async completePaths(query: string): Promise<string[]> {
+    if (this.closed) throw new SessionError("closing", "Session is closed.");
+    if (
+      query.length > 4096 ||
+      hasControlCharacters(query) ||
+      query.startsWith("/") ||
+      query.split("/").includes("..")
+    )
+      throw new SessionError("invalid", "Expected a workspace-relative path.");
+    const env = await this.environment();
+    const slash = query.lastIndexOf("/");
+    const directory = query.slice(0, slash + 1);
+    const prefix = query.slice(slash + 1).toLowerCase();
+    const opened = await env.openDirReader(posix.join(this.binding.cwd, directory), context);
+    if (!opened.ok) {
+      if (["not_found", "not_directory"].includes(opened.error.code)) return [];
+      throw new SessionError("unavailable", "Cannot list paths in this workspace.");
+    }
+    const paths: string[] = [];
+    try {
+      // Bound both scanning and the response; completion must not walk entire trees.
+      for (let count = 0; count < 5000; count += 100) {
+        const page = await opened.value.next(100, context);
+        if (!page.ok) throw new SessionError("unavailable", "Cannot list paths in this workspace.");
+        for (const file of page.value.entries) {
+          const name = posix.basename(file.path);
+          if (
+            !name.toLowerCase().startsWith(prefix) ||
+            (!prefix.startsWith(".") && name.startsWith(".")) ||
+            hasControlCharacters(name)
+          )
+            continue;
+          paths.push(directory + name + (file.kind === "directory" ? "/" : ""));
+        }
+        if (page.value.done) break;
+      }
+    } finally {
+      await opened.value.close(context);
+    }
+    return paths.sort((a, b) => a.localeCompare(b)).slice(0, 50);
   }
 
   async repository(): Promise<RepositoryStatus> {

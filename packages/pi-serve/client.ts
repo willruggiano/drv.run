@@ -1,4 +1,5 @@
 import { settingFields, type GlobalSettings } from "./settings.ts";
+import { commands, installCompletions } from "./completions.ts";
 import {
   installPickerKeyMappings,
   installSelectKeyMappings,
@@ -164,7 +165,9 @@ async function api<T>(path: string, data?: unknown): Promise<T> {
   return result as T;
 }
 function controls(): void {
-  send.disabled = !active || !connected || recovering || sending || !prompt.value.trim();
+  const isCommand = prompt.value.startsWith("/");
+  send.disabled =
+    sending || !prompt.value.trim() || (!isCommand && (!active || !connected || recovering));
   stop.disabled = !active || !connected || !busy || recovering;
   stop.hidden = !busy || recovering;
   modeToggle.hidden = !busy || recovering;
@@ -1200,6 +1203,7 @@ export function render(snapshot: Snapshot): void {
 }
 
 function attach(id: string, branch?: number): void {
+  completions.close();
   saveDraft();
   closePopovers();
   selectedMessage = undefined;
@@ -1264,29 +1268,113 @@ models.onchange = () => {
   fillThinking(newThinking, models, "", true);
   create.disabled = !targets.value || !models.value;
 };
-create.onclick = () => {
+async function newSession(commandText?: string): Promise<void> {
   create.disabled = true;
-  const id = requestId();
-  void api<SessionInfo>("/api/sessions", {
-    id,
-    binding: catalog.targets.find((target) => targetKey(target) === targets.value),
-    model: models.value ? catalog.models[Number(models.value)] : undefined,
-    thinkingLevel: newThinking.value || undefined,
-  })
-    .then((session) => {
-      sessionFilter.value = "";
-      attach(session.id);
-      return refresh();
-    })
-    .catch(report)
-    .finally(() => {
-      create.disabled = !targets.value || !models.value;
+  const current = generation;
+  try {
+    const session = await api<SessionInfo>("/api/sessions", {
+      id: requestId(),
+      binding: catalog.targets.find((target) => targetKey(target) === targets.value),
+      model: models.value ? catalog.models[Number(models.value)] : undefined,
+      thinkingLevel: newThinking.value || undefined,
     });
+    if (commandText !== undefined && current === generation && prompt.value === commandText)
+      prompt.value = "";
+    sessionFilter.value = "";
+    attach(session.id);
+    void refresh().catch(report);
+  } finally {
+    create.disabled = !targets.value || !models.value;
+  }
+}
+create.onclick = () => {
+  void newSession().catch(report);
 };
+const completions = installCompletions(
+  prompt,
+  element("completions", HTMLDivElement),
+  () => `${generation}:${active ?? "none"}:${conversation ?? "main"}`,
+  (query) => {
+    if (!active || !connected) return Promise.reject(new Error("No connected session."));
+    return api<string[]>(
+      `${endpoint("completions")}${conversation === undefined ? "?" : "&"}query=${encodeURIComponent(query)}`,
+    );
+  },
+);
+
+async function runCommand(text: string): Promise<boolean> {
+  const name = text.slice(1).split(/\s/, 1)[0];
+  const argument = text.slice(name.length + 1).trim();
+  if (!commands.some((command) => command.name === name))
+    throw new Error(`Unknown command /${name}. Type / for available commands.`);
+  if (images.length) throw new Error("Remove attached images before running a command.");
+  if (argument && name !== "compact" && name !== "reset")
+    throw new Error(`/${name} does not accept arguments.`);
+  if (name === "help") {
+    notice.textContent =
+      "@ completes workspace paths (references, not file uploads). / lists commands. Use ↑/↓ or Ctrl+J/K, Enter/Tab to select, Escape to dismiss. Ctrl/⌘+Enter or Send runs a command.";
+    notice.hidden = false;
+    return true;
+  }
+  if (name === "sessions") {
+    openPicker();
+    return true;
+  }
+  if (name === "new") {
+    if (create.disabled) throw new Error("Choose an available target and model in Sessions first.");
+    await newSession(text);
+    return true;
+  }
+  if (!active || !connected) throw new Error("Connect to a session first.");
+  if (recovering && name !== "resume") throw new Error("Resume interrupted work first.");
+  if (name === "resume") {
+    if (!recovering) throw new Error("This session does not need to be resumed.");
+    await resumeSession();
+  } else if (name === "compact" || name === "reset") {
+    if (busy) throw new Error("Stop the current run before changing context.");
+    if (name === "reset" && !confirm("Start a new model context? History is preserved."))
+      return false;
+    await api(
+      endpoint(name),
+      argument ? { [name === "reset" ? "handoff" : "instructions"]: argument } : {},
+    );
+  } else if (name === "stop") {
+    if (!busy) throw new Error("There is no running response to stop.");
+    await api(endpoint("stop"), {});
+  } else if (name === "search") openSearch();
+  else if (name === "model" || name === "settings") {
+    element("settings", HTMLButtonElement).click();
+    if (name === "model") sessionModel.focus();
+  } else if (name === "export") await exportConversation();
+  return true;
+}
+
 composer.onsubmit = (event) => {
   event.preventDefault();
-  if (send.disabled || !active) return;
+  if (send.disabled) return;
+  completions.close();
   const text = prompt.value;
+  if (text.startsWith("/")) {
+    const current = generation;
+    sending = true;
+    notice.hidden = true;
+    controls();
+    void runCommand(text)
+      .then((done) => {
+        if (done && current === generation && prompt.value === text) {
+          prompt.value = "";
+          resizePrompt();
+          saveDraft();
+        }
+      })
+      .catch(report)
+      .finally(() => {
+        sending = false;
+        controls();
+      });
+    return;
+  }
+  if (!active) return;
   if (
     pending?.session !== active ||
     pending.conversation !== conversation ||
@@ -1314,6 +1402,7 @@ composer.onsubmit = (event) => {
         prompt.value === text
       ) {
         prompt.value = "";
+        completions.close();
         resizePrompt();
         images = [];
         showAttachments();
@@ -1337,6 +1426,7 @@ modeToggle.onclick = () => {
   controls();
 };
 prompt.onkeydown = (event) => {
+  if (event.defaultPrevented || event.isComposing) return;
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
     composer.requestSubmit();
@@ -1345,17 +1435,17 @@ prompt.onkeydown = (event) => {
 stop.onclick = () => {
   if (active) void api(endpoint("stop"), {}).catch(report);
 };
-resume.onclick = () => {
+async function resumeSession(): Promise<void> {
   const id = active;
-  if (id)
-    void api(`/api/sessions/${id}/resume`, {})
-      .then(() => {
-        if (active === id) {
-          recovering = false;
-          controls();
-        }
-      })
-      .catch(report);
+  if (!id) return;
+  await api(`/api/sessions/${id}/resume`, {});
+  if (active === id) {
+    recovering = false;
+    controls();
+  }
+}
+resume.onclick = () => {
+  void resumeSession().catch(report);
 };
 element("refresh", HTMLButtonElement).onclick = () => {
   void refresh().catch(report);
@@ -1628,19 +1718,20 @@ for (const action of ["compact", "reset"])
         report(error);
       });
   };
+async function exportConversation(): Promise<void> {
+  const filename = `pi-${active}-${conversation ?? "main"}.json`;
+  const records = await api<EntryRecord[]>(endpoint("export"));
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(records, null, 2)], { type: "application/json" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 element("export", HTMLButtonElement).onclick = () => {
-  void api<EntryRecord[]>(endpoint("export"))
-    .then((records) => {
-      const url = URL.createObjectURL(
-        new Blob([JSON.stringify(records, null, 2)], { type: "application/json" }),
-      );
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `pi-${active}-${conversation ?? "main"}.json`;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    })
-    .catch(report);
+  void exportConversation().catch(report);
 };
 window.addEventListener("offline", () => {
   connected = false;

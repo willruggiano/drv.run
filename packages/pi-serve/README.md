@@ -15,6 +15,32 @@ Focused browser tests (with Chromium available):
 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$(command -v chromium) node --test packages/pi-serve/key-mappings.test.ts
 ```
 
+## Mentions and commands
+
+Type `@` at a word boundary to browse paths in the session's workspace (local or
+remote). Completion matches name prefixes; select a directory to browse inside
+it. Type `.` to include hidden entries. Paths containing spaces are quoted
+automatically. Mentions insert path references, not file contents. Listing is
+bounded to 5,000 entries per directory and 50 suggestions.
+
+Type `/` at the start of a message for commands: `/sessions`, `/new`,
+`/settings`, `/model`, `/compact [instructions]`, `/reset [handoff]`, `/stop`,
+`/resume`, `/export`, `/search`, and `/help`. `/new` uses the target and model
+selected in Sessions. Reset asks for confirmation and preserves history. Unknown
+commands and failed operations leave the draft intact; commands are never
+submitted as model prompts.
+
+Use ↑/↓ or Ctrl+J/K to navigate suggestions, Enter/Tab or a tap to select, and
+Escape to dismiss. Selecting a command only inserts it; use Send or Ctrl/⌘+Enter
+to execute. Ordinary Enter still inserts a newline when the suggestion list is
+closed.
+
+Run the focused tests with Chromium and esbuild on PATH:
+
+```sh
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$(command -v chromium) node --test packages/pi-serve/completions.test.ts
+```
+
 ## Benchmarks
 
 “Minified” uses esbuild 0.27.2. Deltas are relative to the unminified build at
