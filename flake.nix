@@ -80,6 +80,10 @@
       // (
         lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
           nixos-pi-serve = pkgs.pi-serve.tests.nixos;
+          nixos-port-forwarding = pkgs.testers.runNixOSTest (import ./tests/nixos/port-forwarding.nix {
+            inherit (self) nixosModules;
+            inherit pkgs;
+          });
           nixos-host-basic = pkgs.testers.runNixOSTest (import ./tests/nixos/host-basic.nix {
             inherit (self) nixosModules;
             inherit pkgs;
