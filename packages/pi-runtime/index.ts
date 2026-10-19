@@ -199,6 +199,8 @@ export type Snapshot = {
   view: ConversationView;
   context: ContextStatus;
   history?: readonly EntryRecord[];
+  /** Durable compaction task durations, keyed by the resulting entry. */
+  contextDurations?: Record<number, number>;
   workflows?: WorkflowView;
 };
 export type Catalog = {

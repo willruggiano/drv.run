@@ -111,6 +111,43 @@ let pending:
   | undefined;
 const entries = new Map<number, EntryRecord>();
 const rendered = new Map<string, { node: HTMLElement; signature: string }>();
+const archives = new WeakMap<HTMLElement, HTMLElement>();
+let archiveStyles: CSSStyleSheet | undefined;
+
+function archive(): HTMLElement {
+  const host = document.createElement("div");
+  host.className = "context-history";
+  const root = host.attachShadow({ mode: "open" });
+  // Share the exact application CSS, including highlighting and responsive
+  // rules. Only the scroll container differs.
+  if (!archiveStyles) {
+    archiveStyles = new CSSStyleSheet();
+    archiveStyles.replaceSync(
+      Array.from(document.styleSheets)
+        .flatMap((sheet) => Array.from(sheet.cssRules, (rule) => rule.cssText))
+        .join("\n") +
+        `
+        #transcript { padding: 0; overflow: visible; scrollbar-gutter: auto; }
+        `,
+    );
+  }
+  root.adoptedStyleSheets = [archiveStyles];
+  const body = document.createElement("div");
+  body.id = "transcript";
+  root.append(body);
+  return host;
+}
+
+function reconcile(parent: HTMLElement, nodes: HTMLElement[]): void {
+  nodes.forEach((node, index) => {
+    if (parent.children[index] !== node) parent.insertBefore(node, parent.children[index] ?? null);
+  });
+  while (parent.children.length > nodes.length) parent.lastElementChild!.remove();
+}
+
+function composedParent(node: Node): Node | null {
+  return node.parentNode ?? (node instanceof ShadowRoot ? node.host : null);
+}
 
 // randomUUID is secure-context-only; getRandomValues also works on LAN HTTP.
 function requestId(): string {
@@ -753,7 +790,7 @@ function cancelLongPress(): void {
 function openHeldActions(actions: HTMLButtonElement): void {
   const point = longPress && { x: longPress.x, y: longPress.y };
   cancelLongPress();
-  if (!actions.isConnected || !transcript.contains(actions)) return;
+  if (!actions.isConnected) return;
   heldActions = actions;
   touchMenuAnchor = point;
   try {
@@ -766,7 +803,7 @@ transcript.addEventListener("pointerdown", (event) => {
   cancelLongPress();
   heldActions = undefined;
   if (event.pointerType !== "touch" || !event.isPrimary) return;
-  const actions = touchActions(event.target);
+  const actions = touchActions(event.composedPath()[0] ?? null);
   if (!actions) return;
   longPress = {
     pointer: event.pointerId,
@@ -799,7 +836,7 @@ visualViewport?.addEventListener("scroll", dismissTouchMenu);
 window.addEventListener("blur", cancelLongPress);
 document.addEventListener("visibilitychange", cancelLongPress);
 transcript.addEventListener("contextmenu", (event) => {
-  const actions = touchActions(event.target);
+  const actions = touchActions(event.composedPath()[0] ?? null);
   if (!actions || (!longPress && !matchMedia("(pointer: coarse)").matches)) return;
   event.preventDefault();
   if (longPress?.actions === actions) openHeldActions(actions);
@@ -812,7 +849,7 @@ transcript.addEventListener(
       event.isTrusted &&
       event.detail > 0 &&
       heldActions &&
-      touchActions(event.target) === heldActions
+      touchActions(event.composedPath()[0] ?? null) === heldActions
     ) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -979,13 +1016,8 @@ export function render(snapshot: Snapshot): void {
     (snapshot.workflows?.asks.some((ask) => ask.actionable)
       ? "Waiting for your input"
       : undefined) ??
-    live?.compactionFailure?.error ??
     live?.generation?.retry?.error ??
-    (live?.compactions?.length
-      ? "Compacting context…"
-      : live?.generation?.deferred
-        ? "Waiting for provider…"
-        : "");
+    (live?.generation?.deferred ? "Waiting for provider…" : "");
   activity.hidden = !activity.textContent;
   if (directoryChanged) repository = undefined;
   if (directoryChanged || (wasBusy && !busy)) void refreshRepository();
@@ -995,9 +1027,11 @@ export function render(snapshot: Snapshot): void {
   // A streamed assistant entry can be replaced by its committed entry. Keep
   // disclosure state by call ID across that transition as well as live updates.
   const disclosureState = new Map(
-    Array.from(transcript.querySelectorAll<HTMLDetailsElement>("details[data-disclosure]")).map(
-      (detail) => [detail.dataset.disclosure, detail.open],
-    ),
+    Array.from(rendered.values())
+      .flatMap(({ node }) =>
+        Array.from(node.querySelectorAll<HTMLDetailsElement>("details[data-disclosure]")),
+      )
+      .map((detail) => [detail.dataset.disclosure, detail.open]),
   );
   const item = (key: string, value: unknown, build: (node: HTMLElement) => void) => {
     wanted.add(key);
@@ -1121,16 +1155,34 @@ export function render(snapshot: Snapshot): void {
       : undefined;
   for (const entry of [...entries.values()].sort((a, b) => a.id - b.id)) {
     if (entry.kind === "pi.reset" || entry.kind === "pi.compaction")
-      item(`context:${entry.id}`, entry, (node) => {
+      item(`context:${entry.id}`, [entry, snapshot.contextDurations?.[entry.id]], (node) => {
+        node.dataset.context = entry.kind;
         const details = document.createElement("details");
-        const summary = document.createElement("summary");
-        summary.textContent = entry.kind === "pi.reset" ? "Context reset" : "Context compacted";
-        details.append(
-          summary,
-          codeBlock(JSON.stringify(entry.data ?? {}, null, 2), "json", details),
+        details.className = "tool-call context-event";
+        details.dataset.state = "completed";
+        details.dataset.disclosure = `context:${entry.id}`;
+        const summary = toolSummary(
+          entry.kind === "pi.reset" ? "Context reset" : "Context compacted",
+          "completed",
+          snapshot.contextDurations?.[entry.id],
         );
+        summary.title =
+          entry.kind === "pi.compaction"
+            ? "Expand summary and prior conversation"
+            : "Expand prior conversation";
+        const host = archive();
+        details.append(summary, host);
+        archives.set(node, host.shadowRoot!.querySelector<HTMLElement>("#transcript")!);
+        if (entry.kind === "pi.compaction" && entry.model?.length) {
+          const summaryContent = document.createElement("div");
+          summaryContent.className = "compaction-summary";
+          for (const message of entry.model)
+            content(summaryContent, message, undefined, undefined, true);
+          details.insertBefore(summaryContent, host);
+        }
         node.append(details);
       });
+    if (entry.kind === "pi.compaction") continue;
     entry.model?.forEach((message, index) => {
       if (message.role === "toolResult" && calls.has(message.toolCallId)) return;
       if (message.role !== "system")
@@ -1181,6 +1233,28 @@ export function render(snapshot: Snapshot): void {
       );
     });
   }
+  for (const compaction of live?.compactions ?? [])
+    item(`compacting:${compaction.taskId}`, compaction, (node) => {
+      node.dataset.context = "pi.compaction";
+      const details = document.createElement("details");
+      details.className = "tool-call context-event";
+      details.dataset.state = "running";
+      details.append(toolSummary("Compacting context…", "running"));
+      if (compaction.retry) details.append(codeBlock(compaction.retry.error));
+      node.append(details);
+    });
+  if (live?.compactionFailure)
+    item(`compaction-failed:${live.compactionFailure.taskId}`, live.compactionFailure, (node) => {
+      node.dataset.context = "pi.compaction";
+      const details = document.createElement("details");
+      details.className = "tool-call context-event";
+      details.dataset.state = "failed";
+      details.append(
+        toolSummary("Compaction failed", "failed"),
+        codeBlock(live.compactionFailure!.error),
+      );
+      node.append(details);
+    });
   for (const [key, value] of rendered) {
     if (!wanted.has(key)) {
       value.node.remove();
@@ -1209,9 +1283,19 @@ export function render(snapshot: Snapshot): void {
       !!next?.querySelector(":scope > :is(.tool-call, .thinking):is(:first-child, header + *)");
     if (node.classList.contains("trace-continues") !== traceContinues)
       node.classList.toggle("trace-continues", traceContinues);
-    if (transcript.children[index] !== node)
-      transcript.insertBefore(node, transcript.children[index] ?? null);
   });
+  // Each successful boundary wraps everything before it, including older
+  // archives. Moving nodes preserves disclosures and handlers.
+  let visible: HTMLElement[] = [];
+  for (const node of ordered) {
+    const body = archives.get(node);
+    if (body) {
+      reconcile(body, visible);
+      visible = [];
+    }
+    visible.push(node);
+  }
+  reconcile(transcript, visible);
   if (wasEmpty !== !transcript.childElementCount) resizePrompt();
   if (stick) transcript.scrollTop = transcript.scrollHeight;
   if (!searchBar.hidden) updateSearch();
@@ -2101,9 +2185,8 @@ inputMenu.addEventListener("click", (event) => {
 document.addEventListener("pointerdown", (event) => {
   if (
     messageMenu.matches(":popover-open") &&
-    event.target instanceof Node &&
-    !messageMenu.contains(event.target) &&
-    !selectedMessage?.trigger.contains(event.target)
+    !event.composedPath().includes(messageMenu) &&
+    (!selectedMessage || !event.composedPath().includes(selectedMessage.trigger))
   )
     messageMenu.hidePopover();
 });
@@ -2240,7 +2323,7 @@ function updateSearch(): void {
   const query = search.value.trim().toLocaleLowerCase();
   matches = [];
   const ranges: Range[] = [];
-  for (const article of transcript.querySelectorAll("article")) {
+  for (const { node: article } of rendered.values()) {
     const found = !searchBar.hidden && !!query && (article.dataset.search ?? "").includes(query);
     if (found) {
       matches.push(article);
@@ -2281,6 +2364,12 @@ function goToMatch(direction: number): void {
   if (!matches.length) return;
   matchIndex = (matchIndex + direction + matches.length) % matches.length;
   const node = matches[matchIndex];
+  for (
+    let parent = composedParent(node);
+    parent && parent !== transcript;
+    parent = composedParent(parent)
+  )
+    if (parent instanceof HTMLDetailsElement) parent.open = true;
   for (const details of node.querySelectorAll("details"))
     if (details.textContent?.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase()))
       details.open = true;

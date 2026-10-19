@@ -13,6 +13,7 @@ import {
   type Conversation,
   type ConversationView,
   type EntryRecord,
+  type Cursor,
   type SubmissionId,
 } from "@earendil-works/pi-durable";
 import {
@@ -256,11 +257,56 @@ async function stream(
       return;
     }
     response.writeHead(200, { "Content-Type": "text/event-stream", "X-Accel-Buffering": "no" });
+    const contextDurations: Record<number, number> = {};
+    const timed = new Set<number>();
     const send = async (view: ConversationView, initial?: EntryRecord[]) => {
+      for (const entry of [...(initial ?? []), ...view.entries]) {
+        if (entry.kind !== "pi.compaction" || timed.has(entry.id)) continue;
+        // Queued summaries may be appended by a run rather than the compaction
+        // task. Resolve that task through its durable write submission.
+        const task = entry.byTaskId
+          ? await session.harness.getTask(entry.byTaskId, context)
+          : undefined;
+        let duration: number | undefined;
+        if (
+          task?.kind === "pi.compaction" &&
+          task.startedAt !== undefined &&
+          task.endedAt !== undefined
+        )
+          duration = task.endedAt - task.startedAt;
+        else
+          duration = await session.harness.commit(async (tx) => {
+            let cursor: Cursor | undefined;
+            do {
+              const page = await tx.scanTasks(
+                { conversationId: entry.conversationId, kind: "pi.compaction" },
+                100,
+                cursor,
+              );
+              for (const candidate of page.items) {
+                const submission = await tx.submissionByRequest(
+                  entry.conversationId,
+                  `compaction:${candidate.id}`,
+                );
+                if (
+                  submission?.entry === entry.id &&
+                  candidate.startedAt !== undefined &&
+                  candidate.endedAt !== undefined
+                )
+                  return candidate.endedAt - candidate.startedAt;
+              }
+              cursor = page.next;
+            } while (cursor);
+            return undefined;
+          }, context);
+        if (duration !== undefined) contextDurations[entry.id] = duration;
+        timed.add(entry.id);
+      }
       const snapshot: Snapshot = {
         session: await session.info(),
         view,
         context: session.contextStatus(view),
+        contextDurations,
         workflows: await session.workflows(conversation),
         ...(initial ? { history: initial } : {}),
       };

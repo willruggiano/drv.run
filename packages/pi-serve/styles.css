@@ -98,6 +98,8 @@ article.trace-continues {
 @media (prefers-reduced-motion: reduce) { .tool-status[data-state=running] > span { animation: none; opacity: .6; } }
 .tool-call[data-state=failed] > summary .tool-status, .tool-call[data-state=error] > summary .tool-status { color: var(--danger); }
 .tool-status:is([data-state=running], [data-state=completed], [data-state=ok], [data-state=done]) { color: var(--accent); }
+.context-history { display: block; font: 14px/1.6 var(--font-ui); color: var(--fg); }
+.context-event > summary { font-family: var(--font-ui); }
 .tool-result { min-width: 0; }
 .tool-call > .message-actions { display: block; }
 .tool-call .tool-call { margin-left: 6px; }
@@ -198,7 +200,10 @@ a { color: var(--link); } [hidden] { display: none !important; }
 #completions small, #completions [role=status] { color: var(--muted); font-size: 12px; }
 #completions [role=status] { padding: 10px; }
 
-body.hide-thinking .thinking, body.hide-images #transcript img { display: none; }
+body.hide-thinking { --thinking-display: none; }
+body.hide-images { --image-display: none; }
+.thinking { display: var(--thinking-display, block); }
+#transcript img { display: var(--image-display, inline); }
 
 /* Stacked main views. */
 body.stacked-layout { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; overflow: hidden; }

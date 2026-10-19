@@ -1126,3 +1126,228 @@ await test("mobile browser navigation never automatically focuses controls", asy
   );
   assert.deepEqual(await page.evaluate(() => Reflect.get(window, "automaticFocus")), []);
 });
+
+await test("mobile browser compaction and reset archive unchanged conversation nodes in Shadow DOM", async (t) => {
+  const f = await fixture(t);
+  const sessions = await Sessions.open({
+    ...f.options,
+    directory: join(f.workspace, "state"),
+    settings: { compaction: { keepRecentTokens: 1 } },
+  });
+  t.after(() => sessions.close());
+  const session = await sessions.create(randomUUID(), f.binding, model);
+  for (const entry of benchmarkFixture(2).view.entries)
+    await session.root.submit(
+      { type: "write", entry: { kind: entry.kind, model: entry.model } },
+      context,
+    );
+  const assets = join(f.workspace, "assets");
+  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  const base = await serve(t, sessions, assets);
+  const browser = await chromium.launch({
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  const errors: Error[] = [];
+  page.on("pageerror", (error) => errors.push(error));
+  await page.goto(`${base}/?session=${session.id}`);
+  await page.waitForSelector('.tool-call[data-call-id="call1"]');
+  const tool = page.locator('.tool-call[data-call-id="call0"]');
+  await tool.locator(":scope > summary").click();
+  const original = await page.evaluateHandle(() =>
+    Array.from(document.querySelectorAll("#transcript > article")),
+  );
+  const appearance = async () =>
+    original.evaluate((nodes) =>
+      nodes
+        .flatMap((node) => [node, ...node.querySelectorAll("*")])
+        .map((node) => {
+          const style = getComputedStyle(node);
+          return [
+            style.font,
+            style.color,
+            style.padding,
+            style.margin,
+            style.border,
+            style.display,
+            node.getBoundingClientRect().width,
+          ];
+        }),
+    );
+  const before = await appearance();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const desktopBefore = await appearance();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  f.faux.setResponses([
+    async () => {
+      await release.promise;
+      return fauxAssistantMessage("A concise checkpoint.");
+    },
+  ]);
+  const taskId = await session.root.compact(undefined, context);
+  const running = page.locator('.context-event[data-state="running"]');
+  await running.waitFor();
+  assert.equal(await running.locator(".tool-status > span").count(), 4);
+  assert.equal(await running.locator(".tool-status").getAttribute("aria-label"), "running");
+  assert.equal(
+    await running
+      .locator(".tool-status > span")
+      .first()
+      .evaluate((node) => getComputedStyle(node).animationName),
+    "tool-spinner",
+  );
+  assert.equal(await page.locator(".context-history").count(), 0);
+  release.resolve();
+  await session.harness.waitForTask(taskId, context);
+  const completed = page.locator('.context-event[data-state="completed"]');
+  await completed.waitFor();
+  assert.equal(await running.count(), 0);
+  assert.equal(await completed.evaluate((node) => (node as HTMLDetailsElement).open), false);
+  assert.equal(
+    await completed.locator(":scope > summary > .tool-status").getAttribute("aria-label"),
+    "completed",
+  );
+  const task = await session.harness.getTask(taskId, context);
+  assert(task?.startedAt !== undefined && task.endedAt !== undefined);
+  const duration = task.endedAt - task.startedAt;
+  assert.equal(
+    await completed.locator(":scope > summary > .tool-duration").getAttribute("title"),
+    `Duration: ${duration}ms`,
+  );
+  assert.equal(
+    await original.evaluate((nodes) =>
+      nodes.every((node) => node.isConnected && node.getRootNode() instanceof ShadowRoot),
+    ),
+    true,
+  );
+  assert.equal(
+    await page.evaluate(() => document.querySelectorAll("#transcript > article").length),
+    1,
+  );
+  assert.equal(await tool.isVisible(), false);
+  const summaryContent = completed.locator(":scope > .compaction-summary");
+  assert.equal(await summaryContent.count(), 1);
+  assert.equal(await summaryContent.isVisible(), false);
+  assert.equal(await completed.locator(":scope > details").count(), 0);
+  await completed.locator(":scope > summary").click();
+  assert.equal(await summaryContent.isVisible(), true);
+  assert.equal(await tool.evaluate((node) => (node as HTMLDetailsElement).open), true);
+  assert.deepEqual(await appearance(), before);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  assert.deepEqual(await appearance(), desktopBefore);
+  await page.setViewportSize({ width: 390, height: 844 });
+  // Updates reuse both the archive and its message nodes, preserving expansion.
+  await session.root.submit(
+    {
+      type: "write",
+      entry: {
+        kind: "message",
+        model: [{ role: "user", content: "After compaction", timestamp: Date.now() }],
+      },
+    },
+    context,
+  );
+  await page.locator('article[data-role="user"]').filter({ hasText: "After compaction" }).waitFor();
+  assert.equal(await completed.evaluate((node) => (node as HTMLDetailsElement).open), true);
+  assert.equal(await original.evaluate((nodes) => nodes.every((node) => node.isConnected)), true);
+  await session.root.reset(undefined, context);
+  const reset = page.locator('article[data-context="pi.reset"] > .context-event');
+  await reset.waitFor();
+  assert.equal(await reset.evaluate((node) => (node as HTMLDetailsElement).open), false);
+  assert.equal(await page.locator(".context-history").count(), 2);
+  await reset.locator(":scope > summary").click();
+  assert.equal(await tool.isVisible(), true);
+  assert.deepEqual(await appearance(), before);
+  // Archived message actions still work across the shadow boundary.
+  await tool.locator(":scope > summary").dispatchEvent("pointerdown", {
+    pointerType: "touch",
+    isPrimary: true,
+    pointerId: 1,
+    composed: true,
+  });
+  await page.locator("#message-menu").waitFor();
+  await tool
+    .locator(":scope > summary")
+    .dispatchEvent("pointerup", { pointerId: 1, composed: true });
+  assert.equal(await page.locator("#message-menu").isVisible(), true);
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await reset.waitFor();
+  assert.equal(await reset.evaluate((node) => (node as HTMLDetailsElement).open), false);
+  assert.equal(await page.locator(".context-history").count(), 2);
+  assert.equal(
+    await page
+      .locator('article[data-context="pi.compaction"] > .context-event > summary > .tool-duration')
+      .getAttribute("title"),
+    `Duration: ${duration}ms`,
+  );
+  await page.keyboard.press("Control+f");
+  await page.fill("#search", "Inspect module 0");
+  assert.equal(await page.locator("#search-count").textContent(), "1 / 1");
+  assert.equal(await reset.evaluate((node) => (node as HTMLDetailsElement).open), true);
+  assert.equal(
+    await page
+      .locator('article[data-context="pi.compaction"] > .context-event')
+      .evaluate((node) => (node as HTMLDetailsElement).open),
+    true,
+  );
+  assert.deepEqual(errors, []);
+});
+
+await test("queued compaction duration resolves its submission, including after reset and fork", async (t) => {
+  const f = await fixture(t);
+  const sessions = await Sessions.open({
+    ...f.options,
+    directory: join(f.workspace, "state"),
+    settings: { compaction: { keepRecentTokens: 1 } },
+  });
+  t.after(() => sessions.close());
+  const session = await sessions.create(randomUUID(), f.binding, model);
+  for (const entry of benchmarkFixture(2).view.entries)
+    await session.root.submit(
+      { type: "write", entry: { kind: entry.kind, model: entry.model } },
+      context,
+    );
+  const generating = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  f.faux.setResponses([
+    async () => {
+      generating.resolve();
+      await release.promise;
+      return fauxAssistantMessage("Finished.");
+    },
+    fauxAssistantMessage("A checkpoint while generation is busy."),
+  ]);
+  await session.prompt("Continue.", randomUUID());
+  await generating.promise;
+  const taskId = await session.root.compact(undefined, context);
+  const receipt = await session.harness.waitForTask(taskId, context);
+  assert.equal(receipt.state.outcome.status, "completed");
+  assert.equal(
+    (await session.history()).some((entry) => entry.kind === "pi.compaction"),
+    false,
+  );
+  release.resolve();
+  await session.root.waitForIdle(context);
+  const entry = (await session.history()).find((entry) => entry.kind === "pi.compaction");
+  assert(entry);
+  assert.notEqual(entry.byTaskId, taskId);
+  const task = await session.harness.getTask(taskId, context);
+  assert(task?.startedAt !== undefined && task.endedAt !== undefined);
+  const duration = task.endedAt - task.startedAt;
+  await session.root.reset(undefined, context);
+  const last = (await session.history()).at(-1);
+  assert(last);
+  const branch = await session.root.fork(last.id, { ownership: { kind: "ownerless" } }, context);
+  const base = await serve(t, sessions);
+  for (const conversation of [session.root, branch]) {
+    const state = await snapshot(
+      `${base}/api/sessions/${session.id}/events?conversation=${conversation.id}`,
+    );
+    assert.equal(state.contextDurations?.[entry.id], duration);
+  }
+});
