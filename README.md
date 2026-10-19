@@ -10,7 +10,7 @@ specifically built around [Nix], because [Nix] is awesome.
 What's the _Big Idea_?
 
 ```sh
-ssh drv.run sourcehut:~bombadil/drv.run
+ssh drv.run github:willruggiano/drv.run
 ```
 
 which lands you, the human operator, in a remote microvm where the _guest
