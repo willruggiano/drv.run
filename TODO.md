@@ -100,6 +100,10 @@ These seem useful on the inside;
 
 Others;
 
+- <https://github.com/kitknox/rootshell>
+- <https://github.com/trzsz/trzsz-ssh>
+- <https://github.com/jetkvm/kvm>
+- <https://github.com/baptiste0928/jj-mesh>
 - <https://github.com/Gurpartap/pi-mermaid> (ascii is fine lmao)
 - <https://github.com/HenryQW/pi-harness/tree/main/extensions>
 - <https://github.com/clay-good/openlore>

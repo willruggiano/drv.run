@@ -2,10 +2,10 @@
 
 # `drv.run`
 
-> [!IMPORTANT] This project is a WORK IN PROGRESS.
+> This project is a work in progress. Expect total chaos.
 
 This project aims to build a sort of exe.dev experience at a smaller scale and
-specifically built around [Nix], because [Nix] is awesome.
+specifically built around [Nix](https://nixos.org), because Nix is awesome.
 
 What's the _Big Idea_?
 
@@ -13,24 +13,60 @@ What's the _Big Idea_?
 ssh drv.run github:willruggiano/drv.run
 ```
 
-which lands you, the human operator, in a remote microvm where the _guest
-environment_ is derived from the given flake reference (this repo, as it
-happens).
+You're in! To what you may ask? A _NixOS microvm_, with your entire build
+environment ready to go for whatever it is you want to do!
 
-## Prior art and credits
+## Principles
 
-- <https://exe.dev>
-- <https://git.sr.ht/~alexdavid/jail.nix>
-- <https://github.com/microvm-nix/microvm.nix>
-- <https://github.com/willruggiano/neovim.drv>
-- <https://michael.stapelberg.ch/posts/2026-02-01-coding-agent-microvm-nix>
+- **Think first:** Verify behavior against the upstream sources. State
+  consequential assumptions and ask when interpretation changes the task. Work
+  backwards from the user when designing the solution.
+- **Keep it simple:** Implement only what is needed. Avoid speculative features,
+  premature optimization, and clever control flow. Shared abstractions are only
+  acceptable when multiple consumers/implementations exist.
+- **Stay strict:** Write idiomatic, strictly typed code. Do not suppress check
+  failures without precise justification and user approval. Assert aggressively.
+- **Be surgical:** Touch only relevant code, match existing style, remove what
+  your change makes obsolete, and report unrelated issues instead of widening
+  scope.
+- **Verify outcomes:** Run relevant tests and static checks. Measure before and
+  after performance work.
+- **Make Ken Thompson proud:** Follow the Unix Philosophy: [[unix.md]].
 
-_One day we should look into..._
+## Communication
 
-- <https://github.com/kitknox/rootshell>
-- <https://github.com/neurosnap/zmx>
-- <https://github.com/trzsz/trzsz-ssh>
-- <https://github.com/jetkvm/kvm>
-- <https://github.com/baptiste0928/jj-mesh>
+- Tone: concise and precise, technical, blunt
+- The user is highly technical; do not "dumb things down"
+- Prefer short, direct sentences and active voice; loosely follow ASD-STE100
+- State the conclusion/solution first; these can be code snippets if apropo
+- Use exact technical terms. Do not replace technical terminology with vague
+  slop language
+- Use ASCII diagrams to explain flow and/or relationships
+- Prefer diagrams to prose
+- Always cite your sources; source code and documentation are the only
+  acceptable form of primary evidence. Prefer _locally available_ source code
+  and documentation (eg. /nix/store paths) to code/docs found on the web. Source
+  code and documentation **must** match the version of the software declared by
+  this project.
+- Preserve important caveats and uncertainty. Distinguish facts, assumptions,
+  and ambiguities. Do not turn a simple question into a tutorial.
+- Avoid jargon, hype, rhetorical framing, motivational language, filler,
+  repetition, dramatic wording, and unnecessary background explanation.
+- Communication is the single most important skill. Get it _precisely_ right.
 
-[Nix]: https://nixos.org/
+## Terminology
+
+- **Client**: the computer from which the user `ssh drv.run <flake ref>`
+- **Host**: the node to which the user `ssh drv.run <flake ref>`
+- **Guest**: the VM on the _Host_ where the user lands after `ssh drv.run` or
+  `ssh drv.run.XXX`
+- **Guest closure**: the NixOS system closure that defines the _Guest_
+- **Flake closure**: the build/development environment derived from the user's
+  provided flake reference (`ssh drv.run <flake ref>`) that is activated when
+  the user enters the _Guest_
+- **Instance**: one systemd drv.run@%i.service
+
+Note: terms are not proper nouns. They are case insensitive to avoid ambiguity.
+For example, "Host" and "host" will be interpreted identically by me. Make sure
+you clarify your meaning if are forced to used these terms in a manner
+inconsistent with the definitions above.
