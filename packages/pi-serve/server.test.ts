@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { fixture, model, waitFor } from "../pi-runtime/testing.ts";
@@ -18,7 +19,7 @@ import { benchmarkFixture, benchmarkOptions } from "./benchmark.ts";
 import { buildAssets } from "./build.ts";
 
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { Sessions } from "../pi-runtime/index.ts";
+import { Sessions, type Catalog } from "../pi-runtime/index.ts";
 import type { GlobalSettings } from "./settings.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -45,6 +46,68 @@ await test("browser executable lookup follows PATH and rejects unusable candidat
   assert.equal(chromiumExecutable([second, first].join(delimiter)), join(second, "chromium"));
   assert.throws(() => chromiumExecutable(unusable.join(delimiter)));
 });
+
+async function checkCLI(
+  child: ChildProcess,
+  url: string,
+  check: (catalog: Catalog) => void | Promise<void>,
+  startupTimeout = 30_000,
+): Promise<void> {
+  assert(child.stderr, "CLI stderr must be piped for startup diagnostics.");
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (text: string) => {
+    stderr += text;
+  });
+  const startup = new AbortController();
+  const ended = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+    child.once("close", (code, signal) => resolve([code, signal]));
+  });
+  child.once("error", (error) => startup.abort(error));
+  child.once("exit", (code, signal) => {
+    startup.abort(new Error("CLI exited before readiness", { cause: { code, signal } }));
+  });
+  const timeout = setTimeout(() => {
+    startup.abort(new DOMException("CLI startup timed out", "TimeoutError"));
+  }, startupTimeout);
+  const cleanup = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await ended;
+  };
+  try {
+    let catalog: Catalog;
+    try {
+      for (;;) {
+        startup.signal.throwIfAborted();
+        const response = await fetch(url, { signal: startup.signal }).catch(() => undefined);
+        startup.signal.throwIfAborted();
+        if (response?.ok) {
+          catalog = await response.json();
+          break;
+        }
+        await response?.body?.cancel();
+        await delay(10, undefined, { signal: startup.signal });
+      }
+    } catch (error) {
+      // Drain stderr and reap the child before reporting the original startup failure.
+      const cause = startup.signal.aborted ? startup.signal.reason : error;
+      await cleanup();
+      throw new Error(`CLI startup failed. Stderr:\n${stderr || "(empty)"}`, { cause });
+    }
+    clearTimeout(timeout);
+    await check(catalog);
+    child.kill("SIGTERM");
+    const forceKill = setTimeout(() => child.kill("SIGKILL"), 5000);
+    try {
+      assert.deepEqual(await ended, [0, null]);
+    } finally {
+      clearTimeout(forceKill);
+    }
+  } finally {
+    clearTimeout(timeout);
+    // Cleanup must not assert graceful shutdown or replace an earlier test failure.
+    await cleanup();
+  }
+}
 
 await test("CLI starts standalone without host commands and loads only explicit integrations", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pi-serve-cli-"));
@@ -92,21 +155,10 @@ await test("CLI starts standalone without host commands and loads only explicit 
           PI_OFFLINE: "1",
           PI_CODING_AGENT_DIR: join(directory, "agent"),
         },
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", "pipe"],
       },
     );
-    const ended = once(child, "exit");
-    try {
-      const url = `http://127.0.0.1:${port}/api/catalog`;
-      await waitFor(async () => {
-        assert.equal(child.exitCode, null);
-        try {
-          return (await fetch(url)).ok;
-        } catch {
-          return false;
-        }
-      });
-      const catalog = await (await fetch(url)).json();
+    await checkCLI(child, `http://127.0.0.1:${port}/api/catalog`, (catalog) => {
       assert.deepEqual(catalog.sessions, []);
       assert.deepEqual(
         catalog.targets,
@@ -122,15 +174,112 @@ await test("CLI starts standalone without host commands and loads only explicit 
               },
             ],
       );
-    } finally {
-      child.kill("SIGTERM");
-      const timeout = setTimeout(() => child.kill("SIGKILL"), 5000);
-      try {
-        assert.deepEqual(await ended, [0, null]);
-      } finally {
-        clearTimeout(timeout);
+    });
+  }
+});
+
+await test("CLI harness preserves startup and assertion failures while reaping children", async (t) => {
+  for (const scenario of [
+    "retry",
+    "exit",
+    "signal",
+    "stall",
+    "body",
+    "assertion",
+    "shutdown",
+  ] as const) {
+    await t.test(scenario, async (t) => {
+      const child = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `
+        import { createServer } from "node:http";
+        const scenario = ${JSON.stringify(scenario)};
+        let requests = 0;
+        const server = createServer((request, response) => {
+          if (scenario === "exit") process.exit(23);
+          if (scenario === "signal") { process.kill(process.pid, "SIGTERM"); return; }
+          if (scenario === "stall") return;
+          if (scenario === "retry" && ++requests === 1) {
+            response.writeHead(503).end();
+            return;
+          }
+          response.setHeader("Content-Type", "application/json");
+          if (scenario === "body") { response.write("{"); return; }
+          response.end(JSON.stringify({ sessions: [], targets: [], models: [] }));
+        });
+        if (scenario !== "signal") process.on("SIGTERM", () => {
+          server.close();
+          server.closeAllConnections();
+          process.disconnect();
+          process.exitCode = scenario === "shutdown" ? 7 : 0;
+        });
+        server.listen(0, "127.0.0.1", () => process.send(server.address().port));
+      `,
+        ],
+        { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+      );
+      t.after(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      });
+      const [port] = await once(child, "message");
+      assert.equal(typeof port, "number");
+      const original = new Error("Catalog assertion failed");
+      let checked = false;
+      const result = checkCLI(
+        child,
+        `http://127.0.0.1:${port}`,
+        (catalog) => {
+          checked = true;
+          assert.deepEqual(catalog, { sessions: [], targets: [], models: [] });
+          if (scenario === "assertion") throw original;
+        },
+        scenario === "stall" || scenario === "body" ? 250 : 30_000,
+      );
+      if (scenario === "retry") {
+        await result;
+        assert.equal(checked, true);
+        assert.equal(child.exitCode, 0);
+      } else if (scenario === "assertion") {
+        await assert.rejects(result, (error) => error === original);
+        assert.equal(checked, true);
+        assert.equal(child.signalCode, "SIGKILL");
+      } else if (scenario === "shutdown") {
+        await assert.rejects(result, (error) => {
+          assert(error instanceof assert.AssertionError);
+          assert.deepEqual(error.actual, [7, null]);
+          return true;
+        });
+        assert.equal(checked, true);
+      } else {
+        await assert.rejects(result, (error) => {
+          assert(error instanceof Error);
+          assert(error.cause instanceof Error);
+          if (scenario === "stall" || scenario === "body") {
+            assert(error.cause instanceof DOMException);
+            assert.equal(error.cause.name, "TimeoutError");
+          } else {
+            assert.deepEqual(error.cause.cause, {
+              code: scenario === "exit" ? 23 : null,
+              signal: scenario === "signal" ? "SIGTERM" : null,
+            });
+          }
+          return true;
+        });
+        assert.equal(checked, false);
+        assert.equal(child.exitCode, scenario === "exit" ? 23 : null);
+        assert.equal(
+          child.signalCode,
+          scenario === "signal"
+            ? "SIGTERM"
+            : scenario === "stall" || scenario === "body"
+              ? "SIGKILL"
+              : null,
+        );
       }
-    }
+    });
   }
 });
 
