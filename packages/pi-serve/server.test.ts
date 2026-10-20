@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { fixture, model, waitFor } from "../pi-runtime/testing.ts";
+import { fixture, model } from "../pi-runtime/testing.ts";
 import { chromiumExecutable, serve, snapshot, post } from "./testing.ts";
 import { GlobalSettingsStore, parseOptions } from "./server.ts";
 import { benchmarkFixture, benchmarkOptions } from "./benchmark.ts";
@@ -91,7 +91,9 @@ async function checkCLI(
       // Drain stderr and reap the child before reporting the original startup failure.
       const cause = startup.signal.aborted ? startup.signal.reason : error;
       await cleanup();
-      throw new Error(`CLI startup failed. Stderr:\n${stderr || "(empty)"}`, { cause });
+      throw new Error(`CLI startup failed. Stderr:\n${stderr || "(empty)"}`, {
+        cause,
+      });
     }
     clearTimeout(timeout);
     await check(catalog);
@@ -322,8 +324,11 @@ await test("HTTP validates origins, IDs, methods, JSON and request size", async 
   const f = await fixture(t);
   const base = await serve(t, f.sessions);
   assert.equal(
-    (await fetch(base + "/api/catalog", { headers: { Origin: "https://untrusted.example" } }))
-      .status,
+    (
+      await fetch(base + "/api/catalog", {
+        headers: { Origin: "https://untrusted.example" },
+      })
+    ).status,
     403,
   );
   const rebinding = await new Promise<number | undefined>((resolve, reject) => {
@@ -340,7 +345,11 @@ await test("HTTP validates origins, IDs, methods, JSON and request size", async 
   });
   assert.equal(rebinding, 403);
   assert.equal(
-    (await fetch(base + "/api/catalog", { headers: { "Sec-Fetch-Site": "cross-site" } })).status,
+    (
+      await fetch(base + "/api/catalog", {
+        headers: { "Sec-Fetch-Site": "cross-site" },
+      })
+    ).status,
     403,
   );
   assert.equal((await fetch(base + "/api/catalog")).status, 200);
@@ -530,7 +539,11 @@ await test("conversation controls validate input and keep forks scoped to their 
     ["prompt", { text: "No", requestId: randomUUID(), mode: "invalid" }],
     [
       "prompt",
-      { text: "No", requestId: randomUUID(), images: [{ mimeType: "text/html", data: "AAAA" }] },
+      {
+        text: "No",
+        requestId: randomUUID(),
+        images: [{ mimeType: "text/html", data: "AAAA" }],
+      },
     ],
     ["configure", { model, thinkingLevel: "invalid", instructions: "" }],
     [
@@ -637,7 +650,10 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
       defaultModel: model.modelId,
       theme: "light",
       shellPath: "/trusted",
-      compaction: { reserveTokens: 12345, modelOverrides: { "faux/faux-1": { reserveTokens: 1 } } },
+      compaction: {
+        reserveTokens: 12345,
+        modelOverrides: { "faux/faux-1": { reserveTokens: 1 } },
+      },
       retry: { maxRetries: 7, provider: { maxRetries: 0 } },
     }),
   );
@@ -661,7 +677,10 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
     { values: { "retry.enabled": "false" } },
     { values: { "retry.maxRetries": -1 } },
     { values: { shellPath: "/not-allowed" } },
-    { values: { hideThinkingBlock: true }, model: { provider: "missing", modelId: "missing" } },
+    {
+      values: { hideThinkingBlock: true },
+      model: { provider: "missing", modelId: "missing" },
+    },
     { modelThinkingLevel: "high" },
     { unknown: true },
   ]) {
@@ -683,14 +702,19 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
     },
   });
   assert.equal(result.status, 200);
-  const persisted = SettingsManager.create(f.workspace, agentDir, { projectTrusted: false });
+  const persisted = SettingsManager.create(f.workspace, agentDir, {
+    projectTrusted: false,
+  });
   assert.equal(persisted.getDefaultThinkingLevel(), "low");
   assert.equal(persisted.getModelThinkingLevel(model.provider, model.modelId), "high");
   assert.equal(persisted.getTheme(), "light");
   assert.equal(persisted.getShellPath(), "/trusted");
   assert.equal(persisted.getCompactionReserveTokens(), 12345);
   assert.equal(
-    persisted.getCompactionReserveTokens({ provider: model.provider, id: model.modelId }),
+    persisted.getCompactionReserveTokens({
+      provider: model.provider,
+      id: model.modelId,
+    }),
     1,
   );
   assert.equal(options.settings?.retry?.enabled, false);

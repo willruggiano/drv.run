@@ -69,11 +69,11 @@
     };
   };
   microvm = {
-    mem = 3 * 1024;
+    mem = lib.mkDefault (3 * 1024);
     storeOnDisk = true;
     # Fresh Guests can share cached pages of the immutable Guest closure image.
     storeDiskDirect = false;
-    vcpu = 2;
+    vcpu = lib.mkDefault 2;
     volumes = [
       {
         image = "state.img";
