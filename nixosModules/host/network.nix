@@ -73,6 +73,15 @@ in {
       # nsresourced needs HAVE_VMLINUX_H in addition to generic BPF support.
       # Keep this override Host-local, not in the kernel's package set.
       package = (pkgs.systemd.override {withLibBPF = true;}).overrideAttrs (old: {
+        # Match config_get_stats_by_path's resolved paths. Using the original
+        # symlink paths makes udev reload its rules continuously on NixOS.
+        postPatch =
+          old.postPatch
+          + ''
+            substituteInPlace src/udev/udev-rules.c \
+              --replace-fail 'hashmap_put_stats_by_path(&rules->stats_by_path, c->original_path, &c->st)' \
+                             'hashmap_put_stats_by_path(&rules->stats_by_path, c->result, &c->st)'
+          '';
         mesonFlags =
           old.mesonFlags
           ++ [

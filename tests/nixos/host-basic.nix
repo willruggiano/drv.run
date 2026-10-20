@@ -2,6 +2,11 @@
   nixosModules,
   pkgs,
 }: let
+  # Nix's path fetcher reuses registered store paths only when named "source".
+  nixpkgs = builtins.path {
+    name = "source";
+    path = pkgs.path;
+  };
   tap = import ../../nixosModules/host/tap.nix {inherit pkgs;};
   shell = pkgs.mkShell {
     packages = [pkgs.curl pkgs.python3 pkgs.iproute2];
@@ -16,9 +21,9 @@
   keys = import (pkgs.path + "/nixos/tests/ssh-keys.nix") pkgs;
   fixture = pkgs.writeText "flake.nix" ''
     {
-      inputs.nixpkgs.url = "path:${pkgs.path}";
+      inputs.nixpkgs.url = "path:${nixpkgs}";
       outputs = { nixpkgs, ... }: {
-        devShells.x86_64-linux.default = let pkgs = nixpkgs.legacyPackages.x86_64-linux; in pkgs.mkShell {
+        devShells.${pkgs.stdenv.hostPlatform.system}.default = let pkgs = nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}; in pkgs.mkShell {
           packages = [pkgs.curl pkgs.python3 pkgs.iproute2];
           DRV_RUN_TEST_VALUE = "captured";
           shellHook = "export DRV_RUN_TEST_READY=1";
@@ -28,7 +33,7 @@
   '';
 in {
   name = "host-basic";
-  qemu.forceAccel = true;
+  imports = [./common.nix];
   nodes = {
     client = {
       # Public/sensitive destinations on an isolated VLAN, never the Internet.
@@ -139,13 +144,7 @@ in {
         wantedBy = ["multi-user.target"];
         serviceConfig.ExecStart = "${pkgs.python3}/bin/python3 -m http.server 8080 --bind 0.0.0.0";
       };
-      virtualisation = {
-        memorySize = 10240;
-        cores = 2;
-        diskSize = 20480;
-        qemu.options = ["-cpu" "host"];
-        additionalPaths = [shell pkgs.path];
-      };
+      virtualisation.additionalPaths = [shell nixpkgs];
       users.users = {
         operator = {
           isNormalUser = true;
@@ -260,7 +259,6 @@ in {
         ]
         return shlex.join(options)
 
-    start_all()
     host.wait_for_unit("default.target")
     host.wait_for_unit("sshd.service")
     host.wait_for_unit("systemd-networkd.service")

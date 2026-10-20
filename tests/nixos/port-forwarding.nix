@@ -2,6 +2,11 @@
   nixosModules,
   pkgs,
 }: let
+  # Nix's path fetcher reuses registered store paths only when named "source".
+  nixpkgs = builtins.path {
+    name = "source";
+    path = pkgs.path;
+  };
   inherit (pkgs) lib;
   ports = {
     pi = 8080;
@@ -10,7 +15,7 @@
   shell = pkgs.mkShell {packages = [pkgs.curl];};
   fixture = pkgs.writeText "flake.nix" ''
     {
-      inputs.nixpkgs.url = "path:${pkgs.path}";
+      inputs.nixpkgs.url = "path:${nixpkgs}";
       outputs = { nixpkgs, ... }: {
         devShells.${pkgs.stdenv.hostPlatform.system}.default =
           let pkgs = nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}; in pkgs.mkShell {
@@ -33,7 +38,7 @@
   '';
 in {
   name = "port-forwarding";
-  qemu.forceAccel = true;
+  imports = [./common.nix];
   nodes = {
     client = {nodes, ...}: {
       environment.systemPackages = [pkgs.curl pkgs.python3];
@@ -137,13 +142,7 @@ in {
         operator.gid = 1000;
         observer.gid = 1001;
       };
-      virtualisation = {
-        memorySize = 10240;
-        cores = 2;
-        diskSize = 20480;
-        qemu.options = ["-cpu" "host"];
-        additionalPaths = [shell pkgs.path];
-      };
+      virtualisation.additionalPaths = [shell nixpkgs];
       nix.settings = {
         experimental-features = ["nix-command" "flakes"];
         sandbox = true;
@@ -240,7 +239,6 @@ in {
         children = host.succeed("python3 -c " + shlex.quote(probe)).split()
         return {main, *(int(pid) for pid in children)}
 
-    start_all()
     host.wait_for_unit("systemd-networkd.service")
     host.wait_for_unit("user@1000.service")
     host.wait_for_unit("default.target", user="operator")

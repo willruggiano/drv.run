@@ -5,13 +5,18 @@
   pi-serve,
   pi-drv-run,
 }: let
+  # Nix's path fetcher reuses registered store paths only when named "source".
+  nixpkgs = builtins.path {
+    name = "source";
+    path = pkgs.path;
+  };
   shell = pkgs.mkShell {
     packages = [pkgs.python3];
     shellHook = "export DRV_RUN_TEST_READY=1";
   };
   fixture = pkgs.writeText "flake.nix" ''
     {
-      inputs.nixpkgs.url = "path:${pkgs.path}";
+      inputs.nixpkgs.url = "path:${nixpkgs}";
       outputs = { nixpkgs, ... }: {
         devShells.${pkgs.stdenv.hostPlatform.system}.default =
           let pkgs = nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}; in pkgs.mkShell {
@@ -127,7 +132,7 @@
 in
   testers.runNixOSTest {
     name = "pi-serve";
-    qemu.forceAccel = true;
+    imports = [./common.nix];
     # Exercise the public module without the drv.run overlay.
     node.pkgs = pkgs.lib.mkForce (import pkgs.path {inherit (pkgs.stdenv.hostPlatform) system;});
     nodes.client.environment.systemPackages = [pkgs.curl];
@@ -149,13 +154,7 @@ in
         dnsServers = ["192.168.1.1"];
       };
       environment.systemPackages = [pkgs.curl pkgs.python3];
-      virtualisation = {
-        memorySize = 10240;
-        cores = 2;
-        diskSize = 20480;
-        qemu.options = ["-cpu" "host"];
-        additionalPaths = [shell pkgs.path];
-      };
+      virtualisation.additionalPaths = [shell nixpkgs];
       users.users.operator = {
         isNormalUser = true;
         uid = 1000;
@@ -207,7 +206,6 @@ in
       def guest(command: str):
           return operator("ssh -T " + shlex.quote(target) + " " + shlex.quote(command))
 
-      start_all()
       with subtest("standalone web frontend starts without drv.run and offers local execution"):
           standalone.wait_for_unit("user@1000.service")
           standalone.wait_until_succeeds("test -S /run/user/1000/bus")
@@ -220,6 +218,7 @@ in
           }])
           t.assertEqual(catalog["sessions"], [])
           standalone.fail("test -e /home/operator/.local/state/drv.run")
+          standalone.shutdown()
 
       host.wait_for_unit("default.target")
       host.wait_for_unit("systemd-networkd.service")
