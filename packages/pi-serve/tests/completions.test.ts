@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fixture } from "../pi-runtime/testing.ts";
-import { commandCompletions, completionToken, pathCompletion } from "./completions.ts";
+import { fixture } from "../../pi-runtime/testing.ts";
+import { commandCompletions, completionToken, pathCompletion } from "../completions.ts";
 import { serve } from "./testing.ts";
 
 await test("completion tokens respect boundaries, quoting and cursor position", () => {

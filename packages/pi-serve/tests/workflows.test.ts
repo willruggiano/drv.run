@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { fixture } from "../pi-runtime/testing.ts";
-import type { Snapshot } from "../pi-runtime/index.ts";
+import { fixture } from "../../pi-runtime/testing.ts";
+import type { Snapshot } from "../../pi-runtime/index.ts";
 import {
   post,
   serve,

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { model } from "../pi-runtime/testing.ts";
+import { model } from "../../pi-runtime/testing.ts";
 import { directoryFixture, post, serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;

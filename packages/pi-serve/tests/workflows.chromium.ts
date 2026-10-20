@@ -8,15 +8,15 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { chromium, type Page } from "playwright";
-import { fixture, waitFor } from "../pi-runtime/testing.ts";
-import type { AskRequest } from "../pi-runtime/workflows.ts";
+import { fixture, waitFor } from "../../pi-runtime/testing.ts";
+import type { AskRequest } from "../../pi-runtime/workflows.ts";
 import {
   chromiumExecutable,
   serve,
   workflowQuestions as questions,
   workflowReport as report,
 } from "./testing.ts";
-import { buildAssets } from "./build.ts";
+import { buildAssets } from "../build.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -27,7 +27,7 @@ await test(
     const f = await fixture(t);
     const assets = await mkdtemp(join(tmpdir(), "ask-review-assets-"));
     t.after(() => rm(assets, { recursive: true, force: true }));
-    await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+    await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
     const base = await serve(t, f.sessions, assets);
     const browser = await chromium.launch({ executablePath: chromiumExecutable() });
     t.after(() => browser.close());

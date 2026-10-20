@@ -18,10 +18,10 @@ async function setup(t: TestContext): Promise<Page> {
   });
   t.after(() => browser.close());
   const page = await browser.newPage();
-  const html = await readFile(new URL("./index.html", import.meta.url), "utf8");
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   await page.setContent(html.replace(/<script[\s\S]*?<\/script>/g, ""));
   const source = stripTypeScriptTypes(
-    await readFile(new URL("./key-mappings.ts", import.meta.url), "utf8"),
+    await readFile(new URL("../key-mappings.ts", import.meta.url), "utf8"),
   );
   await page.addScriptTag({
     content:

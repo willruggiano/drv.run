@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { chromium } from "playwright";
-import { localIntegration } from "../pi-runtime/index.ts";
-import { buildAssets } from "./build.ts";
+import { localIntegration } from "../../pi-runtime/index.ts";
+import { buildAssets } from "../build.ts";
 import { chromiumExecutable, directoryFixture, serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -18,7 +18,7 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   await mkdir(join(f.workspace, "two"));
   await writeFile(join(f.workspace, "only-file.txt"), "file");
   const assets = join(f.directory, "assets");
-  await buildAssets(fileURLToPath(new URL(".", import.meta.url)), assets);
+  await buildAssets(fileURLToPath(new URL("..", import.meta.url)), assets);
   const base = await serve(t, f.sessions, assets);
   const browser = await chromium.launch({
     executablePath: chromiumExecutable(),

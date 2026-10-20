@@ -8,16 +8,16 @@ import { test, type TestContext } from "node:test";
 import { chromium, type Page } from "playwright";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { fixture, waitFor } from "../pi-runtime/testing.ts";
-import type { ManagedSession } from "../pi-runtime/index.ts";
-import { commandCompletions } from "./completions.ts";
-import { buildAssets } from "./build.ts";
+import { fixture, waitFor } from "../../pi-runtime/testing.ts";
+import type { ManagedSession } from "../../pi-runtime/index.ts";
+import { commandCompletions } from "../completions.ts";
+import { buildAssets } from "../build.ts";
 import { chromiumExecutable, serve } from "./testing.ts";
 
 async function landingFixture(t: TestContext) {
   const f = await fixture(t);
   const assets = join(f.workspace, "assets");
-  await buildAssets(fileURLToPath(new URL(".", import.meta.url)), assets);
+  await buildAssets(fileURLToPath(new URL("..", import.meta.url)), assets);
   const base = await serve(t, f.sessions, assets);
   const page = await browser(t);
   const errors: Error[] = [];
@@ -47,7 +47,7 @@ async function attachImage(page: Page) {
   await page.locator("#images").setInputFiles({
     name: "image.png",
     mimeType: "image/png",
-    buffer: await readFile(new URL("./icon-192.png", import.meta.url)),
+    buffer: await readFile(new URL("../icon-192.png", import.meta.url)),
   });
   await page.locator("#attachments button").waitFor();
 }
@@ -328,7 +328,7 @@ await test("mobile browser completions navigate, replace at cursor, dismiss and 
     '<textarea id="prompt" maxlength="100000"></textarea><div id="completions" role="listbox" hidden></div>',
   );
   const source = stripTypeScriptTypes(
-    await readFile(new URL("./completions.ts", import.meta.url), "utf8"),
+    await readFile(new URL("../completions.ts", import.meta.url), "utf8"),
   );
   await page.addScriptTag({
     content:
@@ -403,7 +403,7 @@ await test("mobile browser composer runs commands without sending prompts and pr
   const session = await f.create();
   const assets = await mkdtemp(join(tmpdir(), "pi-completions-assets-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
-  await buildAssets(fileURLToPath(new URL(".", import.meta.url)), assets);
+  await buildAssets(fileURLToPath(new URL("..", import.meta.url)), assets);
   const base = await serve(t, f.sessions, assets);
   const page = await browser(t);
   let prompts = 0;

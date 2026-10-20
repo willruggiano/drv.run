@@ -12,17 +12,46 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { fixture, model } from "../pi-runtime/testing.ts";
+import { fixture, model } from "../../pi-runtime/testing.ts";
 import { chromiumExecutable, serve, snapshot, post } from "./testing.ts";
-import { GlobalSettingsStore, parseOptions } from "./server.ts";
-import { benchmarkFixture, benchmarkOptions } from "./benchmark.ts";
-import { buildAssets } from "./build.ts";
+import { GlobalSettingsStore, parseOptions } from "../server.ts";
+import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
+import { buildAssets } from "../build.ts";
 
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { Sessions, type Catalog } from "../pi-runtime/index.ts";
-import type { GlobalSettings } from "./settings.ts";
+import { Sessions, type Catalog } from "../../pi-runtime/index.ts";
+import type { GlobalSettings } from "../settings.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+await test("HTTP fixtures and benchmark inputs load without Playwright", async () => {
+  // A fresh module graph catches eager transitive imports, including cached
+  // dependencies that the other tests in this process have already loaded.
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import assert from "node:assert/strict";
+       import { registerHooks } from "node:module";
+       registerHooks({
+         resolve(specifier, context, nextResolve) {
+           assert(!["playwright", "playwright-core"].some(
+             (name) => specifier === name || specifier.startsWith(name + "/"),
+           ), "Browser-free imports must not load Playwright");
+           return nextResolve(specifier, context);
+         },
+       });
+       await import(${JSON.stringify(new URL("./testing.ts", import.meta.url).href)});
+       const { benchmarkOptions, benchmarkFixture } =
+         await import(${JSON.stringify(new URL("../benchmark.ts", import.meta.url).href)});
+       assert.equal(benchmarkOptions(["--turns", "2"]).turns, 2);
+       assert.equal(benchmarkFixture(2).view.entries.length, 6);`,
+    ],
+    { stdio: "inherit" },
+  );
+  assert.deepEqual(await once(child, "exit"), [0, null]);
+});
 
 await test("browser executable lookup follows PATH and rejects unusable candidates", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pi-serve-browser-path-"));
@@ -139,7 +168,7 @@ await test("CLI starts standalone without host commands and loads only explicit 
     const child = spawn(
       process.execPath,
       [
-        fileURLToPath(new URL("./server.ts", import.meta.url)),
+        fileURLToPath(new URL("../server.ts", import.meta.url)),
         "--host",
         "127.0.0.1",
         "--port",
@@ -446,7 +475,7 @@ await test("CLI defaults to local execution and accepts explicit integration com
 await test("built highlighter preserves selected languages and is served as a static module", async (t) => {
   const assets = await mkdtemp(join(tmpdir(), "pi-serve-build-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
-  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
   const { default: highlighter }: { default: typeof import("highlight.js") } = await import(
     pathToFileURL(join(assets, "highlight.js")).href
   );

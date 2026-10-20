@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "tsc -p tsconfig.json",
-    "test": "node --test '*.test.ts'"
+    "test": "node --test 'tests/*.test.ts'"
   },
   "peerDependencies": {
     "@earendil-works/chord": "*",

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { Sessions } from "../pi-runtime/index.ts";
-import { GlobalSettingsStore } from "./server.ts";
+import { Sessions } from "../../pi-runtime/index.ts";
+import { GlobalSettingsStore } from "../server.ts";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -16,9 +16,9 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { EntryDraft, ConversationView } from "@earendil-works/pi-durable";
 import { chromium } from "playwright";
-import { fixture, model } from "../pi-runtime/testing.ts";
+import { fixture, model } from "../../pi-runtime/testing.ts";
 import { chromiumExecutable, serve, snapshot, post } from "./testing.ts";
-import { buildAssets } from "./build.ts";
+import { buildAssets } from "../build.ts";
 
 const context = BACKGROUND_CONTEXT;
 const text = (tokens: number) => "x".repeat(Math.floor(tokens * 3.5));
@@ -163,7 +163,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
   await empty.reset(undefined, context);
   const history = await session.history();
   const assets = join(f.directory, "assets");
-  await buildAssets(fileURLToPath(new URL(".", import.meta.url)), assets);
+  await buildAssets(fileURLToPath(new URL("..", import.meta.url)), assets);
   const base = await serve(t, sessions, assets, "127.0.0.1", undefined, store);
   const initial = await snapshot(`${base}/api/sessions/${session.id}/events`);
   assert(initial.inspection.state === "available");

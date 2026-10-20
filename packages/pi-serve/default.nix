@@ -23,18 +23,18 @@
       ./server.ts
       ./settings.ts
       ./completions.ts
-      ./completions.test.ts
-      ./base-directory.test.ts
+      ./tests/completions.test.ts
+      ./tests/base-directory.test.ts
       ./key-mappings.ts
       ./client.ts
       ./workflow-panels.ts
-      ./workflows.test.ts
+      ./tests/workflows.test.ts
       ./highlight.ts
       ./build.ts
       ./benchmark.ts
-      ./server.test.ts
-      ./context.test.ts
-      ./testing.ts
+      ./tests/server.test.ts
+      ./tests/context.test.ts
+      ./tests/testing.ts
       ./index.html
       ./styles.css
       ./design-system.html
@@ -61,7 +61,7 @@ in
     checkPhase = ''
       runHook preCheck
       # Browser tests run locally, not in the Nix build sandbox.
-      node --test "pi-serve/*.test.ts"
+      node --test "pi-serve/tests/*.test.ts"
       runHook postCheck
     '';
     installPhase = ''

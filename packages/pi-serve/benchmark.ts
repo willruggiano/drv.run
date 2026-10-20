@@ -17,7 +17,7 @@ import {
   type LiveState,
   type TaskId,
 } from "@earendil-works/pi-durable";
-import { chromium, type CDPSession, type Page } from "playwright";
+import type { CDPSession, Page } from "playwright";
 import { Sessions, type Snapshot } from "../pi-runtime/index.ts";
 import { httpServer } from "./server.ts";
 import { buildAssets } from "./build.ts";
@@ -236,6 +236,7 @@ async function profilePhase<T>(
 }
 
 export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
+  const { chromium } = await import("playwright");
   assert(
     options.executablePath,
     "Chromium is required; set --chromium or use nix run .#pi-serve.bench.render",

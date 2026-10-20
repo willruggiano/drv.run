@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { fixture } from "../pi-runtime/testing.ts";
+import { fixture } from "../../pi-runtime/testing.ts";
 import { serve, snapshot } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
