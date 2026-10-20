@@ -3,26 +3,26 @@
 # Todos
 
 - Usability improvements:
-  - Key mapping
   - [ ] Automate the host deployment
   - [ ] (pi-serve) web worker?
   - [ ] git push
   - [ ] Automate port exposure (see below "HTTP proxy")
-  - [ ] Add an owner-scoped host command that obtains the guest connection FD
-        from systemd-ssh-proxy
-        (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
-        bytes bidirectionally between that FD and the SSH exec channel’s
-        stdin/stdout.
 - [ ] [[security.md]]
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
-- [ ] HTTP proxy / expose guest services over HTTP
-  - [ ] Secrets injection (pi-gondolin style) using mitmproxy?
-- [ ] Make the host-basic check work on aarch64? (note: it does, it just doesn't
-      work on the rock5b because it lacks nested kvm)
+- [ ] Automate/declarative guest port exposure / service publishing (proof of
+      concept nixos test in tests/nixos/port-forwarding.nix)
+- [ ] HTTP proxy/egress control (ie. http proxy on the host controls network
+      accesss from the guest)
+- [ ] Secrets injection (pi-gondolin style) using mitmproxy?
 - [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
       insight into pre/start/post activation timing, including cold and warm
       boots on flake's of varying (closure) size
 - [ ] Clean up pi-serve nixos test, module, align with "modular services" idiom?
+- [ ] Add an owner-scoped host command that obtains the guest connection FD from
+      systemd-ssh-proxy
+      (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
+      bytes bidirectionally between that FD and the SSH exec channel’s
+      stdin/stdout.
 - [ ] Clients should not need such an elaborate ssh client config? eg.
       `RemoteCommand`
 - [ ] Great practical test (and also something I want badly!):
@@ -38,7 +38,7 @@
       readonly, diff mode. One window with inline diffs. Lastly, it should be
       possible to comment on files/buffers (hijack the builtin op-pending `gc`
       to add a comment, use vim.ui.input to collect) as marks/virtual-text,
-      delete comments, and yank a comment/buffer's comments/all comments across
+      delete comments, and yank a comment/all buffer comments/all comments across
       all buffers to clipboard. These are the only features. Write tests.
     '
   ```

@@ -57,10 +57,7 @@
       );
   in {
     nixosModules = import ./nixosModules inputs;
-    overlays.default = final: prev: let
-      inherit (prev.stdenv.hostPlatform) system;
-    in
-      self.packages.${system};
+    overlays.default = final: prev: self.packages.${prev.stdenv.hostPlatform.system};
 
     # per-system outputs
     checks = eachSystem (pkgs: {
@@ -76,10 +73,12 @@
           touch $out
         '';
       nixos-pi-serve = pkgs.pi-serve.tests.nixos;
-      nixos-port-forwarding = pkgs.testers.runNixOSTest (import ./tests/nixos/port-forwarding.nix {
-        inherit (self) nixosModules;
-        inherit pkgs;
-      });
+      # This one is just a proof of concept. It does not need to be part of the
+      # canonical checks!
+      # nixos-port-forwarding = pkgs.testers.runNixOSTest (import ./tests/nixos/port-forwarding.nix {
+      #   inherit (self) nixosModules;
+      #   inherit pkgs;
+      # });
       nixos-host-basic = pkgs.testers.runNixOSTest (import ./tests/nixos/host-basic.nix {
         inherit (self) nixosModules;
         inherit pkgs;
