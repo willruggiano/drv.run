@@ -215,11 +215,19 @@
           drv-run = {
             guest.extraModules = [
               {
+                microvm.vcpu = 4;
+                microvm.mem = 4096;
+
+                zramSwap = {
+                  enable = true;
+                  algorithm = "zstd";
+                  memoryPercent = 50;
+                };
+
                 environment.systemPackages = with pkgs; [
                   kitty.terminfo
                 ];
-              }
-              {
+
                 environment.persistence."/persist".users.root.directories = [
                   {
                     directory = ".pi/agent";
