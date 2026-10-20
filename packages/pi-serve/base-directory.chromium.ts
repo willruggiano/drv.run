@@ -28,6 +28,7 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
   await page.goto(base);
+  await page.click("#title");
   await page.waitForSelector("#picker:not([hidden])");
   await page.click("#new-options-toggle");
   const remote = JSON.stringify([f.binding.provider, f.binding.target, f.binding.cwd]);

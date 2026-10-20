@@ -5,12 +5,52 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { fixture } from "../pi-runtime/testing.ts";
+import { fixture, waitFor } from "../pi-runtime/testing.ts";
+import type { ManagedSession } from "../pi-runtime/index.ts";
 import { commandCompletions } from "./completions.ts";
 import { buildAssets } from "./build.ts";
 import { chromiumExecutable, serve } from "./testing.ts";
+
+async function landingFixture(t: TestContext) {
+  const f = await fixture(t);
+  const assets = join(f.workspace, "assets");
+  await buildAssets(fileURLToPath(new URL(".", import.meta.url)), assets);
+  const base = await serve(t, f.sessions, assets);
+  const page = await browser(t);
+  const errors: Error[] = [];
+  page.on("pageerror", (error) => errors.push(error));
+  t.after(() => assert.deepEqual(errors, []));
+  const open = async () => {
+    await page.goto(base);
+    await page.locator("#recent-empty:not([hidden]), #recent-sessions button").first().waitFor();
+    await page.click("#new-options-toggle");
+    await page.selectOption("#models", "0");
+  };
+  const currentSession = async () => {
+    await page.waitForFunction(() => new URL(location.href).searchParams.has("session"));
+    return f.sessions.get(new URL(page.url()).searchParams.get("session")!);
+  };
+  return { ...f, page, base, open, currentSession };
+}
+
+async function userMessages(session: ManagedSession) {
+  return (await session.history())
+    .flatMap((entry) => entry.model ?? [])
+    .filter((message) => message.role === "user")
+    .map((message) => message.content);
+}
+
+async function attachImage(page: Page) {
+  await page.locator("#images").setInputFiles({
+    name: "image.png",
+    mimeType: "image/png",
+    buffer: await readFile(new URL("./icon-192.png", import.meta.url)),
+  });
+  await page.locator("#attachments button").waitFor();
+}
 
 async function browser(t: TestContext) {
   const instance = await chromium.launch({
@@ -19,6 +59,268 @@ async function browser(t: TestContext) {
   t.after(() => instance.close());
   return instance.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
 }
+
+await test("landing composer creates sessions with the first draft, options and attachments", async (t) => {
+  const f = await landingFixture(t);
+  const { page } = f;
+  for (const [width, action] of [
+    [390, "button"],
+    [1440, "keyboard"],
+    [390, "sessions"],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await f.open();
+    await page.selectOption("#new-thinking", "high");
+    const target = await page.inputValue("#targets");
+    await page.click("#title");
+    await page.locator("#picker:not([hidden])").waitFor();
+    assert.equal(await page.locator("#session-actions #create").isVisible(), true);
+    assert.equal(await page.inputValue("#new-thinking"), "high");
+    assert.equal(await page.inputValue("#targets"), target);
+    await page.click("#close-view");
+    assert.equal(await page.locator("#composer-actions #create").isVisible(), true);
+    assert.equal(await page.inputValue("#models"), "0");
+    assert.equal(await page.inputValue("#new-thinking"), "high");
+    let sourceKey = "pi.draft:new:main";
+    let previousId: string | undefined;
+    if (action === "sessions") {
+      const previous = await f.create();
+      previousId = previous.id;
+      sourceKey = `pi.draft:${previous.id}:main`;
+      await page.click("#title");
+      await page.locator(`#sessions [data-session="${previous.id}"]`).click();
+      await page.locator("#status[data-state=ready]").waitFor();
+    }
+    const text = `  First message from ${action}\nwith whitespace.  `;
+    await page.fill("#prompt", text);
+    await attachImage(page);
+    f.faux.setResponses([fauxAssistantMessage("Received.")]);
+    // The initial prompt must not wait for an SSE connection.
+    await page.route("**/events", (route) => route.abort());
+    if (action === "sessions") {
+      await page.click("#title");
+      await page.fill("#session-filter", "This is only a filter");
+      await page.click("#create");
+    } else if (action === "keyboard") await page.press("#prompt", "Control+Enter");
+    else await page.click("#create");
+    await page.waitForFunction((id) => {
+      const selected = new URL(location.href).searchParams.get("session");
+      return selected && selected !== id;
+    }, previousId);
+    const session = await f.currentSession();
+    await waitFor(async () => (await userMessages(session)).length === 1);
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    const messages = await userMessages(session);
+    const content = messages[0];
+    assert(Array.isArray(content));
+    assert.deepEqual(content[0], { type: "text", text });
+    assert.equal(content[1].type, "image");
+    assert.equal((await session.info()).thinkingLevel, "high");
+    assert.equal(await page.locator("#attachments button").count(), 0);
+    assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), sourceKey), "");
+    assert.equal(await page.locator("#landing").isVisible(), false);
+    await page.unroute("**/events");
+    await session.root.waitForIdle(BACKGROUND_CONTEXT);
+  }
+  for (const text of ["", "  \n ", "/new"]) {
+    await f.open();
+    await page.fill("#prompt", text);
+    if (text === "/new") await page.press("#prompt", "Control+Enter");
+    else await page.click("#create");
+    const session = await f.currentSession();
+    await page.locator("#status[data-state=ready]").waitFor();
+    assert.deepEqual(await userMessages(session), []);
+  }
+});
+
+await test("landing composer preserves creation failures and retries a lost prompt acknowledgement", async (t) => {
+  const f = await landingFixture(t);
+  const { page } = f;
+  await f.open();
+  await page.fill("#prompt", "Keep this draft.");
+  await attachImage(page);
+  await page.route("**/api/sessions", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Creation failed" }),
+    }),
+  );
+  await page.click("#create");
+  await page.locator("#notice:not([hidden])").waitFor();
+  assert.equal(await page.inputValue("#prompt"), "Keep this draft.");
+  assert.equal(await page.locator("#attachments button").count(), 1);
+  assert.equal(await page.locator("#create").isEnabled(), true);
+  assert.equal((await f.sessions.catalog()).sessions.length, 0);
+  await page.unroute("**/api/sessions");
+
+  const requests: { requestId: string; text: string; mode: string }[] = [];
+  await page.route("**/prompt", async (route) => {
+    requests.push(route.request().postDataJSON());
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Acknowledgement lost" }),
+    });
+  });
+  f.faux.setResponses([fauxAssistantMessage("Only one message.")]);
+  await page.click("#create");
+  const session = await f.currentSession();
+  await page.locator("#notice:not([hidden])").waitFor();
+  assert.equal(await page.inputValue("#prompt"), "Keep this draft.");
+  assert.equal(await page.locator("#attachments button").count(), 1);
+  await waitFor(async () => (await userMessages(session)).length === 1);
+  await session.root.waitForIdle(BACKGROUND_CONTEXT);
+  await page.locator("#status[data-state=ready]").waitFor();
+  await page.unroute("**/prompt");
+  await page.route("**/prompt", async (route) => {
+    requests.push(route.request().postDataJSON());
+    await route.continue();
+  });
+  await page.click("#send");
+  await page.waitForFunction(
+    () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].requestId, requests[1].requestId);
+  assert.equal(requests[0].mode, "followUp");
+  assert.equal((await f.sessions.catalog()).sessions.length, 1);
+  assert.equal((await userMessages(session)).length, 1);
+  assert.equal(f.faux.state.callCount, 1);
+  assert.equal(await page.locator("#attachments button").count(), 0);
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("pi.draft:new:main")), "");
+});
+
+await test("landing creation captures options once and preserves edits during creation and submission", async (t) => {
+  const f = await landingFixture(t);
+  const { page } = f;
+  await f.open();
+  await page.selectOption("#new-thinking", "high");
+  await page.fill("#prompt", "Original draft");
+  const creating = Promise.withResolvers<void>();
+  const releaseCreation = Promise.withResolvers<void>();
+  const submitting = Promise.withResolvers<void>();
+  const releasePrompt = Promise.withResolvers<void>();
+  t.after(() => {
+    releaseCreation.resolve();
+    releasePrompt.resolve();
+  });
+  let creations = 0;
+  await page.route("**/api/sessions", async (route) => {
+    creations++;
+    creating.resolve();
+    await releaseCreation.promise;
+    await route.continue();
+  });
+  await page.route("**/prompt", async (route) => {
+    submitting.resolve();
+    await releasePrompt.promise;
+    await route.continue();
+  });
+  f.faux.setResponses([fauxAssistantMessage("Captured draft received.")]);
+  await page.click("#create");
+  await creating.promise;
+  assert.equal(await page.locator("#create").isDisabled(), true);
+  await page.locator("#create").dispatchEvent("click");
+  await page.press("#prompt", "Control+Enter");
+  await page.fill("#prompt", "Edited during creation");
+  await page.selectOption("#new-thinking", "low");
+  releaseCreation.resolve();
+  await submitting.promise;
+  const session = await f.currentSession();
+  assert.equal(await page.inputValue("#prompt"), "Edited during creation");
+  assert.equal((await session.info()).thinkingLevel, "high");
+  await page.fill("#prompt", "Edited during submission");
+  await attachImage(page);
+  releasePrompt.resolve();
+  await waitFor(async () => (await userMessages(session)).length === 1);
+  await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#send")?.disabled);
+  assert.equal(creations, 1);
+  assert.deepEqual(await userMessages(session), ["Original draft"]);
+  assert.equal(await page.inputValue("#prompt"), "Edited during submission");
+  assert.equal(await page.locator("#attachments button").count(), 1);
+  await page.reload();
+  await page.locator("#status[data-state=ready]").waitFor();
+  assert.equal(await page.inputValue("#prompt"), "Edited during submission");
+});
+
+await test("landing creation cannot replace an explicitly selected session or view", async (t) => {
+  const f = await landingFixture(t);
+  const { page } = f;
+  const existing = await f.create();
+  for (const destination of ["session", "view"]) {
+    await f.open();
+    await page.fill("#prompt", "Do not redirect me");
+    const creating = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const finished = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    await page.route("**/api/sessions", async (route) => {
+      creating.resolve();
+      await release.promise;
+      await route.fulfill({ response: await route.fetch() });
+      finished.resolve();
+    });
+    await page.click("#create");
+    await creating.promise;
+    if (destination === "session") {
+      await page.locator(`#recent-sessions [data-session="${existing.id}"]`).click();
+      await page.locator("#status[data-state=ready]").waitFor();
+      await page.fill("#prompt", "Other session draft");
+    } else {
+      await page.click("#menu-toggle");
+      await page.locator("#global-preferences:not([hidden])").waitFor();
+    }
+    release.resolve();
+    await finished.promise;
+    // Wait for the creation guard to be released before checking the view.
+    await page.waitForFunction(
+      () => !document.querySelector<HTMLButtonElement>("#create")?.disabled,
+    );
+    if (destination === "session") {
+      assert.equal(new URL(page.url()).searchParams.get("session"), existing.id);
+      assert.equal(await page.inputValue("#prompt"), "Other session draft");
+    } else {
+      assert.equal(await page.locator("#global-preferences").isVisible(), true);
+      assert.equal(await page.inputValue("#prompt"), "Do not redirect me");
+    }
+    assert.deepEqual(await userMessages(existing), []);
+    await page.unroute("**/api/sessions");
+  }
+  assert.equal(f.faux.state.callCount, 0);
+  await f.open();
+  await page.fill("#prompt", "Captured before navigation");
+  const submitting = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  await page.route("**/prompt", async (route) => {
+    submitting.resolve();
+    await release.promise;
+    await route.continue();
+  });
+  f.faux.setResponses([fauxAssistantMessage("Sent to the new session.")]);
+  await page.click("#create");
+  await submitting.promise;
+  const created = await f.currentSession();
+  await page.click("#title");
+  await page.locator(`#sessions [data-session="${existing.id}"]`).click();
+  await page.fill("#prompt", "New unrelated draft");
+  release.resolve();
+  await waitFor(async () => (await userMessages(created)).length === 1);
+  await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#send")?.disabled);
+  assert.equal(new URL(page.url()).searchParams.get("session"), existing.id);
+  assert.equal(await page.inputValue("#prompt"), "New unrelated draft");
+  assert.deepEqual(await userMessages(existing), []);
+  assert.deepEqual(await userMessages(created), ["Captured before navigation"]);
+  assert.equal(
+    await page.evaluate((id) => sessionStorage.getItem(`pi.draft:${id}:main`), created.id),
+    "",
+  );
+});
 
 await test("mobile browser completions navigate, replace at cursor, dismiss and ignore stale results", async (t) => {
   const page = await browser(t);

@@ -318,6 +318,12 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         await page.evaluate(({ render }) => {
           const transcript = document.getElementById("transcript");
           if (!transcript) throw new Error("Missing transcript");
+          // This synthetic workload has no selected session. Show its render
+          // surface explicitly instead of benchmarking the hidden transcript.
+          const landing = document.getElementById("landing");
+          if (!landing) throw new Error("Missing landing page");
+          landing.hidden = true;
+          transcript.hidden = false;
           window.__piBenchmarkRender = (snapshot) => {
             const start = performance.now();
             render(JSON.parse(snapshot) as Snapshot);
@@ -326,7 +332,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
           };
         }, frontend);
         await frontend.dispose();
-        await page.locator("#close-view").click();
+        assert.equal(await page.locator("#transcript").isVisible(), true);
         const cdp = await page.context().newCDPSession(page);
         await cdp.send("Emulation.setCPUThrottlingRate", { rate: options.cpuRate });
         if (profiling) {

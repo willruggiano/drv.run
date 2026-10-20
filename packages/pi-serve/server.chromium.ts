@@ -11,12 +11,94 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { chromium } from "playwright";
 import { Sessions } from "../pi-runtime/index.ts";
 import { fixture, model, waitFor } from "../pi-runtime/testing.ts";
-import { browserFlow, chromiumExecutable, serve } from "./testing.ts";
+import { browserFlow, chromiumExecutable, directoryFixture, serve } from "./testing.ts";
 import { GlobalSettingsStore } from "./server.ts";
 import { benchmark, benchmarkFixture, benchmarkOptions } from "./benchmark.ts";
 import { buildAssets } from "./build.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+await test("landing lists the newest five sessions regardless of target availability", async (t) => {
+  const f = await directoryFixture(t);
+  const assets = join(f.workspace, "assets");
+  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  const base = await serve(t, f.sessions, assets);
+  const browser = await chromium.launch({ executablePath: chromiumExecutable() });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const errors: Error[] = [];
+  page.on("pageerror", (error) => errors.push(error));
+  await page.goto(base);
+  await page.locator("#recent-empty:not([hidden])").waitFor();
+  assert.equal(await page.locator("#recent-sessions button").count(), 0);
+  assert.equal(await page.locator("#composer #create").isVisible(), true);
+  assert.equal(await page.locator("#send").isVisible(), false);
+
+  const ids: string[] = [];
+  for (let index = 0; index < 7; index++) {
+    const session = await f.sessions.create(randomUUID(), f.binding, model);
+    await session.rename(`Session ${index}`);
+    ids.unshift(session.id);
+    if (index === 1) {
+      await page.reload();
+      await page.locator("#recent-sessions button").nth(1).waitFor();
+      assert.equal(await page.locator("#recent-sessions button").count(), 2);
+    }
+  }
+  f.stop();
+  await page.reload();
+  await page.locator("#recent-sessions button").nth(4).waitFor();
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.deepEqual(
+      await page
+        .locator("#recent-sessions button")
+        .evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.session)),
+      ids.slice(0, 5),
+    );
+    assert.equal(await page.locator("#recent-empty").isVisible(), false);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    assert.equal(await page.locator("#new-options-toggle").isVisible(), true);
+    if (process.env.PI_SCREENSHOT_DIR) {
+      await mkdir(process.env.PI_SCREENSHOT_DIR, { recursive: true });
+      await page.screenshot({ path: join(process.env.PI_SCREENSHOT_DIR, `landing-${width}.png`) });
+    }
+    await page.click("#title");
+    await page.locator("#picker:not([hidden])").waitFor();
+    assert.equal(await page.locator("#landing").isVisible(), false);
+    assert.equal(await page.locator("#sessions button").count(), 7);
+    await page.fill("#session-filter", "Session 0");
+    assert.equal(await page.locator("#sessions button").count(), 1);
+    await page.click("#close-view");
+    assert.equal(await page.locator("#recent-sessions button").count(), 5);
+    await page.click("#recent-sessions button:first-child");
+    await page.waitForFunction(
+      (id) => new URL(location.href).searchParams.get("session") === id,
+      ids[0],
+    );
+    assert.equal(await page.locator("#landing").isVisible(), false);
+    await page.reload();
+    await page.locator("#status[data-state=ready]").waitFor();
+    assert.equal(await page.locator("#landing").isVisible(), false);
+    await page.goto(base);
+    await page.locator("#recent-sessions button").nth(4).waitFor();
+  }
+  await page.route("**/api/catalog", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Unavailable" }),
+    }),
+  );
+  await page.reload();
+  await page.locator("#notice:not([hidden])").waitFor();
+  assert.equal(await page.locator("#recent-empty").isVisible(), false);
+  assert.equal(await page.locator("#create").isDisabled(), true);
+  assert.deepEqual(errors, []);
+});
 
 await test("mobile browser renderer benchmark returns complete JSON-compatible samples", async () => {
   const report = await benchmark(benchmarkOptions(["--runs", "2", "--turns", "2"]));
@@ -123,6 +205,7 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
   await page.goto(base);
+  await page.click("#title");
   await page.waitForSelector("#picker:not([hidden])");
   await page.click("#new-options-toggle");
   assert.equal(await page.locator("#models").inputValue(), "0");

@@ -22,7 +22,12 @@
   </header>
 
   <main id="main-area">
-    <div id="transcript" class="pane" aria-label="Conversation" tabindex="0"></div>
+    <section id="landing" class="pane" aria-labelledby="recent-title"><div>
+      <h2 id="recent-title">Recent sessions</h2>
+      <div id="recent-sessions" aria-label="Recent sessions"></div>
+      <p id="recent-empty" hidden>No sessions yet. Start a conversation below.</p>
+    </div></section>
+    <div id="transcript" class="pane" aria-label="Conversation" tabindex="0" hidden></div>
     <section id="picker" class="pane" aria-labelledby="view-title" hidden>
       <div id="sessions" aria-label="Sessions"></div><p id="sessions-empty" hidden>No sessions</p>
     </section>
@@ -64,13 +69,13 @@
         <div id="completions" role="listbox" aria-label="Message completions" hidden></div>
         <textarea id="prompt" aria-label="Message" rows="2" placeholder="Ask Pi…" maxlength="100000"></textarea>
         <div id="attachments" aria-label="Attached images"></div>
-        <div class="actions"><button id="input-toggle" class="icon" type="button" popovertarget="input-menu" aria-label="Upload attachments">+</button><button id="input-mode" type="button" hidden>Follow up</button><span class="spacer"></span><button id="stop" class="icon" type="button" hidden disabled aria-label="Stop" title="Stop"><span aria-hidden="true">×</span></button><button id="send" class="icon" type="submit" disabled aria-label="Send" title="Send (Ctrl/⌘ Enter)"><span aria-hidden="true">↑</span></button></div>
+        <div id="composer-actions" class="actions"><button id="input-toggle" class="icon" type="button" popovertarget="input-menu" aria-label="Upload attachments">+</button><button id="input-mode" type="button" hidden>Follow up</button><span class="spacer"></span><button id="stop" class="icon" type="button" hidden disabled aria-label="Stop" title="Stop"><span aria-hidden="true">×</span></button><button id="send" class="icon" type="submit" disabled aria-label="Send" title="Send (Ctrl/⌘ Enter)"><span aria-hidden="true">↑</span></button></div>
       </div>
       <input id="images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
     </form>
     <div id="session-filter-bar" hidden><div class="compose-box">
         <textarea id="session-filter" aria-label="Filter sessions" rows="2" placeholder="Filter sessions…" autocomplete="off"></textarea>
-        <div class="actions"><span class="spacer"></span><button id="new-options-toggle" class="icon" type="button" aria-label="New session options" title="New session options" aria-expanded="false" aria-controls="new-options"><svg class="glyph options-cog" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 3-.6 2.4-1.5.9-2.4-.7-3 5.2L3.3 12l.1 1.8-1.7 1.8 3 5.2 2.3-.7 1.6.9.5 2.4h6l.6-2.4 1.5-.9 2.4.7 3-5.2-1.8-1.2-.1-1.8 1.7-1.8-3-5.2-2.3.7-1.6-.9L15 3Z" transform="translate(1 -1) scale(.92)"/><circle cx="12" cy="12" r="3.2"/></svg><span class="options-close" aria-hidden="true">×</span></button><button id="create" disabled class="icon" type="button" aria-label="New session" title="New session">+</button></div>
+        <div id="session-actions" class="actions"><span class="spacer"></span><button id="new-options-toggle" class="icon" type="button" aria-label="New session options" title="New session options" aria-expanded="false" aria-controls="new-options"><svg class="glyph options-cog" aria-hidden="true" viewBox="0 0 24 24"><path d="m9 3-.6 2.4-1.5.9-2.4-.7-3 5.2L3.3 12l.1 1.8-1.7 1.8 3 5.2 2.3-.7 1.6.9.5 2.4h6l.6-2.4 1.5-.9 2.4.7 3-5.2-1.8-1.2-.1-1.8 1.7-1.8-3-5.2-2.3.7-1.6-.9L15 3Z" transform="translate(1 -1) scale(.92)"/><circle cx="12" cy="12" r="3.2"/></svg><span class="options-close" aria-hidden="true">×</span></button><button id="create" disabled class="icon" type="button" aria-label="New session" title="New session">+</button></div>
       </div></div>
       <div id="search-bar" hidden><div class="compose-box">
         <textarea id="search" aria-label="Find in conversation" rows="2" placeholder="Find in conversation…" autocomplete="off"></textarea>

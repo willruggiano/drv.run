@@ -62,6 +62,8 @@ const targets = element("targets", HTMLSelectElement);
 const models = element("models", HTMLSelectElement);
 const sessions = element("sessions", HTMLDivElement);
 const transcript = element("transcript", HTMLDivElement);
+const landing = element("landing", HTMLElement);
+const recentSessions = element("recent-sessions", HTMLDivElement);
 const composer = element("composer", HTMLFormElement);
 const prompt = element("prompt", HTMLTextAreaElement);
 const send = element("send", HTMLButtonElement);
@@ -98,6 +100,7 @@ let busy = false;
 let recovering = false;
 let connected = false;
 let sending = false;
+let creating = false;
 let pending:
   | {
       session: string;
@@ -106,6 +109,7 @@ let pending:
       mode: string;
       requestId: string;
       images: ImageContent[];
+      sourceDraft?: { key: string; text: string };
     }
   | undefined;
 const entries = new Map<number, EntryRecord>();
@@ -205,8 +209,13 @@ const workflows = workflowPanels({
 function controls(): void {
   workflows.connection(connected);
   const isCommand = prompt.value.startsWith("/");
+  create.disabled = creating || sending || !targets.value || !models.value;
+  send.hidden = !active && !isCommand;
   send.disabled =
-    sending || !prompt.value.trim() || (!isCommand && (!active || !connected || recovering));
+    sending ||
+    creating ||
+    !prompt.value.trim() ||
+    (!isCommand && (active ? !connected || recovering : create.disabled));
   stop.disabled = !active || !connected || !busy || recovering;
   stop.hidden = !busy || recovering;
   modeToggle.hidden = !busy || recovering;
@@ -312,7 +321,7 @@ async function refresh(): Promise<void> {
   fillThinking(newThinking, models, newThinking.value, true);
   updateDirectoryField();
   renderSessions();
-  create.disabled = !targets.value || !models.value;
+  controls();
 }
 function sessionTitle(session: SessionInfo): string {
   return (
@@ -335,43 +344,53 @@ function renderSessions(): void {
       !`${sessionTitle(session)} ${label} ${session.id}`.toLocaleLowerCase().includes(query)
     )
       continue;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "session";
-    button.dataset.session = session.id;
-    button.setAttribute("aria-current", String(session.id === active));
-    const name = document.createElement("strong");
-    name.textContent = sessionTitle(session);
-    const heading = document.createElement("span");
-    heading.className = "session-heading";
-    const timestamp = document.createElement("time");
-    const date = new Date(session.created);
-    timestamp.dateTime = date.toISOString();
-    timestamp.textContent = date.toLocaleDateString();
-    timestamp.title = `Created ${date.toLocaleString()}`;
-    heading.append(name, timestamp);
-    const detail = document.createElement("span");
-    detail.className = "session-detail";
-    const environment = document.createElement("span");
-    environment.className = "session-environment";
-    environment.textContent = environmentText(session.binding, session.cwd);
-    const model = document.createElement("span");
-    model.className = "model-summary";
-    renderModelSummary(model, session.model, session.thinkingLevel);
-    const usage = document.createElement("span");
-    usage.className = "context-usage";
-    renderContextUsage(usage, session.context);
-    detail.append(environment, summaryDot(), model, summaryDot(), usage);
-    button.title = `${label}${target?.available ? "" : " · unavailable"}`;
-    button.append(heading, detail);
-    button.onclick = () => {
-      void selectSession(session.id);
-    };
-    sessions.append(button);
+    sessions.append(sessionRow(session));
   }
+  recentSessions.replaceChildren(...catalog.sessions.slice(0, 5).map(sessionRow));
+  element("recent-empty", HTMLParagraphElement).hidden = catalog.sessions.length > 0;
   const empty = element("sessions-empty", HTMLParagraphElement);
   empty.hidden = !!sessions.childElementCount;
   empty.textContent = query ? "No matching sessions" : "No sessions";
+}
+
+function sessionRow(session: Catalog["sessions"][number]): HTMLButtonElement {
+  const target = catalog.targets.find((item) => targetKey(item) === targetKey(session.binding));
+  const label =
+    (target?.label ?? session.binding.target) +
+    (session.cwd && session.cwd !== session.binding.cwd ? ` · ${session.cwd}` : "");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "session";
+  button.dataset.session = session.id;
+  button.setAttribute("aria-current", String(session.id === active));
+  const name = document.createElement("strong");
+  name.textContent = sessionTitle(session);
+  const heading = document.createElement("span");
+  heading.className = "session-heading";
+  const timestamp = document.createElement("time");
+  const date = new Date(session.created);
+  timestamp.dateTime = date.toISOString();
+  timestamp.textContent = date.toLocaleDateString();
+  timestamp.title = `Created ${date.toLocaleString()}`;
+  heading.append(name, timestamp);
+  const detail = document.createElement("span");
+  detail.className = "session-detail";
+  const environment = document.createElement("span");
+  environment.className = "session-environment";
+  environment.textContent = environmentText(session.binding, session.cwd);
+  const model = document.createElement("span");
+  model.className = "model-summary";
+  renderModelSummary(model, session.model, session.thinkingLevel);
+  const usage = document.createElement("span");
+  usage.className = "context-usage";
+  renderContextUsage(usage, session.context);
+  detail.append(environment, summaryDot(), model, summaryDot(), usage);
+  button.title = `${label}${target?.available ? "" : " · unavailable"}`;
+  button.append(heading, detail);
+  button.onclick = () => {
+    void selectSession(session.id);
+  };
+  return button;
 }
 
 function codeBlock(text: string, language = "", disclosure?: HTMLDetailsElement): HTMLElement {
@@ -1365,7 +1384,7 @@ function attach(id: string, branch?: number): void {
   for (const button of sessions.querySelectorAll("button"))
     button.setAttribute("aria-current", String(button.dataset.session === id));
   connectEvents();
-  controls();
+  setView(view);
 }
 
 function connectEvents(): void {
@@ -1443,52 +1462,67 @@ for (const scope of ["new", "session"] as const) {
 
 targets.onchange = () => {
   updateDirectoryField();
-  create.disabled = !targets.value || !models.value;
+  controls();
 };
 models.onchange = () => {
   fillThinking(newThinking, models, "", true);
-  create.disabled = !targets.value || !models.value;
+  controls();
 };
 async function newSession(commandText?: string): Promise<boolean> {
-  if (!(await flushSettings())) return false;
-  create.disabled = true;
+  if (creating) return false;
+  if (!targets.value || !models.value)
+    throw new Error("Choose an available target and model in New session options first.");
   const current = generation;
+  const request = navigation;
+  const sourceDraft = { key: draftKey(active, conversation), text: prompt.value };
+  const attached = images;
+  const text =
+    commandText === undefined && !sourceDraft.text.startsWith("/") ? sourceDraft.text : "";
+  const options = {
+    id: requestId(),
+    binding: selectedTarget(),
+    baseDirectory: selectedTarget()?.directoryRoot
+      ? element("new-directory", HTMLInputElement).value
+      : undefined,
+    model: catalog.models[Number(models.value)],
+    thinkingLevel: newThinking.value || undefined,
+  };
+  creating = true;
+  notice.hidden = true;
+  controls();
   try {
-    const session = await api<SessionInfo>("/api/sessions", {
-      id: requestId(),
-      binding: selectedTarget(),
-      baseDirectory: selectedTarget()?.directoryRoot
-        ? element("new-directory", HTMLInputElement).value
-        : undefined,
-      model: models.value ? catalog.models[Number(models.value)] : undefined,
-      thinkingLevel: newThinking.value || undefined,
-    });
-    // Edits can begin while creation is in flight. Flush those too before
-    // leaving, and never replace a session explicitly selected in the meantime.
-    if (current !== generation) {
-      void refresh().catch(report);
-      return true;
-    }
-    if (!(await flushSettings())) {
-      void refresh().catch(report);
-      return false;
-    }
-    if (current !== generation) {
-      void refresh().catch(report);
-      return true;
-    }
+    if (!(await flushSettings()) || current !== generation || request !== navigation) return false;
+    const session = await api<SessionInfo>("/api/sessions", options);
+    void refresh().catch(report);
+    // A navigation during creation cancels automatic attachment/submission.
+    // The original draft remains available; the new empty session is in Sessions.
+    if (current !== generation || request !== navigation) return false;
+    if (!(await flushSettings()) || current !== generation || request !== navigation) return false;
     if (commandText !== undefined && prompt.value === commandText) prompt.value = "";
+    const draft = prompt.value;
+    const draftImages = images;
     sessionFilter.value = "";
     attach(session.id);
+    submissionMode = "followUp";
+    if (!sourceDraft.text.startsWith("/") || (commandText !== undefined && draft)) {
+      prompt.value = draft;
+      images = draftImages;
+      showAttachments();
+      saveDraft();
+    }
     setView("conversation");
-    void refresh().catch(report);
+    if (text.trim())
+      await submitPrompt(session.id, undefined, text, "followUp", attached, sourceDraft);
     return true;
   } finally {
-    create.disabled = !targets.value || !models.value;
+    creating = false;
+    controls();
   }
 }
 create.onclick = () => {
-  void newSession().catch(report);
+  if (create.disabled) return;
+  if (!active && prompt.value.startsWith("/")) composer.requestSubmit();
+  else void newSession().catch(report);
 };
 const completions = installCompletions(
   prompt,
@@ -1514,7 +1548,6 @@ async function runCommand(text: string): Promise<boolean> {
     return navigate("sessions");
   }
   if (name === "new") {
-    if (create.disabled) throw new Error("Choose an available target and model in Sessions first.");
     return newSession(text);
   }
   if (!active || !connected) throw new Error("Connect to a session first.");
@@ -1571,48 +1604,56 @@ composer.onsubmit = (event) => {
       });
     return;
   }
-  if (!active) return;
+  if (!active) void newSession().catch(report);
+  else void submitPrompt(active, conversation, text, submissionMode, images).catch(report);
+};
+
+async function submitPrompt(
+  session: string,
+  branch: number | undefined,
+  text: string,
+  mode: string,
+  attached: ImageContent[],
+  sourceDraft?: { key: string; text: string },
+): Promise<void> {
   if (
-    pending?.session !== active ||
-    pending.conversation !== conversation ||
+    pending?.session !== session ||
+    pending.conversation !== branch ||
     pending.text !== text ||
-    pending.mode !== submissionMode ||
-    pending.images !== images
+    pending.mode !== mode ||
+    pending.images !== attached
   )
     pending = {
-      session: active,
-      conversation,
+      session,
+      conversation: branch,
       text,
-      mode: submissionMode,
+      mode,
       requestId: requestId(),
-      images,
+      images: attached,
+      sourceDraft,
     };
   const submission = pending;
   sending = true;
   notice.hidden = true;
   controls();
-  void api(endpoint("prompt"), submission)
-    .then(() => {
-      if (
-        active === submission.session &&
-        conversation === submission.conversation &&
-        prompt.value === text
-      ) {
-        prompt.value = "";
-        completions.close();
-        resizePrompt();
-        images = [];
-        showAttachments();
-        saveDraft();
-      }
-      if (pending === submission) pending = undefined;
-    })
-    .catch(report)
-    .finally(() => {
-      sending = false;
-      controls();
-    });
-};
+  try {
+    const { sourceDraft: origin, ...payload } = submission;
+    await api(
+      `/api/sessions/${session}/prompt${branch === undefined ? "" : `?conversation=${branch}`}`,
+      payload,
+    );
+    clearDraft(draftKey(session, branch), text);
+    if (origin) clearDraft(origin.key, origin.text);
+    if (active === session && conversation === branch && images === attached) {
+      images = [];
+      showAttachments();
+    }
+    if (pending === submission) pending = undefined;
+  } finally {
+    sending = false;
+    controls();
+  }
+}
 prompt.oninput = () => {
   resizePrompt();
   saveDraft();
@@ -1661,24 +1702,36 @@ void refresh()
     if (id && catalog.sessions.some((session) => session.id === id)) {
       const branch = new URL(location.href).searchParams.get("conversation");
       attach(id, branch === null ? undefined : Number(branch));
-    } else void navigate("sessions");
+    }
+    setView(view);
   })
   .catch(report);
-controls();
 
-function draftKey(): string {
-  return `pi.draft:${active ?? "new"}:${conversation ?? "main"}`;
+function draftKey(session: string | undefined, branch: number | undefined): string {
+  return `pi.draft:${session ?? "new"}:${branch ?? "main"}`;
+}
+function clearDraft(key: string, text: string): void {
+  if (draftKey(active, conversation) === key && prompt.value === text) {
+    prompt.value = "";
+    completions.close();
+    resizePrompt();
+  }
+  try {
+    if (sessionStorage.getItem(key) === text) sessionStorage.setItem(key, "");
+  } catch {
+    /* Storage can be disabled by browser policy. */
+  }
 }
 function saveDraft(): void {
   try {
-    sessionStorage.setItem(draftKey(), prompt.value);
+    sessionStorage.setItem(draftKey(active, conversation), prompt.value);
   } catch {
     /* Storage can be disabled by browser policy. */
   }
 }
 function loadDraft(): string {
   try {
-    return sessionStorage.getItem(draftKey()) ?? "";
+    return sessionStorage.getItem(draftKey(active, conversation)) ?? "";
   } catch {
     return "";
   }
@@ -2134,14 +2187,23 @@ function setView(next: View): void {
   completions.close();
   closePopovers();
   for (const pane of new Set(Object.values(panes))) pane.hidden = pane !== panes[next];
+  const isLanding = next === "conversation" && !active;
+  landing.hidden = !isLanding;
+  if (isLanding) transcript.hidden = true;
+  const actions = element(
+    next === "sessions" ? "session-actions" : "composer-actions",
+    HTMLDivElement,
+  );
+  const optionsToggle = element("new-options-toggle", HTMLButtonElement);
+  if (create.parentElement !== actions) actions.append(optionsToggle, create);
+  optionsToggle.hidden = create.hidden = !isLanding && next !== "sessions";
   title.hidden =
     status.hidden =
     element("menu-toggle", HTMLButtonElement).hidden =
       next !== "conversation";
   viewTitle.hidden = element("close-view", HTMLButtonElement).hidden = next === "conversation";
   element("new-options", HTMLElement).hidden =
-    next !== "sessions" ||
-    element("new-options-toggle", HTMLButtonElement).getAttribute("aria-expanded") !== "true";
+    (!isLanding && next !== "sessions") || optionsToggle.getAttribute("aria-expanded") !== "true";
   const queue = element("queue", HTMLDivElement);
   queue.hidden = !queue.childElementCount || (next !== "conversation" && next !== "search");
   composer.hidden = next === "sessions" || next === "search";
@@ -2156,6 +2218,7 @@ function setView(next: View): void {
   if (next === "search") updateSearch();
   if (next === "context") renderContext();
   updateLatest();
+  controls();
 }
 async function navigate(next: View): Promise<boolean> {
   const request = ++navigation;
@@ -2187,7 +2250,8 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-view]")
 }
 function showNewOptions(expanded: boolean): void {
   element("new-options-toggle", HTMLButtonElement).setAttribute("aria-expanded", String(expanded));
-  element("new-options", HTMLElement).hidden = !expanded || view !== "sessions";
+  element("new-options", HTMLElement).hidden =
+    !expanded || (view !== "sessions" && (view !== "conversation" || !!active));
 }
 element("new-options-toggle", HTMLButtonElement).onclick = () =>
   showNewOptions(!!element("new-options", HTMLElement).hidden);
@@ -2721,3 +2785,5 @@ for (const id of ["footer-stats", "footer-context"])
 element("footer-model", HTMLButtonElement).onclick = () => {
   void navigate("settings");
 };
+prompt.value = loadDraft();
+setView("conversation");
