@@ -208,7 +208,7 @@ export type Snapshot = {
 };
 export type Catalog = {
   targets: ExecutionTarget[];
-  sessions: SessionInfo[];
+  sessions: (SessionInfo & { context: ContextStatus })[];
   models: {
     provider: string;
     modelId: string;
@@ -344,7 +344,15 @@ export class Sessions {
     const sessions = await Promise.all(
       names
         .filter((name) => name.endsWith(".sqlite") && uuid.test(name.slice(0, -7)))
-        .map(async (name) => (await this.get(name.slice(0, -7))).info()),
+        .map(async (name) => {
+          const session = await this.get(name.slice(0, -7));
+          const watch = await session.root.watch(context);
+          try {
+            return { ...(await session.info()), context: session.contextStatus(watch.value) };
+          } finally {
+            await watch.stop();
+          }
+        }),
     );
     const targets = (
       await Promise.all(

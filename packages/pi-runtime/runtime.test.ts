@@ -588,6 +588,7 @@ await test("footer context uses the selected model and active context, not lifet
     }
   };
   assert.deepEqual(await status(), { window: 128000, autoCompact: true, lastResponse: null });
+  assert.deepEqual((await f.sessions.catalog()).sessions[0].context, await status());
   f.faux.setResponses([fauxAssistantMessage("Measured response.")]);
   await session.prompt("Hello.", randomUUID());
   await session.root.waitForIdle(context);
@@ -596,6 +597,7 @@ await test("footer context uses the selected model and active context, not lifet
   const message = entry?.model?.[0];
   assert(entry && message?.role === "assistant");
   const measured = await status();
+  assert.deepEqual((await f.sessions.catalog()).sessions[0].context, measured);
   assert.equal(measured.lastResponse?.tokens, message.usage.totalTokens);
   assert.equal(measured.lastResponse?.entry, entry.id);
   const promptTokens = message.usage.input + message.usage.cacheRead + message.usage.cacheWrite;
@@ -623,6 +625,7 @@ await test("footer context uses the selected model and active context, not lifet
   assert.deepEqual(await status(), measured);
   await session.root.configure({ model: { provider: "missing", modelId: "unknown" } }, context);
   assert.deepEqual(await status(), { window: null, autoCompact: true, lastResponse: null });
+  assert.deepEqual((await f.sessions.catalog()).sessions[0].context, await status());
   await session.root.configure({ model }, context);
   // A context head invalidates older usage even if earlier entries are kept.
   await session.root.submit(
@@ -630,6 +633,7 @@ await test("footer context uses the selected model and active context, not lifet
     context,
   );
   assert.equal((await status()).lastResponse, null);
+  assert.equal((await f.sessions.catalog()).sessions[0].context.lastResponse, null);
 });
 
 await test("path completion uses remote leases, bounds scanning and closes failed readers", async (t) => {

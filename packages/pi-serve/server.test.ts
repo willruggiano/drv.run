@@ -830,6 +830,169 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   assert.deepEqual(errors, []);
 });
 
+await test("mobile browser sessions share header and footer formatting and stay within narrow viewports", async (t) => {
+  const f = await fixture(t);
+  const binding = {
+    provider: "remote",
+    target: "guest-" + "long-target-".repeat(20),
+    cwd: "/workspace",
+  };
+  let available = true;
+  await f.reopen([
+    ...f.options.integrations,
+    {
+      id: "remote",
+      targets: async () => [
+        {
+          ...binding,
+          label: `guest · git-https://git.example/${"repository/".repeat(30)}?submodules=1`,
+          available,
+        },
+      ],
+      validate: async () => {},
+      open: () => {
+        throw new Error("Listing sessions must not connect to the environment.");
+      },
+    },
+  ]);
+  const session = await f.create();
+  await session.rename("Session with a very long name ".repeat(4));
+  f.faux.setResponses([fauxAssistantMessage("Measured response.")]);
+  await session.prompt("Hello.", randomUUID());
+  await session.root.waitForIdle(context);
+  const remote = await f.sessions.create(randomUUID(), binding, model);
+  await remote.root.configure(
+    {
+      model: { provider: "missing", modelId: "long-model-".repeat(30) },
+      thinkingLevel: "high",
+    },
+    context,
+  );
+  available = false;
+  const assets = join(f.workspace, "assets");
+  await buildAssets(dirname(fileURLToPath(import.meta.url)), assets);
+  const base = await serve(t, f.sessions, assets);
+  const browser = await chromium.launch({ executablePath: chromiumExecutable() });
+  t.after(() => browser.close());
+  for (const width of [320, 390, 650, 1440]) {
+    const page = await browser.newPage({ viewport: { width, height: 844 } });
+    page.setDefaultTimeout(10_000);
+    await page.goto(`${base}/?session=${session.id}`);
+    await page.waitForSelector("#status[data-state=ready]");
+    // Exercise nonzero safe-area-like insets as well as the usual portrait layout.
+    if (width === 650)
+      await page.addStyleTag({ content: "body { padding-left: 28px; padding-right: 28px; }" });
+    const header = await page.locator("#title").evaluate((node) => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const box = range.getBoundingClientRect();
+      return {
+        left: box.left,
+        top: box.top,
+        height: node.closest(".bar")!.getBoundingClientRect().height,
+      };
+    });
+    const footerModel = await page.locator("#footer-model").textContent();
+    const footerContext = await page.locator("#footer-context").textContent();
+    const footerTokens = await page.locator("#footer-context").getAttribute("data-tokens");
+    for (const [level, variable] of [
+      ["warning", "--warning"],
+      ["critical", "--danger"],
+    ]) {
+      const colors = await page.locator("#footer-context").evaluate(
+        (node, { level, variable }) => {
+          const previous = node.dataset.level;
+          node.dataset.level = level;
+          const actual = getComputedStyle(node).color;
+          const reference = document.createElement("span");
+          reference.style.color = `var(${variable})`;
+          document.body.append(reference);
+          const expected = getComputedStyle(reference).color;
+          reference.remove();
+          node.dataset.level = previous;
+          return { actual, expected };
+        },
+        { level, variable },
+      );
+      assert.equal(colors.actual, colors.expected);
+    }
+    await page.click("#title");
+    await page.waitForSelector("#picker:not([hidden])");
+    const row = page.locator(`#sessions [data-session="${session.id}"]`);
+    await row.waitFor();
+    assert.equal(await row.locator(".model-summary").textContent(), footerModel);
+    assert.equal(await row.locator(".context-usage").textContent(), footerContext);
+    assert.equal(await row.locator(".context-usage").getAttribute("data-tokens"), footerTokens);
+    assert.equal(await row.locator(".session-environment").textContent(), `local · ${f.workspace}`);
+    assert.equal(
+      await row.locator("time").getAttribute("datetime"),
+      new Date(session.created).toISOString(),
+    );
+    const viewHeader = await page.locator("#view-title").evaluate((node) => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const box = range.getBoundingClientRect();
+      return {
+        left: box.left,
+        top: box.top,
+        height: node.closest(".bar")!.getBoundingClientRect().height,
+      };
+    });
+    assert.deepEqual(viewHeader, header);
+    const layout = await page.locator("#picker").evaluate((picker) => ({
+      overflow: picker.scrollWidth > picker.clientWidth,
+      pageOverflow: document.documentElement.scrollWidth > innerWidth,
+      rows: Array.from(picker.querySelectorAll(".session"), (button) => {
+        const box = button.getBoundingClientRect();
+        const heading = button.querySelector(".session-heading")!.getBoundingClientRect();
+        const detail = button.querySelector(".session-detail")!.getBoundingClientRect();
+        const name = button.querySelector("strong")!.getBoundingClientRect();
+        const time = button.querySelector("time")!.getBoundingClientRect();
+        const fields = Array.from(
+          button.querySelectorAll(
+            ".session-environment, .model-name, .model-effort, .context-usage",
+          ),
+        );
+        return {
+          children: button.children.length,
+          twoRows: detail.top >= heading.bottom && detail.bottom <= box.bottom,
+          timestampRight: time.right === heading.right && time.left > name.right,
+          contained: fields.every((field) => {
+            const rect = field.getBoundingClientRect();
+            return (
+              rect.width > 0 &&
+              rect.left >= box.left &&
+              rect.right <= box.right &&
+              rect.top >= detail.top &&
+              rect.bottom <= detail.bottom
+            );
+          }),
+        };
+      }),
+    }));
+    assert.equal(layout.overflow, false, `picker overflow at ${width}px`);
+    assert.equal(layout.pageOverflow, false);
+    assert.equal(layout.rows.length, 2);
+    for (const item of layout.rows) {
+      assert.equal(item.children, 2);
+      assert.equal(item.twoRows, true);
+      assert.equal(item.timestampRight, true);
+      assert.equal(item.contained, true, `summary fields at ${width}px`);
+    }
+    if (process.env.PI_SCREENSHOT_DIR) {
+      await mkdir(process.env.PI_SCREENSHOT_DIR, { recursive: true });
+      await page.screenshot({ path: join(process.env.PI_SCREENSHOT_DIR, `sessions-${width}.png`) });
+    }
+    await page.fill("#session-filter", "repository");
+    assert.equal(await page.locator("#sessions .session").count(), 1);
+    await page.fill("#session-filter", session.id);
+    await row.click();
+    await page.waitForSelector("#transcript:not([hidden])");
+    assert.equal(new URL(page.url()).searchParams.get("session"), session.id);
+    await page.close();
+  }
+});
+
 await test("mobile browser stacked views preserve input and scroll, serialize autosaves and isolate background work", async (t) => {
   const f = await fixture(t);
   const session = await f.create();

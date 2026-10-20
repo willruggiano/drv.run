@@ -17,7 +17,13 @@ import type {
   LiveState,
   UsageState,
 } from "@earendil-works/pi-durable";
-import type { Catalog, ExecutionBinding, SessionInfo, Snapshot } from "../pi-runtime/index.ts";
+import type {
+  Catalog,
+  ContextStatus,
+  ExecutionBinding,
+  SessionInfo,
+  Snapshot,
+} from "../pi-runtime/index.ts";
 
 function element<T extends HTMLElement>(id: string, type: { new (): T }): T {
   const found = document.getElementById(id);
@@ -336,10 +342,28 @@ function renderSessions(): void {
     button.setAttribute("aria-current", String(session.id === active));
     const name = document.createElement("strong");
     name.textContent = sessionTitle(session);
-    const detail = document.createElement("small");
-    detail.textContent = `${label} · ${new Date(session.created).toLocaleDateString()}${target?.available ? "" : " · unavailable"}`;
-    button.title = detail.textContent;
-    button.append(name, detail);
+    const heading = document.createElement("span");
+    heading.className = "session-heading";
+    const timestamp = document.createElement("time");
+    const date = new Date(session.created);
+    timestamp.dateTime = date.toISOString();
+    timestamp.textContent = date.toLocaleDateString();
+    timestamp.title = `Created ${date.toLocaleString()}`;
+    heading.append(name, timestamp);
+    const detail = document.createElement("span");
+    detail.className = "session-detail";
+    const environment = document.createElement("span");
+    environment.className = "session-environment";
+    environment.textContent = environmentText(session.binding, session.cwd);
+    const model = document.createElement("span");
+    model.className = "model-summary";
+    renderModelSummary(model, session.model, session.thinkingLevel);
+    const usage = document.createElement("span");
+    usage.className = "context-usage";
+    renderContextUsage(usage, session.context);
+    detail.append(environment, summaryDot(), model, summaryDot(), usage);
+    button.title = `${label}${target?.available ? "" : " · unavailable"}`;
+    button.append(heading, detail);
     button.onclick = () => {
       void selectSession(session.id);
     };
@@ -1855,7 +1879,7 @@ function flushSettings(): Promise<boolean> {
           if (latest) render({ ...latest, session });
           if (catalog)
             catalog.sessions = catalog.sessions.map((item) =>
-              item.id === session.id ? session : item,
+              item.id === session.id ? { ...item, ...session } : item,
             );
         }
         notice.hidden = true;
@@ -2604,16 +2628,61 @@ function renderContext(): void {
   contextView.append(usage, inventory);
 }
 
+function environmentText(binding: ExecutionBinding, cwd: string): string {
+  return `${binding.provider === "local" ? "local" : binding.target} · ${cwd}`;
+}
+
+function summaryDot(): HTMLSpanElement {
+  const dot = document.createElement("span");
+  dot.className = "footer-dot";
+  dot.setAttribute("aria-hidden", "true");
+  return dot;
+}
+
+function renderModelSummary(
+  node: HTMLElement,
+  model: SessionInfo["model"],
+  thinking: SessionInfo["thinkingLevel"],
+  prefix = "",
+): void {
+  if (!node.childElementCount) {
+    const name = document.createElement("span");
+    name.className = "model-name";
+    const effort = document.createElement("span");
+    effort.className = "model-effort";
+    if (prefix) {
+      name.id = `${prefix}model-name`;
+      effort.id = `${prefix}effort`;
+    }
+    node.append(name, summaryDot(), effort);
+  }
+  node.children[0].textContent = model.modelId;
+  node.children[2].textContent = thinking;
+  node.title = `${model.provider} / ${model.modelId} · thinking ${thinking}`;
+}
+
+function renderContextUsage(node: HTMLElement, context: ContextStatus): void {
+  const { window: limit, lastResponse, autoCompact } = context;
+  const tokens = lastResponse?.tokens;
+  const percent = tokens !== undefined && limit ? (tokens / limit) * 100 : undefined;
+  node.textContent = `${percent === undefined ? "—" : percent.toFixed(1) + "%"}/${limit ? compactTokens(limit) : "?"}${autoCompact ? " (auto)" : ""}`;
+  node.dataset.level =
+    percent !== undefined && percent > 90
+      ? "critical"
+      : percent !== undefined && percent > 70
+        ? "warning"
+        : "normal";
+  node.dataset.tokens = tokens === undefined ? "" : String(tokens);
+  node.title = `Context at last completed response: ${tokens?.toLocaleString() ?? "unknown"} / ${limit?.toLocaleString() ?? "unknown"} tokens. ${autoCompact ? "Automatic compaction enabled." : "Automatic compaction disabled."}`;
+}
+
 function renderFooter(): void {
   if (!latest) return;
   bottomLine.hidden = false;
   const agent = latest.view.docs["pi.agent"] as AgentState | undefined;
   const model = agent?.model ?? latest.session.model;
   const thinking = agent?.thinkingLevel ?? latest.session.thinkingLevel;
-  element("footer-model-name", HTMLSpanElement).textContent = model.modelId;
-  element("footer-effort", HTMLSpanElement).textContent = thinking;
-  element("footer-model", HTMLButtonElement).title =
-    `${model.provider} / ${model.modelId} · thinking ${thinking}`;
+  renderModelSummary(element("footer-model", HTMLButtonElement), model, thinking, "footer-");
   const usage = latest.view.docs["pi.usage"] as UsageState | undefined;
   const totals = [...Object.values(usage?.models ?? {}), ...Object.values(usage?.tools ?? {})];
   const sum = (key: "input" | "output" | "cacheRead" | "cacheWrite") =>
@@ -2634,21 +2703,8 @@ function renderFooter(): void {
     node.dataset.value = String(value);
     node.title = `${field === "read" ? "Cache " : ""}${field}: ${value.toLocaleString()} tokens`;
   }
-  const { window: limit, lastResponse, autoCompact } = latest.context;
-  const hit = lastResponse?.cacheHit;
-  const tokens = lastResponse?.tokens;
-  const percent = tokens !== undefined && limit ? (tokens / limit) * 100 : undefined;
-  const contextText = `${percent === undefined ? "—" : percent.toFixed(1) + "%"}/${limit ? compactTokens(limit) : "?"}${autoCompact ? " (auto)" : ""}`;
-  const contextButton = element("footer-context", HTMLButtonElement);
-  contextButton.textContent = contextText;
-  contextButton.dataset.level =
-    percent !== undefined && percent > 90
-      ? "critical"
-      : percent !== undefined && percent > 70
-        ? "warning"
-        : "normal";
-  contextButton.dataset.tokens = tokens === undefined ? "" : String(tokens);
-  contextButton.title = `Context at last completed response: ${tokens?.toLocaleString() ?? "unknown"} / ${limit?.toLocaleString() ?? "unknown"} tokens. ${autoCompact ? "Automatic compaction enabled." : "Automatic compaction disabled."}`;
+  renderContextUsage(element("footer-context", HTMLButtonElement), latest.context);
+  const hit = latest.context.lastResponse?.cacheHit;
   const hitNode = element("footer-hit", HTMLSpanElement);
   hitNode.textContent = hit == null ? "CH—" : `CH${hit.toFixed(1)}%`;
   hitNode.title = "Cache hit rate at the last completed response";
@@ -2656,10 +2712,7 @@ function renderFooter(): void {
   costNode.textContent = `$${cost.toFixed(3)}`;
   costNode.dataset.value = String(cost);
   costNode.title = "Estimated cost (USD)";
-  set(
-    "footer-instance",
-    `${binding.provider === "local" ? "local" : binding.target} · ${agent?.cwd ?? binding.cwd}`,
-  );
+  set("footer-instance", environmentText(binding, agent?.cwd ?? binding.cwd));
 }
 for (const id of ["footer-stats", "footer-context"])
   element(id, HTMLButtonElement).onclick = () => {
