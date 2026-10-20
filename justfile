@@ -20,7 +20,7 @@ check:
     basedpyright --threads=4 --warnings packages
 
 # Run the CI suite, including full Nix validation
-ci: check test
+ci: check test chromium
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v nix >/dev/null 2>&1; then
@@ -54,6 +54,10 @@ test:
         exit 1
     fi
     nix flake check --no-build
+
+# Run Chromium integration tests and renderer benchmarks
+chromium:
+    node --test "**/*.chromium.ts"
 
 # Run updater scripts
 update:

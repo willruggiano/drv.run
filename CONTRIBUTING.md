@@ -142,6 +142,19 @@ Writing/editing Markdown requires explicit instruction!
 - Do NOT write tests that assert stdout/stderr or attempt to string match in any
   other way. Write tests against interfaces, assert on state.
 
+### Timings
+
+Measurements from a ROCK 5B instance with 2 CPU, 3gb memory.
+
+Sequential runs, without competing Nix builds:
+
+| Command/suite           |   Time | Result                               |
+| ----------------------- | -----: | ------------------------------------ |
+| Non-Chromium Node tests |  56.6s | 108 passed                           |
+| `just test`             |  69.5s | Passed                               |
+| `just chromium`         | 187.1s | 19 passed                            |
+| `just ci`               | 384.0s | Passed, including aarch64 Nix checks |
+
 ### Nix checks
 
 - Assert aggresively in nixos modules

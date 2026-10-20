@@ -14,8 +14,16 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { UsageDoc } from "@earendil-works/pi-durable";
 import { chromium, type Locator, type Page } from "playwright";
-import type { Sessions, Snapshot, ExecutionBinding } from "../pi-runtime/index.ts";
-import { exists, waitFor } from "../pi-runtime/testing.ts";
+import {
+  SessionError,
+  type Integration,
+  type Sessions,
+  type Snapshot,
+  type ExecutionBinding,
+} from "../pi-runtime/index.ts";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import type { AskRequest, ReviewReport } from "../pi-runtime/workflows.ts";
+import { exists, fixture, waitFor } from "../pi-runtime/testing.ts";
 import { httpServer, type GlobalSettingsStore } from "./server.ts";
 import { buildAssets } from "./build.ts";
 
@@ -83,6 +91,115 @@ export function post(url: string, data: unknown) {
     body: JSON.stringify(data),
   });
 }
+
+// Frontend contract fixture. The drv.run suite separately exercises the real pi-env daemon.
+export async function directoryFixture(t: TestContext, root?: string) {
+  const f = await fixture(t);
+  const binding = { provider: "test", target: "guest", cwd: root ?? f.workspace };
+  let available = true;
+  let connections = 0;
+  const integration: Integration = {
+    id: "test",
+    directoryRoot: binding.cwd,
+    async targets() {
+      return [{ ...binding, label: "Guest", available }];
+    },
+    async validate(value) {
+      assert.deepEqual(value, binding);
+      if (!available) throw new SessionError("unavailable", "Guest stopped.");
+    },
+    open() {
+      connections++;
+      const env = new NodeExecutionEnv({ cwd: binding.cwd });
+      return {
+        env,
+        atDirectory: (cwd) => new NodeExecutionEnv({ cwd }),
+        close: () => env.cleanup(context),
+      };
+    },
+  };
+  await f.reopen([integration]);
+  return {
+    ...f,
+    get sessions() {
+      return f.sessions;
+    },
+    binding,
+    integration,
+    stop() {
+      available = false;
+    },
+    get connections() {
+      return connections;
+    },
+  };
+}
+
+export const workflowQuestions: AskRequest = {
+  title: "Preferences storage",
+  questions: [
+    {
+      id: "storage",
+      label: "Storage",
+      prompt: "Which storage should the preferences service use?",
+      type: "single",
+      preview: true,
+      options: [
+        {
+          value: "sqlite",
+          label: "SQLite",
+          description: "Atomic updates using the existing session database.",
+          recommended: true,
+          preview: "CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT);",
+        },
+        {
+          value: "json",
+          label: "JSON file",
+          description: "A standalone configuration file.",
+          preview: '{ "theme": "dark", "lineWrap": true }',
+        },
+      ],
+    },
+    {
+      id: "checks",
+      label: "Verification",
+      prompt: "Which checks should we run?",
+      type: "multiple",
+      options: [
+        { value: "unit", label: "Unit tests" },
+        { value: "browser", label: "Browser tests" },
+      ],
+    },
+  ],
+};
+export const workflowReport: ReviewReport = {
+  scope: "Preferences service · preferences.ts",
+  verdict: "needs attention",
+  findings: [
+    {
+      id: "updates",
+      priority: "P1",
+      title: "Prevent lost preference updates",
+      file: "preferences.ts",
+      startLine: 12,
+      endLine: 16,
+      explanation:
+        "Two concurrent requests can read the same value and overwrite one another. Apply each update in a database transaction.",
+      suggestion: "Run the read and write inside the existing transaction.",
+    },
+    {
+      id: "empty",
+      priority: "P2",
+      title: "Handle a missing preference",
+      file: "preferences.ts",
+      startLine: 24,
+      endLine: 24,
+      explanation:
+        "A fresh database returns no row. Return the default preference rather than dereferencing an absent result.",
+    },
+  ],
+  callouts: ["Database schema changes require human review."],
+};
 
 async function assertHeaderStatus(page: Page, state: string, label: string): Promise<void> {
   const dot = page.locator(".bar #status");
