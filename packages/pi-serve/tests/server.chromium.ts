@@ -2021,6 +2021,137 @@ await test("mobile browser compaction and reset archive unchanged conversation n
   assert.deepEqual(errors, []);
 });
 
+await test("browser coalesces observation refreshes and cancels reads on navigation", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const other = await f.create();
+  const { page, base, errors } = await browserFixture(t, f.sessions);
+  await page.addInitScript(() => {
+    const metrics = { pending: 0, peak: 0, frames: 0, aborted: 0 };
+    Object.assign(window, { observationMetrics: metrics });
+    const fetch = window.fetch.bind(window);
+    window.fetch = async (...args: Parameters<typeof fetch>) => {
+      const input = args[0];
+      const url = new URL(input instanceof Request ? input.url : input, location.href);
+      if (!url.pathname.endsWith("/info")) return fetch(...args);
+      metrics.pending++;
+      metrics.peak = Math.max(metrics.peak, metrics.pending);
+      try {
+        return await fetch(...args);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") metrics.aborted++;
+        throw error;
+      } finally {
+        metrics.pending--;
+      }
+    };
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (new URL(this.url).pathname.endsWith("/watch"))
+          this.addEventListener("message", () => metrics.frames++);
+      }
+    };
+  });
+  await page.goto(`${base}/?session=${session.id}`);
+  await page.waitForSelector("#status[data-state=ready]");
+  let hold = false;
+  let entered = Promise.withResolvers<void>();
+  let release = Promise.withResolvers<void>();
+  const agent = session.root.agent.bind(session.root);
+  t.mock.method(session.root, "agent", async (...args: Parameters<typeof agent>) => {
+    if (hold) {
+      entered.resolve();
+      await release.promise;
+    }
+    return agent(...args);
+  });
+  try {
+    await page.evaluate(() => {
+      const metrics = Reflect.get(window, "observationMetrics");
+      metrics.peak = metrics.pending;
+      metrics.frames = 0;
+    });
+    // One failed read must not start a second batch while its peers are pending.
+    await page.route(
+      `**/api/sessions/${session.id}/context-status`,
+      (route) => route.fulfill({ status: 503, json: { error: "Temporary context failure" } }),
+      { times: 1 },
+    );
+    hold = true;
+    await session.root.configure({ instructions: "initial" }, context);
+    await entered.promise;
+    await page.locator("#notice").waitFor();
+    for (let index = 0; index < 20; index++)
+      await session.root.configure({ instructions: String(index), thinkingLevel: "high" }, context);
+    await page.waitForFunction(() => Reflect.get(window, "observationMetrics").frames >= 21);
+    const peak = await page.evaluate(() => Reflect.get(window, "observationMetrics").peak);
+    t.diagnostic(`Peak pending info fetches during 21 view frames: ${peak}`);
+    assert.equal(peak, 1);
+    hold = false;
+    release.resolve();
+    await page.waitForFunction(
+      () => document.querySelector("#footer-effort")?.textContent === "high",
+    );
+    await page.click("#footer-model");
+    assert.equal(await page.inputValue("#instructions"), "19");
+    await page.click("#close-view");
+
+    entered = Promise.withResolvers<void>();
+    release = Promise.withResolvers<void>();
+    hold = true;
+    await session.root.configure({ thinkingLevel: "low" }, context);
+    await entered.promise;
+    await page.click("#title");
+    await page.click(`#sessions [data-session="${other.id}"]`);
+    await page.waitForURL((url) => url.searchParams.get("session") === other.id);
+    await page.waitForFunction(() => Reflect.get(window, "observationMetrics").aborted > 0);
+    hold = false;
+    release.resolve();
+    await page.waitForSelector("#status[data-state=ready]");
+    assert.equal(await page.locator("#footer-effort").textContent(), "medium");
+    assert.equal(await page.locator("#notice").isVisible(), false);
+    assert.deepEqual(errors, []);
+  } finally {
+    hold = false;
+    release.resolve();
+  }
+});
+
+await test("browser reconnect recovers history hidden by a reset while disconnected", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const watches = t.mock.method(session.root, "watch");
+  const { page, base, errors } = await browserFixture(t, f.sessions);
+  await page.goto(`${base}/?session=${session.id}`);
+  await page.waitForSelector("#status[data-state=ready]");
+  for (const call of watches.mock.calls) {
+    const watch = await call.result;
+    assert(watch);
+    await watch.stop();
+  }
+  await page.waitForSelector("#status[data-state=reconnecting]");
+  const submission = await session.root.submit(
+    {
+      type: "write",
+      entry: {
+        kind: "pi.user",
+        model: [{ role: "user", content: "While disconnected", timestamp: 1 }],
+      },
+    },
+    context,
+  );
+  const entry = (await submission.status(context)).entry;
+  assert(entry !== undefined);
+  await session.root.reset(undefined, context);
+  await page.waitForSelector("#status[data-state=ready]");
+  const boundary = page.locator('article[data-context="pi.reset"] > .context-event');
+  await boundary.locator(":scope > summary").click();
+  await page.getByText("While disconnected", { exact: true }).waitFor();
+  assert.equal(await page.locator('article[data-role="user"]').count(), 1);
+  assert.deepEqual(errors, []);
+});
+
 await test("browser switches execution independently of the model and restores historical selection", async (t) => {
   const f = await fixture(t);
   const other = join(f.workspace, "other");

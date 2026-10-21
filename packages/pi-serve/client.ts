@@ -103,8 +103,7 @@ let selectedMessage:
 
 let catalog: Catalog;
 let active: string | undefined;
-let source: EventSource | undefined;
-const documentSources = new Map<string, EventSource>();
+let observation: AbortController | undefined;
 let generation = 0;
 let busy = false;
 let recovering = false;
@@ -186,22 +185,22 @@ function report(error: unknown): void {
   notice.textContent = message;
   notice.hidden = false;
 }
-async function api<T>(path: string, data?: unknown): Promise<T> {
-  const response = await fetch(
-    path,
-    data === undefined
+async function api<T>(path: string, data?: unknown, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, {
+    signal,
+    ...(data === undefined
       ? {}
       : {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
-        },
-  );
+        }),
+  });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
   return result as T;
 }
-async function pages<T>(path: string): Promise<T[]> {
+async function pages<T>(path: string, signal?: AbortSignal): Promise<T[]> {
   const result: T[] = [];
   let cursor: Cursor | undefined;
   do {
@@ -209,7 +208,7 @@ async function pages<T>(path: string): Promise<T[]> {
     const query = JSON.parse(url.searchParams.get("query") ?? "{}") as Record<string, unknown>;
     url.searchParams.set("query", JSON.stringify({ ...query, order: "ascending" }));
     if (cursor !== undefined) url.searchParams.set("cursor", JSON.stringify(cursor));
-    const page = await api<Page<T, Cursor>>(url.pathname + url.search);
+    const page = await api<Page<T, Cursor>>(url.pathname + url.search, undefined, signal);
     result.push(...page.items);
     cursor = page.next;
   } while (cursor !== undefined);
@@ -1429,35 +1428,36 @@ function attach(id: string, branch?: number): void {
 }
 
 function disconnectEvents(): void {
-  source?.close();
-  source = undefined;
-  for (const document of documentSources.values()) document.close();
-  documentSources.clear();
+  observation?.abort();
 }
 
 function connectEvents(): void {
   disconnectEvents();
+  observation = new AbortController();
+  const { signal } = observation;
   const watchPath = endpoint("watch");
   const infoPath = endpoint("info");
   const statusPath = endpoint("context-status");
   const inspectionPath = endpoint("inspection");
   const workflowPath = endpoint("workflows");
   const historyPath = endpoint("entries");
+  const source = new EventSource(watchPath);
+  const documents = new Map<string, EventSource>();
+  signal.addEventListener(
+    "abort",
+    () => {
+      source.close();
+      for (const document of documents.values()) document.close();
+    },
+    { once: true },
+  );
   let currentView: ConversationView | undefined;
-  let revision = 0;
+  let refreshing = false;
+  let dirty = false;
+  let needsHistory = true;
   const saved = new Map<number, EntryRecord>();
-  let loading: Promise<void> | undefined;
-  const history = () =>
-    (loading ??= pages<EntryRecord>(historyPath)
-      .then((entries) => {
-        for (const entry of entries) saved.set(entry.id, entry);
-      })
-      .catch((error: unknown) => {
-        loading = undefined;
-        throw error;
-      }));
   const failed = (error: unknown) => {
-    if (source === observation) report(error);
+    if (!signal.aborted) report(error);
   };
   const contextDurations: Record<number, number> = {};
   async function timings(entries: readonly EntryRecord[]) {
@@ -1471,6 +1471,7 @@ function connectEvents(): void {
     // CompactionResult identifies both directly appended and queued summaries.
     const tasks = await pages<TaskRecord<unknown, unknown, CompactionResult>>(
       `${base}/scanTasks?query=${encodeURIComponent(JSON.stringify({ kind: "pi.compaction" }))}`,
+      signal,
     );
     for (const task of tasks) {
       if (
@@ -1485,73 +1486,102 @@ function connectEvents(): void {
         entryId ??
         (submissionId === undefined
           ? undefined
-          : (await api<SubmissionRecord>(`${base}/submission/status?id=${submissionId}`)).entry);
+          : (
+              await api<SubmissionRecord>(
+                `${base}/submission/status?id=${submissionId}`,
+                undefined,
+                signal,
+              )
+            ).entry);
       if (id !== undefined) contextDurations[id] = task.endedAt - task.startedAt;
     }
   }
+  // One refresh at a time. Frames arriving during a read request one more pass,
+  // not another batch of requests; each delivered frame still contributes history.
   async function update() {
-    if (!currentView) return;
-    const view = currentView;
-    const frame = ++revision;
-    const [session, context, inspection, workflows] = await Promise.all([
-      api<SessionInfo>(infoPath),
-      api<ContextStatus>(statusPath),
-      api<ContextInspection>(inspectionPath).catch((error: unknown): ContextInspection => {
+    dirty = true;
+    if (refreshing) return;
+    refreshing = true;
+    while (dirty && currentView && !signal.aborted) {
+      dirty = false;
+      const view = currentView;
+      const loadHistory = needsHistory;
+      needsHistory = false;
+      const reads = [
+        api<SessionInfo>(infoPath, undefined, signal),
+        api<ContextStatus>(statusPath, undefined, signal),
+        api<ContextInspection>(inspectionPath, undefined, signal).catch(
+          (error: unknown): ContextInspection => {
+            failed(error);
+            return { state: "unavailable", conversation: view.conversation.id };
+          },
+        ),
+        api<WorkflowView>(workflowPath, undefined, signal),
+        loadHistory ? pages<EntryRecord>(historyPath, signal) : Promise.resolve([]),
+      ] as const;
+      try {
+        const [session, context, inspection, workflows, history] = await Promise.all(reads);
+        for (const entry of history) saved.set(entry.id, entry);
+        const entries = [...saved.values()].sort((a, b) => a.id - b.id);
+        await timings(entries);
+        // Keep the last delivered frame readable after disconnect, but not interactive.
+        if (signal.aborted) continue;
+        connected = source.readyState === EventSource.OPEN && !needsHistory;
+        render({
+          session,
+          view,
+          context,
+          inspection,
+          workflows,
+          history: entries,
+          contextDurations,
+        });
+      } catch (error) {
+        if (loadHistory) needsHistory = true;
         failed(error);
-        return { state: "unavailable", conversation: view.conversation.id };
-      }),
-      api<WorkflowView>(workflowPath),
-      history(),
-    ]);
-    const entries = [...saved.values()].sort((a, b) => a.id - b.id);
-    await timings(entries);
-    if (source !== observation || frame !== revision) return;
-    connected = observation.readyState === EventSource.OPEN;
-    render({ session, view, context, inspection, workflows, history: entries, contextDurations });
-  }
-  const observation = new EventSource(watchPath);
-  source = observation;
-  connected = false;
-  source.onopen = () => {
-    if (source === observation) {
-      connectDocuments();
-      controls();
+        // A failed read does not mean the rest of its batch has finished.
+        await Promise.allSettled(reads);
+      }
     }
-  };
+    refreshing = false;
+  }
+  connected = false;
   source.onmessage = (event) => {
-    if (source !== observation) return;
+    if (signal.aborted) return;
     try {
       currentView = (JSON.parse(event.data) as { value: ConversationView }).value;
       for (const entry of currentView.entries) saved.set(entry.id, entry);
       connectDocuments();
-      void update().catch(failed);
+      void update();
     } catch (error) {
       failed(error);
     }
   };
   source.onerror = () => {
-    if (source !== observation) return;
+    if (signal.aborted) return;
     connected = false;
+    currentView = undefined;
+    needsHistory = true;
     controls();
   };
   function connectDocuments() {
     for (const kind of ["app.workflows", "app.environment", "app.session"]) {
-      const previous = documentSources.get(kind);
+      const previous = documents.get(kind);
       if (previous && previous.readyState !== EventSource.CLOSED) continue;
       const path = new URL(endpoint("watchDoc"), location.origin);
       path.searchParams.set("kind", kind);
       if (kind === "app.session") path.searchParams.delete("conversation");
       const documentSource = new EventSource(path.pathname + path.search);
       documentSource.onmessage = () => {
-        if (source === observation) void update().catch(failed);
+        if (!signal.aborted) void update();
       };
-      documentSources.set(kind, documentSource);
+      documents.set(kind, documentSource);
     }
   }
   connectDocuments();
   const policies = new EventSource("/api/settings/watch");
   policies.onmessage = (event) => {
-    if (source !== observation) return;
+    if (signal.aborted) return;
     globalSettings = JSON.parse(event.data) as GlobalSettings;
     document.body.classList.toggle(
       "hide-thinking",
@@ -1561,9 +1591,9 @@ function connectEvents(): void {
       "hide-images",
       globalSettings.values["terminal.showImages"] === false,
     );
-    void update().catch(failed);
+    void update();
   };
-  documentSources.set("settings", policies);
+  documents.set("settings", policies);
   controls();
 }
 
