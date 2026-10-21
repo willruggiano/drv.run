@@ -34,8 +34,9 @@
     import { BACKGROUND_CONTEXT } from "${app}/node_modules/@earendil-works/chord/dist/context/index.js";
     import { createModels } from "${app}/node_modules/@earendil-works/pi-ai/dist/models.js";
     import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "${app}/node_modules/@earendil-works/pi-ai/dist/providers/faux.js";
-    import { Sessions } from "${app}/../pi-runtime/index.js";
-    import drvRun from "${pi-drv-run}/lib/pi-extensions/drv-run/index.js";
+    import { history, inspectContext } from "${app}/../pi-runtime/index.js";
+    import { openApplication } from "${app}/application.js";
+    import { ownerOptions } from "${pi-drv-run}/lib/pi-extensions/drv-run/index.js";
     import { localDaemon } from "${app}/node_modules/@earendil-works/pi-env/dist/index.js";
 
     // Installed consumers share the production workspace, not the test tree.
@@ -90,19 +91,19 @@
       ` }), { stopReason: "toolUse" }),
       fauxAssistantMessage("Done."),
     ]);
-    const sessions = await Sessions.open({
-      directory, models, integrations: [drvRun()],
+    const sessions = await openApplication({
+      directory, models, cwd: "/workspace", local: false, drvRun: ownerOptions(),
     });
     try {
       const session = await sessions.create(randomUUID(), {
         provider: "drv.run", target: instance, cwd: "/workspace",
       }, { provider: "faux", modelId: "faux-1" });
-      await session.prompt("Write the guest result.", randomUUID());
+      await session.root.submit({ type: "input", content: "Write the guest result.", requestId: randomUUID() }, BACKGROUND_CONTEXT);
       await session.root.waitForIdle(BACKGROUND_CONTEXT);
       assert.equal((await session.harness.inspect(BACKGROUND_CONTEXT)).tasks.length, 0);
-      const results = (await session.history()).flatMap((entry) => entry.model ?? []).filter((message) => message.role === "toolResult");
-      // Context must be read through the pinned guest connection before any model call.
-      assert.equal(results.length, untrusted ? 0 : 6);
+      const results = (await history(session)).flatMap((entry) => entry.model ?? []).filter((message) => message.role === "toolResult");
+      // A rejected host identity cannot execute commands or fall back to the host.
+      assert.equal(results.length, untrusted ? 1 : 6);
       if (!untrusted) {
         assert.equal(results[0].isError, true);
         assert(results.slice(1).every((result) => !result.isError));
@@ -113,7 +114,7 @@
       }
       const watch = await session.root.watch(BACKGROUND_CONTEXT);
       try {
-        const inspection = await session.inspectContext(watch.value);
+        const inspection = await inspectContext(session, watch.value);
         assert.equal(inspection.state, "available");
         assert.equal(inspection.conversation, session.root.id);
         assert.equal(inspection.tokens, inspection.messages.reduce((sum, message) => sum + message.tokens, 0));
@@ -123,7 +124,7 @@
       } finally {
         await watch.stop();
       }
-      assert.equal(faux.state.callCount, untrusted ? 0 : 7);
+      assert.equal(faux.state.callCount, untrusted ? 2 : 7);
     } finally {
       await sessions.close();
       await rm(directory, { recursive: true });
@@ -144,7 +145,7 @@ in
         port = 8787;
         package = pkgs.writeShellScriptBin "pi-serve" ''
           exec ${pkgs.lib.getExe pi-serve} --no-local \
-            --extension ${pi-drv-run}/lib/pi-extensions/drv-run/index.js "$@"
+            --drv-run "$@"
         '';
       };
       systemd.user.services.pi.environment.PI_OFFLINE = "1";

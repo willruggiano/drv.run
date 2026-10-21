@@ -1,3 +1,4 @@
+import type { RenderState } from "../client.ts";
 import assert from "node:assert/strict";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
@@ -6,9 +7,9 @@ import type { TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   SessionError,
-  type Integration,
+  Environment,
+  type SessionOptions,
   type Sessions,
-  type Snapshot,
 } from "../../pi-runtime/index.ts";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { AskRequest, ReviewReport } from "../../pi-runtime/workflows.ts";
@@ -52,7 +53,7 @@ export async function serve(
   });
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
-export async function snapshot(url: string): Promise<Snapshot> {
+export async function snapshot(url: string): Promise<RenderState> {
   const controller = new AbortController();
   const response = await fetch(url, { signal: controller.signal });
   assert.equal(response.status, 200);
@@ -66,7 +67,22 @@ export async function snapshot(url: string): Promise<Snapshot> {
       assert.equal(part.done, false);
       text += decoder.decode(part.value, { stream: true });
     }
-    return JSON.parse(text.slice(6, text.indexOf("\n\n"))) as Snapshot;
+    const view = JSON.parse(text.slice(6, text.indexOf("\n\n"))).value as RenderState["view"];
+    const resource = new URL(url);
+    const id = resource.pathname.split("/")[3];
+    const get = async (path: string) => {
+      const response = await fetch(resource.origin + path + resource.search);
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const [session, context, inspection, workflows, history] = await Promise.all([
+      get(`/api/sessions/${id}/info`),
+      get(`/api/sessions/${id}/context-status`),
+      get(`/api/sessions/${id}/inspection`),
+      get(`/api/sessions/${id}/workflows`),
+      get(`/api/harness/${id}/entries`),
+    ]);
+    return { session, view, context, inspection, workflows, history: history.items };
   } finally {
     controller.abort();
     reader.releaseLock();
@@ -86,34 +102,43 @@ export async function directoryFixture(t: TestContext, root?: string) {
   const binding = { provider: "test", target: "guest", cwd: root ?? f.workspace };
   let available = true;
   let connections = 0;
-  const integration: Integration = {
-    id: "test",
-    directoryRoot: binding.cwd,
+  const environments = new Map<string, NodeExecutionEnv>();
+  const execution: Partial<Omit<SessionOptions, "open">> = {
     async targets() {
-      return [{ ...binding, label: "Guest", available }];
+      return [
+        { ...binding, directoryRoot: binding.cwd, label: "Guest", available },
+        ...(await f.options.targets()),
+      ];
     },
-    async validate(value) {
-      assert.deepEqual(value, binding);
+    async env(target, context) {
+      const selected = await target.read.snapshot(Environment, target.conversationId, context);
+      if (selected?.provider === "local") return f.options.env(target, context);
+      assert.equal(selected?.provider, binding.provider);
+      assert.equal(selected?.target, binding.target);
       if (!available) throw new SessionError("unavailable", "Guest stopped.");
+      const cwd = target.cwd ?? binding.cwd;
+      let env = environments.get(cwd);
+      if (!env) {
+        connections++;
+        env = new NodeExecutionEnv({ cwd });
+        environments.set(cwd, env);
+      }
+      return env;
     },
-    open() {
-      connections++;
-      const env = new NodeExecutionEnv({ cwd: binding.cwd });
-      return {
-        env,
-        atDirectory: (cwd) => new NodeExecutionEnv({ cwd }),
-        close: () => env.cleanup(context),
-      };
+    async close() {
+      await f.options.close();
+      await Promise.all([...environments.values()].map((env) => env.cleanup(context)));
+      environments.clear();
     },
   };
-  await f.reopen([integration]);
+  await f.reopen(execution);
   return {
     ...f,
     get sessions() {
       return f.sessions;
     },
     binding,
-    integration,
+    execution,
     stop() {
       available = false;
     },

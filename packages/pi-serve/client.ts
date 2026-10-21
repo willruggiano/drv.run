@@ -1,3 +1,7 @@
+import type { CompactionResult, TaskRecord, SubmissionRecord } from "@earendil-works/pi-durable";
+import type { ContextInspection } from "../pi-runtime/inspection.ts";
+import type { ConversationView, Page, Cursor } from "@earendil-works/pi-durable";
+import type { WorkflowView } from "../pi-runtime/workflows.ts";
 import { workflowPanels } from "./workflow-panels.ts";
 import { settingFields, type GlobalSettings } from "./settings.ts";
 import { commands, installCompletions } from "./completions.ts";
@@ -17,13 +21,18 @@ import type {
   LiveState,
   UsageState,
 } from "@earendil-works/pi-durable";
-import type {
-  Catalog,
-  ContextStatus,
-  ExecutionBinding,
-  SessionInfo,
-  Snapshot,
-} from "../pi-runtime/index.ts";
+import type { Catalog, ContextStatus, ExecutionBinding, SessionInfo } from "../pi-runtime/index.ts";
+
+export type RenderState = {
+  session: SessionInfo;
+  view: ConversationView;
+  context: ContextStatus;
+  inspection: ContextInspection;
+  history?: readonly EntryRecord[];
+  /** Durable compaction task durations, keyed by the resulting entry. */
+  contextDurations?: Record<number, number>;
+  workflows?: WorkflowView;
+};
 
 function element<T extends HTMLElement>(id: string, type: { new (): T }): T {
   const found = document.getElementById(id);
@@ -56,7 +65,7 @@ const sessionModel = element("session-model", HTMLSelectElement);
 const thinking = element("thinking", HTMLSelectElement);
 const instructions = element("instructions", HTMLTextAreaElement);
 let conversation: number | undefined;
-let latest: Snapshot | undefined;
+let latest: RenderState | undefined;
 let images: (ImageContent & { name: string })[] = [];
 const targets = element("targets", HTMLSelectElement);
 const models = element("models", HTMLSelectElement);
@@ -95,6 +104,7 @@ let selectedMessage:
 let catalog: Catalog;
 let active: string | undefined;
 let source: EventSource | undefined;
+const documentSources = new Map<string, EventSource>();
 let generation = 0;
 let busy = false;
 let recovering = false;
@@ -191,6 +201,21 @@ async function api<T>(path: string, data?: unknown): Promise<T> {
   if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
   return result as T;
 }
+async function pages<T>(path: string): Promise<T[]> {
+  const result: T[] = [];
+  let cursor: Cursor | undefined;
+  do {
+    const url = new URL(path, location.origin);
+    const query = JSON.parse(url.searchParams.get("query") ?? "{}") as Record<string, unknown>;
+    url.searchParams.set("query", JSON.stringify({ ...query, order: "ascending" }));
+    if (cursor !== undefined) url.searchParams.set("cursor", JSON.stringify(cursor));
+    const page = await api<Page<T, Cursor>>(url.pathname + url.search);
+    result.push(...page.items);
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return result;
+}
+
 const workflows = workflowPanels({
   request: (action, data) => api(endpoint(action), data),
   navigate: (id) => {
@@ -215,11 +240,11 @@ function controls(): void {
     sending ||
     creating ||
     !prompt.value.trim() ||
-    (!isCommand && (active ? !connected || recovering : create.disabled));
-  stop.disabled = !active || !connected || !busy || recovering;
-  stop.hidden = !busy || recovering;
-  modeToggle.hidden = !busy || recovering;
-  modeToggle.disabled = !active || !connected || recovering || sending;
+    (!isCommand && (active ? !connected : create.disabled));
+  stop.disabled = !active || !connected || !busy;
+  stop.hidden = !busy;
+  modeToggle.hidden = !busy;
+  modeToggle.disabled = !active || !connected || sending;
   modeToggle.textContent = submissionMode === "steer" ? "Steer" : "Follow up";
   modeToggle.dataset.mode = submissionMode;
   modeToggle.setAttribute(
@@ -228,7 +253,7 @@ function controls(): void {
   );
   resume.disabled = !active || !connected || !recovering;
   recovery.hidden = !recovering;
-  element("footer-model", HTMLButtonElement).disabled = !active || !connected || recovering;
+  element("footer-model", HTMLButtonElement).disabled = !active || !connected;
   document.body.classList.toggle("offline", !navigator.onLine);
   bottomLine.dataset.connected = String(connected);
   const action = busy && !recovering ? (submissionMode === "steer" ? "Steer" : "Queue") : "Send";
@@ -257,8 +282,8 @@ function controls(): void {
   status.title = label;
   status.querySelector(".sr-only")!.textContent = label;
 }
-function targetKey(binding: ExecutionBinding): string {
-  return JSON.stringify([binding.provider, binding.target, binding.cwd]);
+function targetKey(binding: ExecutionBinding | undefined): string {
+  return binding ? JSON.stringify([binding.provider, binding.target, binding.cwd]) : "";
 }
 function chooseOption(
   select: HTMLSelectElement,
@@ -326,8 +351,9 @@ async function refresh(): Promise<void> {
 function sessionTitle(session: SessionInfo): string {
   return (
     session.name ||
-    session.binding.target.split("/").filter(Boolean).at(-1) ||
-    session.binding.provider
+    session.binding?.target.split("/").filter(Boolean).at(-1) ||
+    session.binding?.provider ||
+    "Session"
   );
 }
 function renderSessions(): void {
@@ -337,8 +363,8 @@ function renderSessions(): void {
   for (const session of catalog.sessions) {
     const target = catalog.targets.find((item) => targetKey(item) === targetKey(session.binding));
     const label =
-      (target?.label ?? session.binding.target) +
-      (session.cwd && session.cwd !== session.binding.cwd ? ` · ${session.cwd}` : "");
+      (target?.label ?? session.binding?.target) +
+      (session.cwd && session.cwd !== session.binding?.cwd ? ` · ${session.cwd}` : "");
     if (
       query &&
       !`${sessionTitle(session)} ${label} ${session.id}`.toLocaleLowerCase().includes(query)
@@ -356,8 +382,8 @@ function renderSessions(): void {
 function sessionRow(session: Catalog["sessions"][number]): HTMLButtonElement {
   const target = catalog.targets.find((item) => targetKey(item) === targetKey(session.binding));
   const label =
-    (target?.label ?? session.binding.target) +
-    (session.cwd && session.cwd !== session.binding.cwd ? ` · ${session.cwd}` : "");
+    (target?.label ?? session.binding?.target) +
+    (session.cwd && session.cwd !== session.binding?.cwd ? ` · ${session.cwd}` : "");
   const button = document.createElement("button");
   button.type = "button";
   button.className = "session";
@@ -459,13 +485,29 @@ function markdown(text: string): HTMLElement {
   return result;
 }
 function endpoint(action: string): string {
-  return `/api/sessions/${active}/${action}${conversation === undefined ? "" : `?conversation=${conversation}`}`;
+  const upstream = [
+    "submit",
+    "abort",
+    "resume",
+    "configure",
+    "compact",
+    "reset",
+    "abortSubmission",
+    "fork",
+    "scanConversations",
+    "entries",
+    "watch",
+    "watchDoc",
+    "context",
+    "inspect",
+  ].includes(action);
+  return `/api/${upstream ? "harness" : "sessions"}/${active}/${action}${conversation === undefined ? "" : `?conversation=${conversation}`}`;
 }
 async function refreshBranches(): Promise<void> {
   const current = generation;
   const id = active;
   if (!id) return;
-  const records = await api<ConversationRecord[]>(endpoint("conversations"));
+  const records = await pages<ConversationRecord>(endpoint("scanConversations"));
   if (current !== generation) return;
   // Keep existing buttons connected so a pending refresh cannot drop keyboard focus.
   const existing = new Map(
@@ -782,7 +824,7 @@ function messageActions(
     element("quote-message", HTMLButtonElement).hidden = !message;
     const fork = element("fork-message", HTMLButtonElement);
     fork.hidden = entry === undefined;
-    fork.disabled = !connected || recovering;
+    fork.disabled = !connected;
     // Clear the last anchor when switching between touch and mouse/keyboard.
     for (const property of ["top", "right", "bottom", "left", "max-width", "max-height"])
       messageMenu.style.removeProperty(property);
@@ -1016,7 +1058,7 @@ function content(
 }
 
 // A stable module export lets benchmarks exercise the minified renderer.
-export function render(snapshot: Snapshot): void {
+export function render(snapshot: RenderState): void {
   const wasEmpty = !transcript.childElementCount;
   latest = snapshot;
   const agent = snapshot.view.docs["pi.agent"] as AgentState | undefined;
@@ -1036,7 +1078,7 @@ export function render(snapshot: Snapshot): void {
       cancel.setAttribute("aria-label", "Cancel queued message");
       cancel.title = "Cancel queued message";
       cancel.onclick = () => {
-        void api(endpoint("cancel"), { id: item.id }).catch(report);
+        void api(endpoint("abortSubmission"), { id: item.id }).catch(report);
       };
       row.append(cancel);
     }
@@ -1054,7 +1096,7 @@ export function render(snapshot: Snapshot): void {
   recovering = snapshot.session.needsResume;
   title.textContent = sessionTitle(snapshot.session);
   if (view === "search") updateViewTitle();
-  title.title = `${snapshot.session.binding.provider} / ${snapshot.session.binding.target} · ${agent?.model?.modelId ?? snapshot.session.model.modelId}`;
+  title.title = `${snapshot.session.binding?.provider} / ${snapshot.session.binding?.target} · ${agent?.model?.modelId ?? snapshot.session.model?.modelId}`;
   const activity = element("activity", HTMLDivElement);
   activity.textContent =
     (snapshot.workflows?.asks.some((ask) => ask.actionable)
@@ -1354,7 +1396,6 @@ function attach(id: string, branch?: number): void {
   closePopovers();
   selectedMessage = undefined;
   clearSearch();
-  source?.close();
   conversation = branch;
   images = [];
   showAttachments();
@@ -1387,29 +1428,142 @@ function attach(id: string, branch?: number): void {
   setView(view);
 }
 
-function connectEvents(): void {
+function disconnectEvents(): void {
   source?.close();
-  const currentGeneration = generation;
-  source = new EventSource(endpoint("events"));
+  source = undefined;
+  for (const document of documentSources.values()) document.close();
+  documentSources.clear();
+}
+
+function connectEvents(): void {
+  disconnectEvents();
+  const watchPath = endpoint("watch");
+  const infoPath = endpoint("info");
+  const statusPath = endpoint("context-status");
+  const inspectionPath = endpoint("inspection");
+  const workflowPath = endpoint("workflows");
+  const historyPath = endpoint("entries");
+  let currentView: ConversationView | undefined;
+  let revision = 0;
+  const saved = new Map<number, EntryRecord>();
+  let loading: Promise<void> | undefined;
+  const history = () =>
+    (loading ??= pages<EntryRecord>(historyPath)
+      .then((entries) => {
+        for (const entry of entries) saved.set(entry.id, entry);
+      })
+      .catch((error: unknown) => {
+        loading = undefined;
+        throw error;
+      }));
+  const failed = (error: unknown) => {
+    if (source === observation) report(error);
+  };
+  const contextDurations: Record<number, number> = {};
+  async function timings(entries: readonly EntryRecord[]) {
+    if (
+      !entries.some(
+        (entry) => entry.kind === "pi.compaction" && contextDurations[entry.id] === undefined,
+      )
+    )
+      return;
+    const base = watchPath.split("?")[0].replace(/\/watch$/, "");
+    // CompactionResult identifies both directly appended and queued summaries.
+    const tasks = await pages<TaskRecord<unknown, unknown, CompactionResult>>(
+      `${base}/scanTasks?query=${encodeURIComponent(JSON.stringify({ kind: "pi.compaction" }))}`,
+    );
+    for (const task of tasks) {
+      if (
+        task.state.status !== "terminal" ||
+        task.state.outcome.status !== "completed" ||
+        task.startedAt === undefined ||
+        task.endedAt === undefined
+      )
+        continue;
+      const { entryId, submissionId } = task.state.outcome.result;
+      const id =
+        entryId ??
+        (submissionId === undefined
+          ? undefined
+          : (await api<SubmissionRecord>(`${base}/submission/status?id=${submissionId}`)).entry);
+      if (id !== undefined) contextDurations[id] = task.endedAt - task.startedAt;
+    }
+  }
+  async function update() {
+    if (!currentView) return;
+    const view = currentView;
+    const frame = ++revision;
+    const [session, context, inspection, workflows] = await Promise.all([
+      api<SessionInfo>(infoPath),
+      api<ContextStatus>(statusPath),
+      api<ContextInspection>(inspectionPath).catch((error: unknown): ContextInspection => {
+        failed(error);
+        return { state: "unavailable", conversation: view.conversation.id };
+      }),
+      api<WorkflowView>(workflowPath),
+      history(),
+    ]);
+    const entries = [...saved.values()].sort((a, b) => a.id - b.id);
+    await timings(entries);
+    if (source !== observation || frame !== revision) return;
+    connected = observation.readyState === EventSource.OPEN;
+    render({ session, view, context, inspection, workflows, history: entries, contextDurations });
+  }
+  const observation = new EventSource(watchPath);
+  source = observation;
+  connected = false;
   source.onopen = () => {
-    if (currentGeneration === generation) {
-      connected = true;
+    if (source === observation) {
+      connectDocuments();
       controls();
     }
   };
   source.onmessage = (event) => {
-    if (currentGeneration !== generation) return;
+    if (source !== observation) return;
     try {
-      render(JSON.parse(event.data) as Snapshot);
+      currentView = (JSON.parse(event.data) as { value: ConversationView }).value;
+      for (const entry of currentView.entries) saved.set(entry.id, entry);
+      connectDocuments();
+      void update().catch(failed);
     } catch (error) {
-      report(error);
+      failed(error);
     }
   };
   source.onerror = () => {
-    if (currentGeneration !== generation) return;
+    if (source !== observation) return;
     connected = false;
     controls();
   };
+  function connectDocuments() {
+    for (const kind of ["app.workflows", "app.environment", "app.session"]) {
+      const previous = documentSources.get(kind);
+      if (previous && previous.readyState !== EventSource.CLOSED) continue;
+      const path = new URL(endpoint("watchDoc"), location.origin);
+      path.searchParams.set("kind", kind);
+      if (kind === "app.session") path.searchParams.delete("conversation");
+      const documentSource = new EventSource(path.pathname + path.search);
+      documentSource.onmessage = () => {
+        if (source === observation) void update().catch(failed);
+      };
+      documentSources.set(kind, documentSource);
+    }
+  }
+  connectDocuments();
+  const policies = new EventSource("/api/settings/watch");
+  policies.onmessage = (event) => {
+    if (source !== observation) return;
+    globalSettings = JSON.parse(event.data) as GlobalSettings;
+    document.body.classList.toggle(
+      "hide-thinking",
+      globalSettings.values.hideThinkingBlock === true,
+    );
+    document.body.classList.toggle(
+      "hide-images",
+      globalSettings.values["terminal.showImages"] === false,
+    );
+    void update().catch(failed);
+  };
+  documentSources.set("settings", policies);
   controls();
 }
 
@@ -1429,7 +1583,8 @@ for (const scope of ["new", "session"] as const) {
   const list = element(`${scope}-directories`, HTMLDataListElement);
   let revision = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const binding = () => (scope === "new" ? selectedTarget() : latest?.session.binding);
+  const binding = () =>
+    scope === "new" ? selectedTarget() : (settingsTarget() ?? latest?.session.binding);
   const identity = () => JSON.stringify([binding(), scope === "new" ? targets.value : generation]);
   const suggest = () => {
     clearTimeout(timer);
@@ -1551,12 +1706,10 @@ async function runCommand(text: string): Promise<boolean> {
     return newSession(text);
   }
   if (!active || !connected) throw new Error("Connect to a session first.");
-  if (recovering && name !== "resume") throw new Error("Resume interrupted work first.");
   if (name === "resume") {
     if (!recovering) throw new Error("This session does not need to be resumed.");
     await resumeSession();
   } else if (name === "compact" || name === "reset") {
-    if (busy) throw new Error("Stop the current run before changing context.");
     if (name === "reset" && !confirm("Start a new model context? History is preserved."))
       return false;
     await api(
@@ -1565,7 +1718,7 @@ async function runCommand(text: string): Promise<boolean> {
     );
   } else if (name === "stop") {
     if (!busy) throw new Error("There is no running response to stop.");
-    await api(endpoint("stop"), {});
+    await api(endpoint("abort"), {});
   } else if (name === "review") {
     closePopovers();
     await workflows.openReview();
@@ -1639,8 +1792,13 @@ async function submitPrompt(
   try {
     const { sourceDraft: origin, ...payload } = submission;
     await api(
-      `/api/sessions/${session}/prompt${branch === undefined ? "" : `?conversation=${branch}`}`,
-      payload,
+      `/api/harness/${session}/submit${branch === undefined ? "" : `?conversation=${branch}`}`,
+      {
+        type: "input",
+        requestId: payload.requestId,
+        content: attached.length ? [{ type: "text", text }, ...attached] : text,
+        whenBusy: mode,
+      },
     );
     clearDraft(draftKey(session, branch), text);
     if (origin) clearDraft(origin.key, origin.text);
@@ -1671,12 +1829,12 @@ prompt.onkeydown = (event) => {
   }
 };
 stop.onclick = () => {
-  if (active) void api(endpoint("stop"), {}).catch(report);
+  if (active) void api(endpoint("abort"), {}).catch(report);
 };
 async function resumeSession(): Promise<void> {
   const id = active;
   if (!id) return;
-  await api(`/api/sessions/${id}/resume`, {});
+  await api(`/api/harness/${id}/resume`, {});
   if (active === id) {
     recovering = false;
     controls();
@@ -1690,9 +1848,7 @@ document.addEventListener("visibilitychange", () => {
     void refresh().catch(report);
   }
 });
-window.addEventListener("pagehide", () => {
-  source?.close();
-});
+window.addEventListener("pagehide", disconnectEvents);
 window.addEventListener("pageshow", (event) => {
   if (event.persisted && active) connectEvents();
 });
@@ -1782,8 +1938,15 @@ function fillModelDefault(): void {
 }
 // Forms are initialized only on entry. Streamed snapshots never overwrite edits.
 let settingsModels: Catalog["models"] = [];
+let settingsTargets: Catalog["targets"] = [];
+const sessionTarget = element("session-target", HTMLSelectElement);
+function settingsTarget() {
+  return settingsTargets.find((target) => targetKey(target) === sessionTarget.value);
+}
 let sessionBaseline: ReturnType<typeof sessionSettings> | undefined;
-let settingsBinding: { configure: string; rename: string; generation: number } | undefined;
+let settingsBinding:
+  | { configure: string; environment: string; rename: string; generation: number }
+  | undefined;
 let savingSettings: Promise<boolean> | undefined;
 function sessionSettings() {
   return {
@@ -1791,14 +1954,34 @@ function sessionSettings() {
     model: sessionModel.value ? settingsModels[Number(sessionModel.value)] : undefined,
     thinkingLevel: thinking.value,
     instructions: instructions.value,
-    baseDirectory: latest?.session.directoryRoot
+    target: settingsTarget(),
+    baseDirectory: settingsTarget()?.directoryRoot
       ? element("session-directory", HTMLInputElement).value
       : undefined,
   };
 }
 function prepareSessionSettings(): void {
   settingsModels = catalog.models;
-  settingsBinding = { configure: endpoint("configure"), rename: endpoint("rename"), generation };
+  settingsTargets = catalog.targets;
+  sessionTarget.replaceChildren();
+  chooseOption(sessionTarget, "", "No available environment selected", true);
+  for (const target of settingsTargets) {
+    chooseOption(sessionTarget, targetKey(target), target.label);
+    sessionTarget.options[sessionTarget.options.length - 1].disabled = !target.available;
+  }
+  const selected = latest?.session.binding;
+  const target = settingsTargets.find(
+    (target) => target.provider === selected?.provider && target.target === selected?.target,
+  );
+  if (!target && selected)
+    chooseOption(sessionTarget, targetKey(selected), selected.target + " (unavailable)", true);
+  sessionTarget.value = targetKey(target ?? selected);
+  settingsBinding = {
+    configure: endpoint("configure"),
+    environment: endpoint("environment"),
+    rename: endpoint("rename"),
+    generation,
+  };
   const agent = latest?.view.docs["pi.agent"] as AgentState | undefined;
   element("session-name", HTMLInputElement).value = latest?.session.name ?? "";
   sessionModel.replaceChildren();
@@ -1823,12 +2006,20 @@ function prepareSessionSettings(): void {
   const directory = element("session-directory", HTMLInputElement);
   element("session-directory-field", HTMLLabelElement).hidden = !root;
   directory.disabled = !root;
-  const cwd = agent?.cwd ?? latest?.session.binding.cwd;
+  const cwd = agent?.cwd ?? latest?.session.binding?.cwd;
   directory.value = root && cwd?.startsWith(root + "/") ? cwd.slice(root.length + 1) : "";
   if (root) directory.placeholder = `${root} (default)`;
   element("session-directories", HTMLDataListElement).replaceChildren();
   sessionBaseline = sessionSettings();
 }
+sessionTarget.onchange = () => {
+  const target = settingsTarget();
+  const directory = element("session-directory", HTMLInputElement);
+  directory.value = "";
+  directory.disabled = !target?.directoryRoot;
+  element("session-directory-field", HTMLLabelElement).hidden = !target?.directoryRoot;
+  if (target?.directoryRoot) directory.placeholder = `${target.directoryRoot} (default)`;
+};
 function prepareGlobalSettings(): void {
   settingsModels = catalog?.models ?? [];
   editingSettings = globalSettings;
@@ -1921,7 +2112,39 @@ function flushSettings(): Promise<boolean> {
         if (changed) {
           if (!configure.model || !configure.thinkingLevel)
             throw new Error("Select an available model.");
-          await api(binding.configure, configure);
+          const root = configure.target?.directoryRoot ?? latest?.session.directoryRoot;
+          const directory = configure.baseDirectory;
+          if (
+            directory !== undefined &&
+            (directory.split("/").includes("..") ||
+              Array.from(directory).some(
+                (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+              ))
+          )
+            throw new Error("Expected a workspace-relative directory without '..'.");
+          const switched = targetKey(configure.target) !== targetKey(oldConfigure.target);
+          const cwd =
+            root && directory !== undefined
+              ? [root, ...directory.split("/").filter(Boolean)].join("/")
+              : switched
+                ? configure.target?.cwd
+                : undefined;
+          if (switched && configure.target) {
+            await api(binding.environment, {
+              binding: {
+                provider: configure.target.provider,
+                target: configure.target.target,
+                cwd: cwd ?? configure.target.cwd,
+              },
+            });
+            if (generation !== binding.generation || settingsBinding !== binding) return false;
+          }
+          await api(binding.configure, {
+            model: { provider: configure.model.provider, modelId: configure.model.modelId },
+            thinkingLevel: configure.thinkingLevel,
+            instructions: configure.instructions,
+            ...(cwd === undefined ? {} : { cwd }),
+          });
           if (generation !== binding.generation || settingsBinding !== binding) return false;
           sessionBaseline = { ...next, name: oldName };
         }
@@ -2008,7 +2231,7 @@ for (const form of [preferences, globalPreferences]) {
 
 async function exportConversation(): Promise<void> {
   const filename = `pi-${active}-${conversation ?? "main"}.json`;
-  const records = await api<EntryRecord[]>(endpoint("export"));
+  const records = await pages<EntryRecord>(endpoint("entries"));
   const url = URL.createObjectURL(
     new Blob([JSON.stringify(records, null, 2)], { type: "application/json" }),
   );
@@ -2370,7 +2593,10 @@ element("fork-message", HTMLButtonElement).onclick = () => {
   )
     return;
   messageMenu.hidePopover();
-  void api<{ id: number }>(endpoint("fork"), { entry: selected.entry })
+  void api<{ id: number }>(endpoint("fork"), {
+    at: selected.entry,
+    options: { ownership: { kind: "ownerless" } },
+  })
     .then((result) => {
       if (active === selected.session && conversation === selected.branch)
         void selectSession(selected.session, result.id);
@@ -2692,7 +2918,8 @@ function renderContext(): void {
   contextView.append(usage, inventory);
 }
 
-function environmentText(binding: ExecutionBinding, cwd: string): string {
+function environmentText(binding: ExecutionBinding | undefined, cwd: string): string {
+  if (!binding) return "No execution environment";
   return `${binding.provider === "local" ? "local" : binding.target} · ${cwd}`;
 }
 
@@ -2720,9 +2947,9 @@ function renderModelSummary(
     }
     node.append(name, summaryDot(), effort);
   }
-  node.children[0].textContent = model.modelId;
+  node.children[0].textContent = model?.modelId ?? "No model";
   node.children[2].textContent = thinking;
-  node.title = `${model.provider} / ${model.modelId} · thinking ${thinking}`;
+  node.title = `${model?.provider ?? ""} / ${model?.modelId ?? ""} · thinking ${thinking}`;
 }
 
 function renderContextUsage(node: HTMLElement, context: ContextStatus): void {
@@ -2776,7 +3003,7 @@ function renderFooter(): void {
   costNode.textContent = `$${cost.toFixed(3)}`;
   costNode.dataset.value = String(cost);
   costNode.title = "Estimated cost (USD)";
-  set("footer-instance", environmentText(binding, agent?.cwd ?? binding.cwd));
+  set("footer-instance", environmentText(binding, agent?.cwd ?? binding?.cwd ?? ""));
 }
 for (const id of ["footer-stats", "footer-context"])
   element(id, HTMLButtonElement).onclick = () => {

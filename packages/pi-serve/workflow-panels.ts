@@ -1,4 +1,4 @@
-import type { Snapshot } from "../pi-runtime/index.ts";
+import type { RenderState } from "./client.ts";
 import type { AskView, AskResponse, ReviewState } from "../pi-runtime/workflows.ts";
 import { installCompletions } from "./completions.ts";
 
@@ -36,7 +36,7 @@ export function workflowPanels(host: Host) {
   const root = node("section");
   root.id = "workflows";
   root.setAttribute("aria-label", "Questions and review");
-  let snapshot: Snapshot | undefined;
+  let snapshot: RenderState | undefined;
   let connected = false;
   let identity = "";
   let reviewSignature = "";
@@ -162,7 +162,7 @@ export function workflowPanels(host: Host) {
   end.onclick = () => void endReview().catch((error: unknown) => host.report(error));
 
   function controls() {
-    const disabled = !connected || !snapshot || snapshot.session.needsResume;
+    const disabled = !connected || !snapshot;
     const live = snapshot?.view.docs["pi.live"];
     start.disabled = disabled || !!live?.run || !!snapshot?.workflows?.review || starting;
     end.hidden = !snapshot?.workflows?.review;
@@ -505,7 +505,7 @@ export function workflowPanels(host: Host) {
       dialog.close();
       controls();
     },
-    render(value: Snapshot) {
+    render(value: RenderState) {
       snapshot = value;
       const key = `${value.session.id}/${value.view.conversation.id}`;
       if (key !== identity) {

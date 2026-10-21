@@ -1,3 +1,5 @@
+import * as workflow from "../../pi-runtime/workflows.ts";
+import * as runtime from "../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -53,14 +55,21 @@ await test(
       if (shots) await page.screenshot({ path: join(shots, `${name}.png`), fullPage: true });
     }
     const session = await f.create();
-    await session.rename("Preferences service");
+    await runtime.rename(session, "Preferences service");
     await writeFile(join(f.workspace, "preferences.ts"), "export const preferences = {};\n");
     f.faux.setResponses([
       fauxAssistantMessage(fauxToolCall("ask_user", questions), { stopReason: "toolUse" }),
       fauxAssistantMessage("I will use SQLite and run the requested checks."),
     ]);
-    await session.prompt("Choose the preferences implementation before coding.", randomUUID());
-    await waitFor(async () => (await session.workflows()).asks.length === 1);
+    await session.root.submit(
+      {
+        type: "input",
+        content: "Choose the preferences implementation before coding.",
+        requestId: randomUUID(),
+      },
+      context,
+    );
+    await waitFor(async () => (await workflow.workflows(session)).asks.length === 1);
     const url = `${base}/?session=${session.id}`;
     await page.goto(url);
     await phone.goto(url);
@@ -72,7 +81,7 @@ await test(
       "Recommendations are not selections",
     );
     await page.locator(".ask-panel > summary").click();
-    assert.equal((await session.workflows()).asks[0].actionable, true);
+    assert.equal((await workflow.workflows(session)).asks[0].actionable, true);
     await page.locator(".ask-panel > summary").click();
     await page.locator('.ask-panel input[value="sqlite"]').focus();
     await page.keyboard.press("Space");
@@ -103,7 +112,7 @@ await test(
         document.querySelector<HTMLFieldSetElement>(".ask-panel form > fieldset")?.disabled ===
         false,
     );
-    assert.equal((await session.workflows()).asks[0].actionable, true);
+    assert.equal((await workflow.workflows(session)).asks[0].actionable, true);
     // Reconnect restores committed questions, not browser drafts.
     await page.locator('.ask-panel input[value="sqlite"]').check();
     await page.locator('.ask-panel input[value="unit"]').check();
@@ -116,7 +125,7 @@ await test(
     await shot(page, "ask-confirm-desktop");
     await page.getByRole("button", { name: "Submit answers", exact: true }).click();
     await session.root.waitForIdle(context);
-    const response = (await session.workflows()).asks[0].response!;
+    const response = (await workflow.workflows(session)).asks[0].response!;
     assert.deepEqual(
       response.answers.map((answer) => answer.selected),
       [["sqlite"], ["unit", "browser"]],
@@ -147,7 +156,10 @@ await test(
       fauxAssistantMessage(fauxToolCall("ask_user", unsafe), { stopReason: "toolUse" }),
       fauxAssistantMessage("Explanation supplied."),
     ]);
-    await session.prompt("Clarify the preview.", randomUUID());
+    await session.root.submit(
+      { type: "input", content: "Clarify the preview.", requestId: randomUUID() },
+      context,
+    );
     await phone.waitForSelector('.ask-panel[open] [data-question="unsafe"]');
     assert.equal(await phone.locator(".ask-preview img").count(), 0);
     await phone
@@ -160,20 +172,24 @@ await test(
     await shot(phone, "ask-elaboration-mobile");
     await phone.getByRole("button", { name: "Request elaboration", exact: true }).click();
     await session.root.waitForIdle(context);
-    assert.equal((await session.workflows()).asks.at(-1)!.response?.action, "elaborate");
-    assert.deepEqual((await session.workflows()).asks.at(-1)!.response?.answers[0].optionNotes, [
-      { value: "html", note: "Explain this option." },
-    ]);
+    assert.equal((await workflow.workflows(session)).asks.at(-1)!.response?.action, "elaborate");
+    assert.deepEqual(
+      (await workflow.workflows(session)).asks.at(-1)!.response?.answers[0].optionNotes,
+      [{ value: "html", note: "Explain this option." }],
+    );
 
     f.faux.setResponses([
       fauxAssistantMessage(fauxToolCall("ask_user", unsafe), { stopReason: "toolUse" }),
       fauxAssistantMessage("Cancelled; no answer inferred."),
     ]);
-    await session.prompt("Ask once more.", randomUUID());
+    await session.root.submit(
+      { type: "input", content: "Ask once more.", requestId: randomUUID() },
+      context,
+    );
     await phone.waitForSelector('.ask-panel[open] [data-question="unsafe"]');
     await phone.getByRole("button", { name: "Cancel question", exact: true }).click();
     await session.root.waitForIdle(context);
-    assert.deepEqual((await session.workflows()).asks.at(-1)!.response, {
+    assert.deepEqual((await workflow.workflows(session)).asks.at(-1)!.response, {
       action: "cancel",
       answers: [],
     });
@@ -182,6 +198,9 @@ await test(
     f.faux.setResponses([
       fauxAssistantMessage(fauxToolCall("submit_review", report), { stopReason: "toolUse" }),
     ]);
+    await page.waitForFunction(
+      () => !document.querySelector<HTMLButtonElement>("#review-start")?.disabled,
+    );
     await page.fill("#prompt", "/review");
     await page.click("#send");
     await page.waitForSelector("#review-setup[open]");
@@ -201,7 +220,7 @@ await test(
     await page.click("#review-submit");
     await page.waitForSelector(".review-finding");
     const reviewerId = Number(new URL(page.url()).searchParams.get("conversation"));
-    const reviewer = await session.conversation(reviewerId);
+    const reviewer = await runtime.getConversation(session, reviewerId);
     await reviewer.waitForIdle(context);
     await page.locator(".review-panel").scrollIntoViewIfNeeded();
     await shot(page, "review-desktop");
@@ -222,7 +241,7 @@ await test(
     );
     assert.equal(f.faux.state.callCount, beforeHandoff);
     assert.equal(
-      (await session.history()).filter((entry) => entry.kind === "app.review").length,
+      (await runtime.history(session)).filter((entry) => entry.kind === "app.review").length,
       1,
     );
     await page.locator('.review-finding input[value="updates"]').check();
@@ -232,7 +251,9 @@ await test(
       (url) => Number(url.searchParams.get("conversation")) === session.root.id,
     );
     await session.root.waitForIdle(context);
-    const fixes = (await session.history()).filter((entry) => entry.kind === "app.review-fix");
+    const fixes = (await runtime.history(session)).filter(
+      (entry) => entry.kind === "app.review-fix",
+    );
     assert.equal(fixes.length, 1);
     assert.deepEqual(fixes[0].data, {
       reviewer: reviewerId,

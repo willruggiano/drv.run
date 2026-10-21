@@ -1,8 +1,9 @@
+import { openCodingSessions } from "../../pi-runtime/coding.ts";
+import * as runtime from "../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { Sessions } from "../../pi-runtime/index.ts";
 import { GlobalSettingsStore } from "../server.ts";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +15,7 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { EntryDraft, ConversationView } from "@earendil-works/pi-durable";
+import type { EntryDraft } from "@earendil-works/pi-durable";
 import { chromium } from "playwright";
 import { fixture, model } from "../../pi-runtime/testing.ts";
 import { chromiumExecutable, serve, snapshot, post } from "./testing.ts";
@@ -30,21 +31,14 @@ await test("mobile browser Context follows the approved mock, isolates late even
   f.options.models.setProvider(faux.provider);
   let opens = 0;
   const store = new GlobalSettingsStore(SettingsManager.inMemory());
-  const sessions = await Sessions.open(
+  const sessions = await openCodingSessions(
     store.bind({
       ...f.options,
       directory: join(f.directory, "inspected"),
-      integrations: [
-        {
-          id: "local",
-          targets: async () => [{ ...f.binding, available: true, label: "Offline fixture" }],
-          validate: async () => {},
-          open: () => {
-            opens++;
-            throw new Error("No execution allowed");
-          },
-        },
-      ],
+      env: async () => {
+        opens++;
+        throw new Error("No execution allowed");
+      },
     }),
   );
   t.after(() => sessions.close());
@@ -161,11 +155,11 @@ await test("mobile browser Context follows the approved mock, isolates late even
   });
   const empty = await session.root.fork(last.id, { ownership: { kind: "ownerless" } }, context);
   await empty.reset(undefined, context);
-  const history = await session.history();
+  const history = await runtime.history(session);
   const assets = join(f.directory, "assets");
   await buildAssets(fileURLToPath(new URL("..", import.meta.url)), assets);
   const base = await serve(t, sessions, assets, "127.0.0.1", undefined, store);
-  const initial = await snapshot(`${base}/api/sessions/${session.id}/events`);
+  const initial = await snapshot(`${base}/api/harness/${session.id}/watch`);
   assert(initial.inspection.state === "available");
   const browser = await chromium.launch({
     executablePath: chromiumExecutable(),
@@ -249,7 +243,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
     node.scrollTop = 530;
   });
   await shot("context-mobile-inventory");
-  assert.deepEqual(await session.history(), history);
+  assert.deepEqual(await runtime.history(session), history);
   assert.equal(opens, 0);
   assert.equal(faux.state.callCount, 0);
 
@@ -329,17 +323,16 @@ await test("mobile browser Context follows the approved mock, isolates late even
 
   // A failed inspection clears the preceding inventory; recovery does not
   // require a new browser or a durable inspector document.
-  const fail = t.mock.method(session, "inspectContext", async (view: ConversationView) => ({
-    state: "unavailable" as const,
-    conversation: view.conversation.id,
-  }));
+  await page.route("**/inspection*", (route) =>
+    route.fulfill({ json: { state: "unavailable", conversation: empty.id } }),
+  );
   await empty.configure({ model }, context);
   await page.waitForFunction(
     () => document.querySelector("#context-view")?.textContent === "Context unavailable",
   );
   assert.equal(await pane.getAttribute("data-tokens"), null);
   await shot("context-mobile-unavailable");
-  fail.mock.restore();
+  await page.unroute("**/inspection*");
   await empty.commit(async (tx) => {
     for (let index = 0; index < 600; index++)
       await tx.appendEntry(empty.id, { kind: "pi.user", model: [user(10)] });

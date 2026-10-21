@@ -1,61 +1,32 @@
-import assert from "node:assert/strict";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join, posix, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isAbsolute, join, posix } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type {
-  AssistantMessage,
-  ImageContent,
-  Models,
-  ModelThinkingLevel,
-} from "@earendil-works/pi-ai";
+import type { AssistantMessage, Models, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import {
   DEFAULT_COMPACTION_POLICY,
   type HarnessSettings,
   type AgentState,
-  createRegistry,
   defineDoc,
-  defineExtension,
-  Harness,
-  LiveDoc,
-  InboxDoc,
-  type TaskId,
-  section,
+  type Harness,
+  type HarnessOptions,
+  type Storage,
+  MemoryStorage,
+  configure,
   type Conversation,
   type ConversationView,
   type ConversationId,
   type ConversationRecord,
   type Cursor,
   type EntryRecord,
-  type Extension,
   type ModelRef,
 } from "@earendil-works/pi-durable";
-import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
 
-import { createContextExtension, withContextValidation } from "./context.ts";
 import { describeContext, type ContextInspection } from "./inspection.ts";
 export type { ContextInspection } from "./inspection.ts";
-import {
-  AskExtension,
-  ReviewExtension,
-  ReportTool,
-  Workflows,
-  WorkflowError,
-  answerQuestion,
-  prepareReview,
-  reportText,
-  validate,
-  ReviewFinishSchema,
-  type WorkflowView,
-} from "./workflows.ts";
-
 // pi-coding-agent/core/defaults is not exported by Pi's public API.
 export const DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "medium";
 
@@ -76,114 +47,26 @@ export class SessionError extends Error {
   }
 }
 
-/** Persisted identity, never a connection or a fallback preference. */
-export type ExecutionBinding = {
-  provider: string;
-  target: string;
-  cwd: string;
-};
+export type ExecutionBinding = { provider: string; target: string; cwd: string };
 export type ExecutionTarget = ExecutionBinding & {
   label: string;
   available: boolean;
   directoryRoot?: string;
 };
-export type EnvironmentLease = {
-  env: ExecutionEnv;
-  /** Immutable cwd views sharing the lease's connection and lifetime. */
-  atDirectory?(cwd: string): ExecutionEnv;
-  close(): void | Promise<void>;
-};
-
-/** Application integration, not the coding-agent ExtensionAPI. Factories do no I/O. */
-export interface Integration {
-  readonly id: string;
-  /** Opt in to workspace-relative base directories. */
-  readonly directoryRoot?: string;
-  readonly extensions?: readonly Extension[];
-  targets(): Promise<ExecutionTarget[]>;
-  /** Check every execution, including already-open leases. Throw to fail closed. */
-  validate(binding: ExecutionBinding): Promise<void>;
-  /** Acquired lazily, once per session; close after the harness has stopped. */
-  open(binding: ExecutionBinding): EnvironmentLease | Promise<EnvironmentLease>;
-}
-export type IntegrationFactory = () => Integration | Promise<Integration>;
-
-export async function loadIntegrations(paths: readonly string[]): Promise<Integration[]> {
-  const integrations: Integration[] = [];
-  for (const path of paths) {
-    const module: { default?: unknown } = await import(pathToFileURL(resolve(path)).href);
-    assert(typeof module.default === "function", `Integration ${path} must export a factory.`);
-    const integration: Integration = await module.default();
-    assertIntegration(integration);
-    integrations.push(integration);
-  }
-  return integrations;
-}
-
-function assertIntegration(integration: Integration): void {
-  assert(
-    integration && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(integration.id),
-    "Invalid integration ID.",
-  );
-  for (const method of ["targets", "validate", "open"] as const)
-    assert(typeof integration[method] === "function", `Integration requires ${method}().`);
-}
-
 export function stateDirectory(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
   return env.XDG_STATE_HOME && isAbsolute(env.XDG_STATE_HOME)
     ? env.XDG_STATE_HOME
     : join(home, ".local", "state");
 }
 
-export function localIntegration(directory: string): Integration {
-  const cwd = resolve(directory);
-  return {
-    id: "local",
-    async targets() {
-      let available = false;
-      try {
-        available = (await stat(cwd)).isDirectory();
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-      }
-      return [
-        {
-          provider: "local",
-          target: cwd,
-          cwd,
-          label: `Local · ${cwd}`,
-          available,
-        },
-      ];
-    },
-    async validate(binding) {
-      if (
-        binding.provider !== "local" ||
-        !isAbsolute(binding.cwd) ||
-        binding.target !== binding.cwd
-      )
-        throw new SessionError("invalid", "Invalid local directory binding.");
-      try {
-        if (!(await stat(binding.cwd)).isDirectory()) throw new Error("Not a directory.");
-      } catch {
-        throw new SessionError("unavailable", `Local directory is unavailable: ${binding.cwd}`);
-      }
-    },
-    open(binding) {
-      const env = new NodeExecutionEnv({ cwd: binding.cwd });
-      return { env, close: () => env.cleanup(context) };
-    },
-  };
-}
-
 export type SessionInfo = {
   id: string;
   name: string;
-  binding: ExecutionBinding;
+  binding?: ExecutionBinding;
   cwd: string;
   directoryRoot?: string;
   created: number;
-  model: ModelRef;
+  model?: ModelRef;
   needsResume: boolean;
   thinkingLevel: ModelThinkingLevel;
 };
@@ -196,16 +79,6 @@ export type ContextStatus = {
 export type RepositoryStatus =
   | { state: "repository"; branch: string | null; revision: string | null }
   | { state: "none" | "unavailable" };
-export type Snapshot = {
-  session: SessionInfo;
-  view: ConversationView;
-  context: ContextStatus;
-  inspection: ContextInspection;
-  history?: readonly EntryRecord[];
-  /** Durable compaction task durations, keyed by the resulting entry. */
-  contextDurations?: Record<number, number>;
-  workflows?: WorkflowView;
-};
 export type Catalog = {
   targets: ExecutionTarget[];
   sessions: (SessionInfo & { context: ContextStatus })[];
@@ -221,7 +94,10 @@ export type Catalog = {
 export type SessionOptions = {
   directory: string;
   models: Models;
-  integrations: readonly Integration[];
+  open(storage: Storage): Promise<Harness>;
+  env?: HarnessOptions["env"];
+  targets?: () => Promise<ExecutionTarget[]>;
+  close?: () => Promise<void>;
   defaultModel?: ModelRef;
   thinkingLevel?: ModelThinkingLevel;
   modelThinkingLevels?: Record<string, ModelThinkingLevel>;
@@ -229,19 +105,36 @@ export type SessionOptions = {
   onReport?: (error: unknown) => void;
 };
 
-const Metadata = defineDoc<{
-  binding: ExecutionBinding | null;
-  created: number;
-  name?: string;
-}>({
+export const Metadata = defineDoc<{ created: number; name?: string }>({
   kind: "app.session",
   version: 1,
   scope: "conversation",
   history: "latest",
   fork: "current",
-  initial: () => ({ binding: null, created: 0 }),
+  initial: () => ({ created: 0 }),
 });
-
+export const Environment = defineDoc<{ provider?: string; target?: string }>({
+  kind: "app.environment",
+  version: 1,
+  scope: "conversation",
+  history: "rewindable",
+  fork: "asOf",
+  initial: () => ({}),
+});
+type InitialSession = {
+  binding?: ExecutionBinding;
+  model?: ModelRef;
+  thinkingLevel?: ModelThinkingLevel;
+  cwd?: string;
+};
+export type Session = {
+  readonly owner: Sessions;
+  readonly id: string;
+  readonly harness: Harness;
+  readonly root: Conversation;
+  readonly created: number;
+  readonly inspections: Map<number, { key: string; result: Promise<ContextInspection> }>;
+};
 function validBinding(binding: ExecutionBinding): boolean {
   return [binding.provider, binding.target, binding.cwd].every(
     (value) =>
@@ -267,7 +160,7 @@ export function resolveBaseDirectory(root: string, value: string): string {
   return posix.resolve(root, `./${value}`);
 }
 
-async function completePaths(
+async function listPaths(
   env: ExecutionEnv,
   query: string,
   directoriesOnly = false,
@@ -307,36 +200,18 @@ async function completePaths(
 
 export class Sessions {
   readonly options: SessionOptions;
-  readonly opened = new Map<string, Promise<ManagedSession>>();
-  private readonly integrations = new Map<string, Integration>();
+  readonly opened = new Map<string, Promise<Session>>();
   private closing = false;
   private closed?: Promise<void>;
 
   private constructor(options: SessionOptions) {
     this.options = options;
-    for (const integration of options.integrations) {
-      assertIntegration(integration);
-      assert(!this.integrations.has(integration.id), `Duplicate integration: ${integration.id}`);
-      this.integrations.set(integration.id, integration);
-    }
   }
 
   static async open(options: SessionOptions): Promise<Sessions> {
     const sessions = new Sessions(options);
     await mkdir(options.directory, { recursive: true, mode: 0o700 });
     return sessions;
-  }
-
-  integration(id: string): Integration | undefined {
-    return this.integrations.get(id);
-  }
-
-  async requireTarget(binding: ExecutionBinding): Promise<Integration> {
-    const integration = this.integrations.get(binding.provider);
-    if (!integration)
-      throw new SessionError("unavailable", `Integration is not installed: ${binding.provider}`);
-    await integration.validate(binding);
-    return integration;
   }
 
   async catalog(): Promise<Catalog> {
@@ -348,28 +223,16 @@ export class Sessions {
           const session = await this.get(name.slice(0, -7));
           const watch = await session.root.watch(context);
           try {
-            return { ...(await session.info()), context: session.contextStatus(watch.value) };
+            return {
+              ...(await sessionInfo(session)),
+              context: contextStatus(session, watch.value),
+            };
           } finally {
             await watch.stop();
           }
         }),
     );
-    const targets = (
-      await Promise.all(
-        [...this.integrations.values()].map(async (integration) => {
-          const targets = await integration.targets();
-          for (const target of targets)
-            assert(
-              target.provider === integration.id && validBinding(target),
-              "Invalid execution target.",
-            );
-          return targets.map((target) => ({
-            ...target,
-            ...(integration.directoryRoot ? { directoryRoot: integration.directoryRoot } : {}),
-          }));
-        }),
-      )
-    ).flat();
+    const targets = (await this.options.targets?.()) ?? [];
     return {
       targets,
       sessions: sessions.sort((a, b) => b.created - a.created),
@@ -384,26 +247,38 @@ export class Sessions {
     };
   }
 
-  baseDirectory(binding: ExecutionBinding, value: string): string {
-    const root = this.integrations.get(binding.provider)?.directoryRoot;
-    if (!root) throw new SessionError("invalid", "This target does not support base directories.");
-    return resolveBaseDirectory(root, value);
+  async baseDirectory(binding: ExecutionBinding, value: string): Promise<string> {
+    const target = (await this.options.targets?.())?.find(
+      (item) => item.provider === binding.provider && item.target === binding.target,
+    );
+    if (!target?.directoryRoot)
+      throw new SessionError("invalid", "This target does not support base directories.");
+    return resolveBaseDirectory(target.directoryRoot, value);
   }
 
-  /** Browse a target before a session exists, using the integration, never host I/O. */
   async completeDirectories(binding: ExecutionBinding, query: string): Promise<string[]> {
     if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
-    if (!validBinding(binding)) throw new SessionError("invalid", "Invalid execution binding.");
-    const root = this.baseDirectory(binding, "");
-    this.baseDirectory(binding, query);
-    const integration = await this.requireTarget(binding);
-    const lease = await integration.open(binding);
+    const root = await this.baseDirectory(binding, "");
+    resolveBaseDirectory(root, query);
+    const harness = await this.options.open(new MemoryStorage());
     try {
-      const env = root === lease.env.cwd ? lease.env : lease.atDirectory?.(root);
-      if (!env) throw new SessionError("unavailable", "Integration cannot change directories.");
-      return await completePaths(env, query, true);
+      const conversation = await harness.root(context, {
+        agent: { cwd: root },
+        init: async (tx, id) => {
+          Object.assign(await tx.doc(Environment, id), {
+            provider: binding.provider,
+            target: binding.target,
+          });
+        },
+      });
+      const env = await this.options.env?.(
+        { conversationId: conversation.id, cwd: root, read: harness },
+        context,
+      );
+      if (!env) throw new SessionError("unavailable", "No execution environment selected.");
+      return await listPaths(env, query, true);
     } finally {
-      await lease.close();
+      await harness.close(context);
     }
   }
 
@@ -419,7 +294,7 @@ export class Sessions {
     );
   }
 
-  async get(id: string): Promise<ManagedSession> {
+  async get(id: string): Promise<Session> {
     if (!uuid.test(id)) throw new SessionError("not_found", "Session not found.");
     if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
     const existing = this.opened.get(id);
@@ -434,17 +309,9 @@ export class Sessions {
     return this.opened.get(id) ?? this.open(id);
   }
 
-  private open(
-    id: string,
-    create?: {
-      binding: ExecutionBinding;
-      model: ModelRef;
-      thinkingLevel: ModelThinkingLevel;
-      cwd: string;
-    },
-  ): Promise<ManagedSession> {
+  private open(id: string, create?: InitialSession): Promise<Session> {
     if (this.closing) return Promise.reject(new SessionError("closing", "Runtime is stopping."));
-    const opened = ManagedSession.open(this, id, create);
+    const opened = openSession(this, id, create);
     this.opened.set(id, opened);
     void opened.catch(() => this.opened.delete(id));
     return opened;
@@ -452,27 +319,23 @@ export class Sessions {
 
   async create(
     id: string,
-    binding: ExecutionBinding,
-    model: ModelRef,
+    binding?: ExecutionBinding,
+    model?: ModelRef,
     thinkingLevel?: ModelThinkingLevel,
     baseDirectory?: string,
-  ): Promise<ManagedSession> {
-    if (!uuid.test(id) || !validBinding(binding))
+  ): Promise<Session> {
+    if (!uuid.test(id) || (binding !== undefined && !validBinding(binding)))
       throw new SessionError("invalid", "Invalid session or execution binding.");
     if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
     // Snapshot caller-owned values before yielding.
-    binding = { ...binding };
-    model = { ...model };
+    binding = binding && { ...binding };
+    model = model && { ...model };
     const cwd =
-      baseDirectory === undefined ? binding.cwd : this.baseDirectory(binding, baseDirectory);
-    await this.requireTarget(binding);
-    const available = await this.options.models.getAvailable();
-    if (!available.some((item) => item.provider === model.provider && item.id === model.modelId))
-      throw new SessionError(
-        "invalid",
-        "Select an available model. Configure credentials with pi /login.",
-      );
-    let found: ManagedSession | undefined;
+      binding &&
+      (baseDirectory === undefined
+        ? binding.cwd
+        : await this.baseDirectory(binding, baseDirectory));
+    let found: Session | undefined;
     try {
       found = await this.get(id);
     } catch (error) {
@@ -484,15 +347,13 @@ export class Sessions {
         this.open(id, {
           binding,
           model,
-          thinkingLevel: this.resolveThinking(model, thinkingLevel),
+          thinkingLevel: model ? this.resolveThinking(model, thinkingLevel) : thinkingLevel,
           cwd,
         })));
-    const info = await session.info();
+    const info = await sessionInfo(session);
     if (
-      !sameBinding(info.binding, binding) ||
-      info.cwd !== cwd ||
-      info.model.provider !== model.provider ||
-      info.model.modelId !== model.modelId
+      (binding && (!info.binding || !sameBinding(info.binding, binding) || info.cwd !== cwd)) ||
+      (model && (info.model?.provider !== model.provider || info.model?.modelId !== model.modelId))
     )
       throw new SessionError("conflict", "Session ID already belongs to a different session.");
     return session;
@@ -502,580 +363,283 @@ export class Sessions {
     this.closing = true;
     return (this.closed ??= (async () => {
       const results = await Promise.allSettled(
-        [...this.opened.values()].map(async (session) => (await session).close()),
+        [...this.opened.values()].map(async (session) => (await session).harness.close(context)),
       );
+      await this.options.close?.();
       const failed = results.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") throw failed.reason;
     })());
   }
 }
 
-export class ManagedSession {
-  needsResume = false;
-  private lease?: Promise<EnvironmentLease>;
-  private closed?: Promise<void>;
-  readonly owner: Sessions;
-  readonly id: string;
-  readonly harness: Harness;
-  readonly root: Conversation;
-  readonly binding: Readonly<ExecutionBinding>;
-  readonly created: number;
-  private readonly sandbox: CodemodeSandbox;
-  private readonly inspections = new Map<
-    number,
-    { key: string; result: Promise<ContextInspection> }
-  >();
-
-  private constructor(
-    owner: Sessions,
-    id: string,
-    harness: Harness,
-    root: Conversation,
-    binding: ExecutionBinding,
-    created: number,
-    sandbox: CodemodeSandbox,
-  ) {
-    this.owner = owner;
-    this.id = id;
-    this.harness = harness;
-    this.root = root;
-    this.binding = Object.freeze({ ...binding });
-    this.created = created;
-    this.sandbox = sandbox;
-  }
-
-  static async open(
-    owner: Sessions,
-    id: string,
-    create?: {
-      binding: ExecutionBinding;
-      model: ModelRef;
-      thinkingLevel: ModelThinkingLevel;
-      cwd: string;
-    },
-  ): Promise<ManagedSession> {
-    const registry = createRegistry();
-    registry.install(CodingTools);
-    // JavaScript runs in a worker-isolated QuickJS VM. Nested file/process
-    // calls still use this session's bound execution environment.
-    const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
-    registry.install(createCodemodeExtension({ sandbox }));
-    registry.install(
-      defineExtension({
-        name: "coding",
-        sections: [
-          section(
-            "preamble",
-            () =>
-              "You are Pi, a coding agent. Follow the supplied context files in order: system, user, then repository documentation; more-specific guidance takes precedence on conflicts. Use edit/write for file mutations. CONTRIBUTING.md is supplied before mutations when present. Never claim an operation succeeded without checking its result.",
-            { tag: false },
-          ),
-          section("cwd", (input) => input.env?.cwd),
-        ],
-      }),
-    );
-    registry.install(
-      createContextExtension(async (id, context) => {
-        const conversation = await harness.conversation(id, context);
-        assert(conversation, "Context conversation must exist.");
-        return conversation;
-      }),
-    );
-    registry.install(AskExtension);
-    const defaults = [...(owner.options.settings?.extensions ?? registry.snapshot().installed())];
-    if (!defaults.includes(AskExtension)) defaults.push(AskExtension);
-    registry.install(ReviewExtension);
-    let managed: ManagedSession | undefined;
-    const harness = await Harness.open(
-      await openNodeSqliteStorage(join(owner.options.directory, `${id}.sqlite`)),
-      {
-        models: withContextValidation(owner.options.models),
-        get settings() {
-          return { ...owner.options.settings, extensions: defaults };
-        },
-        registry,
-        env: async ({ cwd }) => {
-          assert(managed, "Session initialization must finish before tools run.");
-          return managed.environment(cwd);
-        },
-        onReport: owner.options.onReport,
-      },
+async function openSession(owner: Sessions, id: string, create?: InitialSession): Promise<Session> {
+  const storage = await openNodeSqliteStorage(join(owner.options.directory, `${id}.sqlite`));
+  const harness = await owner.options.open(storage);
+  try {
+    const root = await harness.root(
       context,
+      create
+        ? {
+            agent: { model: create.model, thinkingLevel: create.thinkingLevel, cwd: create.cwd },
+            init: async (tx, conversationId) => {
+              (await tx.doc(Metadata, conversationId)).created = Date.now();
+              if (create.binding)
+                Object.assign(await tx.doc(Environment, conversationId), {
+                  provider: create.binding.provider,
+                  target: create.binding.target,
+                });
+            },
+          }
+        : undefined,
     );
-    try {
-      const root = await harness.root(
-        context,
-        create
-          ? {
-              agent: {
-                model: create.model,
-                cwd: create.cwd,
-                thinkingLevel: create.thinkingLevel,
-              },
-              init: async (tx, conversationId) => {
-                const metadata = await tx.doc(Metadata, conversationId);
-                metadata.binding = create.binding;
-                metadata.created = Date.now();
-              },
-            }
-          : undefined,
-      );
-      const metadata = await harness.snapshot(Metadata, root.id, context);
-      assert(
-        metadata?.binding && validBinding(metadata.binding),
-        "Session has no execution binding.",
-      );
-      // Install only this session's integration, never another provider's prompt or tools.
-      for (const extension of owner.integration(metadata.binding.provider)?.extensions ?? []) {
-        registry.install(extension);
-        if (!defaults.some((item) => item.name === extension.name)) defaults.push(extension);
-      }
-      managed = new ManagedSession(
-        owner,
-        id,
-        harness,
-        root,
-        metadata.binding,
-        metadata.created,
-        sandbox,
-      );
-      const inspection = await harness.inspect(context);
-      managed.needsResume = inspection.tasks.length > 0 || inspection.submissions.length > 0;
-      return managed;
-    } catch (error) {
-      try {
-        await harness.close(context);
-      } finally {
-        await sandbox.close();
-      }
-      throw error;
-    }
+    const metadata = await harness.snapshot(Metadata, root.id, context);
+    return { owner, id, harness, root, created: metadata?.created ?? 0, inspections: new Map() };
+  } catch (error) {
+    await harness.close(context);
+    throw error;
   }
+}
+export async function environment(
+  session: Session,
+  conversation = session.root,
+): Promise<ExecutionEnv> {
+  const agent = await conversation.agent(context);
+  const env = await session.owner.options.env?.(
+    { conversationId: conversation.id, cwd: agent.cwd, read: session.harness },
+    context,
+  );
+  if (!env) throw new SessionError("unavailable", "No execution environment selected.");
+  return env;
+}
+export async function selectEnvironment(
+  session: Session,
+  binding: ExecutionBinding,
+  conversation = session.root,
+): Promise<void> {
+  if (!validBinding(binding)) throw new SessionError("invalid", "Invalid execution destination.");
+  await conversation.commit(async (tx) => {
+    Object.assign(await tx.doc(Environment, conversation.id), {
+      provider: binding.provider,
+      target: binding.target,
+    });
+    await configure(tx, conversation.id, { cwd: binding.cwd });
+  }, context);
+}
+/** Complete relative paths in the bound environment, never the server's filesystem. */
+export async function completePaths(
+  session: Session,
+  query: string,
+  conversation = session.root,
+): Promise<string[]> {
+  if (
+    query.length > 4096 ||
+    hasControlCharacters(query) ||
+    query.startsWith("/") ||
+    query.split("/").includes("..")
+  )
+    throw new SessionError("invalid", "Expected a workspace-relative path.");
+  const env = await environment(session, conversation);
+  return listPaths(env, query);
+}
 
-  private async environment(cwd = this.binding.cwd): Promise<ExecutionEnv> {
-    const integration = await this.owner.requireTarget(this.binding);
-    if (
-      cwd !== this.binding.cwd &&
-      (!integration.directoryRoot ||
-        cwd !==
-          resolveBaseDirectory(
-            integration.directoryRoot,
-            posix.relative(integration.directoryRoot, cwd),
-          ))
-    )
-      throw new SessionError("invalid", "Invalid execution directory.");
-    // The viewer and sibling tools share a lease; validation still runs on every use.
-    this.lease ??= Promise.resolve().then(() => integration.open(this.binding));
-    let lease: EnvironmentLease;
-    try {
-      lease = await this.lease;
-    } catch (error) {
-      this.lease = undefined;
-      throw error;
-    }
-    if (cwd === lease.env.cwd) return lease.env;
-    if (!lease.atDirectory)
-      throw new SessionError("unavailable", "Integration cannot change directories.");
-    return lease.atDirectory(cwd);
-  }
-
-  /** Complete relative paths in the bound environment, never the server's filesystem. */
-  async completePaths(query: string, conversation = this.root): Promise<string[]> {
-    if (this.closed) throw new SessionError("closing", "Session is closed.");
-    if (
-      query.length > 4096 ||
-      hasControlCharacters(query) ||
-      query.startsWith("/") ||
-      query.split("/").includes("..")
-    )
-      throw new SessionError("invalid", "Expected a workspace-relative path.");
-    const env = await this.environment((await conversation.agent(context)).cwd);
-    return completePaths(env, query);
-  }
-
-  async repository(conversation = this.root): Promise<RepositoryStatus> {
-    if (this.closed) return { state: "unavailable" };
-    try {
-      const env = await this.environment((await conversation.agent(context)).cwd);
-      let output = "";
-      const result = await env.exec(
-        `if ! command -v git >/dev/null 2>&1; then
-  printf 'unavailable\n'
+export async function repository(
+  session: Session,
+  conversation = session.root,
+): Promise<RepositoryStatus> {
+  try {
+    const env = await environment(session, conversation);
+    let output = "";
+    const result = await env.exec(
+      `if ! command -v git >/dev/null 2>&1; then
+printf 'unavailable\n'
 elif ! git rev-parse --git-dir >/dev/null 2>&1; then
-  printf 'none\n'
+printf 'none\n'
 else
-  printf 'repository\n'
-  git symbolic-ref --quiet --short HEAD || printf '\n'
-  git rev-parse --verify --short HEAD 2>/dev/null || true
+printf 'repository\n'
+git symbolic-ref --quiet --short HEAD || printf '\n'
+git rev-parse --verify --short HEAD 2>/dev/null || true
 fi`,
-        {
-          cwd: env.cwd,
-          timeout: 3,
-          env: { GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
-          onOutput(text, _context, info) {
-            if (info.stream === "stdout") output = (output + text).slice(0, 8192);
-          },
+      {
+        cwd: env.cwd,
+        timeout: 3,
+        env: { GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+        onOutput(text, _context, info) {
+          if (info.stream === "stdout") output = (output + text).slice(0, 8192);
         },
-        context,
-      );
-      if (!result.ok || result.value.exitCode !== 0) return { state: "unavailable" };
-      const [state, branch, revision] = output.split("\n");
-      if (state === "none") return { state };
-      if (state !== "repository") return { state: "unavailable" };
-      return { state, branch: branch || null, revision: revision || null };
+      },
+      context,
+    );
+    if (!result.ok || result.value.exitCode !== 0) return { state: "unavailable" };
+    const [state, branch, revision] = output.split("\n");
+    if (state === "none") return { state };
+    if (state !== "repository") return { state: "unavailable" };
+    return { state, branch: branch || null, revision: revision || null };
+  } catch {
+    // A disconnected guest must not break the transcript or fall back to host Git.
+    return { state: "unavailable" };
+  }
+}
+
+/** Capture at the supplied watch boundary, including its agent configuration.
+ * Live-document updates reuse this result without scanning the transcript. */
+export function inspectContext(
+  session: Session,
+  view: ConversationView,
+): Promise<ContextInspection> {
+  const id = view.conversation.id;
+  const model = (view.docs["pi.agent"] as AgentState | undefined)?.model ?? null;
+  const capacity = model
+    ? (session.owner.options.models.getModel(model.provider, model.modelId)?.contextWindow ?? null)
+    : null;
+  const policy = { ...DEFAULT_COMPACTION_POLICY, ...session.owner.options.settings?.compaction };
+  const first = view.entries[0]?.id;
+  const last = view.entries.at(-1)?.id;
+  const tail = first !== undefined && (last === undefined || first > last) ? first : last;
+  const key = JSON.stringify([tail, model, capacity, policy]);
+  const cached = session.inspections.get(id);
+  if (cached?.key === key) return cached.result;
+  const result = (async (): Promise<ContextInspection> => {
+    try {
+      const projection =
+        tail === undefined
+          ? { head: undefined, entries: [], contributions: [], messages: [] }
+          : await (await getConversation(session, id)).context(context, { at: tail });
+      return describeContext(projection, id, model, capacity, policy);
     } catch {
-      // A disconnected guest must not break the transcript or fall back to host Git.
-      return { state: "unavailable" };
+      // Do not cache failures or show the preceding conversation as current.
+      if (session.inspections.get(id)?.key === key) session.inspections.delete(id);
+      return { state: "unavailable", conversation: id };
     }
-  }
+  })();
+  session.inspections.set(id, { key, result });
+  return result;
+}
 
-  /** Capture at the supplied watch boundary, including its agent configuration.
-   * Live-document updates reuse this result without scanning the transcript. */
-  inspectContext(view: ConversationView): Promise<ContextInspection> {
-    const id = view.conversation.id;
-    const model = (view.docs["pi.agent"] as AgentState | undefined)?.model ?? null;
-    const capacity = model
-      ? (this.owner.options.models.getModel(model.provider, model.modelId)?.contextWindow ?? null)
-      : null;
-    const policy = { ...DEFAULT_COMPACTION_POLICY, ...this.owner.options.settings?.compaction };
-    const first = view.entries[0]?.id;
-    const last = view.entries.at(-1)?.id;
-    const tail = first !== undefined && (last === undefined || first > last) ? first : last;
-    const key = JSON.stringify([tail, model, capacity, policy]);
-    const cached = this.inspections.get(id);
-    if (cached?.key === key) return cached.result;
-    const result = (async (): Promise<ContextInspection> => {
-      try {
-        const projection =
-          tail === undefined
-            ? { head: undefined, entries: [], contributions: [], messages: [] }
-            : await (await this.conversation(id)).context(context, { at: tail });
-        return describeContext(projection, id, model, capacity, policy);
-      } catch {
-        // Do not cache failures or show the preceding conversation as current.
-        if (this.inspections.get(id)?.key === key) this.inspections.delete(id);
-        return { state: "unavailable", conversation: id };
-      }
-    })();
-    this.inspections.set(id, { key, result });
-    return result;
+export function contextStatus(session: Session, view: ConversationView): ContextStatus {
+  const agent = view.docs["pi.agent"] as AgentState | undefined;
+  const model =
+    agent?.model &&
+    session.owner.options.models.getModel(agent.model.provider, agent.model.modelId);
+  const head = view.entries.reduce(
+    (head, entry) => (entry.head === undefined ? head : Math.max(head, entry.id)),
+    -1,
+  );
+  let last: { message: AssistantMessage; entry: number } | undefined;
+  for (const entry of view.entries) {
+    if (entry.id <= head || (last && entry.id <= last.entry)) continue;
+    const message = entry.model
+      ?.slice()
+      .reverse()
+      .find(
+        (message): message is AssistantMessage =>
+          message.role === "assistant" &&
+          message.stopReason !== "error" &&
+          message.stopReason !== "aborted",
+      );
+    if (message) last = { message, entry: entry.id };
   }
+  let lastResponse: ContextStatus["lastResponse"] = null;
+  if (
+    last &&
+    last.message.provider === agent?.model?.provider &&
+    last.message.model === agent?.model?.modelId
+  ) {
+    const usage = last.message.usage;
+    const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+    const tokens = usage.totalTokens || prompt + usage.output;
+    if (tokens > 0)
+      lastResponse = {
+        tokens,
+        cacheHit: prompt > 0 ? (usage.cacheRead / prompt) * 100 : null,
+        entry: last.entry,
+      };
+  }
+  return {
+    window: model?.contextWindow ?? null,
+    autoCompact:
+      session.owner.options.settings?.compaction?.enabled ?? DEFAULT_COMPACTION_POLICY.enabled,
+    lastResponse,
+  };
+}
 
-  contextStatus(view: ConversationView): ContextStatus {
-    const agent = view.docs["pi.agent"] as AgentState | undefined;
-    const model =
-      agent?.model && this.owner.options.models.getModel(agent.model.provider, agent.model.modelId);
-    const head = view.entries.reduce(
-      (head, entry) => (entry.head === undefined ? head : Math.max(head, entry.id)),
-      -1,
+export async function sessionInfo(
+  session: Session,
+  conversation = session.root,
+): Promise<SessionInfo> {
+  const agent = await conversation.agent(context);
+  const metadata = await session.harness.snapshot(Metadata, session.root.id, context);
+  const selected = await session.harness.snapshot(Environment, conversation.id, context);
+  const target = (await session.owner.options.targets?.())?.find(
+    (item) => item.provider === selected?.provider && item.target === selected.target,
+  );
+  const inspection = await session.harness.inspect(context);
+  return {
+    id: session.id,
+    name: metadata?.name ?? "",
+    binding:
+      selected?.provider && selected.target
+        ? {
+            provider: selected.provider,
+            target: selected.target,
+            cwd: target?.cwd ?? agent.cwd ?? "",
+          }
+        : undefined,
+    cwd: agent.cwd ?? "",
+    directoryRoot: target?.directoryRoot,
+    created: session.created,
+    model: agent.model,
+    thinkingLevel: agent.thinkingLevel,
+    needsResume:
+      inspection.scheduling === "paused" &&
+      (inspection.tasks.length > 0 || inspection.submissions.length > 0),
+  };
+}
+
+export async function rename(session: Session, name: string): Promise<void> {
+  if (typeof name !== "string" || name.trim().length > 120 || hasControlCharacters(name))
+    throw new SessionError(
+      "invalid",
+      "Session name must be at most 120 characters without control characters.",
     );
-    let last: { message: AssistantMessage; entry: number } | undefined;
-    for (const entry of view.entries) {
-      if (entry.id <= head || (last && entry.id <= last.entry)) continue;
-      const message = entry.model
-        ?.slice()
-        .reverse()
-        .find(
-          (message): message is AssistantMessage =>
-            message.role === "assistant" &&
-            message.stopReason !== "error" &&
-            message.stopReason !== "aborted",
-        );
-      if (message) last = { message, entry: entry.id };
-    }
-    let lastResponse: ContextStatus["lastResponse"] = null;
-    if (
-      last &&
-      last.message.provider === agent?.model?.provider &&
-      last.message.model === agent?.model?.modelId
-    ) {
-      const usage = last.message.usage;
-      const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
-      const tokens = usage.totalTokens || prompt + usage.output;
-      if (tokens > 0)
-        lastResponse = {
-          tokens,
-          cacheHit: prompt > 0 ? (usage.cacheRead / prompt) * 100 : null,
-          entry: last.entry,
-        };
-    }
-    return {
-      window: model?.contextWindow ?? null,
-      autoCompact:
-        this.owner.options.settings?.compaction?.enabled ?? DEFAULT_COMPACTION_POLICY.enabled,
-      lastResponse,
-    };
-  }
+  await session.root.commit(async (tx) => {
+    const metadata = await tx.doc(Metadata, session.root.id);
+    metadata.name = name.trim();
+  }, context);
+}
 
-  async info(): Promise<SessionInfo> {
-    const agent = await this.root.agent(context);
-    const metadata = await this.harness.snapshot(Metadata, this.root.id, context);
-    assert(agent.model, "Session has no model.");
-    return {
-      id: this.id,
-      name: metadata?.name ?? "",
-      binding: { ...this.binding },
-      cwd: agent.cwd ?? this.binding.cwd,
-      directoryRoot: this.owner.integration(this.binding.provider)?.directoryRoot,
-      created: this.created,
-      model: agent.model,
-      needsResume: this.needsResume,
-      thinkingLevel: agent.thinkingLevel,
-    };
-  }
-
-  async rename(name: string): Promise<void> {
-    if (
-      typeof name !== "string" ||
-      name.trim().length > 120 ||
-      Array.from(name).some((character) => {
-        const code = character.charCodeAt(0);
-        return code < 32 || code === 127;
-      })
-    )
-      throw new SessionError(
-        "invalid",
-        "Session name must be at most 120 characters without control characters.",
-      );
-    await this.root.commit(async (tx) => {
-      const metadata = await tx.doc(Metadata, this.root.id);
-      metadata.name = name.trim();
-    }, context);
-  }
-
-  async conversations(): Promise<ConversationRecord[]> {
-    const records: ConversationRecord[] = [];
-    let cursor: Cursor | undefined;
-    do {
-      const page = await this.harness.commit(
-        (tx) => tx.scanConversations({}, 256, cursor),
-        context,
-      );
-      records.push(...page.items);
-      cursor = page.next;
-    } while (cursor !== undefined);
-    return records;
-  }
-
-  async conversation(id?: number): Promise<Conversation> {
-    if (id === undefined) return this.root;
-    if (!Number.isSafeInteger(id) || id < 0)
-      throw new SessionError("invalid", "Invalid conversation ID.");
-    const conversation = await this.harness.conversation(id as ConversationId, context);
-    if (!conversation) throw new SessionError("not_found", "Conversation not found.");
-    return conversation;
-  }
-
-  async history(conversation = this.root): Promise<EntryRecord[]> {
-    const entries: EntryRecord[] = [];
-    let cursor: Cursor | undefined;
-    do {
-      const page = await conversation.entries({ order: "ascending" }, 256, cursor, context);
-      entries.push(...page.items);
-      cursor = page.next;
-    } while (cursor !== undefined);
-    return entries;
-  }
-
-  async watchWorkflows(conversation = this.root) {
-    await conversation.commit(async (tx) => {
-      await tx.doc(Workflows, conversation.id);
-    }, context);
-    const watch = await this.harness.watchDoc(Workflows, conversation.id, context);
-    assert(watch);
-    return watch;
-  }
-
-  async workflows(conversation = this.root): Promise<WorkflowView> {
-    const state = await this.harness.snapshot(Workflows, conversation.id, context);
-    return {
-      asks: await Promise.all(
-        Object.entries(state?.asks ?? {}).map(async ([id, ask]) => {
-          const task = ask.response
-            ? undefined
-            : await this.harness.getTask(Number(id) as TaskId, context);
-          return {
-            ...ask,
-            id: Number(id),
-            actionable:
-              !ask.response &&
-              !!task &&
-              !task.abortRequested &&
-              ["pending", "running", "waiting"].includes(task.state.status),
-          };
-        }),
-      ),
-      ...(state?.review ? { review: state.review } : {}),
-    };
-  }
-
-  private async requireWorkflowExecution(): Promise<void> {
-    if (this.closed) throw new SessionError("closing", "Session is closed.");
-    if (this.needsResume) throw new SessionError("conflict", "Resume interrupted work first.");
-    await this.owner.requireTarget(this.binding);
-  }
-
-  private async requireIdle(conversation: Conversation): Promise<void> {
-    await conversation.commit(async (tx) => {
-      const live = await tx.doc(LiveDoc, conversation.id);
-      const inbox = await tx.doc(InboxDoc, conversation.id);
-      if (live.run || inbox.items.length)
-        throw new SessionError("conflict", "Conversation is busy.");
-    }, context);
-  }
-
-  async answer(taskId: number, response: unknown, conversation = this.root): Promise<void> {
-    await this.requireWorkflowExecution();
-    await conversation.commit(
-      (tx) => answerQuestion(tx, conversation.id, taskId, response),
+export async function conversations(session: Session): Promise<ConversationRecord[]> {
+  const records: ConversationRecord[] = [];
+  let cursor: Cursor | undefined;
+  do {
+    const page = await session.harness.commit(
+      (tx) => tx.scanConversations({}, 256, cursor),
       context,
     );
-  }
+    records.push(...page.items);
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return records;
+}
 
-  async startReview(input: unknown, conversation = this.root): Promise<Conversation> {
-    await this.requireWorkflowExecution();
-    await this.requireIdle(conversation);
-    if ((await this.harness.snapshot(Workflows, conversation.id, context))?.review)
-      throw new WorkflowError("conflict", "Nested reviews are not supported.");
-    const agent = await conversation.agent(context);
-    const prepared = await prepareReview(await this.environment(agent.cwd), input);
-    const history = await conversation.entries({}, 1, undefined, context);
-    const reviewer = await this.harness.createConversation(
-      {
-        ownership: { kind: "ownerless" },
-        agent: {
-          model: agent.model,
-          thinkingLevel: agent.thinkingLevel,
-          cwd: agent.cwd,
-          extensions: [...agent.extensions, ReviewExtension],
-          tools: [...new Set([...agent.tools, ...agent.callable, ...agent.deferred, ReportTool])],
-          modelTools: [...agent.tools, ReportTool],
-          instructions: agent.instructions,
-        },
-        init: async (tx, id) => {
-          // Recheck admission atomically with creation, after asynchronous target resolution.
-          const live = await tx.doc(LiveDoc, conversation.id);
-          const inbox = await tx.doc(InboxDoc, conversation.id);
-          if (live.run || inbox.items.length)
-            throw new SessionError("conflict", "Conversation is busy.");
-          const state = await tx.doc(Workflows, id);
-          state.review = {
-            ...prepared,
-            origin: conversation.id,
-            ...(history.items.length ? { originEntry: history.items[0].id } : {}),
-          };
-        },
-      },
-      context,
-    );
-    await reviewer.submit({ type: "input", content: prepared.scope, whenBusy: "reject" }, context);
-    return reviewer;
-  }
+export async function getConversation(session: Session, id?: number): Promise<Conversation> {
+  if (id === undefined) return session.root;
+  if (!Number.isSafeInteger(id) || id < 0)
+    throw new SessionError("invalid", "Invalid conversation ID.");
+  const conversation = await session.harness.conversation(id as ConversationId, context);
+  if (!conversation) throw new SessionError("not_found", "Conversation not found.");
+  return conversation;
+}
 
-  async finishReview(input: unknown, conversation = this.root): Promise<Conversation> {
-    const command = validate(ReviewFinishSchema, input);
-    const review = (await this.harness.snapshot(Workflows, conversation.id, context))?.review;
-    if (!review) throw new WorkflowError("conflict", "Not a review conversation.");
-    const origin = await this.conversation(review.origin);
-    if (command.action === "return") return origin;
-    await this.requireWorkflowExecution();
-    await this.requireIdle(origin);
-    if (!review.report) throw new WorkflowError("conflict", "No review report has been submitted.");
-    const selected = review.report.findings.filter((item) => command.findings.includes(item.id));
-    if (
-      selected.length !== command.findings.length ||
-      (command.action === "fix" && !selected.length)
-    )
-      throw new WorkflowError("invalid", "Select existing findings to fix.");
-    const report =
-      command.action === "fix" ? { ...review.report, findings: selected } : review.report;
-    const text = `Workspace: ${review.cwd}\nTarget: ${JSON.stringify(review.target)}\nResolved revisions: ${JSON.stringify(review.resolved)}\n\n${reportText(report)}`;
-    if (command.action === "fix" && (await origin.agent(context)).cwd !== review.cwd)
-      throw new WorkflowError(
-        "conflict",
-        "Origin directory changed. Restore it or start a new review before fixing.",
-      );
-    if (command.action === "handoff") {
-      await origin.submit(
-        {
-          type: "write",
-          requestId: command.requestId,
-          entry: {
-            kind: "app.review",
-            data: { reviewer: conversation.id, report },
-            model: [
-              {
-                role: "user",
-                content: `Review handoff (informational; no fix run requested):\n\n${text}`,
-                timestamp: Date.now(),
-              },
-            ],
-          },
-        },
-        context,
-      );
-    } else {
-      await origin.submit(
-        {
-          type: "input",
-          requestId: command.requestId,
-          whenBusy: "reject",
-          entry: { kind: "app.review-fix", data: { reviewer: conversation.id, report } },
-          content: `Implement and verify only the selected findings below. Human callouts are informational, not fix tasks. Do not start an automatic re-review loop. Review cwd: ${review.cwd}\n\n${text}`,
-        },
-        context,
-      );
-    }
-    return origin;
-  }
-
-  async prompt(
-    text: string,
-    requestId: string,
-    whenBusy: "reject" | "steer" | "followUp" = "reject",
-    conversation = this.root,
-    images: readonly ImageContent[] = [],
-  ): Promise<void> {
-    if (!uuid.test(requestId) || !text.trim())
-      throw new SessionError("invalid", "Invalid prompt or request ID.");
-    if (this.needsResume)
-      throw new SessionError("conflict", "Resume interrupted work before sending a new prompt.");
-    await this.owner.requireTarget(this.binding);
-    await conversation.submit(
-      {
-        type: "input",
-        content: images.length ? [{ type: "text", text }, ...images] : text,
-        requestId,
-        whenBusy,
-      },
-      context,
-    );
-  }
-
-  async resume(): Promise<void> {
-    await this.owner.requireTarget(this.binding);
-    this.harness.resume();
-    this.needsResume = false;
-  }
-
-  async stop(conversation = this.root): Promise<void> {
-    // abort() starts Durable's scheduler. Never execute pending work via this path.
-    if (this.needsResume)
-      throw new SessionError("conflict", "Resume interrupted work before stopping it.");
-    await conversation.abort(context);
-  }
-
-  close(): Promise<void> {
-    return (this.closed ??= (async () => {
-      try {
-        await this.harness.close(context);
-      } finally {
-        try {
-          await this.sandbox.close();
-        } finally {
-          await (await this.lease)?.close();
-        }
-      }
-    })());
-  }
+export async function history(
+  session: Session,
+  conversation = session.root,
+): Promise<EntryRecord[]> {
+  const entries: EntryRecord[] = [];
+  let cursor: Cursor | undefined;
+  do {
+    const page = await conversation.entries({ order: "ascending" }, 256, cursor, context);
+    entries.push(...page.items);
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return entries;
 }

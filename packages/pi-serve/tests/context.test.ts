@@ -1,3 +1,4 @@
+import * as runtime from "../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -17,15 +18,19 @@ await test("Context HTTP inspection is scoped, read-only and available without i
     { type: "write", entry: { kind: "pi.user", model: [user(20)] } },
     context,
   );
-  const last = (await session.history()).at(-1)!;
+  const last = (await runtime.history(session)).at(-1)!;
   const branch = await session.root.fork(last.id, { ownership: { kind: "ownerless" } }, context);
   await branch.reset(undefined, context);
-  const before = await session.history();
-  await f.reopen([]);
+  const before = await runtime.history(session);
+  await f.reopen({ env: undefined, targets: async () => [] });
   const restored = await f.sessions.get(session.id);
   const base = await serve(t, f.sessions);
-  const url = `${base}/api/sessions/${session.id}/events`;
-  for (const selected of [restored.root, await restored.conversation(branch.id), restored.root]) {
+  const url = `${base}/api/harness/${session.id}/watch`;
+  for (const selected of [
+    restored.root,
+    await runtime.getConversation(restored, branch.id),
+    restored.root,
+  ]) {
     const state = await snapshot(`${url}?conversation=${selected.id}`);
     assert.equal(state.inspection.state, "available");
     assert(state.inspection.state === "available");
@@ -37,7 +42,7 @@ await test("Context HTTP inspection is scoped, read-only and available without i
     );
   }
   assert.equal((await fetch(`${url}?conversation=999999`)).status, 404);
-  assert.deepEqual(await restored.history(), before);
+  assert.deepEqual(await runtime.history(restored), before);
   assert.equal(f.faux.state.callCount, 0);
   assert.equal((await restored.harness.inspect(context)).tasks.length, 0);
 });

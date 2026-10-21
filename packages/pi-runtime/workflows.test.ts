@@ -1,3 +1,5 @@
+import * as workflow from "./workflows.ts";
+import * as runtime from "./index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -147,21 +149,26 @@ for (const action of ["submit", "cancel", "elaborate"] as const) {
       fauxAssistantMessage(fauxToolCall("ask_user", request), { stopReason: "toolUse" }),
       fauxAssistantMessage("Acknowledged."),
     ]);
-    await session.prompt("Ask about preferences.", randomUUID());
-    await waitFor(async () => (await session.workflows()).asks.some((item) => item.actionable));
-    const ask = (await session.workflows()).asks[0];
+    await session.root.submit(
+      { type: "input", content: "Ask about preferences.", requestId: randomUUID() },
+      context,
+    );
+    await waitFor(async () =>
+      (await workflow.workflows(session)).asks.some((item) => item.actionable),
+    );
+    const ask = (await workflow.workflows(session)).asks[0];
     const response = { ...answer, action, ...(action === "cancel" ? { answers: [] } : {}) };
-    await session.answer(ask.id, response);
+    await workflow.answer(session, ask.id, response);
     await session.root.waitForIdle(context);
-    const saved = (await session.workflows()).asks[0];
+    const saved = (await workflow.workflows(session)).asks[0];
     assert.deepEqual(saved.response, response);
     assert.equal(saved.actionable, false);
-    const results = (await session.history())
+    const results = (await runtime.history(session))
       .flatMap((entry) => entry.model ?? [])
       .filter((message) => message.role === "toolResult");
     assert.equal(results.length, 1);
     assert.equal(results[0].isError, false);
-    await assert.rejects(session.answer(ask.id, answer), workflowCode("conflict"));
+    await assert.rejects(workflow.answer(session, ask.id, answer), workflowCode("conflict"));
     assert.equal(f.faux.state.callCount, 2);
   });
 }
@@ -172,21 +179,21 @@ await test("ask recovers the original request after restart without admitting a 
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("ask_user", request), { stopReason: "toolUse" }),
   ]);
-  await session.prompt("Ask.", randomUUID());
-  await waitFor(async () => (await session.workflows()).asks.length === 1);
-  const original = (await session.workflows()).asks[0];
+  await session.root.submit({ type: "input", content: "Ask.", requestId: randomUUID() }, context);
+  await waitFor(async () => (await workflow.workflows(session)).asks.length === 1);
+  const original = (await workflow.workflows(session)).asks[0];
   await f.reopen();
   const restored = await f.sessions.get(session.id);
-  assert.equal(restored.needsResume, true);
-  assert.equal((await restored.workflows()).asks[0].id, original.id);
+  assert.equal((await runtime.sessionInfo(restored)).needsResume, true);
+  assert.equal((await workflow.workflows(restored)).asks[0].id, original.id);
   assert.equal((await restored.harness.inspect(context)).scheduling, "paused");
-  await assert.rejects(restored.answer(original.id, answer), code("conflict"));
+  await workflow.answer(restored, original.id, answer);
+  assert.deepEqual((await workflow.workflows(restored)).asks[0].response, answer);
   f.faux.setResponses([fauxAssistantMessage("Thanks.")]);
-  await restored.resume();
-  await restored.answer(original.id, answer);
+  restored.harness.resume();
   await restored.root.waitForIdle(context);
-  assert.equal((await restored.workflows()).asks.length, 1);
-  const messages = (await restored.history()).flatMap((entry) => entry.model ?? []);
+  assert.equal((await workflow.workflows(restored)).asks.length, 1);
+  const messages = (await runtime.history(restored)).flatMap((entry) => entry.model ?? []);
   assert.equal(messages.filter((message) => message.role === "user").length, 1);
   assert.equal(messages.filter((message) => message.role === "toolResult").length, 1);
 });
@@ -198,31 +205,36 @@ await test("ask ownership, concurrent responses, fork isolation and stop use exi
     fauxAssistantMessage(fauxToolCall("ask_user", request), { stopReason: "toolUse" }),
     fauxAssistantMessage("Done."),
   ]);
-  await session.prompt("Ask.", randomUUID());
-  await waitFor(async () => (await session.workflows()).asks.length === 1);
-  const ask = (await session.workflows()).asks[0];
-  const entry = (await session.history())[0];
+  await session.root.submit({ type: "input", content: "Ask.", requestId: randomUUID() }, context);
+  await waitFor(async () => (await workflow.workflows(session)).asks.length === 1);
+  const ask = (await workflow.workflows(session)).asks[0];
+  const entry = (await runtime.history(session))[0];
   const fork = await session.root.fork(entry.id, { ownership: { kind: "ownerless" } }, context);
-  assert.deepEqual((await session.workflows(fork)).asks, []);
-  await assert.rejects(session.answer(ask.id, answer, fork), workflowCode("not_found"));
+  assert.deepEqual((await workflow.workflows(session, fork)).asks, []);
+  await assert.rejects(workflow.answer(session, ask.id, answer, fork), workflowCode("not_found"));
   const results = await Promise.allSettled([
-    session.answer(ask.id, answer),
-    session.answer(ask.id, answer),
+    workflow.answer(session, ask.id, answer),
+    workflow.answer(session, ask.id, answer),
   ]);
   assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
   await session.root.waitForIdle(context);
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("ask_user", request), { stopReason: "toolUse" }),
   ]);
-  await session.prompt("Ask again.", randomUUID());
-  await waitFor(async () => (await session.workflows()).asks.some((item) => item.actionable));
-  const pending = (await session.workflows()).asks.find((item) => item.actionable)!;
-  await session.stop();
+  await session.root.submit(
+    { type: "input", content: "Ask again.", requestId: randomUUID() },
+    context,
+  );
+  await waitFor(async () =>
+    (await workflow.workflows(session)).asks.some((item) => item.actionable),
+  );
+  const pending = (await workflow.workflows(session)).asks.find((item) => item.actionable)!;
+  await session.root.abort(context);
   assert.equal(
-    (await session.workflows()).asks.find((item) => item.id === pending.id)?.actionable,
+    (await workflow.workflows(session)).asks.find((item) => item.id === pending.id)?.actionable,
     false,
   );
-  await assert.rejects(session.answer(pending.id, answer), workflowCode("conflict"));
+  await assert.rejects(workflow.answer(session, pending.id, answer), workflowCode("conflict"));
 });
 
 await test("review targets resolve Git identities and paths without changing the checkout", async (t) => {
@@ -287,7 +299,14 @@ await test("review has fresh context and normal tools; report, passive handoff a
   await writeFile(join(f.workspace, "preferences.ts"), "export const value = 1;\n");
   const session = await f.create();
   f.faux.setResponses([fauxAssistantMessage("Private coding history.")]);
-  await session.prompt("Coding history should not reach the reviewer.", randomUUID());
+  await session.root.submit(
+    {
+      type: "input",
+      content: "Coding history should not reach the reviewer.",
+      requestId: randomUUID(),
+    },
+    context,
+  );
   await session.root.waitForIdle(context);
   const agent = await session.root.agent(context);
   assert.equal(
@@ -297,7 +316,7 @@ await test("review has fresh context and normal tools; report, passive handoff a
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("submit_review", report), { stopReason: "toolUse" }),
   ]);
-  const reviewer = await session.startReview({
+  const reviewer = await workflow.startReview(session, {
     target: { kind: "paths", paths: ["preferences.ts"] },
   });
   await reviewer.waitForIdle(context);
@@ -312,21 +331,32 @@ await test("review has fresh context and normal tools; report, passive handoff a
       ),
     );
   assert(reviewerAgent.tools.some((tool) => tool.name === "submit_review"));
-  const reviewMessages = (await session.history(reviewer)).flatMap((entry) => entry.model ?? []);
+  const reviewMessages = (await runtime.history(session, reviewer)).flatMap(
+    (entry) => entry.model ?? [],
+  );
   assert.equal(reviewMessages.filter((message) => message.role === "user").length, 1);
-  const saved = (await session.workflows(reviewer)).review!;
+  const saved = (await workflow.workflows(session, reviewer)).review!;
   assert.equal(saved.origin, session.root.id);
   assert.deepEqual(saved.report, report);
   await assert.rejects(
-    session.startReview({ target: { kind: "paths", paths: ["preferences.ts"] } }, reviewer),
+    workflow.startReview(
+      session,
+      { target: { kind: "paths", paths: ["preferences.ts"] } },
+      reviewer,
+    ),
     workflowCode("conflict"),
   );
   await assert.rejects(
-    session.finishReview({ action: "fix", findings: [], requestId: randomUUID() }, reviewer),
+    workflow.finishReview(
+      session,
+      { action: "fix", findings: [], requestId: randomUUID() },
+      reviewer,
+    ),
     workflowCode("invalid"),
   );
   await assert.rejects(
-    session.finishReview(
+    workflow.finishReview(
+      session,
       { action: "fix", findings: ["unknown"], requestId: randomUUID() },
       reviewer,
     ),
@@ -334,31 +364,37 @@ await test("review has fresh context and normal tools; report, passive handoff a
   );
   await session.root.configure({ cwd: join(f.workspace, "other") }, context);
   await assert.rejects(
-    session.finishReview({ action: "fix", findings: ["race"], requestId: randomUUID() }, reviewer),
+    workflow.finishReview(
+      session,
+      { action: "fix", findings: ["race"], requestId: randomUUID() },
+      reviewer,
+    ),
     workflowCode("conflict"),
   );
   await session.root.configure({ cwd: f.workspace }, context);
   const calls = f.faux.state.callCount;
-  const returned = await session.finishReview(
+  const returned = await workflow.finishReview(
+    session,
     { action: "return", findings: [], requestId: randomUUID() },
     reviewer,
   );
   assert.equal(returned.id, session.root.id);
   const requestId = randomUUID();
-  await session.finishReview({ action: "handoff", findings: [], requestId }, reviewer);
-  await session.finishReview({ action: "handoff", findings: [], requestId }, reviewer);
+  await workflow.finishReview(session, { action: "handoff", findings: [], requestId }, reviewer);
+  await workflow.finishReview(session, { action: "handoff", findings: [], requestId }, reviewer);
   assert.equal(f.faux.state.callCount, calls);
-  const handoffs = (await session.history()).filter((entry) => entry.kind === "app.review");
+  const handoffs = (await runtime.history(session)).filter((entry) => entry.kind === "app.review");
   assert.equal(handoffs.length, 1);
   assert.deepEqual(handoffs[0].data, { reviewer: reviewer.id, report });
   f.faux.setResponses([fauxAssistantMessage("Fixed the selected issue.")]);
-  await session.finishReview(
+  await workflow.finishReview(
+    session,
     { action: "fix", findings: ["race"], requestId: randomUUID() },
     reviewer,
   );
   await session.root.waitForIdle(context);
   assert.equal(f.faux.state.callCount, calls + 1);
-  const fixes = (await session.history()).filter((entry) => entry.kind === "app.review-fix");
+  const fixes = (await runtime.history(session)).filter((entry) => entry.kind === "app.review-fix");
   assert.equal(fixes.length, 1);
   assert.deepEqual(fixes[0].data, {
     reviewer: reviewer.id,
@@ -367,7 +403,8 @@ await test("review has fresh context and normal tools; report, passive handoff a
   await f.reopen();
   const restored = await f.sessions.get(session.id);
   assert.deepEqual(
-    (await restored.workflows(await restored.conversation(reviewer.id))).review,
+    (await workflow.workflows(restored, await runtime.getConversation(restored, reviewer.id)))
+      .review,
     saved,
   );
 });
@@ -380,7 +417,7 @@ await test("empty review reports finish successfully and missing targets never f
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("submit_review", empty), { stopReason: "toolUse" }),
   ]);
-  const reviewer = await session.startReview({
+  const reviewer = await workflow.startReview(session, {
     target: { kind: "paths", paths: ["preferences.ts"] },
   });
   await reviewer.waitForIdle(context);
@@ -388,10 +425,10 @@ await test("empty review reports finish successfully and missing targets never f
     (await session.harness.snapshot(Workflows, reviewer.id, context))?.review?.report,
     empty,
   );
-  await f.reopen([]);
+  await f.reopen({ env: undefined, targets: async () => [] });
   const restored = await f.sessions.get(session.id);
   await assert.rejects(
-    restored.startReview({ target: { kind: "paths", paths: ["preferences.ts"] } }),
+    workflow.startReview(restored, { target: { kind: "paths", paths: ["preferences.ts"] } }),
     code("unavailable"),
   );
 });

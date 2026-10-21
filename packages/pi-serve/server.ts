@@ -1,30 +1,39 @@
-import { WorkflowError } from "../pi-runtime/workflows.ts";
+import * as workflow from "../pi-runtime/workflows.ts";
+import * as runtime from "../pi-runtime/index.ts";
+import { WorkflowError, Workflows } from "../pi-runtime/workflows.ts";
+import { ContextFiles } from "../pi-runtime/context.ts";
+import { openApplication } from "./application.ts";
+import { ownerOptions } from "../pi-extensions/drv-run/index.ts";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   ConversationBusy,
-  type Conversation,
-  type ConversationView,
-  type EntryRecord,
+  StorageRequestError,
   type Cursor,
   type SubmissionId,
+  type SubmissionDraft,
+  type AgentChange,
+  type ConversationCreateOptions,
+  type EntryId,
+  type WatchHandle,
+  AgentDoc,
+  InboxDoc,
+  LiveDoc,
+  UsageDoc,
+  ProviderDoc,
 } from "@earendil-works/pi-durable";
 import {
   DEFAULT_THINKING_LEVEL,
-  loadIntegrations,
-  localIntegration,
   stateDirectory,
   Sessions,
   SessionError,
-  type ManagedSession,
-  type Snapshot,
   type SessionOptions,
 } from "../pi-runtime/index.ts";
 import { settingFields, thinkingLevels, type GlobalSettings } from "./settings.ts";
@@ -76,7 +85,10 @@ export class GlobalSettingsStore {
 
   // Getters are intentional: Durable resolves host policy on every run. Agent
   // model/thinking remain persisted in the conversation, not changed by defaults.
-  bind(options: SessionOptions): SessionOptions {
+  bind<T extends Omit<SessionOptions, "open">>(
+    options: T,
+  ): T &
+    Pick<SessionOptions, "settings" | "defaultModel" | "thinkingLevel" | "modelThinkingLevels"> {
     const manager = this.manager;
     return {
       ...options,
@@ -197,7 +209,6 @@ function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
 }
 
 const context = BACKGROUND_CONTEXT;
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export class RequestError extends Error {
   readonly status: number;
@@ -243,119 +254,47 @@ function json(response: ServerResponse, status: number, data: unknown): void {
   response.end(JSON.stringify(data));
 }
 
-async function stream(
-  session: ManagedSession,
-  response: ServerResponse,
-  conversation: Conversation,
-  settings?: GlobalSettingsStore,
-): Promise<void> {
-  const features = await session.watchWorkflows(conversation);
-  const watch = await conversation.watch(context).catch(async (error: unknown) => {
-    await features.stop();
-    throw error;
-  });
-  let unwatchSettings: (() => void) | undefined;
-  const cleanup = () => {
-    unwatchSettings?.();
-    void watch.stop();
-    void features.stop();
-  };
-  response.once("close", cleanup);
-  try {
-    const history = await session.history(conversation);
-    if (response.destroyed) {
-      await watch.stop();
-      await features.stop();
+async function stream<T>(watch: WatchHandle<T>, response: ServerResponse): Promise<void> {
+  // The watch uses the request context; disconnect cancels it upstream.
+  if (response.destroyed) return;
+  response.writeHead(200, { "Content-Type": "text/event-stream", "X-Accel-Buffering": "no" });
+  async function send(value: T, ops: readonly unknown[]) {
+    if (response.destroyed) return;
+    if (response.writableLength > 1024 * 1024) {
+      response.destroy();
       return;
     }
-    response.writeHead(200, { "Content-Type": "text/event-stream", "X-Accel-Buffering": "no" });
-    const contextDurations: Record<number, number> = {};
-    const timed = new Set<number>();
-    const send = async (view: ConversationView, initial?: EntryRecord[]) => {
-      for (const entry of [...(initial ?? []), ...view.entries]) {
-        if (entry.kind !== "pi.compaction" || timed.has(entry.id)) continue;
-        // Queued summaries may be appended by a run rather than the compaction
-        // task. Resolve that task through its durable write submission.
-        const task = entry.byTaskId
-          ? await session.harness.getTask(entry.byTaskId, context)
-          : undefined;
-        let duration: number | undefined;
-        if (
-          task?.kind === "pi.compaction" &&
-          task.startedAt !== undefined &&
-          task.endedAt !== undefined
-        )
-          duration = task.endedAt - task.startedAt;
-        else
-          duration = await session.harness.commit(async (tx) => {
-            let cursor: Cursor | undefined;
-            do {
-              const page = await tx.scanTasks(
-                { conversationId: entry.conversationId, kind: "pi.compaction" },
-                100,
-                cursor,
-              );
-              for (const candidate of page.items) {
-                const submission = await tx.submissionByRequest(
-                  entry.conversationId,
-                  `compaction:${candidate.id}`,
-                );
-                if (
-                  submission?.entry === entry.id &&
-                  candidate.startedAt !== undefined &&
-                  candidate.endedAt !== undefined
-                )
-                  return candidate.endedAt - candidate.startedAt;
-              }
-              cursor = page.next;
-            } while (cursor);
-            return undefined;
-          }, context);
-        if (duration !== undefined) contextDurations[entry.id] = duration;
-        timed.add(entry.id);
-      }
-      const snapshot: Snapshot = {
-        session: await session.info(),
-        view,
-        context: session.contextStatus(view),
-        inspection: await session.inspectContext(view),
-        contextDurations,
-        workflows: await session.workflows(conversation),
-        ...(initial ? { history: initial } : {}),
-      };
-      if (response.destroyed) return;
-      // Disconnect slow clients rather than accumulating an unbounded stream.
-      if (response.writableLength > 1024 * 1024) {
-        response.destroy();
-        return;
-      }
-      response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
-    };
-    await send(watch.value, history);
-    if (response.destroyed) return;
-    let sending = Promise.resolve();
-    const update = () => {
-      sending = sending
-        .then(() => send(watch.value))
-        .catch(() => {
-          response.destroy();
-        });
-      return sending;
-    };
-    watch.start(update);
-    features.start(update);
-    unwatchSettings = settings?.watch(() => {
-      void update();
-    });
-    const heartbeat = setInterval(() => {
-      if (response.writableLength > 1024 * 1024) response.destroy();
-      else response.write(": heartbeat\n\n");
-    }, 15_000);
-    response.once("close", () => clearInterval(heartbeat));
-  } catch (error) {
-    await watch.stop();
-    await features.stop();
-    throw error;
+    if (!response.write(`data: ${JSON.stringify({ value, ops })}\n\n`))
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          response.off("drain", done);
+          response.off("close", done);
+          resolve();
+        };
+        response.once("drain", done);
+        response.once("close", done);
+      });
+  }
+  await send(watch.value, []);
+  if (response.destroyed) return;
+  watch.start(send);
+  const heartbeat = setInterval(() => {
+    if (response.writableLength > 1024 * 1024) response.destroy();
+    else response.write(": heartbeat\n\n");
+  }, 15_000);
+  void watch.closed.then((end) => {
+    clearInterval(heartbeat);
+    if (!response.destroyed) response.end(`event: end\ndata: ${JSON.stringify(end)}\n\n`);
+  });
+}
+
+function queryObject(url: URL, name: "query" | "cursor"): Record<string, unknown> | undefined {
+  const value = url.searchParams.get(name);
+  if (value === null) return undefined;
+  try {
+    return object(JSON.parse(value));
+  } catch {
+    throw new RequestError(400, `Invalid ${name}.`);
   }
 }
 
@@ -402,6 +341,18 @@ export function httpServer(
       )
         throw new RequestError(403, "Cross-origin requests are not allowed.");
       const url = new URL(request.url ?? "/", origin);
+      if (request.method === "GET" && url.pathname === "/api/settings/watch") {
+        if (!settings) return json(response, 200, null);
+        response.writeHead(200, { "Content-Type": "text/event-stream", Connection: "keep-alive" });
+        const send = () => {
+          if (response.writableLength > 1024 * 1024) response.destroy();
+          else response.write(`data: ${JSON.stringify(settings.read())}\n\n`);
+        };
+        const stop = settings.watch(send);
+        response.once("close", stop);
+        send();
+        return;
+      }
       if (url.pathname === "/api/settings") {
         if (!settings) {
           if (request.method === "GET") return json(response, 200, null);
@@ -433,167 +384,302 @@ export function httpServer(
       }
       if (request.method === "POST" && url.pathname === "/api/sessions") {
         const data = await body(request);
-        const model = object(data.model);
-        const binding = object(data.binding);
+        const model = data.model === undefined ? undefined : object(data.model);
+        const binding = data.binding === undefined ? undefined : object(data.binding);
         if (data.thinkingLevel !== undefined && !isThinkingLevel(data.thinkingLevel))
           throw new RequestError(400, "Invalid thinking level.");
         const session = await sessions.create(
           string(data.id, 36),
-          {
+          binding && {
             provider: string(binding.provider, 200),
             target: string(binding.target, 4096),
             cwd: string(binding.cwd, 4096),
           },
-          {
+          model && {
             provider: string(model.provider, 200),
             modelId: string(model.modelId, 300),
           },
           data.thinkingLevel,
           data.baseDirectory === undefined ? undefined : directoryInput(data.baseDirectory),
         );
-        return json(response, 201, await session.info());
+        return json(response, 201, await runtime.sessionInfo(session));
       }
-      const match =
-        /^\/api\/sessions\/([^/]+)\/(events|answer|review|end-review|prompt|resume|stop|configure|compact|reset|cancel|fork|conversations|export|rename|repository|completions)$/.exec(
-          url.pathname,
-        );
-      if (match) {
-        const session = await sessions.get(match[1]);
-        const conversation = await session.conversation(
+      const harnessRoute = /^\/api\/harness\/([^/]+)\/([a-zA-Z/]+)$/.exec(url.pathname);
+      if (harnessRoute) {
+        const controller = new AbortController();
+        response.once("close", () => controller.abort());
+        const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
+        const session = await sessions.get(harnessRoute[1]);
+        const harness = session.harness;
+        const conversation = await runtime.getConversation(
+          session,
           url.searchParams.has("conversation")
             ? Number(url.searchParams.get("conversation"))
             : undefined,
         );
-        if (request.method === "GET" && match[2] === "completions")
-          return json(
-            response,
-            200,
-            await session.completePaths(url.searchParams.get("query") ?? "", conversation),
-          );
-        if (request.method === "GET" && match[2] === "repository")
-          return json(response, 200, await session.repository(conversation));
-        if (request.method === "GET" && match[2] === "conversations")
-          return json(response, 200, await session.conversations());
-        if (request.method === "GET" && match[2] === "export")
-          return json(response, 200, await session.history(conversation));
-        if (request.method === "GET" && match[2] === "events")
-          return await stream(session, response, conversation, settings);
-        if (request.method === "POST" && match[2] !== "events") {
-          const data = await body(request, match[2] === "prompt" ? 8 * 1024 * 1024 : 128 * 1024);
-          if (match[2] === "answer") {
-            if (!Number.isSafeInteger(data.id)) throw new RequestError(400, "Invalid question ID.");
-            await session.answer(data.id as number, data.response, conversation);
-          } else if (match[2] === "review") {
-            const reviewer = await session.startReview(data, conversation);
-            return json(response, 201, { id: reviewer.id });
-          } else if (match[2] === "end-review") {
-            const origin = await session.finishReview(data, conversation);
-            return json(response, 200, { id: origin.id });
-          } else if (match[2] === "prompt") {
-            const requestId = string(data.requestId, 36);
-            if (!uuid.test(requestId)) throw new RequestError(400, "Invalid request ID.");
-            const mode = data.mode ?? "reject";
-            if (mode !== "reject" && mode !== "steer" && mode !== "followUp")
-              throw new RequestError(400, "Invalid queue mode.");
-            const images = data.images ?? [];
-            if (!Array.isArray(images) || images.length > 4)
-              throw new RequestError(400, "At most four images are allowed.");
-            const validated = images.map((value: unknown) => {
-              const image = object(value);
-              if (
-                typeof image.mimeType !== "string" ||
-                !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image.mimeType) ||
-                typeof image.data !== "string" ||
-                !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)
-              )
-                throw new RequestError(400, "Invalid image.");
-              return { type: "image" as const, mimeType: image.mimeType, data: image.data };
-            });
-            if (validated.length) {
-              const agent = await conversation.agent(context);
-              const available = await sessions.options.models.getAvailable();
-              if (
-                !available
-                  .find(
-                    (model) =>
-                      model.provider === agent.model?.provider && model.id === agent.model.modelId,
-                  )
-                  ?.input.includes("image")
-              )
-                throw new RequestError(400, "This model does not support images.");
+        const method = harnessRoute[2];
+        if (request.method === "GET") {
+          if (method === "watch") return stream(await conversation.watch(context), response);
+          if (method === "snapshot" || method === "watchDoc") {
+            const kind = url.searchParams.get("kind");
+            // Only the document capabilities this application exposes. Tokens remain server-side.
+            const token = [
+              AgentDoc,
+              InboxDoc,
+              LiveDoc,
+              ProviderDoc,
+              UsageDoc,
+              Workflows,
+              ContextFiles,
+              runtime.Environment,
+              runtime.Metadata,
+            ].find((token) => token.definition.kind === kind);
+            if (!token) throw new RequestError(404, "Document capability is not exposed.");
+            // Each token has the same conversation scope; widening its JSON value does not change its definition.
+            const document = token as import("@earendil-works/pi-durable").ConversationDocToken<
+              import("@earendil-works/pi-durable").JsonObject
+            >;
+            if (method === "snapshot")
+              return json(
+                response,
+                200,
+                (await harness.snapshot(document, conversation.id, context)) ?? null,
+              );
+            const watch = await harness.watchDoc(document, conversation.id, context);
+            if (!watch) return json(response, 200, null);
+            return await stream(watch, response);
+          }
+        }
+        async function invoke(): Promise<unknown> {
+          if (request.method === "GET") {
+            if (method === "entries" || method === "scanTasks" || method === "scanConversations") {
+              const args = [
+                queryObject(url, "query") ?? {},
+                Number(url.searchParams.get("limit") ?? 256),
+                queryObject(url, "cursor") as Cursor | undefined,
+              ] as const;
+              if (method === "entries") return conversation.entries(...args, context);
+              if (method === "scanTasks")
+                return harness.commit((tx) => tx.scanTasks(...args), context);
+              return harness.commit((tx) => tx.scanConversations(...args), context);
             }
-            await session.prompt(string(data.text), requestId, mode, conversation, validated);
-          } else if (match[2] === "rename") {
-            if (typeof data.name !== "string") throw new RequestError(400, "Invalid session name.");
-            await session.rename(data.name);
-            return json(response, 200, await session.info());
-          } else if (match[2] === "resume") await session.resume();
-          else if (match[2] === "stop") await session.stop(conversation);
-          else {
-            if (session.needsResume) throw new RequestError(409, "Resume interrupted work first.");
-            await sessions.requireTarget(session.binding);
-            if (match[2] === "configure") {
-              const model = object(data.model);
-              const available = (await sessions.catalog()).models;
-              const selected = available.find(
-                (item) => item.provider === model.provider && item.modelId === model.modelId,
+            if (method === "context")
+              return await conversation.context(
+                context,
+                url.searchParams.has("at")
+                  ? { at: Number(url.searchParams.get("at")) as EntryId }
+                  : undefined,
               );
-              if (!selected) throw new RequestError(400, "Model is unavailable.");
-              const thinking = data.thinkingLevel;
-              if (!isThinkingLevel(thinking))
-                throw new RequestError(400, "Invalid thinking level.");
-              if (typeof data.instructions !== "string" || data.instructions.length > 100_000)
-                throw new RequestError(400, "Invalid instructions.");
-              await conversation.configure(
-                {
-                  model: { provider: selected.provider, modelId: selected.modelId },
-                  thinkingLevel: sessions.resolveThinking(selected, thinking),
-                  instructions: data.instructions,
-                  ...(data.baseDirectory === undefined
-                    ? {}
-                    : {
-                        cwd: sessions.baseDirectory(
-                          session.binding,
-                          directoryInput(data.baseDirectory),
-                        ),
-                      }),
-                },
+            if (method === "inspect") return await harness.inspect(context);
+            if (method === "getTask")
+              return harness.getTask(
+                Number(url.searchParams.get("id")) as Parameters<typeof harness.getTask>[0],
                 context,
               );
-            } else if (match[2] === "compact") {
-              await conversation.compact(
-                data.instructions === undefined ? undefined : string(data.instructions),
+            if (method === "submission/status") {
+              const submission = await harness.submission(
+                Number(url.searchParams.get("id")) as SubmissionId,
                 context,
               );
-            } else if (match[2] === "reset") {
-              await conversation.reset(
-                data.handoff === undefined ? undefined : string(data.handoff),
+              return submission?.status(context);
+            }
+          }
+          if (request.method === "POST") {
+            const data = await body(request, method === "submit" ? 8 * 1024 * 1024 : 128 * 1024);
+            if (method === "submit") {
+              if (data.requestId !== undefined && typeof data.requestId !== "string")
+                throw new RequestError(400, "Invalid requestId.");
+              if (data.type === "input") {
+                if (
+                  data.whenBusy !== undefined &&
+                  (typeof data.whenBusy !== "string" ||
+                    !["steer", "followUp", "reject"].includes(data.whenBusy))
+                )
+                  throw new RequestError(400, "Invalid whenBusy.");
+                if (typeof data.content !== "string") {
+                  if (!Array.isArray(data.content))
+                    throw new RequestError(400, "Invalid input content.");
+                  for (const item of data.content) {
+                    const part = object(item);
+                    if (part.type === "text" && typeof part.text === "string") continue;
+                    if (
+                      part.type === "image" &&
+                      typeof part.data === "string" &&
+                      typeof part.mimeType === "string"
+                    )
+                      continue;
+                    throw new RequestError(400, "Invalid input content.");
+                  }
+                }
+              } else if (data.type === "write") {
+                const entry = object(data.entry);
+                if (typeof entry.kind !== "string")
+                  throw new RequestError(400, "Invalid entry kind.");
+                if (entry.model !== undefined && !Array.isArray(entry.model))
+                  throw new RequestError(400, "Invalid entry messages.");
+              }
+              if (data.type !== "input" && data.type !== "write")
+                throw new RequestError(400, "Invalid submission type.");
+              // Admission, content validation, deduplication and defaults belong to Durable.
+              const submission = await conversation.submit(data as SubmissionDraft, context);
+              return { id: submission.id };
+            }
+            if (method === "configure") {
+              if (
+                data.thinkingLevel !== undefined &&
+                data.thinkingLevel !== null &&
+                !isThinkingLevel(data.thinkingLevel)
+              )
+                throw new RequestError(400, "Invalid thinkingLevel.");
+              for (const key of ["cwd", "instructions"])
+                if (data[key] !== undefined && data[key] !== null && typeof data[key] !== "string")
+                  throw new RequestError(400, `Invalid ${key}.`);
+              if (data.model !== undefined && data.model !== null) {
+                const ref = object(data.model);
+                if (typeof ref.provider !== "string" || typeof ref.modelId !== "string")
+                  throw new RequestError(400, "Invalid model reference.");
+              }
+              for (const key of ["extensions", "tools", "modelTools"]) {
+                const selection = data[key];
+                if (selection === undefined || selection === null) continue;
+                const lists = Array.isArray(selection)
+                  ? [selection]
+                  : Object.values(object(selection));
+                for (const list of lists) {
+                  if (
+                    !Array.isArray(list) ||
+                    list.some((item) => typeof object(item).name !== "string")
+                  )
+                    throw new RequestError(400, `Invalid ${key} references.`);
+                }
+              }
+              // Upstream applyChange persists reference names, not executable definitions.
+              // Selecting a tool here does not install it in the application registry.
+              return conversation.configure(data as AgentChange, context);
+            }
+            if (method === "resume") return harness.resume();
+            if (method === "abort") return conversation.abort(context, data);
+            if (method === "compact")
+              return await conversation.compact(data.instructions as string | undefined, context);
+            if (method === "reset")
+              return conversation.reset(data.handoff as string | undefined, context);
+            if (method === "fork") {
+              if (!Number.isSafeInteger(data.at) || Number(data.at) < 0)
+                throw new RequestError(400, "Invalid entry ID.");
+              const options = object(data.options);
+              object(options.ownership);
+              if (options.init !== undefined)
+                throw new RequestError(
+                  501,
+                  "Conversation initialization callbacks are server-side capabilities.",
+                );
+              const fork = await conversation.fork(
+                data.at as EntryId,
+                data.options as ConversationCreateOptions,
                 context,
               );
-            } else if (match[2] === "cancel") {
+              return { id: fork.id };
+            }
+            if (method === "abortSubmission") {
               if (!Number.isSafeInteger(data.id))
                 throw new RequestError(400, "Invalid submission ID.");
-              const result = await session.harness.abortSubmission(
+              return await harness.abortSubmission(
                 data.id as SubmissionId,
                 context,
-                conversation.id,
+                data.conversationId as
+                  | import("@earendil-works/pi-durable").ConversationId
+                  | undefined,
               );
-              if (result === "not_found") throw new RequestError(404, "Submission not found.");
-              return json(response, 200, { result });
-            } else if (match[2] === "fork") {
-              const entry = (await session.history(conversation)).find(
-                (entry) => entry.id === data.entry,
-              );
-              if (!entry) throw new RequestError(400, "Entry not found in this conversation.");
-              const fork = await conversation.fork(
-                entry.id,
-                { ownership: { kind: "ownerless" } },
-                context,
-              );
-              return json(response, 201, { id: fork.id });
-            } else throw new RequestError(405, "Method not allowed.");
+            }
+            if (method === "submission/wait" || method === "submission/abort") {
+              const submission = await harness.submission(data.id as SubmissionId, context);
+              if (!submission) throw new RequestError(404, "Submission not found.");
+              return method === "submission/wait"
+                ? await submission.wait(context)
+                : await submission.abort(context);
+            }
           }
-          return json(response, 200, { accepted: true });
+          throw new RequestError(405, "Method not exposed for this resource.");
+        }
+        return json(response, 200, (await invoke()) ?? null);
+      }
+      const match =
+        /^\/api\/sessions\/([^/]+)\/(info|context-status|inspection|workflows|answer|review|end-review|rename|repository|completions|environment)$/.exec(
+          url.pathname,
+        );
+      if (match) {
+        const session = await sessions.get(match[1]);
+        const conversation = await runtime.getConversation(
+          session,
+          url.searchParams.has("conversation")
+            ? Number(url.searchParams.get("conversation"))
+            : undefined,
+        );
+        if (request.method === "GET") {
+          if (match[2] === "info")
+            return json(response, 200, await runtime.sessionInfo(session, conversation));
+          if (match[2] === "workflows")
+            return json(response, 200, await workflow.workflows(session, conversation));
+          if (match[2] === "completions")
+            return json(
+              response,
+              200,
+              await runtime.completePaths(
+                session,
+                url.searchParams.get("query") ?? "",
+                conversation,
+              ),
+            );
+          if (match[2] === "repository")
+            return json(response, 200, await runtime.repository(session, conversation));
+          if (match[2] === "inspection" || match[2] === "context-status") {
+            const watch = await conversation.watch(context);
+            try {
+              return json(
+                response,
+                200,
+                match[2] === "inspection"
+                  ? await runtime.inspectContext(session, watch.value)
+                  : runtime.contextStatus(session, watch.value),
+              );
+            } finally {
+              await watch.stop();
+            }
+          }
+        }
+        if (request.method === "POST") {
+          const data = await body(request);
+          if (match[2] === "answer") {
+            if (!Number.isSafeInteger(data.id)) throw new RequestError(400, "Invalid question ID.");
+            await workflow.answer(session, data.id as number, data.response, conversation);
+            return json(response, 200, null);
+          }
+          if (match[2] === "review")
+            return json(response, 201, {
+              id: (await workflow.startReview(session, data, conversation)).id,
+            });
+          if (match[2] === "end-review")
+            return json(response, 200, {
+              id: (await workflow.finishReview(session, data, conversation)).id,
+            });
+          if (match[2] === "rename") {
+            if (typeof data.name !== "string") throw new RequestError(400, "Invalid session name.");
+            await runtime.rename(session, data.name);
+            return json(response, 200, await runtime.sessionInfo(session, conversation));
+          }
+          if (match[2] === "environment") {
+            const selected = object(data.binding);
+            await runtime.selectEnvironment(
+              session,
+              {
+                provider: string(selected.provider),
+                target: string(selected.target),
+                cwd: string(selected.cwd),
+              },
+              conversation,
+            );
+            return json(response, 200, null);
+          }
         }
         throw new RequestError(405, "Method not allowed.");
       }
@@ -658,12 +744,19 @@ export function httpServer(
       }
       throw new RequestError(404, "Not found.");
     })().catch((error: unknown) => {
+      if (response.destroyed) return;
       if (response.headersSent) {
         response.destroy();
         return;
       }
       if (error instanceof ConversationBusy)
-        json(response, 409, { error: "Conversation is busy. Choose Steer or Follow up." });
+        json(response, 409, {
+          error: error.message,
+          name: error.name,
+          conversationId: error.conversationId,
+        });
+      else if (error instanceof TypeError || error instanceof StorageRequestError)
+        json(response, 400, { name: error.name, error: error.message });
       else if (error instanceof RequestError)
         json(response, error.status, { error: error.message });
       else if (error instanceof SessionError || error instanceof WorkflowError) {
@@ -678,6 +771,7 @@ export function httpServer(
       } else {
         console.error(error);
         json(response, 500, {
+          name: error instanceof Error ? error.name : "Error",
           error: error instanceof Error ? error.message : "Internal server error.",
         });
       }
@@ -708,11 +802,15 @@ export function parseOptions(args: string[]) {
     port = 8080,
     directory = join(stateDirectory(), "pi-serve"),
     cwd = process.cwd(),
-    local = true;
+    local = true,
+    drvRun = false;
   let publicOrigin: string | undefined;
-  const extensions: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const option = args[i];
+    if (option === "--drv-run") {
+      drvRun = true;
+      continue;
+    }
     if (option === "--no-local") {
       local = false;
       continue;
@@ -724,26 +822,25 @@ export function parseOptions(args: string[]) {
     else if (option === "--state") directory = resolve(value);
     else if (option === "--cwd") cwd = resolve(value);
     else if (option === "--origin") publicOrigin = validateOrigin(value);
-    else if (option === "--extension") extensions.push(resolve(value));
     else throw new Error(`Unknown option: ${option}`);
   }
   if (!isIP(host) || host === "::")
     throw new Error("--host must be an IP address; IPv6 wildcard binding is not supported.");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid port.");
-  if (!local && extensions.length === 0) throw new Error("--no-local requires an extension.");
-  return { host, port, directory, cwd, local, extensions, publicOrigin };
+  if (!local && !drvRun) throw new Error("--no-local requires --drv-run.");
+  return { host, port, directory, cwd, local, drvRun, publicOrigin };
 }
 
 export async function main(args: string[]): Promise<void> {
   if (args.includes("--help")) {
     console.log(`Usage: pi-serve [--host IP] [--port PORT] [--state DIRECTORY]
-                [--cwd DIRECTORY] [--extension MODULE]... [--no-local] [--origin HTTPS_ORIGIN]
+                [--cwd DIRECTORY] [--drv-run] [--no-local] [--origin HTTPS_ORIGIN]
 
 Runs pi-durable with a web frontend. Defaults to local tools in the launch directory.
-Extensions are explicitly loaded application integrations, not coding-agent extensions.
+The standard application installs coding extensions and selects available environments.
 Uses ~/.pi/agent model settings and credentials (PI_CODING_AGENT_DIR supported).
 Run pi /login to configure credentials.
-History survives restart; interrupted work requires explicit Resume.
+History survives restart; opening does not resume interrupted work.
 Default: unauthenticated HTTP on 0.0.0.0:8080. No TLS or browser authentication.
 HTTP does not provide secure-context PWA features outside localhost.
 For a trusted HTTPS reverse proxy, bind --host 127.0.0.1 and set --origin to its
@@ -751,20 +848,19 @@ exact HTTPS origin. The proxy must preserve Host. Forwarded headers are ignored.
 This does not add authentication: restrict access at the proxy/network boundary.`);
     return;
   }
-  const { host, port, directory, cwd, extensions, local, publicOrigin } = parseOptions(args);
+  const { host, port, directory, cwd, drvRun, local, publicOrigin } = parseOptions(args);
   process.umask(0o077);
   const models = await ModelRuntime.create();
   const settings = new GlobalSettingsStore(
     SettingsManager.create(homedir(), getAgentDir(), { projectTrusted: false }),
   );
-  const sessions = await Sessions.open(
+  const sessions = await openApplication(
     settings.bind({
       directory,
       models,
-      integrations: [
-        ...(local ? [localIntegration(cwd)] : []),
-        ...(await loadIntegrations(extensions)),
-      ],
+      cwd,
+      local,
+      drvRun: drvRun ? ownerOptions() : undefined,
       onReport: (error) => console.error("pi-serve session", error),
     }),
   );

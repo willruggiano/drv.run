@@ -1,3 +1,4 @@
+import { Environment, environment, getConversation, type Session } from "./index.ts";
 import assert from "node:assert/strict";
 import { posix } from "node:path";
 import { BACKGROUND_CONTEXT, awaitWithContext } from "@earendil-works/chord/context";
@@ -8,6 +9,9 @@ import {
   defineExtension,
   defineTool,
   section,
+  LiveDoc,
+  InboxDoc,
+  type Conversation,
   type ConversationId,
   type TaskId,
   type Tx,
@@ -484,4 +488,150 @@ export async function prepareReview(
       .filter(Boolean)
       .join("\n\n"),
   };
+}
+
+export async function workflows(
+  session: Session,
+  conversation = session.root,
+): Promise<WorkflowView> {
+  const state = await session.harness.snapshot(Workflows, conversation.id, context);
+  return {
+    asks: await Promise.all(
+      Object.entries(state?.asks ?? {}).map(async ([id, ask]) => {
+        const task = ask.response
+          ? undefined
+          : await session.harness.getTask(Number(id) as TaskId, context);
+        return {
+          ...ask,
+          id: Number(id),
+          actionable:
+            !ask.response &&
+            !!task &&
+            !task.abortRequested &&
+            ["pending", "running", "waiting"].includes(task.state.status),
+        };
+      }),
+    ),
+    ...(state?.review ? { review: state.review } : {}),
+  };
+}
+
+async function requireIdle(conversation: Conversation): Promise<void> {
+  await conversation.commit(async (tx) => {
+    const live = await tx.doc(LiveDoc, conversation.id);
+    const inbox = await tx.doc(InboxDoc, conversation.id);
+    if (live.run || inbox.items.length)
+      throw new WorkflowError("conflict", "Conversation is busy.");
+  }, context);
+}
+
+export async function answer(
+  session: Session,
+  taskId: number,
+  response: unknown,
+  conversation = session.root,
+): Promise<void> {
+  await conversation.commit((tx) => answerQuestion(tx, conversation.id, taskId, response), context);
+}
+
+export async function startReview(
+  session: Session,
+  input: unknown,
+  conversation = session.root,
+): Promise<Conversation> {
+  await requireIdle(conversation);
+  if ((await session.harness.snapshot(Workflows, conversation.id, context))?.review)
+    throw new WorkflowError("conflict", "Nested reviews are not supported.");
+  const agent = await conversation.agent(context);
+  const prepared = await prepareReview(await environment(session, conversation), input);
+  const history = await conversation.entries({}, 1, undefined, context);
+  const destination = await session.harness.snapshot(Environment, conversation.id, context);
+  const reviewer = await session.harness.createConversation(
+    {
+      ownership: { kind: "ownerless" },
+      agent: {
+        model: agent.model,
+        thinkingLevel: agent.thinkingLevel,
+        cwd: agent.cwd,
+        extensions: [...agent.extensions, ReviewExtension],
+        tools: [...new Set([...agent.tools, ...agent.callable, ...agent.deferred, ReportTool])],
+        modelTools: [...agent.tools, ReportTool],
+        instructions: agent.instructions,
+      },
+      init: async (tx, id) => {
+        // Recheck admission atomically with creation, after asynchronous target resolution.
+        const live = await tx.doc(LiveDoc, conversation.id);
+        const inbox = await tx.doc(InboxDoc, conversation.id);
+        if (live.run || inbox.items.length)
+          throw new WorkflowError("conflict", "Conversation is busy.");
+        Object.assign(await tx.doc(Environment, id), destination);
+        const state = await tx.doc(Workflows, id);
+        state.review = {
+          ...prepared,
+          origin: conversation.id,
+          ...(history.items.length ? { originEntry: history.items[0].id } : {}),
+        };
+      },
+    },
+    context,
+  );
+  await reviewer.submit({ type: "input", content: prepared.scope, whenBusy: "reject" }, context);
+  return reviewer;
+}
+
+export async function finishReview(
+  session: Session,
+  input: unknown,
+  conversation = session.root,
+): Promise<Conversation> {
+  const command = validate(ReviewFinishSchema, input);
+  const review = (await session.harness.snapshot(Workflows, conversation.id, context))?.review;
+  if (!review) throw new WorkflowError("conflict", "Not a review conversation.");
+  const origin = await getConversation(session, review.origin);
+  if (command.action === "return") return origin;
+  await requireIdle(origin);
+  if (!review.report) throw new WorkflowError("conflict", "No review report has been submitted.");
+  const selected = review.report.findings.filter((item) => command.findings.includes(item.id));
+  if (selected.length !== command.findings.length || (command.action === "fix" && !selected.length))
+    throw new WorkflowError("invalid", "Select existing findings to fix.");
+  const report =
+    command.action === "fix" ? { ...review.report, findings: selected } : review.report;
+  const text = `Workspace: ${review.cwd}\nTarget: ${JSON.stringify(review.target)}\nResolved revisions: ${JSON.stringify(review.resolved)}\n\n${reportText(report)}`;
+  if (command.action === "fix" && (await origin.agent(context)).cwd !== review.cwd)
+    throw new WorkflowError(
+      "conflict",
+      "Origin directory changed. Restore it or start a new review before fixing.",
+    );
+  if (command.action === "handoff") {
+    await origin.submit(
+      {
+        type: "write",
+        requestId: command.requestId,
+        entry: {
+          kind: "app.review",
+          data: { reviewer: conversation.id, report },
+          model: [
+            {
+              role: "user",
+              content: `Review handoff (informational; no fix run requested):\n\n${text}`,
+              timestamp: Date.now(),
+            },
+          ],
+        },
+      },
+      context,
+    );
+  } else {
+    await origin.submit(
+      {
+        type: "input",
+        requestId: command.requestId,
+        whenBusy: "reject",
+        entry: { kind: "app.review-fix", data: { reviewer: conversation.id, report } },
+        content: `Implement and verify only the selected findings below. Human callouts are informational, not fix tasks. Do not start an automatic re-review loop. Review cwd: ${review.cwd}\n\n${text}`,
+      },
+      context,
+    );
+  }
+  return origin;
 }

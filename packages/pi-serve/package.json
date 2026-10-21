@@ -12,6 +12,7 @@
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-durable": "*",
+    "@earendil-works/pi-env": "*",
     "highlight.js": "10.7.3"
   },
   "devDependencies": {

@@ -10,6 +10,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import {
   ROOT_CONVERSATION_ID,
@@ -18,7 +19,9 @@ import {
   type TaskId,
 } from "@earendil-works/pi-durable";
 import type { CDPSession, Page } from "playwright";
-import { Sessions, type Snapshot } from "../pi-runtime/index.ts";
+import { Sessions } from "../pi-runtime/index.ts";
+import type { RenderState } from "./client.ts";
+import { Harness, createRegistry } from "@earendil-works/pi-durable";
 import { httpServer } from "./server.ts";
 import { buildAssets } from "./build.ts";
 
@@ -87,7 +90,7 @@ const timestamp = 1_700_000_000_000;
 const streamUpdates = 40;
 const transitions = 10;
 
-export function benchmarkFixture(turns: number): Snapshot {
+export function benchmarkFixture(turns: number): RenderState {
   const entries: EntryRecord[] = [];
   for (let i = 0; i < turns; i++) {
     entries.push(
@@ -259,7 +262,12 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
     sessions = await Sessions.open({
       directory: join(directory, "state"),
       models: createModels(),
-      integrations: [],
+      open: (storage) =>
+        Harness.open(
+          storage,
+          { models: createModels(), registry: createRegistry() },
+          BACKGROUND_CONTEXT,
+        ),
     });
     server = httpServer(sessions, "127.0.0.1", directory);
     await new Promise<void>((resolve, reject) => {
@@ -309,11 +317,15 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         const errors: Error[] = [];
         page.on("pageerror", (error) => errors.push(error));
         await page.goto(base);
+        // Let the ordinary catalog initialization finish before showing the synthetic surface.
+        await page.waitForFunction(
+          () => document.querySelector("#models")?.childElementCount === 1,
+        );
         // Import the public renderer export, not private names that minifiers
         // can rename. The timed code uses the exact served production module.
         // The literal browser import avoids tsc adding a Node-side import
         // rewriting helper to a function that Playwright serializes.
-        const frontend = await page.evaluateHandle<{ render: (snapshot: Snapshot) => void }>(
+        const frontend = await page.evaluateHandle<{ render: (snapshot: RenderState) => void }>(
           "import('/client.js')",
         );
         await page.evaluate(({ render }) => {
@@ -327,7 +339,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
           transcript.hidden = false;
           window.__piBenchmarkRender = (snapshot) => {
             const start = performance.now();
-            render(JSON.parse(snapshot) as Snapshot);
+            render(JSON.parse(snapshot) as RenderState);
             transcript.getBoundingClientRect();
             return performance.now() - start;
           };

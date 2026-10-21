@@ -1,3 +1,4 @@
+import * as runtime from "./index.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -11,7 +12,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { describeContext } from "./inspection.ts";
 import { fixture, model } from "./testing.ts";
-import type { ManagedSession } from "./index.ts";
+import type { Session } from "./index.ts";
 
 const context = BACKGROUND_CONTEXT;
 const user = (content: string): Message => ({ role: "user", content, timestamp: 1 });
@@ -25,8 +26,8 @@ async function view(conversation: Conversation) {
     await watch.stop();
   }
 }
-async function inspect(session: ManagedSession, conversation = session.root) {
-  const data = await session.inspectContext(await view(conversation));
+async function inspect(session: Session, conversation = session.root) {
+  const data = await runtime.inspectContext(session, await view(conversation));
   assert.equal(data.state, "available");
   assert(data.state === "available");
   const projection = await conversation.context(context);
@@ -274,18 +275,21 @@ await test("inspection follows edits, fork-as-of, reset and persisted unavailabl
     edits: [{ target: first.id, action: "replace", messages: first.model! }],
   });
   assert.equal((await inspect(session)).tokens, original.tokens);
-  const history = await session.history();
-  await f.reopen([]);
+  const history = await runtime.history(session);
+  await f.reopen({ env: undefined, targets: async () => [] });
   const restored = await f.sessions.get(session.id);
   assert.equal((await inspect(restored)).tokens, original.tokens);
-  assert.deepEqual(await restored.history(), history);
+  assert.deepEqual(await runtime.history(restored), history);
   assert.equal(f.faux.state.callCount, 0);
   await restored.root.reset(undefined, context);
   const empty = await inspect(restored);
   assert.equal(empty.tokens, 0);
   assert.deepEqual(empty.messages, []);
   assert.notEqual(empty.head, null);
-  assert.deepEqual(await inspect(restored, await restored.conversation(branch.id)), original);
+  assert.deepEqual(
+    await inspect(restored, await runtime.getConversation(restored, branch.id)),
+    original,
+  );
 });
 
 await test("inspection uses captured boundaries, caches live-only revisions and recovers from failure", async (t) => {
@@ -294,11 +298,15 @@ await test("inspection uses captured boundaries, caches live-only revisions and 
   const first = await append(session.root, { kind: "pi.user", model: [user("one")] });
   const before = await view(session.root);
   await append(session.root, { kind: "pi.user", model: [user("two")] });
-  const old = await session.inspectContext(before);
+  const old = await runtime.inspectContext(session, before);
   assert(old.state === "available");
   assert.equal(old.tail, first.id);
   assert.equal(old.messages.length, 1);
-  const get = t.mock.method(session, "conversation", session.conversation.bind(session));
+  const get = t.mock.method(
+    session.harness,
+    "conversation",
+    session.harness.conversation.bind(session.harness),
+  );
   const live = {
     ...before,
     docs: {
@@ -307,14 +315,14 @@ await test("inspection uses captured boundaries, caches live-only revisions and 
       "pi.inbox": { items: [{ text: "queued" }] },
     },
   };
-  assert.equal(await session.inspectContext(live), old);
+  assert.equal(await runtime.inspectContext(session, live), old);
   assert.equal(get.mock.callCount(), 0);
   get.mock.restore();
   const current = await view(session.root);
-  const failing = t.mock.method(session, "conversation", async () => {
+  const failing = t.mock.method(session.harness, "conversation", async () => {
     throw new Error("storage unavailable");
   });
-  assert.deepEqual(await session.inspectContext(current), {
+  assert.deepEqual(await runtime.inspectContext(session, current), {
     state: "unavailable",
     conversation: session.root.id,
   });
@@ -324,7 +332,7 @@ await test("inspection uses captured boundaries, caches live-only revisions and 
     ...current,
     docs: { ...current.docs, "pi.agent": { model: { provider: "missing", modelId: "missing" } } },
   };
-  const changed = await session.inspectContext(unknown);
+  const changed = await runtime.inspectContext(session, unknown);
   assert(changed.state === "available");
   assert.equal(changed.window, null);
   assert.equal(changed.fraction, null);
@@ -334,25 +342,20 @@ await test("inspection uses captured boundaries, caches live-only revisions and 
 await test("inspection reads no execution environment, starts no work and writes no durable state", async (t) => {
   const f = await fixture(t);
   let opens = 0;
-  await f.reopen([
-    {
-      id: "local",
-      targets: async () => [{ ...f.binding, available: true, label: "offline" }],
-      validate: async () => {},
-      open: () => {
-        opens++;
-        throw new Error("disconnected");
-      },
+  await f.reopen({
+    env: async () => {
+      opens++;
+      throw new Error("disconnected");
     },
-  ]);
+  });
   const session = await f.create();
   const entry = await append(session.root, { kind: "pi.user", model: [user("committed")] });
   const branch = await session.root.fork(entry.id, { ownership: { kind: "ownerless" } }, context);
   const before = await session.harness.inspect(context);
-  const history = await session.history();
+  const history = await runtime.history(session);
   for (const conversation of [session.root, branch, session.root])
     await inspect(session, conversation);
-  assert.deepEqual(await session.history(), history);
+  assert.deepEqual(await runtime.history(session), history);
   assert.deepEqual(await session.harness.inspect(context), before);
   assert.equal(opens, 0);
   assert.equal(f.faux.state.callCount, 0);

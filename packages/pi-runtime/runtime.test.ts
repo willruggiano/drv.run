@@ -1,6 +1,9 @@
+import { defineDoc } from "@earendil-works/pi-durable";
+import { openCodingSessions } from "./coding.ts";
+import * as runtime from "./index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -9,256 +12,208 @@ import {
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { defineExtension, section, type Conversation } from "@earendil-works/pi-durable";
+import {
+  Harness,
+  createRegistry,
+  defineExtension,
+  section,
+  type Conversation,
+} from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import {
-  Sessions,
-  SessionError,
-  localIntegration,
-  loadIntegrations,
-  stateDirectory,
-  type Integration,
-} from "./index.ts";
+import { Sessions, SessionError, stateDirectory } from "./index.ts";
 import { fixture, code, exists, model, waitFor } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-await test("local creation validates directories, models, IDs and bindings before opening storage", async (t) => {
+await test("creation is read-only and validates persistence identities and model defaults", async (t) => {
   const f = await fixture(t);
   await assert.rejects(f.sessions.create("bad", f.binding, model), code("invalid"));
-  await assert.rejects(
-    f.sessions.create(randomUUID(), { ...f.binding, provider: "missing" }, model),
-    code("unavailable"),
-  );
-  await assert.rejects(
-    f.sessions.create(randomUUID(), { ...f.binding, cwd: "." }, model),
-    code("invalid"),
-  );
   await assert.rejects(
     f.sessions.create(randomUUID(), f.binding, { provider: "missing", modelId: "missing" }),
     code("invalid"),
   );
-  assert.equal((await f.sessions.catalog()).sessions.length, 0);
+  const session = await f.create();
+  assert.equal((await session.harness.inspect(context)).scheduling, "paused");
   assert.equal(f.faux.state.callCount, 0);
+  await assert.rejects(
+    f.sessions.create(session.id, { ...f.binding, target: "/other" }, model),
+    code("conflict"),
+  );
 });
 
-await test("distinct local sessions keep their directories across a restart in a different directory", async (t) => {
+await test("environment selection persists independently and forks inherit selection at the entry", async (t) => {
   const f = await fixture(t);
   const second = join(f.workspace, "second");
   await mkdir(second);
+  const session = await f.create();
+  const one = await session.root.submit(
+    { type: "write", entry: { kind: "marker", data: { value: 1 } } },
+    context,
+  );
+  const entry = (await one.status(context)).entry;
+  assert(entry !== undefined);
   const binding = { provider: "local", target: second, cwd: second };
-  const a = await f.create();
-  const b = await f.sessions.create(randomUUID(), binding, model);
-  await assert.rejects(f.sessions.create(a.id, binding, model), code("conflict"));
-  await f.reopen([localIntegration(second)]);
+  await runtime.selectEnvironment(session, binding);
+  const fork = await session.root.fork(entry, { ownership: { kind: "ownerless" } }, context);
+  assert.deepEqual(await session.harness.snapshot(runtime.Environment, fork.id, context), {
+    provider: "local",
+    target: f.workspace,
+  });
+  assert.equal((await fork.agent(context)).cwd, f.workspace);
+  assert.deepEqual(await session.harness.snapshot(runtime.Environment, session.root.id, context), {
+    provider: "local",
+    target: second,
+  });
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("write", { path: "where.json", content: "1" }), {
       stopReason: "toolUse",
     }),
-    fauxAssistantMessage("Done."),
-    fauxAssistantMessage(fauxToolCall("write", { path: "where.json", content: "2" }), {
+    fauxAssistantMessage(fauxToolCall("write", { path: "where.json", content: "1" }), {
       stopReason: "toolUse",
     }),
     fauxAssistantMessage("Done."),
   ]);
-  for (const id of [a.id, b.id]) {
-    const session = await f.sessions.get(id);
-    await session.prompt("Write in your directory.", randomUUID());
-    await session.root.waitForIdle(context);
-  }
+  await fork.submit({ type: "input", content: "Write the selected file." }, context);
+  await fork.waitForIdle(context);
   assert.equal(JSON.parse(await readFile(join(f.workspace, "where.json"), "utf8")), 1);
-  assert.equal(JSON.parse(await readFile(join(second, "where.json"), "utf8")), 2);
-  assert.deepEqual((await (await f.sessions.get(a.id)).info()).binding, f.binding);
-  assert.deepEqual((await (await f.sessions.get(b.id)).info()).binding, binding);
+  assert.equal(await exists(join(second, "where.json")), false);
+  await f.reopen();
+  const restored = await f.sessions.get(session.id);
+  assert.deepEqual(await restored.harness.snapshot(runtime.Environment, session.root.id, context), {
+    provider: "local",
+    target: second,
+  });
+  assert.deepEqual(await restored.harness.snapshot(runtime.Environment, fork.id, context), {
+    provider: "local",
+    target: f.workspace,
+  });
+  assert.equal((await restored.harness.inspect(context)).scheduling, "paused");
 });
 
-await test("missing integrations preserve history, cannot prompt or resume, and never acquire local tools", async (t) => {
+await test("missing environments preserve history and permit upstream progress without local fallback", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   f.faux.setResponses([fauxAssistantMessage("Done.")]);
-  await session.prompt("Work.", randomUUID());
+  await session.root.submit({ type: "input", content: "Work." }, context);
   await session.root.waitForIdle(context);
-  const history = await session.history();
-  await f.reopen([]);
+  const before = await runtime.history(session);
+  await f.reopen({ env: undefined, targets: async () => [] });
   const restored = await f.sessions.get(session.id);
-  assert.deepEqual(await restored.history(), history);
+  assert.deepEqual(await runtime.history(restored), before);
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
-  assert.equal((await f.sessions.catalog()).targets.length, 0);
-  await assert.rejects(restored.prompt("Work.", randomUUID()), code("unavailable"));
-  await assert.rejects(restored.resume(), code("unavailable"));
-  assert.equal(f.faux.state.callCount, 1);
-});
-
-await test("removed local directories are unavailable without losing readable sessions", async (t) => {
-  const f = await fixture(t);
-  const session = await f.create();
-  await rm(f.workspace, { recursive: true });
-  await assert.rejects(session.prompt("Work.", randomUUID()), code("unavailable"));
-  await assert.rejects(session.resume(), code("unavailable"));
-  assert.equal((await session.history()).length, 0);
-  assert.equal((await f.sessions.catalog()).sessions.length, 1);
-});
-
-await test("integration leases are lazy, shared by concurrent tools, scoped and closed exactly once", async (t) => {
-  const f = await fixture(t);
-  let opens = 0,
-    closes = 0,
-    validations = 0;
-  const base = localIntegration(f.workspace);
-  const extension = defineExtension({
-    name: "test.instructions",
-    sections: [section("test", () => "Use the project directory.")],
-  });
-  const integration: Integration = {
-    ...base,
-    extensions: [extension],
-    async validate(binding) {
-      validations++;
-      await base.validate(binding);
-    },
-    async open(binding) {
-      opens++;
-      const lease = await base.open(binding);
-      return {
-        env: lease.env,
-        async close() {
-          closes++;
-          await lease.close();
-        },
-      };
-    },
-  };
-  await f.reopen([integration]);
-  const session = await f.create();
-  assert.equal(opens, 0);
-  await session.history();
-  await f.sessions.catalog();
-  assert.equal(opens, 0);
-  assert(
-    (await session.root.agent(context)).extensions.some((item) => item.name === extension.name),
-  );
   f.faux.setResponses([
-    fauxAssistantMessage(
-      [
-        fauxToolCall("write", { path: "a.json", content: "1" }),
-        fauxToolCall("write", { path: "b.json", content: "2" }),
-      ],
-      { stopReason: "toolUse" },
-    ),
-    fauxAssistantMessage("Done."),
+    fauxAssistantMessage(fauxToolCall("write", { path: "never.json", content: "1" }), {
+      stopReason: "toolUse",
+    }),
+    fauxAssistantMessage("Unavailable."),
   ]);
-  await session.prompt("Write both files.", randomUUID());
-  await session.root.waitForIdle(context);
-  assert.equal(opens, 1);
-  assert(validations >= 4); // create, prompt, generation and each tool call
-  assert.equal(await exists(join(f.workspace, "a.json")), true);
-  assert.equal(await exists(join(f.workspace, "b.json")), true);
+  await restored.root.submit({ type: "input", content: "Try the missing environment." }, context);
+  await restored.root.waitForIdle(context);
+  assert.equal(await exists(join(f.workspace, "never.json")), false);
+  const results = (await runtime.history(restored))
+    .flatMap((entry) => entry.model ?? [])
+    .filter((message) => message.role === "toolResult");
+  assert.equal(results.length, 1);
+  assert.equal(results[0].isError, true);
+  restored.harness.resume();
+});
+
+await test("application environment ownership is lazy and closes after all harnesses stop", async (t) => {
+  const f = await fixture(t);
+  let resolutions = 0,
+    closes = 0;
+  await f.reopen({
+    env: async (target, context) => {
+      resolutions++;
+      return f.options.env(target, context);
+    },
+    close: async () => {
+      closes++;
+      await f.options.close();
+    },
+  });
+  const a = await f.create(),
+    b = await f.create();
+  await runtime.history(a);
+  await f.sessions.catalog();
+  assert.equal(resolutions, 0);
+  f.faux.setResponses([fauxAssistantMessage("Done.")]);
+  await a.root.submit({ type: "input", content: "Hello." }, context);
+  await a.root.waitForIdle(context);
+  assert(resolutions > 0);
+  await a.harness.close(context);
+  assert.equal(closes, 0);
+  assert.equal((await b.harness.inspect(context)).scheduling, "paused");
   await Promise.all([f.sessions.close(), f.sessions.close()]);
   assert.equal(closes, 1);
   await assert.rejects(f.create(), code("closing"));
 });
 
-await test("integration acquisition failure blocks context and model dispatch; a later attempt can retry", async (t) => {
+await test("environment failure is a tool failure and a later attempt can resolve again", async (t) => {
   const f = await fixture(t);
-  let attempts = 0;
-  const base = localIntegration(f.workspace);
-  await f.reopen([
-    {
-      ...base,
-      open(binding) {
-        attempts++;
-        if (attempts === 1) throw new Error("Connection unavailable.");
-        return base.open(binding);
-      },
+  let available = false;
+  await f.reopen({
+    env: async (target, context) => {
+      if (!available) throw new SessionError("unavailable", "Disconnected.");
+      return f.options.env(target, context);
     },
-  ]);
+  });
+  const session = await f.create();
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("write", { path: "never.json", content: "1" }), {
       stopReason: "toolUse",
     }),
-    fauxAssistantMessage("Failed."),
+    fauxAssistantMessage("Unavailable."),
   ]);
-  const session = await f.create();
-  await session.prompt("Try writing.", randomUUID());
-  await session.root.waitForIdle(context);
-  const results = (await session.history())
-    .flatMap((entry) => entry.model ?? [])
-    .filter((message) => message.role === "toolResult");
-  assert.equal(results.length, 0);
-  assert.equal(f.faux.state.callCount, 0);
-  assert.equal(await exists(join(f.workspace, "never.json")), false);
-  f.faux.setResponses([
-    fauxAssistantMessage(fauxToolCall("write", { path: "retry.json", content: "2" }), {
-      stopReason: "toolUse",
-    }),
-    fauxAssistantMessage("Done."),
-  ]);
-  await session.prompt("Try again.", randomUUID());
-  await session.root.waitForIdle(context);
-  assert.equal(JSON.parse(await readFile(join(f.workspace, "retry.json"), "utf8")), 2);
-});
-
-await test("availability is checked again for tools, not just at prompt admission", async (t) => {
-  const f = await fixture(t);
-  let available = true;
-  const base = localIntegration(f.workspace);
-  await f.reopen([
-    {
-      ...base,
-      async validate(binding) {
-        assert(available);
-        await base.validate(binding);
-      },
-    },
-  ]);
-  f.faux.setResponses([
-    () => {
-      available = false;
-      return fauxAssistantMessage(fauxToolCall("write", { path: "never.json", content: "1" }), {
-        stopReason: "toolUse",
-      });
-    },
-    fauxAssistantMessage("Failed."),
-  ]);
-  const session = await f.create();
-  await session.prompt("Work.", randomUUID());
+  await session.root.submit({ type: "input", content: "Try writing." }, context);
   await session.root.waitForIdle(context);
   assert.equal(await exists(join(f.workspace, "never.json")), false);
-  const results = (await session.history())
-    .flatMap((entry) => entry.model ?? [])
-    .filter((message) => message.role === "toolResult");
-  assert.equal(results[0].isError, true);
+  assert.equal(
+    (await runtime.history(session))
+      .flatMap((entry) => entry.model ?? [])
+      .filter((message) => message.role === "toolResult")[0].isError,
+    true,
+  );
+  available = true;
+  f.faux.setResponses([fauxAssistantMessage("Reconnected.")]);
+  await session.root.submit({ type: "input", content: "Continue." }, context);
+  await session.root.waitForIdle(context);
+  assert.equal((await session.harness.inspect(context)).tasks.length, 0);
 });
 
-await test("local environment cleanup and identity follow Durable's contract", async (t) => {
+await test("harness management accepts an application registry without coding or environments", async (t) => {
   const f = await fixture(t);
-  const local = localIntegration(f.workspace);
-  const lease = await local.open(f.binding);
-  assert(lease.env instanceof NodeExecutionEnv);
-  assert.equal(lease.env.cwd, f.workspace);
-  assert.equal(lease.env.id, new NodeExecutionEnv({ cwd: f.directory }).id);
-  await lease.close();
-});
-
-await test("explicit module loading validates factories and rejects duplicate integration identities", async (t) => {
-  const f = await fixture(t);
-  const module = join(f.workspace, "integration.mjs");
-  await writeFile(
-    module,
-    'export default () => ({ id: "example", targets: async () => [], validate: async () => {}, open: () => { throw new Error(); } });',
+  const registry = createRegistry();
+  const extension = defineExtension({
+    name: "custom",
+    sections: [section("custom", () => "Custom agent.")],
+  });
+  registry.install(extension);
+  const sessions = await Sessions.open({
+    directory: join(f.directory, "plain"),
+    models: f.options.models,
+    open: (storage) =>
+      Harness.open(
+        storage,
+        { models: f.options.models, registry, settings: { extensions: [extension] } },
+        context,
+      ),
+  });
+  t.after(() => sessions.close());
+  const session = await sessions.create(randomUUID());
+  assert.equal((await runtime.sessionInfo(session)).binding, undefined);
+  assert.equal((await session.root.agent(context)).model, undefined);
+  await session.root.configure({ model }, context);
+  assert.deepEqual(
+    (await session.root.agent(context)).extensions.map((item) => item.name),
+    ["custom"],
   );
-  const loaded = await loadIntegrations([module]);
-  assert.equal(loaded[0].id, "example");
-  assert.deepEqual(await loaded[0].targets(), []);
-  const invalid = join(f.workspace, "invalid.mjs");
-  await writeFile(invalid, "export default 42;");
-  await assert.rejects(loadIntegrations([invalid]), assert.AssertionError);
-  await assert.rejects(loadIntegrations([join(f.workspace, "missing.mjs")]));
-  await assert.rejects(
-    Sessions.open({ ...f.options, integrations: [...loaded, ...loaded] }),
-    assert.AssertionError,
-  );
+  assert.deepEqual((await session.root.agent(context)).tools, []);
+  f.faux.setResponses([fauxAssistantMessage("Independent agent.")]);
+  await session.root.submit({ type: "input", content: "Hello." }, context);
+  await session.root.waitForIdle(context);
+  assert.equal(f.faux.state.callCount, 1);
 });
 
 await test("state directory follows absolute XDG_STATE_HOME without systemd", () => {
@@ -278,9 +233,9 @@ await test("concurrent creation is idempotent", async (t) => {
   );
   for (const result of results) assert.equal(result, results[0]);
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
-  const before = await results[0].info();
+  const before = await runtime.sessionInfo(results[0]);
   await f.reopen();
-  assert.deepEqual(await (await f.sessions.get(id)).info(), before);
+  assert.deepEqual(await runtime.sessionInfo(await f.sessions.get(id)), before);
 });
 
 await test("local coding tools use the bound directory, not the state directory", async (t) => {
@@ -300,14 +255,17 @@ await test("local coding tools use the bound directory, not the state directory"
     fauxAssistantMessage("Done."),
   ]);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
-  await session.prompt("Exercise the coding tools.", randomUUID());
+  await session.root.submit(
+    { type: "input", content: "Exercise the coding tools.", requestId: randomUUID() },
+    context,
+  );
   await session.root.waitForIdle(context);
   assert.deepEqual(JSON.parse(await readFile(join(f.workspace, "state.json"), "utf8")), {
     value: 2,
   });
   assert.equal(await exists(join(f.workspace, "command-ran")), true);
   assert.equal(await exists(join(f.directory, "state.json")), false);
-  const messages = (await session.history()).flatMap((entry) => entry.model ?? []);
+  const messages = (await runtime.history(session)).flatMap((entry) => entry.model ?? []);
   const results = messages.filter((message) => message.role === "toolResult");
   assert.equal(results.length, 4);
   assert.equal(
@@ -346,9 +304,12 @@ await test("codemode is enabled and runs parallel coding tools in the bound dire
     ),
     fauxAssistantMessage("Done."),
   ]);
-  await session.prompt("Use codemode.", randomUUID());
+  await session.root.submit(
+    { type: "input", content: "Use codemode.", requestId: randomUUID() },
+    context,
+  );
   await session.root.waitForIdle(context);
-  const history = await session.history();
+  const history = await runtime.history(session);
   const results = history
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
@@ -374,7 +335,7 @@ await test("codemode is enabled and runs parallel coding tools in the bound dire
   assert.equal(await exists(join(f.directory, "code.json")), false);
   await f.reopen();
   const restored = await f.sessions.get(session.id);
-  assert.deepEqual(await restored.history(), history);
+  assert.deepEqual(await runtime.history(restored), history);
   f.faux.setResponses([
     fauxAssistantMessage(
       fauxToolCall("codemode", {
@@ -384,7 +345,10 @@ await test("codemode is enabled and runs parallel coding tools in the bound dire
     ),
     fauxAssistantMessage("Done."),
   ]);
-  await restored.prompt("Use codemode after reopening.", randomUUID());
+  await restored.root.submit(
+    { type: "input", content: "Use codemode after reopening.", requestId: randomUUID() },
+    context,
+  );
   await restored.root.waitForIdle(context);
   assert.equal(JSON.parse(await readFile(join(f.workspace, "reopened.json"), "utf8")), 4);
 });
@@ -401,16 +365,19 @@ await test("codemode reports script and nested tool errors without breaking late
       fauxAssistantMessage(fauxToolCall("codemode", { code: source }), { stopReason: "toolUse" }),
       fauxAssistantMessage("Failed."),
     ]);
-    await session.prompt("Exercise a failure.", randomUUID());
+    await session.root.submit(
+      { type: "input", content: "Exercise a failure.", requestId: randomUUID() },
+      context,
+    );
     await session.root.waitForIdle(context);
-    const result = (await session.history())
+    const result = (await runtime.history(session))
       .flatMap((entry) => entry.model ?? [])
       .filter((message) => message.role === "toolResult")
       .at(-1);
     assert.equal(result?.isError, true);
     assert.equal((await session.harness.inspect(context)).tasks.length, 0);
   }
-  const result = (await session.history())
+  const result = (await runtime.history(session))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult")
     .at(-1);
@@ -425,7 +392,10 @@ await test("codemode reports script and nested tool errors without breaking late
     ),
     fauxAssistantMessage("Recovered."),
   ]);
-  await session.prompt("Recover.", randomUUID());
+  await session.root.submit(
+    { type: "input", content: "Recover.", requestId: randomUUID() },
+    context,
+  );
   await session.root.waitForIdle(context);
   assert.equal(JSON.parse(await readFile(join(f.workspace, "recovered.json"), "utf8")), true);
 });
@@ -449,16 +419,19 @@ await test(
       f.faux.setResponses([
         fauxAssistantMessage(fauxToolCall("codemode", { code: source }), { stopReason: "toolUse" }),
       ]);
-      await session.prompt("Run until stopped.", randomUUID());
+      await session.root.submit(
+        { type: "input", content: "Run until stopped.", requestId: randomUUID() },
+        context,
+      );
       await waitFor(() => exists(join(f.workspace, marker)));
-      await session.stop();
+      await session.root.abort(context);
       assert.equal((await session.harness.inspect(context)).tasks.length, 0);
     }
     assert.equal(await exists(join(f.workspace, "nested-finished")), false);
   },
 );
 
-await test("opening persisted work is read-only until explicit resume, even when another session runs", async (t) => {
+await test("opening persisted work is read-only; progress is scoped to its harness", async (t) => {
   const f = await fixture(t);
   const started = Promise.withResolvers<void>();
   f.faux.setResponses([
@@ -473,28 +446,32 @@ await test("opening persisted work is read-only until explicit resume, even when
     },
   ]);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
-  await session.prompt("Work until interrupted.", randomUUID());
+  await session.root.submit(
+    { type: "input", content: "Work until interrupted.", requestId: randomUUID() },
+    context,
+  );
   await started.promise;
   await f.reopen();
   const restored = await f.sessions.get(session.id);
-  assert.equal(restored.needsResume, true);
-  await restored.rename("Interrupted work");
-  assert.equal((await restored.info()).name, "Interrupted work");
-  await restored.history();
+  assert.equal((await runtime.sessionInfo(restored)).needsResume, true);
+  await runtime.rename(restored, "Interrupted work");
+  assert.equal((await runtime.sessionInfo(restored)).name, "Interrupted work");
+  await runtime.history(restored);
   await f.sessions.catalog();
   assert.equal(f.faux.state.callCount, 1);
-  await assert.rejects(restored.prompt("New work", randomUUID()), code("conflict"));
-  await assert.rejects(restored.stop(), code("conflict"));
   f.faux.setResponses([fauxAssistantMessage("Other session."), fauxAssistantMessage("Resumed.")]);
   const other = await f.sessions.create(randomUUID(), f.binding, model);
-  await other.prompt("Independent work", randomUUID());
+  await other.root.submit(
+    { type: "input", content: "Independent work", requestId: randomUUID() },
+    context,
+  );
   await other.root.waitForIdle(context);
   assert.equal(f.faux.state.callCount, 2);
-  assert.equal(restored.needsResume, true);
+  assert.equal((await runtime.sessionInfo(restored)).needsResume, true);
   assert.equal((await restored.harness.inspect(context)).scheduling, "paused");
-  await restored.resume();
+  restored.harness.resume();
   await restored.root.waitForIdle(context);
-  assert.equal(restored.needsResume, false);
+  assert.equal((await runtime.sessionInfo(restored)).needsResume, false);
   assert.equal(f.faux.state.callCount, 3);
   assert.equal((await restored.harness.inspect(context)).tasks.length, 0);
 });
@@ -508,9 +485,12 @@ await test("stop aborts a running local process group", async (t) => {
     ),
   ]);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
-  await session.prompt("Run a long command.", randomUUID());
+  await session.root.submit(
+    { type: "input", content: "Run a long command.", requestId: randomUUID() },
+    context,
+  );
   await waitFor(() => exists(join(f.workspace, "started")));
-  await session.stop();
+  await session.root.abort(context);
   assert.equal((await session.harness.inspect(context)).tasks.length, 0);
   assert.equal(await exists(join(f.workspace, "finished")), false);
 });
@@ -518,25 +498,25 @@ await test("stop aborts a running local process group", async (t) => {
 await test("session names persist without changing bindings or starting work", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
-  await session.rename("  Counter cleanup  ");
-  assert.equal((await session.info()).name, "Counter cleanup");
-  assert.deepEqual((await session.info()).binding, f.binding);
+  await runtime.rename(session, "  Counter cleanup  ");
+  assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
+  assert.deepEqual((await runtime.sessionInfo(session)).binding, f.binding);
   for (const name of ["a".repeat(121), "line\nbreak", "null\0byte"])
-    await assert.rejects(session.rename(name), code("invalid"));
-  await f.reopen([]);
+    await assert.rejects(runtime.rename(session, name), code("invalid"));
+  await f.reopen({ env: undefined, targets: async () => [] });
   const restored = await f.sessions.get(session.id);
-  assert.equal((await restored.info()).name, "Counter cleanup");
-  await restored.rename("<b>Plain text</b>");
-  assert.equal((await restored.info()).name, "<b>Plain text</b>");
+  assert.equal((await runtime.sessionInfo(restored)).name, "Counter cleanup");
+  await runtime.rename(restored, "<b>Plain text</b>");
+  assert.equal((await runtime.sessionInfo(restored)).name, "<b>Plain text</b>");
   assert.equal(f.faux.state.callCount, 0);
-  await restored.rename("");
-  assert.equal((await restored.info()).name, "");
+  await runtime.rename(restored, "");
+  assert.equal((await runtime.sessionInfo(restored)).name, "");
 });
 
 await test("footer repository inspection follows the bound directory without running the agent", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
-  assert.deepEqual(await session.repository(), { state: "none" });
+  assert.deepEqual(await runtime.repository(session), { state: "none" });
   const env = new NodeExecutionEnv({ cwd: f.workspace });
   t.after(() => env.cleanup(context));
   const git = async (...args: string[]) => {
@@ -545,7 +525,7 @@ await test("footer repository inspection follows the bound directory without run
     assert.equal(result.value.exitCode, 0);
   };
   await git("init", "--initial-branch=footer-test");
-  assert.deepEqual(await session.repository(), {
+  assert.deepEqual(await runtime.repository(session), {
     state: "repository",
     branch: "footer-test",
     revision: null,
@@ -561,19 +541,21 @@ await test("footer repository inspection follows the bound directory without run
     "-m",
     "Initial",
   );
-  const committed = await session.repository();
+  const committed = await runtime.repository(session);
   assert.equal(committed.state, "repository");
   assert(committed.state === "repository" && committed.revision);
   await git("checkout", "--detach");
-  assert.deepEqual(await session.repository(), {
+  assert.deepEqual(await runtime.repository(session), {
     state: "repository",
     branch: null,
     revision: committed.revision,
   });
   assert.equal(f.faux.state.callCount, 0);
   assert.equal((await session.harness.inspect(context)).scheduling, "paused");
-  await f.reopen([]);
-  assert.deepEqual(await (await f.sessions.get(session.id)).repository(), { state: "unavailable" });
+  await f.reopen({ env: undefined, targets: async () => [] });
+  assert.deepEqual(await runtime.repository(await f.sessions.get(session.id)), {
+    state: "unavailable",
+  });
 });
 
 await test("footer context uses the selected model and active context, not lifetime spend", async (t) => {
@@ -582,7 +564,7 @@ await test("footer context uses the selected model and active context, not lifet
   const status = async (conversation: Conversation = session.root) => {
     const watch = await conversation.watch(context);
     try {
-      return session.contextStatus(watch.value);
+      return runtime.contextStatus(session, watch.value);
     } finally {
       await watch.stop();
     }
@@ -590,9 +572,9 @@ await test("footer context uses the selected model and active context, not lifet
   assert.deepEqual(await status(), { window: 128000, autoCompact: true, lastResponse: null });
   assert.deepEqual((await f.sessions.catalog()).sessions[0].context, await status());
   f.faux.setResponses([fauxAssistantMessage("Measured response.")]);
-  await session.prompt("Hello.", randomUUID());
+  await session.root.submit({ type: "input", content: "Hello.", requestId: randomUUID() }, context);
   await session.root.waitForIdle(context);
-  const history = await session.history();
+  const history = await runtime.history(session);
   const entry = history.at(-1);
   const message = entry?.model?.[0];
   assert(entry && message?.role === "assistant");
@@ -606,7 +588,7 @@ await test("footer context uses the selected model and active context, not lifet
   try {
     // Switching back to an earlier model must not resurrect older measurements.
     assert.equal(
-      session.contextStatus({
+      runtime.contextStatus(session, {
         ...watch.value,
         entries: [
           { ...entry, id: watch.value.entries[0].id },
@@ -668,27 +650,25 @@ await test("path completion uses remote leases, bounds scanning and closes faile
       },
     };
   };
-  await f.reopen([
-    {
-      id: "remote",
-      targets: async () => [{ ...binding, label: "Guest", available }],
-      async validate() {
-        if (!available) throw new SessionError("unavailable", "Guest disconnected");
-      },
-      open: () => ({ env, close: () => env.cleanup(context) }),
+  await f.reopen({
+    targets: async () => [{ ...binding, label: "Guest", available }],
+    env: async () => {
+      if (!available) throw new SessionError("unavailable", "Guest disconnected");
+      return env;
     },
-  ]);
+    close: () => env.cleanup(context),
+  });
   const session = await f.sessions.create(randomUUID(), binding, model);
-  const paths = await session.completePaths("src/remote");
+  const paths = await runtime.completePaths(session, "src/remote");
   assert.equal(paths.length, 50);
   assert(paths.every((path) => path.startsWith("src/remote-")));
   assert.equal(pages, 50);
   assert.equal(closes, 1);
   fail = true;
-  await assert.rejects(session.completePaths("src/"), /Disconnected/);
+  await assert.rejects(runtime.completePaths(session, "src/"), /Disconnected/);
   assert.equal(closes, 2);
   available = false;
-  await assert.rejects(session.completePaths("src/"), code("unavailable"));
+  await assert.rejects(runtime.completePaths(session, "src/"), code("unavailable"));
   assert.equal(closes, 2);
   assert.equal(f.faux.state.callCount, 0);
 });
@@ -696,9 +676,9 @@ await test("path completion uses remote leases, bounds scanning and closes faile
 await test("thinking defaults follow Pi precedence and model capabilities, and persist per conversation", async (t) => {
   const f = await fixture(t);
   const initial = await f.create();
-  assert.equal((await initial.info()).thinkingLevel, "medium");
+  assert.equal((await runtime.sessionInfo(initial)).thinkingLevel, "medium");
   await f.sessions.close();
-  const sessions = await Sessions.open({
+  const sessions = await openCodingSessions({
     ...f.options,
     thinkingLevel: "low",
     modelThinkingLevels: { "faux/faux-1": "high" },
@@ -708,16 +688,19 @@ await test("thinking defaults follow Pi precedence and model capabilities, and p
   assert.equal(catalog.models[0].defaultThinkingLevel, "high");
   assert.deepEqual(catalog.models[0].thinkingLevels, ["off", "minimal", "low", "medium", "high"]);
   const perModel = await sessions.create(randomUUID(), f.binding, model);
-  assert.equal((await perModel.info()).thinkingLevel, "high");
+  assert.equal((await runtime.sessionInfo(perModel)).thinkingLevel, "high");
   const explicit = await sessions.create(randomUUID(), f.binding, model, "off");
-  assert.equal((await explicit.info()).thinkingLevel, "off");
+  assert.equal((await runtime.sessionInfo(explicit)).thinkingLevel, "off");
   const clamped = await sessions.create(randomUUID(), f.binding, model, "max");
-  assert.equal((await clamped.info()).thinkingLevel, "high");
-  assert.equal((await (await sessions.get(initial.id)).info()).thinkingLevel, "medium");
+  assert.equal((await runtime.sessionInfo(clamped)).thinkingLevel, "high");
+  assert.equal((await runtime.sessionInfo(await sessions.get(initial.id))).thinkingLevel, "medium");
   await sessions.close();
   await f.reopen();
-  assert.equal((await (await f.sessions.get(perModel.id)).info()).thinkingLevel, "high");
-  assert.equal((await (await f.sessions.get(explicit.id)).info()).thinkingLevel, "off");
+  assert.equal(
+    (await runtime.sessionInfo(await f.sessions.get(perModel.id))).thinkingLevel,
+    "high",
+  );
+  assert.equal((await runtime.sessionInfo(await f.sessions.get(explicit.id))).thinkingLevel, "off");
 });
 
 await test("thinking choices include max only when supported and non-reasoning models stay off", async (t) => {
@@ -735,7 +718,7 @@ await test("thinking choices include max only when supported and non-reasoning m
   ]);
   assert.equal(f.sessions.resolveThinking(model, "minimal"), "low");
   const maximum = await f.sessions.create(randomUUID(), f.binding, model, "max");
-  assert.equal((await maximum.info()).thinkingLevel, "max");
+  assert.equal((await runtime.sessionInfo(maximum)).thinkingLevel, "max");
   const plain = fauxProvider({ provider: "plain", models: [{ id: "plain", reasoning: false }] });
   f.options.models.setProvider(plain.provider);
   const ref = { provider: "plain", modelId: "plain" };
@@ -743,5 +726,129 @@ await test("thinking choices include max only when supported and non-reasoning m
   assert.deepEqual(entry?.thinkingLevels, ["off"]);
   assert.equal(entry.defaultThinkingLevel, "off");
   const session = await f.sessions.create(randomUUID(), f.binding, ref, "high");
-  assert.equal((await session.info()).thinkingLevel, "off");
+  assert.equal((await runtime.sessionInfo(session)).thinkingLevel, "off");
+});
+
+await test("switching environments leaves a running command in its original environment", async (t) => {
+  const f = await fixture(t);
+  const next = join(f.workspace, "next");
+  await mkdir(next);
+  const session = await f.create();
+  f.faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("bash", {
+        command:
+          "touch started; while test ! -f release; do sleep 0.01; done; printf 1 > completed.json",
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Finished the original command."),
+  ]);
+  await session.root.submit({ type: "input", content: "Run until released." }, context);
+  await waitFor(() => exists(join(f.workspace, "started")));
+  await runtime.selectEnvironment(session, { provider: "local", target: next, cwd: next });
+  await writeFile(join(f.workspace, "release"), "");
+  await session.root.waitForIdle(context);
+  assert.equal(JSON.parse(await readFile(join(f.workspace, "completed.json"), "utf8")), 1);
+  assert.equal(await exists(join(next, "completed.json")), false);
+  f.faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("write", { path: "next.json", content: "2" }), {
+      stopReason: "toolUse",
+    }),
+    fauxAssistantMessage("Used the selected environment."),
+  ]);
+  await session.root.submit({ type: "input", content: "Write in the new environment." }, context);
+  await session.root.waitForIdle(context);
+  assert.equal(JSON.parse(await readFile(join(next, "next.json"), "utf8")), 2);
+  assert.equal(await exists(join(f.workspace, "next.json")), false);
+});
+
+await test("a submission enables eligible work in other conversations of the same recovered harness", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const marker = await session.root.submit({ type: "write", entry: { kind: "marker" } }, context);
+  const at = (await marker.status(context)).entry;
+  assert(at !== undefined);
+  const branch = await session.root.fork(at, { ownership: { kind: "ownerless" } }, context);
+  const started = Promise.withResolvers<void>();
+  f.faux.setResponses([
+    async (_messages, options) => {
+      assert(options?.signal);
+      started.resolve();
+      await new Promise<void>((resolve) => {
+        if (options.signal?.aborted) resolve();
+        else options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return fauxAssistantMessage("", { stopReason: "aborted" });
+    },
+  ]);
+  await session.root.submit({ type: "input", content: "Interrupted root work." }, context);
+  await started.promise;
+  await f.reopen();
+  const restored = await f.sessions.get(session.id);
+  assert.equal((await restored.harness.inspect(context)).scheduling, "paused");
+  const other = await restored.harness.conversation(branch.id, context);
+  assert(other);
+  f.faux.setResponses([
+    fauxAssistantMessage("One conversation."),
+    fauxAssistantMessage("The other conversation."),
+  ]);
+  await other.submit({ type: "input", content: "New branch work." }, context);
+  assert.equal((await restored.harness.inspect(context)).scheduling, "running");
+  await restored.harness.waitForIdle(context);
+  assert.equal(f.faux.state.callCount, 3);
+  assert.equal((await restored.harness.inspect(context)).tasks.length, 0);
+});
+
+await test("legacy metadata and history remain intact until an environment is explicitly selected", async (t) => {
+  const f = await fixture(t);
+  const LegacyMetadata = defineDoc<{ binding: typeof f.binding | null; created: number }>({
+    kind: "app.session",
+    version: 1,
+    scope: "conversation",
+    history: "latest",
+    fork: "current",
+    initial: () => ({ binding: null, created: 0 }),
+  });
+  const directory = join(f.directory, "legacy");
+  let sessions = await Sessions.open({
+    directory,
+    models: f.options.models,
+    async open(storage) {
+      const harness = await Harness.open(
+        storage,
+        { models: f.options.models, registry: createRegistry() },
+        context,
+      );
+      await harness.root(context, {
+        agent: { model, cwd: f.workspace },
+        init: async (tx, id) => {
+          Object.assign(await tx.doc(LegacyMetadata, id), { binding: f.binding, created: 1 });
+        },
+      });
+      return harness;
+    },
+  });
+  t.after(() => sessions.close());
+  const session = await sessions.create(randomUUID());
+  await session.root.submit(
+    { type: "write", entry: { kind: "marker", data: { retained: true } } },
+    context,
+  );
+  const before = await runtime.history(session);
+  await sessions.close();
+  sessions = await openCodingSessions({ ...f.options, directory });
+  const restored = await sessions.get(session.id);
+  assert.deepEqual(await runtime.history(restored), before);
+  assert.deepEqual(await restored.harness.snapshot(LegacyMetadata, restored.root.id, context), {
+    binding: f.binding,
+    created: 1,
+  });
+  assert.equal((await runtime.sessionInfo(restored)).binding, undefined);
+  await assert.rejects(runtime.environment(restored), code("unavailable"));
+  assert.equal((await restored.harness.inspect(context)).scheduling, "paused");
+  await runtime.selectEnvironment(restored, f.binding);
+  assert.equal((await runtime.environment(restored)).cwd, f.workspace);
+  assert.deepEqual(await runtime.history(restored), before);
+  assert.equal(f.faux.state.callCount, 0);
 });

@@ -1,3 +1,4 @@
+import * as runtime from "../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
@@ -9,7 +10,7 @@ import { chromium, type Page } from "playwright";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { fixture, waitFor } from "../../pi-runtime/testing.ts";
-import type { ManagedSession } from "../../pi-runtime/index.ts";
+import type { Session } from "../../pi-runtime/index.ts";
 import { commandCompletions } from "../completions.ts";
 import { buildAssets } from "../build.ts";
 import { chromiumExecutable, serve } from "./testing.ts";
@@ -36,8 +37,8 @@ async function landingFixture(t: TestContext) {
   return { ...f, page, base, open, currentSession };
 }
 
-async function userMessages(session: ManagedSession) {
-  return (await session.history())
+async function userMessages(session: Session) {
+  return (await runtime.history(session))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "user")
     .map((message) => message.content);
@@ -96,7 +97,7 @@ await test("landing composer creates sessions with the first draft, options and 
     await attachImage(page);
     f.faux.setResponses([fauxAssistantMessage("Received.")]);
     // The initial prompt must not wait for an SSE connection.
-    await page.route("**/events", (route) => route.abort());
+    await page.route("**/api/harness/*/watch", (route) => route.abort());
     if (action === "sessions") {
       await page.click("#title");
       await page.fill("#session-filter", "This is only a filter");
@@ -117,11 +118,11 @@ await test("landing composer creates sessions with the first draft, options and 
     assert(Array.isArray(content));
     assert.deepEqual(content[0], { type: "text", text });
     assert.equal(content[1].type, "image");
-    assert.equal((await session.info()).thinkingLevel, "high");
+    assert.equal((await runtime.sessionInfo(session)).thinkingLevel, "high");
     assert.equal(await page.locator("#attachments button").count(), 0);
     assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), sourceKey), "");
     assert.equal(await page.locator("#landing").isVisible(), false);
-    await page.unroute("**/events");
+    await page.unroute("**/api/harness/*/watch");
     await session.root.waitForIdle(BACKGROUND_CONTEXT);
   }
   for (const text of ["", "  \n ", "/new"]) {
@@ -156,8 +157,8 @@ await test("landing composer preserves creation failures and retries a lost prom
   assert.equal((await f.sessions.catalog()).sessions.length, 0);
   await page.unroute("**/api/sessions");
 
-  const requests: { requestId: string; text: string; mode: string }[] = [];
-  await page.route("**/prompt", async (route) => {
+  const requests: { requestId: string; content: unknown; whenBusy: string }[] = [];
+  await page.route("**/submit", async (route) => {
     requests.push(route.request().postDataJSON());
     const response = await route.fetch();
     assert.equal(response.status(), 200);
@@ -176,8 +177,8 @@ await test("landing composer preserves creation failures and retries a lost prom
   await waitFor(async () => (await userMessages(session)).length === 1);
   await session.root.waitForIdle(BACKGROUND_CONTEXT);
   await page.locator("#status[data-state=ready]").waitFor();
-  await page.unroute("**/prompt");
-  await page.route("**/prompt", async (route) => {
+  await page.unroute("**/submit");
+  await page.route("**/submit", async (route) => {
     requests.push(route.request().postDataJSON());
     await route.continue();
   });
@@ -187,7 +188,7 @@ await test("landing composer preserves creation failures and retries a lost prom
   );
   assert.equal(requests.length, 2);
   assert.equal(requests[0].requestId, requests[1].requestId);
-  assert.equal(requests[0].mode, "followUp");
+  assert.equal(requests[0].whenBusy, "followUp");
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
   assert.equal((await userMessages(session)).length, 1);
   assert.equal(f.faux.state.callCount, 1);
@@ -216,7 +217,7 @@ await test("landing creation captures options once and preserves edits during cr
     await releaseCreation.promise;
     await route.continue();
   });
-  await page.route("**/prompt", async (route) => {
+  await page.route("**/submit", async (route) => {
     submitting.resolve();
     await releasePrompt.promise;
     await route.continue();
@@ -233,7 +234,7 @@ await test("landing creation captures options once and preserves edits during cr
   await submitting.promise;
   const session = await f.currentSession();
   assert.equal(await page.inputValue("#prompt"), "Edited during creation");
-  assert.equal((await session.info()).thinkingLevel, "high");
+  assert.equal((await runtime.sessionInfo(session)).thinkingLevel, "high");
   await page.fill("#prompt", "Edited during submission");
   await attachImage(page);
   releasePrompt.resolve();
@@ -297,7 +298,7 @@ await test("landing creation cannot replace an explicitly selected session or vi
   const submitting = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   t.after(() => release.resolve());
-  await page.route("**/prompt", async (route) => {
+  await page.route("**/submit", async (route) => {
     submitting.resolve();
     await release.promise;
     await route.continue();
@@ -408,7 +409,7 @@ await test("mobile browser composer runs commands without sending prompts and pr
   const page = await browser(t);
   let prompts = 0;
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname.endsWith("/prompt")) prompts++;
+    if (new URL(request.url()).pathname.endsWith("/submit")) prompts++;
   });
   await page.goto(`${base}/?session=${session.id}`);
   await page.waitForSelector("#status[data-state=ready]");
@@ -516,10 +517,10 @@ await test("mobile browser composer runs commands without sending prompts and pr
   await page.waitForSelector("#status[data-state=ready]");
   f.faux.setResponses([fauxAssistantMessage("Mention received.")]);
   const request = page.waitForRequest((request) =>
-    new URL(request.url()).pathname.endsWith("/prompt"),
+    new URL(request.url()).pathname.endsWith("/submit"),
   );
   await run('Read @"a folder/file.txt"');
-  assert.equal((await request).postDataJSON().text, 'Read @"a folder/file.txt"');
+  assert.equal((await request).postDataJSON().content, 'Read @"a folder/file.txt"');
   await page.getByText("Mention received.", { exact: true }).waitFor();
   assert.equal(prompts, 1);
 });

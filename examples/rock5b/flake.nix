@@ -257,7 +257,7 @@
             in
               pkgs.writeShellScriptBin "pi-serve" ''
                 exec ${lib.getExe pi.pi-serve} --no-local \
-                  --extension ${pi.pi-drv-run}/lib/pi-extensions/drv-run/index.js "$@"
+                  --drv-run "$@"
               '';
           };
         };

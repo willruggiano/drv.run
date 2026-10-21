@@ -7,7 +7,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { Page } from "playwright";
-import type { Snapshot } from "../../pi-runtime/index.ts";
+import type { RenderState } from "../client.ts";
 import { fixture, model } from "../../pi-runtime/testing.ts";
 import { snapshot } from "./testing.ts";
 import {
@@ -24,7 +24,7 @@ async function rendererFixture(t: TestContext) {
   const f = await fixture(t);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
   const b = await browserFixture(t, f.sessions);
-  const state = await snapshot(`${b.base}/api/sessions/${session.id}/events`);
+  const state = await snapshot(`${b.base}/api/harness/${session.id}/watch`);
   const url = `${b.base}/?session=${session.id}`;
   const entries = [...state.view.entries];
   state.view = { ...state.view, entries };
@@ -39,24 +39,27 @@ async function rendererFixture(t: TestContext) {
   };
   const load = async (page: Page = b.page) => {
     // Keep a closed fixture stream from reconnecting and racing direct renders.
-    await page.route("**/events", (route) =>
+    await page.route("**/api/harness/*/watch", (route) =>
       route.fulfill({
         contentType: "text/event-stream",
-        body: `retry: 3600000\n\ndata: ${JSON.stringify(state)}\n\n`,
+        body: `retry: 3600000\n\ndata: ${JSON.stringify({ value: state.view, ops: [] })}\n\n`,
       }),
     );
     await page.goto(url);
     await page.locator("#bottom-line:not([hidden])").waitFor();
   };
   const render = async (page: Page = b.page) => {
-    const frontend = await page.evaluateHandle<{ render(snapshot: Snapshot): void }>(
+    const frontend = await page.evaluateHandle<{ render(snapshot: RenderState): void }>(
       "import('/client.js')",
     );
     try {
-      await page.evaluate(({ frontend, data }) => frontend.render(JSON.parse(data) as Snapshot), {
-        frontend,
-        data: JSON.stringify(state),
-      });
+      await page.evaluate(
+        ({ frontend, data }) => frontend.render(JSON.parse(data) as RenderState),
+        {
+          frontend,
+          data: JSON.stringify(state),
+        },
+      );
     } finally {
       await frontend.dispose();
     }

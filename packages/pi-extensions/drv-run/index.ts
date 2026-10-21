@@ -3,15 +3,13 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { defineExtension, section } from "@earendil-works/pi-durable";
-import { RemoteExecutionEnv, sshConnection } from "@earendil-works/pi-env";
-import { SessionError, stateDirectory, type Integration } from "../../pi-runtime/index.ts";
+import { sshConnection } from "@earendil-works/pi-env";
+import { SessionError, stateDirectory } from "../../pi-runtime/index.ts";
 
 const exec = promisify(execFile);
 const instanceId = /^[a-zA-Z0-9]+$/;
 export type Instance = { id: string; reference: string; running: boolean };
-type Options = {
+export type Options = {
   stateDirectory: string;
   runtimeDirectory: string;
   systemctl?: string;
@@ -66,94 +64,26 @@ export async function listInstances(options: Options): Promise<Instance[]> {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export function createDrvRunIntegration(options: Options): Integration {
-  return {
-    id: "drv.run",
-    directoryRoot: "/workspace",
-    extensions: [
-      defineExtension({
-        name: "drv.run",
-        sections: [
-          section(
-            "execution",
-            (input) =>
-              `File and command tools run in the selected drv.run guest, in ${input.env?.cwd ?? "/workspace"}.`,
-          ),
-        ],
-      }),
-    ],
-    async targets() {
-      return (await listInstances(options)).map((instance) => ({
-        provider: "drv.run",
-        target: instance.id,
-        cwd: "/workspace",
-        label: `${instance.id} · ${instance.reference}`,
-        available: instance.running,
-      }));
-    },
-    async validate(binding) {
-      if (
-        binding.provider !== "drv.run" ||
-        !instanceId.test(binding.target) ||
-        binding.cwd !== "/workspace"
-      )
-        throw new SessionError("invalid", "Invalid drv.run binding.");
-      if (
-        !(await listInstances(options)).some(
-          (instance) => instance.id === binding.target && instance.running,
-        )
-      )
-        throw new SessionError("unavailable", "Instance is not running or no longer exists.");
-    },
-    open(binding) {
-      assert(
-        binding.provider === "drv.run" &&
-          instanceId.test(binding.target) &&
-          binding.cwd === "/workspace",
-      );
-      const host = `drv.run.${binding.target}`;
-      const runtime = join(options.runtimeDirectory, host);
-      // Owner-scoped route and pinned key: no user SSH overrides or network key acceptance.
-      const { connection } = (options.connect ?? sshConnection)({
-        host,
-        user: "root",
-        ssh: options.ssh ?? "ssh",
-        configFile: "/etc/ssh/ssh_config",
-        identityFile: join(runtime, "client-key"),
-        knownHostsFile: join(runtime, "known_hosts"),
-        hostKeyAlias: host,
-      });
-      const env = new RemoteExecutionEnv({ connection, id: host, cwd: binding.cwd });
-      const environments = new Map([[binding.cwd, env]]);
-      return {
-        env,
-        atDirectory(cwd) {
-          let view = environments.get(cwd);
-          if (!view) {
-            view = new RemoteExecutionEnv({ connection, id: host, cwd });
-            environments.set(cwd, view);
-          }
-          return view;
-        },
-        async close() {
-          try {
-            await Promise.all(
-              [...environments.values()].map((env) => env.cleanup(BACKGROUND_CONTEXT)),
-            );
-          } finally {
-            connection.close();
-          }
-        },
-      };
-    },
-  };
+/** Owner-scoped discovery and SSH routing; callers own the returned pi-env connection. */
+export async function connectInstance(options: Options, id: string) {
+  if (!instanceId.test(id)) throw new SessionError("invalid", "Invalid drv.run instance.");
+  if (!(await listInstances(options)).some((instance) => instance.id === id && instance.running))
+    throw new SessionError("unavailable", "Instance is not running or no longer exists.");
+  const host = `drv.run.${id}`;
+  const runtime = join(options.runtimeDirectory, host);
+  return (options.connect ?? sshConnection)({
+    host,
+    user: "root",
+    ssh: options.ssh ?? "ssh",
+    configFile: "/etc/ssh/ssh_config",
+    identityFile: join(runtime, "client-key"),
+    knownHostsFile: join(runtime, "known_hosts"),
+    hostKeyAlias: host,
+  }).connection;
 }
 
-export default function drvRun(): Integration {
+export function ownerOptions(): Options {
   const uid = process.getuid?.();
-  assert(uid !== undefined && uid !== 0, "Load drv.run as the instance owner, not root.");
-  return createDrvRunIntegration({
-    stateDirectory: stateDirectory(),
-    runtimeDirectory: `/run/user/${uid}`,
-  });
+  assert(uid !== undefined && uid !== 0, "Run drv.run as the instance owner, not root.");
+  return { stateDirectory: stateDirectory(), runtimeDirectory: `/run/user/${uid}` };
 }

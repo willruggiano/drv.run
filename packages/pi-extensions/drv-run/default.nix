@@ -15,7 +15,7 @@ stdenv.mkDerivation {
   version = (lib.importJSON ./package.json).version;
   src = lib.fileset.toSource {
     root = ../..;
-    fileset = lib.fileset.unions [./index.ts ./package.json ./tsconfig.json ./tests ../../pi-runtime];
+    fileset = lib.fileset.unions [./index.ts ./package.json ./tsconfig.json ./tests ../../pi-runtime ../../pi-serve/application.ts ../../pi-serve/package.json];
   };
   npmDeps = pi-development-node-modules;
   nativeBuildInputs = [importNpmLock.hooks.linkNodeModulesHook nodejs typescript];

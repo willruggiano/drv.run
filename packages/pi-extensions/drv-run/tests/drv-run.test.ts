@@ -1,3 +1,4 @@
+import * as runtime from "../../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -6,9 +7,9 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { Connection, RemoteExecutionEnv, sshArguments } from "@earendil-works/pi-env";
-import { localIntegration, resolveBaseDirectory } from "../../../pi-runtime/index.ts";
+import { resolveBaseDirectory } from "../../../pi-runtime/index.ts";
 import { code, exists, model } from "../../../pi-runtime/testing.ts";
-import { createDrvRunIntegration, listInstances } from "../index.ts";
+import { connectInstance, listInstances } from "../index.ts";
 import { remoteFixture } from "./fixture.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -39,7 +40,7 @@ await test("inventory excludes invalid and incomplete instances; readiness requi
       "--value",
     ]),
   );
-  assert.equal((await f.integration.targets()).filter((target) => target.available).length, 1);
+  assert.equal((await f.targets()).filter((target) => target.available).length, 1);
   assert.deepEqual(
     await listInstances({ ...f.options, stateDirectory: join(f.directory, "missing") }),
     [],
@@ -47,33 +48,23 @@ await test("inventory excludes invalid and incomplete instances; readiness requi
   await assert.rejects(listInstances({ ...f.options, systemctl: join(f.directory, "missing") }));
 });
 
-await test("binding validation rejects stopped, absent and malformed targets", async (t) => {
+await test("connection admission rejects stopped, absent and malformed instance identities", async (t) => {
   const f = await remoteFixture(t);
-  await f.integration.validate(f.binding);
-  for (const target of ["../test1", "-test", "test;echo", ""]) {
-    await assert.rejects(f.integration.validate({ ...f.binding, target }), code("invalid"));
-  }
-  await assert.rejects(f.integration.validate({ ...f.binding, cwd: "/tmp" }), code("invalid"));
-  await assert.rejects(
-    f.integration.validate({ ...f.binding, provider: "local" }),
-    code("invalid"),
-  );
-  await assert.rejects(
-    f.integration.validate({ ...f.binding, target: "missing" }),
-    code("unavailable"),
-  );
+  for (const id of ["../test1", "-test", "test;echo", ""])
+    await assert.rejects(connectInstance(f.options, id), code("invalid"));
+  await assert.rejects(connectInstance(f.options, "missing"), code("unavailable"));
   await writeFile(f.states, "{}");
-  await assert.rejects(f.integration.validate(f.binding), code("unavailable"));
+  await assert.rejects(connectInstance(f.options, "test1"), code("unavailable"));
   assert.equal(f.connections.length, 0);
 });
 
 await test("lease pins the owner route and host key, uses /workspace and cleans up the connection", async (t) => {
   const f = await remoteFixture(t);
-  const lease = await f.integration.open(f.binding);
-  t.after(() => lease.close());
-  assert(lease.env instanceof RemoteExecutionEnv);
-  assert.equal(lease.env.cwd, "/workspace");
-  assert.equal(lease.env.id, "drv.run.test1");
+  const connection = await connectInstance(f.options, "test1");
+  t.after(() => connection.close());
+  const env = new RemoteExecutionEnv({ connection, id: "drv.run.test1", cwd: "/workspace" });
+  assert.equal(env.cwd, "/workspace");
+  assert.equal(env.id, "drv.run.test1");
   assert.deepEqual(f.sshOptions, [
     {
       host: "drv.run.test1",
@@ -91,14 +82,15 @@ await test("lease pins the owner route and host key, uses /workspace and cleans 
   assert(args.includes("GlobalKnownHostsFile=none"));
   assert(args.includes("PermitLocalCommand=no"));
   const close = t.mock.method(f.connections[0], "close");
-  await lease.close();
+  await env.cleanup(context);
+  connection.close();
   assert.equal(close.mock.callCount(), 1);
 });
 
 await test("faux turns use the daemon for read/write/edit; extension removal preserves history and forbids local fallback", async (t) => {
   const f = await remoteFixture(t);
   // The local daemon needs an existing cwd even when tool paths are absolute.
-  await f.reopen([{ ...f.integration, directoryRoot: f.workspace }]);
+  await f.reopen({ targets: f.targets });
   const file = join(f.workspace, "remote.json");
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("write", { path: file, content: "1" }), {
@@ -111,33 +103,32 @@ await test("faux turns use the daemon for read/write/edit; extension removal pre
     fauxAssistantMessage("Done."),
   ]);
   const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "");
-  assert(
-    (await session.root.agent(context)).extensions.some(
-      (extension) => extension.name === "drv.run",
-    ),
+  assert.equal((await runtime.sessionInfo(session)).binding?.provider, "drv.run");
+  await session.root.submit(
+    { type: "input", content: "Use the remote filesystem.", requestId: randomUUID() },
+    context,
   );
-  await session.prompt("Use the remote filesystem.", randomUUID());
   await session.root.waitForIdle(context);
   assert.equal(JSON.parse(await readFile(file, "utf8")), 2);
   assert.equal(f.connections.length, 1);
-  const history = await session.history();
+  const history = await runtime.history(session);
   const results = history
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
   assert.equal(results.length, 3);
   assert(results.every((result) => !result.isError));
-  await f.reopen([localIntegration(f.workspace)]);
+  await f.reopen({ drvRun: undefined, local: true });
   const restored = await f.sessions.get(session.id);
-  assert.deepEqual(await restored.history(), history);
-  await assert.rejects(restored.prompt("Try local instead.", randomUUID()), code("unavailable"));
-  await assert.rejects(restored.resume(), code("unavailable"));
+  assert.deepEqual(await runtime.history(restored), history);
+  await assert.rejects(runtime.environment(restored), code("unavailable"));
+  restored.harness.resume();
   assert.equal(f.faux.state.callCount, 4);
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
 });
 
 await test("codemode nested tools use the bound remote daemon", async (t) => {
   const f = await remoteFixture(t);
-  await f.reopen([{ ...f.integration, directoryRoot: f.workspace }]);
+  await f.reopen({ targets: f.targets });
   const file = join(f.workspace, "codemode-remote.json");
   f.faux.setResponses([
     fauxAssistantMessage(
@@ -153,9 +144,12 @@ await test("codemode nested tools use the bound remote daemon", async (t) => {
     fauxAssistantMessage("Done."),
   ]);
   const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "");
-  await session.prompt("Use codemode in the guest.", randomUUID());
+  await session.root.submit(
+    { type: "input", content: "Use codemode in the guest.", requestId: randomUUID() },
+    context,
+  );
   await session.root.waitForIdle(context);
-  const results = (await session.history())
+  const results = (await runtime.history(session))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
   assert.equal(results.length, 1);
@@ -169,23 +163,23 @@ await test("stopping an instance blocks existing sessions without opening anothe
   const f = await remoteFixture(t);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
   await rm(join(f.options.runtimeDirectory, "drv.run.test1", "client.conf"));
-  await assert.rejects(session.prompt("Work.", randomUUID()), code("unavailable"));
-  await assert.rejects(session.resume(), code("unavailable"));
+  await assert.rejects(runtime.environment(session), code("unavailable"));
+  session.harness.resume();
   assert.equal(f.connections.length, 0);
   assert.equal(f.faux.state.callCount, 0);
-  assert.equal((await session.history()).length, 0);
+  assert.equal((await runtime.history(session)).length, 0);
 });
 
-await test("transport failure blocks context and model dispatch without touching local files", async (t) => {
+await test("transport failure reports tool errors without touching local files", async (t) => {
   const f = await remoteFixture(t);
-  const integration = createDrvRunIntegration({
+  const broken = {
     ...f.options,
     connect: () => ({
       connection: new Connection({ command: [join(f.directory, "missing-ssh")] }),
       remote: () => undefined,
     }),
-  });
-  await f.reopen([integration]);
+  };
+  await f.reopen({ drvRun: broken });
   const file = join(f.workspace, "never.json");
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("write", { path: file, content: "1" }), {
@@ -194,27 +188,28 @@ await test("transport failure blocks context and model dispatch without touching
     fauxAssistantMessage("Failed."),
   ]);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
-  await session.prompt("Work.", randomUUID());
+  await session.root.submit({ type: "input", content: "Work.", requestId: randomUUID() }, context);
   await session.root.waitForIdle(context);
   assert.equal(await exists(file), false);
-  const results = (await session.history())
+  const results = (await runtime.history(session))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
-  assert.equal(results.length, 0);
-  assert.equal(f.faux.state.callCount, 0);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].isError, true);
+  assert.equal(f.faux.state.callCount, 2);
 });
 
 await test("repository inspection uses the guest environment and fails closed when stopped", async (t) => {
   const f = await remoteFixture(t);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
   const exec = t.mock.method(RemoteExecutionEnv.prototype, "exec");
-  await session.repository();
+  await runtime.repository(session);
   assert.equal(exec.mock.callCount(), 1);
   assert.equal(exec.mock.calls[0].arguments[1]?.cwd, "/workspace");
   assert.equal(f.connections.length, 1);
   assert.equal(f.faux.state.callCount, 0);
   await writeFile(f.states, JSON.stringify({ test1: "inactive" }));
-  assert.deepEqual(await session.repository(), { state: "unavailable" });
+  assert.deepEqual(await runtime.repository(session), { state: "unavailable" });
   assert.equal(exec.mock.callCount(), 1);
 });
 
@@ -241,8 +236,8 @@ await test("base directory input is always workspace-relative and invalid paths 
   for (const input of [undefined, "", "foo", "/foo"]) {
     const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, input);
     assert.equal((await session.root.agent(context)).cwd, input ? "/workspace/foo" : "/workspace");
-    assert.equal((await session.info()).directoryRoot, "/workspace");
-    assert.deepEqual(session.binding, f.binding);
+    assert.equal((await runtime.sessionInfo(session)).directoryRoot, "/workspace");
+    assert.deepEqual((await runtime.sessionInfo(session)).binding, f.binding);
   }
   assert.equal(f.connections.length, 0);
 });
@@ -250,7 +245,7 @@ await test("base directory input is always workspace-relative and invalid paths 
 await test("native Durable cwd drives remote tools, forks, completions and restart without changing the target", async (t) => {
   const f = await remoteFixture(t);
   // A temporary guest workspace makes the real daemon test independent of /workspace permissions.
-  await f.reopen([{ ...f.integration, directoryRoot: f.workspace }]);
+  await f.reopen({ targets: f.targets });
   for (const path of ["one", "two", "space name", ".hidden", "one/nested"])
     await mkdir(join(f.workspace, path));
   await writeFile(join(f.workspace, "file.txt"), "not a directory");
@@ -280,21 +275,24 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
     }),
     fauxAssistantMessage("Done."),
   ]);
-  await session.prompt("Write relative to the base directory.", randomUUID());
+  await session.root.submit(
+    { type: "input", content: "Write relative to the base directory.", requestId: randomUUID() },
+    context,
+  );
   await session.root.waitForIdle(context);
   assert.equal(await readFile(join(f.workspace, "one/root.txt"), "utf8"), "root");
   assert.equal(
     (await readFile(join(f.workspace, "one/cwd.txt"), "utf8")).trim(),
     join(f.workspace, "one"),
   );
-  const history = await session.history();
+  const history = await runtime.history(session);
   const fork = await session.root.fork(
     history.at(-1)!.id,
     { ownership: { kind: "ownerless" } },
     context,
   );
   assert.equal((await fork.agent(context)).cwd, join(f.workspace, "one"));
-  await fork.configure({ cwd: f.sessions.baseDirectory(f.binding, "/two") }, context);
+  await fork.configure({ cwd: await f.sessions.baseDirectory(f.binding, "/two") }, context);
   f.faux.setResponses([
     fauxAssistantMessage(
       fauxToolCall("codemode", {
@@ -305,22 +303,28 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
     fauxAssistantMessage("Done."),
   ]);
   const before = f.connections.length;
-  await session.prompt("Write in the fork.", randomUUID(), "reject", fork);
+  await fork.submit(
+    { type: "input", content: "Write in the fork.", requestId: randomUUID(), whenBusy: "reject" },
+    context,
+  );
   await fork.waitForIdle(context);
   assert.equal(await readFile(join(f.workspace, "two/branch.txt"), "utf8"), "branch");
-  assert.deepEqual(await session.completePaths("root"), ["root.txt"]);
-  assert.deepEqual(await session.completePaths("branch", fork), ["branch.txt"]);
+  assert.deepEqual(await runtime.completePaths(session, "root"), ["root.txt"]);
+  assert.deepEqual(await runtime.completePaths(session, "branch", fork), ["branch.txt"]);
   assert.equal(f.connections.length, before, "cwd views share a single SSH connection");
   const exec = t.mock.method(RemoteExecutionEnv.prototype, "exec");
-  await session.repository(fork);
+  await runtime.repository(session, fork);
   assert.equal(exec.mock.calls[0].arguments[1]?.cwd, join(f.workspace, "two"));
-  await f.reopen([{ ...f.integration, directoryRoot: f.workspace }]);
+  await f.reopen({ targets: f.targets });
   const restored = await f.sessions.get(session.id);
-  assert.equal((await restored.info()).cwd, join(f.workspace, "one"));
-  const restoredFork = await restored.conversation(fork.id);
+  assert.equal((await runtime.sessionInfo(restored)).cwd, join(f.workspace, "one"));
+  const restoredFork = await runtime.getConversation(restored, fork.id);
   assert.equal((await restoredFork.agent(context)).cwd, join(f.workspace, "two"));
-  assert.deepEqual(await restored.completePaths("branch", restoredFork), ["branch.txt"]);
+  assert.deepEqual(await runtime.completePaths(restored, "branch", restoredFork), ["branch.txt"]);
   await writeFile(f.states, "{}");
-  await assert.rejects(restored.completePaths("branch", restoredFork), code("unavailable"));
+  await assert.rejects(
+    runtime.completePaths(restored, "branch", restoredFork),
+    code("unavailable"),
+  );
   await assert.rejects(f.sessions.completeDirectories(f.binding, ""), code("unavailable"));
 });

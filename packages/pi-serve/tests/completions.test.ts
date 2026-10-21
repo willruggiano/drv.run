@@ -82,7 +82,7 @@ await test("HTTP path completion uses the session workspace and validates paths"
   for (const query of ["../", "src/../../", "/etc/", "\0", "x".repeat(4097)])
     assert.equal((await complete(query)).status, 400, query);
   assert.equal(f.faux.state.callCount, 0);
-  await f.reopen([]);
+  await f.reopen({ env: undefined, targets: async () => [] });
   // A missing integration must not fall back to reading the web server's cwd.
   const unavailableBase = await serve(t, f.sessions);
   assert.equal(

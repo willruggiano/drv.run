@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { chromium } from "playwright";
-import { localIntegration } from "../../pi-runtime/index.ts";
 import { buildAssets } from "../build.ts";
 import { chromiumExecutable, directoryFixture, serve } from "./testing.ts";
 
@@ -13,7 +12,6 @@ const context = BACKGROUND_CONTEXT;
 
 await test("mobile browser exposes remote directory suggestions for new sessions and conversation settings", async (t) => {
   const f = await directoryFixture(t);
-  await f.reopen([f.integration, localIntegration(f.workspace)]);
   await mkdir(join(f.workspace, "one"));
   await mkdir(join(f.workspace, "two"));
   await writeFile(join(f.workspace, "only-file.txt"), "file");
@@ -53,6 +51,7 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   assert(id);
   const session = await f.sessions.get(id);
   assert.equal((await session.root.agent(context)).cwd, join(f.workspace, "one"));
+  await page.waitForSelector("#status[data-state=ready]");
   await page.fill("#prompt", "/settings");
   await page.keyboard.press("Control+Enter");
   await page.waitForSelector("#preferences:not([hidden])");

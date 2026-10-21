@@ -1,3 +1,5 @@
+import * as workflow from "./workflows.ts";
+import * as runtime from "./index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -10,7 +12,7 @@ import { type Conversation, ToolResultEntry } from "@earendil-works/pi-durable";
 import { FileError, getOrThrow } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { ContextFiles, contextPaths, loadContextFiles, type ContextFile } from "./context.ts";
-import { localIntegration, type Integration } from "./index.ts";
+import type { SessionOptions } from "./index.ts";
 import { fixture, exists } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -41,26 +43,22 @@ async function configured(t: TestContext) {
       cwd,
       shellEnv: { ...process.env, HOME: home, XDG_CONFIG_HOME: user, XDG_CONFIG_DIRS: system },
     });
-  const integration: Integration = {
-    ...localIntegration(f.workspace),
-    directoryRoot: f.workspace,
-    open() {
-      const env = environment();
-      const views = [env];
-      return {
-        env,
-        atDirectory(cwd) {
-          const view = environment(cwd);
-          views.push(view);
-          return view;
-        },
-        async close() {
-          await Promise.all(views.map((env) => env.cleanup(context)));
-        },
-      };
+  const views: NodeExecutionEnv[] = [];
+  const execution: Partial<Omit<SessionOptions, "open">> = {
+    targets: async () => [
+      { ...f.binding, directoryRoot: f.workspace, available: true, label: "Local" },
+    ],
+    env: async ({ cwd }) => {
+      const env = environment(cwd);
+      views.push(env);
+      return env;
+    },
+    close: async () => {
+      await Promise.all(views.map((env) => env.cleanup(context)));
+      views.length = 0;
     },
   };
-  await f.reopen([integration]);
+  await f.reopen(execution);
   const run = async (conversation: Conversation) => {
     await conversation.submit(
       { type: "input", content: "Work.", requestId: randomUUID() },
@@ -68,7 +66,7 @@ async function configured(t: TestContext) {
     );
     await conversation.waitForIdle(context);
   };
-  return { f, home, user, system, environment, integration, run };
+  return { f, home, user, system, environment, execution, run };
 }
 
 await test("XDG context paths use defaults, absolute overrides and low-to-high precedence", () => {
@@ -197,7 +195,7 @@ await test("baseline context precedes the first request and CONTRIBUTING blocks 
   assert.equal(f.faux.state.callCount, 3);
   assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
   assert.deepEqual(
-    (await session.history())
+    (await runtime.history(session))
       .filter((entry) => ToolResultEntry.is(entry))
       .map((entry) => entry.data.diagnostics.map((d) => d.code)),
     [["context_required"], []],
@@ -297,7 +295,7 @@ await test("missing files allow mutation; newly created CONTRIBUTING requires di
   assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 2);
 });
 
-await test("instruction failures stop model dispatch, never retain stale context, and recover", async (t) => {
+await test("instruction failures block mutations, never retain stale context, and recover", async (t) => {
   const { f, run } = await configured(t);
   const file = join(f.workspace, "README.md");
   await writeFile(file, "Valid.");
@@ -308,12 +306,13 @@ await test("instruction failures stop model dispatch, never retain stale context
   await mkdir(file);
   f.faux.setResponses([write(), done()]);
   await run(session.root);
-  assert.equal(f.faux.state.callCount, 1);
+  assert.equal(f.faux.state.callCount, 3);
   assert.equal(await exists(join(f.workspace, "result.json")), false);
   await rm(file, { recursive: true });
   await writeFile(file, "Fixed.");
+  f.faux.setResponses([write(), done()]);
   await run(session.root);
-  assert.equal(f.faux.state.callCount, 3);
+  assert.equal(f.faux.state.callCount, 5);
   assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
 });
 
@@ -324,7 +323,7 @@ await test("unreadable CONTRIBUTING blocks mutations and oversized instructions 
   f.faux.setResponses([write(), done()]);
   await run(session.root);
   assert.equal(await exists(join(f.workspace, "result.json")), false);
-  const results = (await session.history())
+  const results = (await runtime.history(session))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
   assert.equal(results[0]?.isError, true);
@@ -335,21 +334,21 @@ await test("unreadable CONTRIBUTING blocks mutations and oversized instructions 
 });
 
 await test("activation survives restart and compaction, forks as-of, and resets independently", async (t) => {
-  const { f, run, integration } = await configured(t);
+  const { f, run, execution } = await configured(t);
   await writeFile(join(f.workspace, "CONTRIBUTING.md"), "Contribute.");
   let session = await f.create();
   f.faux.setResponses([done()]);
   await run(session.root);
-  const before = (await session.history()).at(-1)!;
+  const before = (await runtime.history(session)).at(-1)!;
   f.faux.setResponses([write(), done()]);
   await run(session.root);
-  const after = (await session.history()).at(-1)!;
+  const after = (await runtime.history(session)).at(-1)!;
   assert.equal(
     (await session.harness.snapshot(ContextFiles, session.root.id, context))?.contributing,
     true,
   );
   const id = session.id;
-  await f.reopen([integration]);
+  await f.reopen(execution);
   session = await f.sessions.get(id);
   const early = await session.root.fork(before.id, { ownership: { kind: "ownerless" } }, context);
   const late = await session.root.fork(after.id, { ownership: { kind: "ownerless" } }, context);
@@ -379,7 +378,7 @@ await test("activation survives restart and compaction, forks as-of, and resets 
   await run(late);
   await late.reset(undefined, context);
   // A compaction before the next request must not hide that reset from the loader.
-  const reset = (await session.history(late)).at(-1)!;
+  const reset = (await runtime.history(session, late)).at(-1)!;
   await late.submit(
     { type: "write", entry: { kind: "pi.compaction", data: { reason: "manual" }, head: reset.id } },
     context,
@@ -474,7 +473,7 @@ await test("fresh review discovers baseline context without the parent's CONTRIB
       return done();
     },
   ]);
-  const reviewer = await session.startReview({ target: { kind: "uncommitted" } });
+  const reviewer = await workflow.startReview(session, { target: { kind: "uncommitted" } });
   await reviewer.waitForIdle(context);
   assert.equal(
     (await session.harness.snapshot(ContextFiles, reviewer.id, context))?.contributing,

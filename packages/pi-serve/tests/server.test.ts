@@ -1,3 +1,5 @@
+import { openCodingSessions } from "../../pi-runtime/coding.ts";
+import * as runtime from "../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -19,7 +21,7 @@ import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
 import { buildAssets } from "../build.ts";
 
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { Sessions, type Catalog } from "../../pi-runtime/index.ts";
+import type { Catalog } from "../../pi-runtime/index.ts";
 import type { GlobalSettings } from "../settings.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -140,27 +142,10 @@ async function checkCLI(
   }
 }
 
-await test("CLI starts standalone without host commands and loads only explicit integrations", async (t) => {
+await test("server starts standalone without host commands", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "pi-serve-cli-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const module = join(directory, "example.mjs");
-  const target = {
-    provider: "example",
-    target: "test",
-    cwd: "/work",
-    label: "Example",
-    available: true,
-  };
-  await writeFile(
-    module,
-    `export default () => ({
-    id: "example",
-    targets: async () => [${JSON.stringify(target)}],
-    validate: async () => {},
-    open: () => { throw new Error("Not used"); },
-  });`,
-  );
-  for (const extensions of [[], ["--no-local", "--extension", module]]) {
+  {
     const reservation = createServer();
     await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
     const port = (reservation.address() as AddressInfo).port;
@@ -177,7 +162,6 @@ await test("CLI starts standalone without host commands and loads only explicit 
         join(directory, "state"),
         "--cwd",
         directory,
-        ...extensions,
       ],
       {
         env: {
@@ -191,20 +175,15 @@ await test("CLI starts standalone without host commands and loads only explicit 
     );
     await checkCLI(child, `http://127.0.0.1:${port}/api/catalog`, (catalog) => {
       assert.deepEqual(catalog.sessions, []);
-      assert.deepEqual(
-        catalog.targets,
-        extensions.length
-          ? [target]
-          : [
-              {
-                provider: "local",
-                target: directory,
-                cwd: directory,
-                label: `Local · ${directory}`,
-                available: true,
-              },
-            ],
-      );
+      assert.deepEqual(catalog.targets, [
+        {
+          provider: "local",
+          target: directory,
+          cwd: directory,
+          label: `Local · ${directory}`,
+          available: true,
+        },
+      ]);
     });
   }
 });
@@ -329,16 +308,28 @@ await test("HTTP disconnect does not abort work; reconnect includes history and 
   const base = await serve(t, f.sessions);
   const id = randomUUID();
   assert.equal((await post(base + "/api/sessions", { id, binding: f.binding, model })).status, 201);
-  const url = `${base}/api/sessions/${id}`;
-  const data = { text: "Work", requestId: randomUUID() };
-  assert.equal((await post(url + "/prompt", data)).status, 200);
+  const url = `${base}/api/harness/${id}`;
+  const data = { type: "input", content: "Work", requestId: "retryable-input" };
+  assert.equal((await post(url + "/submit", data)).status, 200);
   await started.promise;
-  assert.equal((await snapshot(url + "/events")).session.id, id);
-  assert.equal((await post(url + "/prompt", data)).status, 200);
-  finish.resolve();
   const session = await f.sessions.get(id);
+  const views = t.mock.method(session.root, "watch");
+  assert.equal((await snapshot(url + "/watch")).session.id, id);
+  const view = await views.mock.calls[0].result;
+  assert(view);
+  assert.deepEqual(await view.closed, { reason: "cancelled" });
+  const documents = t.mock.method(session.harness, "watchDoc");
+  const response = await fetch(url + "/watchDoc?kind=pi.agent");
+  assert.equal(response.status, 200);
+  assert(response.body);
+  await response.body.cancel();
+  const document = await documents.mock.calls[0].result;
+  assert(document);
+  assert.deepEqual(await document.closed, { reason: "cancelled" });
+  assert.equal((await post(url + "/submit", data)).status, 200);
+  finish.resolve();
   await session.root.waitForIdle(context);
-  const reconnected = await snapshot(url + "/events");
+  const reconnected = await snapshot(url + "/watch");
   assert.equal(
     reconnected.history
       ?.flatMap((entry) => entry.model ?? [])
@@ -382,7 +373,7 @@ await test("HTTP validates origins, IDs, methods, JSON and request size", async 
     403,
   );
   assert.equal((await fetch(base + "/api/catalog")).status, 200);
-  assert.equal((await fetch(base + "/api/sessions/bad/events")).status, 404);
+  assert.equal((await fetch(base + "/api/harness/bad/watch")).status, 404);
   assert.equal((await post(base + "/api/sessions", {})).status, 400);
   assert.equal(
     (
@@ -396,7 +387,7 @@ await test("HTTP validates origins, IDs, methods, JSON and request size", async 
   );
   assert.equal((await post(base + "/api/sessions", { data: "a".repeat(129 * 1024) })).status, 413);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
-  assert.equal((await fetch(base + `/api/sessions/${session.id}/stop`)).status, 405);
+  assert.equal((await fetch(base + `/api/harness/${session.id}/abort`)).status, 405);
   assert.equal((await fetch(base + "/manifest.webmanifest")).status, 200);
   const icon = await fetch(base + "/icon.svg");
   assert.equal(icon.status, 200);
@@ -445,11 +436,10 @@ await test("CLI defaults to local execution and accepts explicit integration com
   assert.equal(defaults.port, 8080);
   assert.equal(defaults.local, true);
   assert.equal(defaults.cwd, process.cwd());
-  assert.deepEqual(defaults.extensions, []);
+  assert.equal(defaults.drvRun, false);
   const custom = parseOptions([
     "--no-local",
-    "--extension",
-    "./provider.mjs",
+    "--drv-run",
     "--port",
     "9000",
     "--cwd",
@@ -458,7 +448,7 @@ await test("CLI defaults to local execution and accepts explicit integration com
     "/state",
   ]);
   assert.equal(custom.local, false);
-  assert.deepEqual(custom.extensions, [resolve("provider.mjs")]);
+  assert.equal(custom.drvRun, true);
   assert.equal(custom.cwd, "/work");
   assert.equal(custom.directory, "/state");
   assert.equal(custom.port, 9000);
@@ -559,61 +549,61 @@ await test("conversation controls validate input and keep forks scoped to their 
   const f = await fixture(t);
   const session = await f.create();
   const base = await serve(t, f.sessions);
-  const url = `${base}/api/sessions/${session.id}`;
+  const url = `${base}/api/harness/${session.id}`;
   f.faux.setResponses([fauxAssistantMessage("A completed turn.")]);
-  await session.prompt("Begin.", randomUUID());
+  await session.root.submit({ type: "input", content: "Begin.", requestId: randomUUID() }, context);
   await session.root.waitForIdle(context);
-  const history = await session.history();
+  const history = await runtime.history(session);
   for (const [action, data] of [
-    ["prompt", { text: "No", requestId: randomUUID(), mode: "invalid" }],
-    [
-      "prompt",
-      {
-        text: "No",
-        requestId: randomUUID(),
-        images: [{ mimeType: "text/html", data: "AAAA" }],
-      },
-    ],
-    ["configure", { model, thinkingLevel: "invalid", instructions: "" }],
-    [
-      "configure",
-      {
-        model: { provider: "missing", modelId: "missing" },
-        thinkingLevel: "off",
-        instructions: "",
-      },
-    ],
-    ["cancel", { id: "wrong" }],
-    ["fork", { entry: -1 }],
+    ["submit", { type: "input", content: "No", whenBusy: "invalid" }],
+    ["submit", { type: "input", content: 123 }],
+    ["configure", { thinkingLevel: "invalid" }],
+    ["abortSubmission", { id: "wrong" }],
+    ["fork", { at: -1 }],
   ] as const)
     assert.equal((await post(`${url}/${action}`, data)).status, 400);
+  assert.equal(
+    (
+      await post(`${url}/configure`, {
+        instructions: null,
+        tools: { remove: [{ name: "not-installed" }] },
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await session.root.agent(context)).instructions, undefined);
   for (const name of [null, 123, "a".repeat(121), "line\nbreak"]) {
-    assert.equal((await post(`${url}/rename`, { name })).status, 400);
+    assert.equal((await post(`${base}/api/sessions/${session.id}/rename`, { name })).status, 400);
   }
-  const renamed = await post(`${url}/rename`, { name: "  Counter cleanup  " });
+  const renamed = await post(`${base}/api/sessions/${session.id}/rename`, {
+    name: "  Counter cleanup  ",
+  });
   assert.equal(renamed.status, 200);
   assert.equal((await renamed.json()).name, "Counter cleanup");
   assert.equal(
     (await (await fetch(base + "/api/catalog")).json()).sessions[0].name,
     "Counter cleanup",
   );
-  assert.deepEqual(await session.history(), history);
-  assert.equal((await fetch(`${url}/events?conversation=-1`)).status, 400);
-  assert.equal((await fetch(`${url}/events?conversation=9999999`)).status, 404);
-  const forkResponse = await post(`${url}/fork`, { entry: history.at(-1)?.id });
-  assert.equal(forkResponse.status, 201);
+  assert.deepEqual(await runtime.history(session), history);
+  assert.equal((await fetch(`${url}/watch?conversation=-1`)).status, 400);
+  assert.equal((await fetch(`${url}/watch?conversation=9999999`)).status, 404);
+  const forkResponse = await post(`${url}/fork`, {
+    at: history.at(-1)?.id,
+    options: { ownership: { kind: "ownerless" } },
+  });
+  assert.equal(forkResponse.status, 200);
   const fork = await forkResponse.json();
-  const branch = await session.conversation(fork.id);
-  assert.deepEqual(await session.history(branch), history);
-  assert.equal((await fetch(`${url}/conversations`)).status, 200);
+  const branch = await runtime.getConversation(session, fork.id);
+  assert.deepEqual(await runtime.history(session, branch), history);
+  assert.equal((await fetch(`${url}/scanConversations`)).status, 200);
   const reset = await post(`${url}/reset?conversation=${fork.id}`, {
     handoff: "Carry this forward.",
   });
   assert.equal(reset.status, 200);
   assert.equal((await branch.context(context)).messages.length, 1);
-  assert.deepEqual(await session.history(), history);
-  const exported = await (await fetch(`${url}/export?conversation=${fork.id}`)).json();
-  assert.equal(exported.length, history.length + 1);
+  assert.deepEqual(await runtime.history(session), history);
+  const exported = await (await fetch(`${url}/entries?conversation=${fork.id}`)).json();
+  assert.equal(exported.items.length, history.length + 1);
   assert.equal((await post(`${url}/compact?conversation=${fork.id}`, {})).status, 200);
   await session.harness.waitForIdle(context);
   assert.equal((await session.harness.inspect(context)).tasks.length, 0);
@@ -690,11 +680,11 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
     SettingsManager.create(f.workspace, agentDir, { projectTrusted: false }),
   );
   const options = store.bind(f.options);
-  const sessions = await Sessions.open(options);
+  const sessions = await openCodingSessions(options);
   t.after(() => sessions.close());
   const base = await serve(t, sessions, undefined, "127.0.0.1", undefined, store);
   const current = await sessions.create(randomUUID(), f.binding, model);
-  assert.equal((await current.info()).thinkingLevel, "medium");
+  assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "medium");
   assert.equal(options.settings?.compaction?.reserveTokens, 12345);
   assert.equal(options.settings?.stream?.maxRetries, 0);
   const get = () =>
@@ -751,12 +741,12 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   assert.equal(options.settings?.steeringMode, "all");
   assert.equal(options.settings?.followUpMode, "all");
   assert.equal(options.settings?.stream?.transport, "sse");
-  const view = await snapshot(base + "/api/sessions/" + current.id + "/events");
+  const view = await snapshot(base + "/api/harness/" + current.id + "/watch");
   assert.equal(view.context.autoCompact, false);
   assert(view.inspection.state === "available");
   assert.equal(view.inspection.policy.enabled, false);
   assert.equal(view.inspection.policy.reserveTokens, 12345);
-  assert.equal((await current.info()).thinkingLevel, "medium");
+  assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "medium");
   const created = await post(base + "/api/sessions", {
     id: randomUUID(),
     binding: f.binding,
@@ -778,13 +768,13 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
     thinkingLevel: "invalid",
   });
   assert.equal(invalid.status, 400);
-  const configured = await post(base + "/api/sessions/" + current.id + "/configure", {
+  const configured = await post(base + "/api/harness/" + current.id + "/configure", {
     model,
     thinkingLevel: "max",
     instructions: "",
   });
   assert.equal(configured.status, 200);
-  assert.equal((await current.info()).thinkingLevel, "high");
+  assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "max");
   assert.equal(
     (await post(base + "/api/settings", { model, modelThinkingLevel: null })).status,
     200,
@@ -798,7 +788,10 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
       return fauxAssistantMessage("Configured.");
     },
   ]);
-  await current.prompt("Run with current policy.", randomUUID());
+  await current.root.submit(
+    { type: "input", content: "Run with current policy.", requestId: randomUUID() },
+    context,
+  );
   await current.root.waitForIdle(context);
   assert.equal(f.faux.state.callCount, 1);
 });
@@ -823,7 +816,7 @@ await test("settings persistence failures are reported and never silently acknow
 
 await test("queued compaction duration resolves its submission, including after reset and fork", async (t) => {
   const f = await fixture(t);
-  const sessions = await Sessions.open({
+  const sessions = await openCodingSessions({
     ...f.options,
     directory: join(f.workspace, "state"),
     settings: { compaction: { keepRecentTokens: 1 } },
@@ -846,32 +839,92 @@ await test("queued compaction duration resolves its submission, including after 
     },
     fauxAssistantMessage("A checkpoint while generation is busy."),
   ]);
-  await session.prompt("Continue.", randomUUID());
+  await session.root.submit(
+    { type: "input", content: "Continue.", requestId: randomUUID() },
+    context,
+  );
   await generating.promise;
   const taskId = await session.root.compact(undefined, context);
   const receipt = await session.harness.waitForTask(taskId, context);
   assert.equal(receipt.state.outcome.status, "completed");
   assert.equal(
-    (await session.history()).some((entry) => entry.kind === "pi.compaction"),
+    (await runtime.history(session)).some((entry) => entry.kind === "pi.compaction"),
     false,
   );
   release.resolve();
   await session.root.waitForIdle(context);
-  const entry = (await session.history()).find((entry) => entry.kind === "pi.compaction");
+  const entry = (await runtime.history(session)).find((entry) => entry.kind === "pi.compaction");
   assert(entry);
   assert.notEqual(entry.byTaskId, taskId);
   const task = await session.harness.getTask(taskId, context);
   assert(task?.startedAt !== undefined && task.endedAt !== undefined);
   const duration = task.endedAt - task.startedAt;
   await session.root.reset(undefined, context);
-  const last = (await session.history()).at(-1);
+  const last = (await runtime.history(session)).at(-1);
   assert(last);
   const branch = await session.root.fork(last.id, { ownership: { kind: "ownerless" } }, context);
   const base = await serve(t, sessions);
   for (const conversation of [session.root, branch]) {
-    const state = await snapshot(
-      `${base}/api/sessions/${session.id}/events?conversation=${conversation.id}`,
-    );
-    assert.equal(state.contextDurations?.[entry.id], duration);
+    const history = await (
+      await fetch(`${base}/api/harness/${session.id}/entries?conversation=${conversation.id}`)
+    ).json();
+    assert(history.items.some((item: { id: number }) => item.id === entry.id));
+    const task = await (
+      await fetch(`${base}/api/harness/${session.id}/getTask?id=${taskId}`)
+    ).json();
+    assert.equal(task.endedAt - task.startedAt, duration);
+    const submission = await (
+      await fetch(
+        `${base}/api/harness/${session.id}/submission/status?id=${task.state.outcome.result.submissionId}`,
+      )
+    ).json();
+    assert.equal(submission.entry, entry.id);
   }
+});
+
+await test("HTTP preserves upstream scan filters, pages, and cursor ordering defaults", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  for (let n = 0; n < 5; n++)
+    await session.root.submit({ type: "write", entry: { kind: "marker", data: { n } } }, context);
+  const base = await serve(t, f.sessions);
+  const url = `${base}/api/harness/${session.id}/entries`;
+  for (const method of ["entries", "scanTasks", "scanConversations"]) {
+    const resource = `${base}/api/harness/${session.id}/${method}`;
+    for (const parameter of ["query", "cursor"])
+      for (const invalid of ["not-json", "[]", "null"])
+        assert.equal((await fetch(`${resource}?${parameter}=${invalid}`)).status, 400);
+    assert.equal((await fetch(resource)).status, 200);
+  }
+  const first = await (
+    await fetch(
+      url + "?limit=2&query=" + encodeURIComponent(JSON.stringify({ order: "ascending" })),
+    )
+  ).json();
+  const expected = await session.root.entries({ order: "ascending" }, 2, undefined, context);
+  assert.deepEqual(
+    first.items.map((entry: { id: number }) => entry.id),
+    expected.items.map((entry) => entry.id),
+  );
+  assert.deepEqual(first.next, expected.next);
+  const second = await (
+    await fetch(url + "?limit=2&cursor=" + encodeURIComponent(JSON.stringify(first.next)))
+  ).json();
+  const next = await session.root.entries({}, 2, expected.next, context);
+  assert.deepEqual(
+    second.items.map((entry: { id: number }) => entry.id),
+    next.items.map((entry) => entry.id),
+  );
+  const query = {
+    minEntryId: first.items[1].id,
+    maxEntryId: second.items[0].id,
+    order: "ascending",
+  };
+  const bounded = await (
+    await fetch(url + "?query=" + encodeURIComponent(JSON.stringify(query)))
+  ).json();
+  assert.deepEqual(
+    bounded.items.map((entry: { id: number }) => entry.id),
+    [query.minEntryId, query.maxEntryId],
+  );
 });

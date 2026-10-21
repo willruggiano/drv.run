@@ -10,6 +10,7 @@
   nixosModules,
   makeWrapper,
   pi-runtime,
+  pi-drv-run,
   pi-workspace,
   pi-development-node-modules,
 }: let
@@ -21,6 +22,9 @@
       ./package-lock.json
       ./tsconfig.json
       ./server.ts
+      ./application.ts
+      ../pi-extensions/drv-run/index.ts
+      ../pi-extensions/drv-run/package.json
       ./settings.ts
       ./completions.ts
       ./tests/completions.test.ts
@@ -68,9 +72,10 @@ in
       runHook preInstall
       mkdir -p "$out/lib/pi-serve" "$out/bin"
       cp pi-serve/package.json "$out/lib/pi-serve/"
-      cp dist/pi-serve/{index.html,styles.css,design-system.html,sw.js,icon-192.png,icon-512.png,server.js,settings.js,client.js,highlight.js} "$out/lib/pi-serve/"
+      cp dist/pi-serve/{index.html,styles.css,design-system.html,sw.js,icon-192.png,icon-512.png,server.js,application.js,settings.js,client.js,highlight.js} "$out/lib/pi-serve/"
       ln -s ${pi-workspace}/node_modules "$out/lib/pi-serve/node_modules"
       ln -s ${pi-runtime}/lib/pi-runtime "$out/lib/pi-runtime"
+      ln -s ${pi-drv-run}/lib/pi-extensions "$out/lib/pi-extensions"
       makeWrapper ${nodejs}/bin/node "$out/bin/pi-serve" \
         --add-flags "$out/lib/pi-serve/server.js"
       runHook postInstall

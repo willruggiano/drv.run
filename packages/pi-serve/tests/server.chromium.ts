@@ -1,3 +1,5 @@
+import { openCodingSessions } from "../../pi-runtime/coding.ts";
+import * as runtime from "../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -14,13 +16,13 @@ import {
 import { UsageDoc } from "@earendil-works/pi-durable";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { chromium, type Page } from "playwright";
-import { Sessions } from "../../pi-runtime/index.ts";
 import { fixture, model, waitFor } from "../../pi-runtime/testing.ts";
 import { chromiumExecutable, directoryFixture, serve, snapshot } from "./testing.ts";
 import {
   assertLayout,
   assertMessageTimestamps,
   browserFlow,
+  browserFixture,
   openMessageActions,
 } from "./browser-testing.ts";
 import { GlobalSettingsStore } from "../server.ts";
@@ -48,7 +50,7 @@ await test("landing lists the newest five sessions regardless of target availabi
   const ids: string[] = [];
   for (let index = 0; index < 7; index++) {
     const session = await f.sessions.create(randomUUID(), f.binding, model);
-    await session.rename(`Session ${index}`);
+    await runtime.rename(session, `Session ${index}`);
     ids.unshift(session.id);
     if (index === 1) {
       await page.reload();
@@ -294,7 +296,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     () => document.querySelector<HTMLElement>("#preferences")?.hidden,
   );
   assert.equal((await session.root.agent(context)).thinkingLevel, "high");
-  assert.equal((await session.info()).name, "Counter cleanup");
+  assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
 
   const ledger = await session.harness.snapshot(UsageDoc, session.root.id, context);
   assert(ledger);
@@ -302,7 +304,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   const expectedInput = buckets.reduce((sum, usage) => sum + usage.input, 0);
   const expectedOutput = buckets.reduce((sum, usage) => sum + usage.output, 0);
   const expectedRead = buckets.reduce((sum, usage) => sum + usage.cacheRead, 0);
-  const expectedContext = (await snapshot(`${base}/api/sessions/${id}/events`)).context;
+  const expectedContext = (await snapshot(`${base}/api/harness/${id}/watch`)).context;
   const gallery = async (page: Page, size: string) => {
     await assertHeaderStatus(page, "ready", "Ready");
     assert.equal(await page.locator(".bar button:visible").count(), 2);
@@ -399,7 +401,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await page.click(size === "desktop" ? "#footer-stats" : "#footer-context");
     await page.waitForSelector("#context-view:not([hidden])");
     assert.equal(await page.locator("#view-title").textContent(), "Context");
-    const inspection = (await snapshot(`${base}/api/sessions/${id}/events`)).inspection;
+    const inspection = (await snapshot(`${base}/api/harness/${id}/watch`)).inspection;
     assert(inspection.state === "available");
     assert.equal(
       Number(await page.locator("#context-view").getAttribute("data-tokens")),
@@ -688,12 +690,12 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.setViewportSize({ width: 390, height: 844 });
 
   // Fork history is isolated and survives a browser reload.
-  const originalEntries = await session.history();
+  const originalEntries = await runtime.history(session);
   await openMessageActions(reconnected, reconnected.locator("article .message-actions").last());
   await reconnected.click("#fork-message");
   await reconnected.waitForFunction(() => new URL(location.href).searchParams.has("conversation"));
   const branchId = Number(new URL(reconnected.url()).searchParams.get("conversation"));
-  const branch = await session.conversation(branchId);
+  const branch = await runtime.getConversation(session, branchId);
   assert.notEqual(branch.id, session.root.id);
   await reconnected.waitForFunction(
     () => document.querySelector<HTMLElement>("#footer-input")?.dataset.value === "0",
@@ -710,7 +712,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     3,
   );
   await branch.waitForIdle(context);
-  assert.equal((await session.history()).length, originalEntries.length);
+  assert.equal((await runtime.history(session)).length, originalEntries.length);
   await reconnected.fill("#prompt", "Unsent branch draft");
   await reconnected.reload();
   await reconnected.waitForFunction(
@@ -793,7 +795,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   release();
   await branch.waitForIdle(context);
   await reconnected.waitForFunction(() => document.querySelector("#queue")?.hasAttribute("hidden"));
-  const afterQueue = await session.history(branch);
+  const afterQueue = await runtime.history(session, branch);
   assert.equal(
     afterQueue.filter((entry) =>
       entry.model?.some(
@@ -855,7 +857,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   );
   await branch.waitForIdle(context);
   assert(
-    (await session.history(branch)).some((entry) =>
+    (await runtime.history(session, branch)).some((entry) =>
       entry.model?.some(
         (message) =>
           message.role === "user" &&
@@ -934,7 +936,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.waitForFunction(
     () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
   );
-  assert((await session.history(branch)).some((entry) => entry.kind === "pi.reset"));
+  assert((await runtime.history(session, branch)).some((entry) => entry.kind === "pi.reset"));
   assert.equal((await branch.context(context)).messages.length, 0);
   await reconnected.waitForFunction(
     () => document.querySelector<HTMLElement>("#footer-context")?.dataset.tokens === "",
@@ -961,7 +963,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.waitForFunction(
     () => !document.querySelector<HTMLButtonElement>("#footer-model")?.disabled,
   );
-  assert.equal(errors.length, 0);
+  assert.deepEqual([...errors], []);
   // Real codemode: the faux provider selects the tool, but QuickJS, nested
   // coding tools, Durable storage, SSE and both browser layouts are production.
   const codeFile = "codemode.json";
@@ -1030,7 +1032,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   assert.deepEqual(JSON.parse(await readFile(join(f.workspace, "codemode.json"), "utf8")), {
     value: 2,
   });
-  const codeResult = (await session.history(branch))
+  const codeResult = (await runtime.history(session, branch))
     .flatMap((entry) => entry.model ?? [])
     .find((message) => message.role === "toolResult" && message.toolCallId === "real-codemode");
   assert(codeResult?.role === "toolResult");
@@ -1143,19 +1145,21 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await f.reopen();
   const restoredSessions = f.sessions;
   const restored = await restoredSessions.get(id);
-  assert.equal(restored.needsResume, true);
-  assert.equal((await restored.info()).name, "Counter cleanup");
+  assert.equal((await runtime.sessionInfo(restored)).needsResume, true);
+  assert.equal((await runtime.sessionInfo(restored)).name, "Counter cleanup");
   const restoredBase = await serve(t, restoredSessions, assets);
   f.faux.setResponses([fauxAssistantMessage("Explicitly resumed after restart.")]);
   await reconnected.goto(`${restoredBase}/?session=${id}&conversation=${branchId}`);
   await reconnected.waitForSelector("#recovery", { state: "visible" });
   await assertLayout(reconnected, "mobile-recovery");
-  assert.equal(await reconnected.locator("#send").isDisabled(), true);
+  await reconnected.fill("#prompt", "A new submission may also enable progress.");
+  assert.equal(await reconnected.locator("#send").isDisabled(), false);
+  await reconnected.fill("#prompt", "");
   assert.equal((await restored.harness.inspect(context)).scheduling, "paused");
   await reconnected.click("#resume");
   await reconnected.waitForSelector("#recovery", { state: "hidden" });
-  await (await restored.conversation(branchId)).waitForIdle(context);
-  assert.equal(restored.needsResume, false);
+  await (await runtime.getConversation(restored, branchId)).waitForIdle(context);
+  assert.equal((await runtime.sessionInfo(restored)).needsResume, false);
   assert.equal((await restored.harness.inspect(context)).tasks.length, 0);
 });
 
@@ -1170,7 +1174,7 @@ await test("mobile browser edits shared defaults and keeps session settings inde
       defaultModel: model.modelId,
     }),
   );
-  const sessions = await Sessions.open(store.bind(f.options));
+  const sessions = await openCodingSessions(store.bind(f.options));
   t.after(() => sessions.close());
   const assets = join(f.workspace, "assets");
   await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
@@ -1260,7 +1264,7 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   await page.waitForFunction(() => new URL(location.href).searchParams.has("session"));
   const id = new URL(page.url()).searchParams.get("session")!;
   const session = await sessions.get(id);
-  assert.equal((await session.info()).thinkingLevel, "high");
+  assert.equal((await runtime.sessionInfo(session)).thinkingLevel, "high");
   await page.waitForFunction(
     () => !document.querySelector<HTMLButtonElement>("#footer-model")?.disabled,
   );
@@ -1274,7 +1278,7 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   await page.selectOption("#thinking", "off");
   await page.click("#close-view");
   await page.waitForSelector("#preferences", { state: "hidden" });
-  assert.equal((await session.info()).thinkingLevel, "off");
+  assert.equal((await runtime.sessionInfo(session)).thinkingLevel, "off");
   assert.equal(store.read().values.defaultThinkingLevel, "low");
   assert.equal(store.read().modelThinkingLevels["faux/faux-1"], "high");
   await page.reload();
@@ -1285,7 +1289,7 @@ await test("mobile browser edits shared defaults and keeps session settings inde
     await page.locator("body").evaluate((node) => node.classList.contains("hide-thinking")),
     true,
   );
-  assert.equal((await session.info()).thinkingLevel, "off");
+  assert.equal((await runtime.sessionInfo(session)).thinkingLevel, "off");
   assert.deepEqual(errors, []);
 });
 
@@ -1297,27 +1301,30 @@ await test("mobile browser sessions share header and footer formatting and stay 
     cwd: "/workspace",
   };
   let available = true;
-  await f.reopen([
-    ...f.options.integrations,
-    {
-      id: "remote",
-      targets: async () => [
-        {
-          ...binding,
-          label: `guest · git-https://git.example/${"repository/".repeat(30)}?submodules=1`,
-          available,
-        },
-      ],
-      validate: async () => {},
-      open: () => {
-        throw new Error("Listing sessions must not connect to the environment.");
+  await f.reopen({
+    targets: async () => [
+      ...(await f.options.targets()),
+      {
+        ...binding,
+        label: `guest · git-https://git.example/${"repository/".repeat(30)}?submodules=1`,
+        available,
       },
+    ],
+    env: async (target, context) => {
+      const selected = await target.read.snapshot(
+        runtime.Environment,
+        target.conversationId,
+        context,
+      );
+      if (selected?.provider !== "local")
+        throw new Error("Listing sessions must not connect to the environment.");
+      return f.options.env(target, context);
     },
-  ]);
+  });
   const session = await f.create();
-  await session.rename("Session with a very long name ".repeat(4));
+  await runtime.rename(session, "Session with a very long name ".repeat(4));
   f.faux.setResponses([fauxAssistantMessage("Measured response.")]);
-  await session.prompt("Hello.", randomUUID());
+  await session.root.submit({ type: "input", content: "Hello.", requestId: randomUUID() }, context);
   await session.root.waitForIdle(context);
   const remote = await f.sessions.create(randomUUID(), binding, model);
   await remote.root.configure(
@@ -1464,7 +1471,10 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
   });
   t.after(() => browser.close());
   f.faux.setResponses([fauxAssistantMessage("Searchable history.\n".repeat(80))]);
-  await session.prompt("Seed history.", randomUUID());
+  await session.root.submit(
+    { type: "input", content: "Seed history.", requestId: randomUUID() },
+    context,
+  );
   await session.root.waitForIdle(context);
   for (const width of [390, 1440]) {
     const page = await browser.newPage({
@@ -1493,7 +1503,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     await page.click("#footer-model");
     await page.fill("#session-name", `Session ${width}`);
     await page.focus("#instructions");
-    await waitFor(async () => (await session.info()).name === `Session ${width}`);
+    await waitFor(async () => (await runtime.sessionInfo(session)).name === `Session ${width}`);
     assert.equal(await page.locator("body").getAttribute("data-view"), "settings");
 
     // A blur starts a save; leaving during that request must wait and fail closed.
@@ -1704,7 +1714,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     await page.waitForURL((url) => url.searchParams.get("session") === newSession.id);
     await page.waitForSelector("#status[data-state=ready]");
     assert.equal((await session.root.agent(context)).instructions, `Before creating ${width}`);
-    assert.equal((await session.info()).name, `Old session ${width}`);
+    assert.equal((await runtime.sessionInfo(session)).name, `Old session ${width}`);
     assert.equal(
       (await (await f.sessions.get(newSession.id)).root.agent(context)).instructions,
       undefined,
@@ -1719,7 +1729,7 @@ await test("mobile browser branch refresh preserves keyboard focus while loading
   const f = await fixture(t);
   const session = await f.create();
   await session.root.reset(undefined, context);
-  const last = (await session.history()).at(-1);
+  const last = (await runtime.history(session)).at(-1);
   assert(last);
   const assets = join(f.workspace, "assets");
   await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
@@ -1737,7 +1747,7 @@ await test("mobile browser branch refresh preserves keyboard focus while loading
   const requested = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   t.after(() => release.resolve());
-  await page.route("**/conversations", async (route) => {
+  await page.route("**/scanConversations*", async (route) => {
     requested.resolve();
     await release.promise;
     await route.continue();
@@ -1832,7 +1842,7 @@ await test("mobile browser navigation never automatically focuses controls", asy
 
 await test("mobile browser compaction and reset archive unchanged conversation nodes in Shadow DOM", async (t) => {
   const f = await fixture(t);
-  const sessions = await Sessions.open({
+  const sessions = await openCodingSessions({
     ...f.options,
     directory: join(f.workspace, "state"),
     settings: { compaction: { keepRecentTokens: 1 } },
@@ -1997,5 +2007,65 @@ await test("mobile browser compaction and reset archive unchanged conversation n
       .evaluate((node) => (node as HTMLDetailsElement).open),
     true,
   );
+  const cutoff = (await runtime.history(session)).at(-1);
+  assert(cutoff);
+  const branch = await session.root.fork(cutoff.id, { ownership: { kind: "ownerless" } }, context);
+  await page.goto(`${base}/?session=${session.id}&conversation=${branch.id}`);
+  await reset.waitFor();
+  assert.equal(
+    await page
+      .locator('article[data-context="pi.compaction"] > .context-event > summary > .tool-duration')
+      .getAttribute("title"),
+    `Duration: ${duration}ms`,
+  );
+  assert.deepEqual(errors, []);
+});
+
+await test("browser switches execution independently of the model and restores historical selection", async (t) => {
+  const f = await fixture(t);
+  const other = join(f.workspace, "other");
+  await mkdir(other);
+  const targets = [
+    { ...f.binding, label: "First environment", available: true },
+    { provider: "local", target: other, cwd: other, label: "Second environment", available: true },
+  ];
+  await f.reopen({ targets: async () => targets });
+  const session = await f.create();
+  const marker = await session.root.submit(
+    { type: "write", entry: { kind: "marker", data: { before: true } } },
+    context,
+  );
+  const at = (await marker.status(context)).entry;
+  assert(at !== undefined);
+  const { page, base, errors } = await browserFixture(t, f.sessions);
+  await page.goto(`${base}/?session=${session.id}`);
+  await page.waitForSelector("#status[data-state=ready]");
+  await page.click("#footer-model");
+  await page.selectOption("#session-target", { label: "Second environment" });
+  await page.click("#close-view");
+  await waitFor(
+    async () =>
+      (await session.harness.snapshot(runtime.Environment, session.root.id, context))?.target ===
+      other,
+  );
+  assert.deepEqual((await session.root.agent(context)).model, model);
+  assert.equal((await session.root.agent(context)).cwd, other);
+  await page.reload();
+  await page.waitForSelector("#status[data-state=ready]");
+  await page.click("#footer-model");
+  assert.equal(
+    await page.locator("#session-target option:checked").textContent(),
+    "Second environment",
+  );
+  await page.click("#close-view");
+  const branch = await session.root.fork(at, { ownership: { kind: "ownerless" } }, context);
+  await page.goto(`${base}/?session=${session.id}&conversation=${branch.id}`);
+  await page.waitForSelector("#status[data-state=ready]");
+  await page.click("#footer-model");
+  assert.equal(
+    await page.locator("#session-target option:checked").textContent(),
+    "First environment",
+  );
+  assert.equal((await branch.agent(context)).cwd, f.workspace);
   assert.deepEqual(errors, []);
 });
