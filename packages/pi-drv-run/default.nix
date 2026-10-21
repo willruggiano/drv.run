@@ -14,27 +14,27 @@ stdenv.mkDerivation {
   pname = "pi-drv-run";
   version = (lib.importJSON ./package.json).version;
   src = lib.fileset.toSource {
-    root = ../..;
-    fileset = lib.fileset.unions [./index.ts ./package.json ./tsconfig.json ./tests ../../pi-runtime ../../pi-serve/application.ts ../../pi-serve/package.json];
+    root = ../.;
+    fileset = lib.fileset.unions [./index.ts ./package.json ./tsconfig.json ./tests ../pi-runtime ../pi-serve/application.ts ../pi-serve/package.json];
   };
   npmDeps = pi-development-node-modules;
   nativeBuildInputs = [importNpmLock.hooks.linkNodeModulesHook nodejs typescript];
   buildPhase = ''
     runHook preBuild
-    tsc -p pi-extensions/drv-run/tsconfig.json --noEmit false --rewriteRelativeImportExtensions --rootDir . --outDir dist
+    tsc -p pi-drv-run/tsconfig.json --noEmit false --rewriteRelativeImportExtensions --rootDir . --outDir dist
     runHook postBuild
   '';
   doCheck = true;
   checkPhase = ''
     runHook preCheck
-    node --test pi-extensions/drv-run/tests/*.test.ts
+    node --test pi-drv-run/tests/*.test.ts
     runHook postCheck
   '';
   installPhase = ''
     runHook preInstall
-    target="$out/lib/pi-extensions/drv-run"
+    target="$out/lib/pi-drv-run"
     mkdir -p "$target"
-    cp dist/pi-extensions/drv-run/index.js pi-extensions/drv-run/package.json "$target/"
+    cp dist/pi-drv-run/index.js pi-drv-run/package.json "$target/"
     ln -s ${pi-workspace}/node_modules "$target/node_modules"
     ln -s ${pi-runtime}/lib/pi-runtime "$out/lib/pi-runtime"
     substituteInPlace "$target/index.js" \
@@ -45,8 +45,8 @@ stdenv.mkDerivation {
   doInstallCheck = true;
   installCheckPhase = ''
     runHook preInstallCheck
-    node --input-type=module -e "await import('$out/lib/pi-extensions/drv-run/index.js')"
-    test ! -e "$out/lib/pi-extensions/drv-run/node_modules/playwright"
+    node --input-type=module -e "await import('$out/lib/pi-drv-run/index.js')"
+    test ! -e "$out/lib/pi-drv-run/node_modules/playwright"
     runHook postInstallCheck
   '';
   meta = {

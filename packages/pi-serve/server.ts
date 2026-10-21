@@ -3,7 +3,7 @@ import * as runtime from "../pi-runtime/index.ts";
 import { WorkflowError, Workflows } from "../pi-runtime/workflows.ts";
 import { ContextFiles } from "../pi-runtime/context.ts";
 import { openApplication } from "./application.ts";
-import { ownerOptions } from "../pi-extensions/drv-run/index.ts";
+import { ownerOptions } from "../pi-drv-run/index.ts";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";

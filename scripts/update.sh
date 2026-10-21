@@ -9,9 +9,6 @@ fi
 old_head=$(jj log -r @- --no-graph -T commit_id)
 
 nix-update cloud-hypervisor --commit --flake
-nix-update pi-ask --commit --flake
-nix-update pi-autoresearch --commit --flake
-nix-update pi-parallel-web --commit --flake '--version-regex=^pi-extension-v([0-9]+\.[0-9]+\.[0-9]+)$'
 nix-update subtrace --commit --flake
 
 new_head=$(jj log -r @- --no-graph -T commit_id)

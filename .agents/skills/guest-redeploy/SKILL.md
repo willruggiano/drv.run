@@ -62,8 +62,8 @@ destination has the same name as the guest source.
    Recheck bookmarks before moving them; do not undo concurrent user renames or
    deletions. Preserve existing commit messages; use Conventional Commits for
    new fixes.
-6. Run `rockctl deploy` with a 24-hour timeout (`86400` seconds; codemode
-   `timeout_ms: 86400000`). Require exit code zero and confirmed activation.
-   Report the tip, checks, and `.scratch/rock5b-deploy.log`. Nix is unavailable
-   in jail: explicitly defer `nix flake check` to the operator; deployment
-   success does not replace full validation.
+6. Run `rockctl deploy` with a 24-hour timeout (`86400` seconds). Require exit
+   code zero and confirmed activation. Report the tip, checks, and
+   `.scratch/rock5b-deploy.log`. Nix is unavailable in jail: explicitly defer
+   `nix flake check` to the operator; deployment success does not replace full
+   validation.

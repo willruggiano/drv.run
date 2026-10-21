@@ -371,78 +371,39 @@ await test("renderer preserves safe thinking/tool text and native touch, disclos
   assert.deepEqual(errors, []);
 });
 
-await test("renderer pairs parallel calls, handles legacy metadata and preserves highlighted tool subtrees", async (t) => {
+await test("renderer pairs parallel calls, displays metadata and preserves highlighted tool subtrees", async (t) => {
   const f = await rendererFixture(t);
-  const { page: reconnected, browser, browserContext, base, screenshots, errors } = f;
+  const { page: reconnected, browser, browserContext, base, errors } = f;
   f.append(...toolHistory);
   await f.load();
   await browserContext.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
-  const iconStates = {
-    cancelled: "⊘",
-    done: "✓",
-    unfinished: "◷",
-    unavailable: "?",
-    unknown: "?",
-  };
-  // Persist both supported nested-call record formats. Legacy codemode args are
-  // deliberately truncated JSON: display text, not a parseable input payload.
   f.append(
-    fauxAssistantMessage(
-      fauxToolCall(
-        "codemode",
-        { code: 'await tools.read({ path: "example.txt" })' },
-        { id: "code-history" },
-      ),
-    ),
+    fauxAssistantMessage(fauxToolCall("read", { path: "example.txt" }, { id: "metadata-history" })),
     {
       role: "toolResult",
-      toolCallId: "code-history",
+      toolCallId: "metadata-history",
       durationMs: 1234,
-      toolName: "codemode",
-      content: [{ type: "text", text: "Nested call finished" }],
+      toolName: "read",
+      content: [{ type: "text", text: "File contents" }],
       isError: false,
       timestamp: 1,
       details: {
+        path: "example.txt",
         note: '<img src=x onerror="document.body.dataset.metadataInjected = 1">',
-        calls: [
-          { id: 1, name: "read", args: '{"path":"example...', status: "ok", durationMs: 2 },
-          { id: 2, name: "read", args: '{"path":"pending.txt"}', status: "pending" },
-          ...Object.keys(iconStates).map((status, index) => ({
-            id: index + 3,
-            name: "read",
-            args: JSON.stringify({ path: `${status}.txt` }),
-            ...(status === "done" ? { durationMs: 0 } : {}),
-            status,
-          })),
-        ],
       },
     },
     {
       role: "toolResult",
-      toolCallId: "nested-history",
+      toolCallId: "unmatched-history",
       toolName: "custom.tool",
-      content: [],
+      content: [{ type: "text", text: "File unavailable" }],
       isError: true,
       timestamp: 2,
-      nestedCalls: {
-        complete: false,
-        calls: [
-          {
-            id: "nested-history/c1",
-            name: "read",
-            status: "error",
-            argumentsBytes: 300,
-            durationMs: 65000,
-            error: "File unavailable",
-          },
-        ],
-      },
     },
   );
   await f.render();
-  await reconnected.waitForSelector(".nested-tools", { state: "attached" });
   await reconnected.reload();
-  await reconnected.waitForFunction(() => document.querySelectorAll(".nested-tools").length === 2);
+  await reconnected.waitForSelector('.tool-call[data-call-id="metadata-history"]');
   const speakerGroups = await reconnected.locator("#transcript > article").evaluateAll((nodes) =>
     nodes.map((node) => {
       const speaker = node.querySelector(":scope > header > .speaker");
@@ -468,64 +429,14 @@ await test("renderer pairs parallel calls, handles legacy metadata and preserves
     }
     previousRole = role;
   }
-  assert.equal(await reconnected.locator(".nested-tools .error").count(), 1);
+  const historyCall = reconnected.locator('.tool-call[data-call-id="metadata-history"]');
   assert.equal(
-    await reconnected.locator(".nested-tools > details").count(),
-    5 + Object.keys(iconStates).length,
-  );
-  for (const [state, icon] of Object.entries(iconStates)) {
-    const status = reconnected.locator(`.nested-tools .tool-status[data-state="${state}"]`);
-    assert.equal(await status.textContent(), icon);
-    assert.equal(await status.getAttribute("aria-label"), state);
-    assert.equal(await status.getAttribute("title"), state);
-  }
-  assert.equal(
-    await reconnected
-      .locator('.tool-call[data-call-id="code-history"] > summary > .tool-duration')
-      .textContent(),
+    await historyCall.locator(":scope > summary > .tool-duration").textContent(),
     "1.2s",
   );
-  for (const [state, duration] of [
-    ["ok", "2ms"],
-    ["done", "0ms"],
-    ["error", "65.0s"],
-  ] as const)
-    assert.equal(
-      await reconnected
-        .locator(`.nested-tools .tool-call[data-state="${state}"] > summary > .tool-duration`)
-        .textContent(),
-      duration,
-    );
-  assert.equal(
-    await reconnected
-      .locator('.nested-tools .tool-call[data-state="pending"] .tool-duration')
-      .count(),
-    0,
-  );
-  await reconnected.locator('.tool-call[data-call-id="code-history"] > summary').click();
-  await reconnected
-    .locator('.tool-call[data-call-id="code-history"] .nested-tools > summary')
-    .click();
-  for (const state of ["pending", "unfinished"]) {
-    const status = reconnected.locator(`.tool-status[data-state="${state}"]`);
-    assert.equal(await status.textContent(), "◷");
-    assert.equal(await status.locator("span").count(), 0);
-    assert.equal(await status.evaluate((node) => getComputedStyle(node).animationName), "none");
-  }
-  for (const state of ["completed", "ok", "done", "cancelled", "unavailable", "unknown"]) {
-    const status = reconnected.locator(`.tool-status[data-state="${state}"]`).first();
-    assert.equal(
-      await status.evaluate((node) => getComputedStyle(node).color),
-      ["completed", "ok", "done"].includes(state) ? "rgb(175, 214, 188)" : "rgb(150, 158, 157)",
-    );
-  }
-  if (screenshots)
-    await reconnected.locator('.tool-call[data-call-id="code-history"]').screenshot({
-      path: join(screenshots, "mobile-tool-statuses.png"),
-    });
+  await historyCall.locator(":scope > summary").click();
   // Collapsed metadata keeps searchable/copyable text, but no syntax spans.
-  const historyCall = reconnected.locator('.tool-call[data-call-id="code-history"]');
-  const rawDetails = historyCall.locator(".nested-tools > details").last();
+  const rawDetails = historyCall.locator(".tool-result > details");
   const rawCode = rawDetails.locator("pre code");
   const rawText = await rawCode.textContent();
   assert(rawText);
@@ -559,14 +470,6 @@ await test("renderer pairs parallel calls, handles legacy metadata and preserves
   await rawDetails.locator(":scope > summary").click();
   assert.equal(await syntax.evaluate((node) => node.isConnected), true);
 
-  const nestedError = reconnected.locator(
-    '.nested-tools .tool-call[data-state="error"] > summary > .tool-status',
-  );
-  assert.equal(await nestedError.textContent(), "✕");
-  assert.equal(
-    await nestedError.evaluate((node) => getComputedStyle(node).color),
-    "rgb(255, 173, 173)",
-  );
   assert.equal(errors.length, 0);
   // Parallel calls of the same tool pair by ID, not tool name or result order.
   const fullCommand = `printf '%s\\n' '${"long command argument ".repeat(18)}'\necho finished`;

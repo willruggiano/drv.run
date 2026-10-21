@@ -550,8 +550,6 @@ async function refreshBranches(): Promise<void> {
   for (const button of existing.values()) button.remove();
 }
 
-// Arguments may be incomplete while streaming. Never parse display previews (in
-// particular codemode's truncated args) as JSON.
 function toolLabel(name: string, args: Record<string, unknown> = {}): string {
   const short = name.split(".").at(-1) ?? name;
   const path = typeof args.path === "string" ? args.path : "";
@@ -559,7 +557,6 @@ function toolLabel(name: string, args: Record<string, unknown> = {}): string {
     const command = typeof args.command === "string" ? args.command.trim() : "Shell command";
     return `$ ${command}`;
   }
-  if (short === "codemode") return "Code · JavaScript";
   const verb = {
     read: "Read",
     edit: "Edit",
@@ -574,7 +571,6 @@ function toolLabel(name: string, args: Record<string, unknown> = {}): string {
 function toolCommand(name: string, args: Record<string, unknown> = {}): string {
   const short = name.split(".").at(-1);
   if (short === "bash") return toolLabel(name, args);
-  if (short === "codemode" && typeof args.code === "string") return args.code.trim();
   const label = toolLabel(name, args);
   if (short === "write" && typeof args.content === "string") return `${label}\n${args.content}`;
   return Object.keys(args).length ? `${label}\n${JSON.stringify(args, null, 2)}` : label;
@@ -587,14 +583,10 @@ function toolSummary(command: string, state: string, durationMs?: number): HTMLE
   status.textContent =
     {
       completed: "✓",
-      ok: "✓",
       running: "",
       pending: "◷",
       failed: "✕",
-      error: "✕",
       cancelled: "⊘",
-      done: "✓",
-      unfinished: "◷",
     }[state] ?? "?";
   status.dataset.state = state;
   status.setAttribute("role", "img");
@@ -631,8 +623,6 @@ function toolInput(
   const short = name.split(".").at(-1);
   if (short === "bash" && typeof args.command === "string")
     return { text: args.command, language: "bash" };
-  if (short === "codemode" && typeof args.code === "string")
-    return { text: args.code, language: "javascript" };
   if (short === "write" && typeof args.content === "string")
     return { text: args.content, language: "" };
   if (short === "edit") {
@@ -660,18 +650,6 @@ function toolInput(
   return { text: JSON.stringify(args, null, 2), language: "json" };
 }
 
-function resultDetails(message: Extract<Message, { role: "toolResult" }>): unknown {
-  const data = message.details;
-  return message.nestedCalls
-    ? {
-        ...(data && typeof data === "object" && !Array.isArray(data)
-          ? Object.fromEntries(Object.entries(data))
-          : {}),
-        ...message.nestedCalls,
-      }
-    : data;
-}
-
 function toolDetails(node: HTMLElement, data: unknown): void {
   if (!data || typeof data !== "object") return;
   const patch =
@@ -685,52 +663,9 @@ function toolDetails(node: HTMLElement, data: unknown): void {
   summary.textContent = patch ? "Changes" : "Details";
   details.open = !!patch;
   details.append(summary);
-  if ("calls" in data && Array.isArray(data.calls)) {
-    summary.textContent = `Nested tools · ${data.calls.length}${"complete" in data && data.complete === false ? " · partial record" : ""}`;
-    details.className = "nested-tools";
-    for (const call of data.calls) {
-      if (!call || typeof call !== "object") continue;
-      const row = document.createElement("details");
-      row.className = "tool-call";
-      row.dataset.state = String(call.status);
-      const command =
-        call.arguments && typeof call.arguments === "object"
-          ? toolCommand(String(call.name), call.arguments)
-          : `${toolLabel(String(call.name))}${typeof call.args === "string" ? `\n${call.args}` : ""}`;
-      row.append(toolSummary(command, String(call.status), call.durationMs));
-      if (typeof call.argumentsBytes === "number")
-        row.append(`Arguments omitted (${call.argumentsBytes} bytes)`);
-      if (typeof call.error === "string") {
-        row.classList.add("error");
-        row.append(codeBlock(call.error));
-      }
-      const actions = messageActions(
-        undefined,
-        undefined,
-        toolCopies(
-          call.arguments && typeof call.arguments === "object"
-            ? toolInput(String(call.name), call.arguments).text
-            : typeof call.args === "string"
-              ? call.args
-              : undefined,
-          typeof call.error === "string" ? call.error : undefined,
-          call,
-        ),
-      );
-      actions.setAttribute("aria-label", "Tool actions");
-      row.append(actions);
-      details.append(row);
-    }
-    // Keep truncation paths and any future metadata accessible as well.
-    const raw = document.createElement("details");
-    const label = document.createElement("summary");
-    label.textContent = "Raw details";
-    raw.append(label, codeBlock(JSON.stringify(data, null, 2), "json", raw));
-    details.append(raw);
-  } else
-    details.append(
-      codeBlock(patch ?? JSON.stringify(data, null, 2), patch ? "diff" : "json", details),
-    );
+  details.append(
+    codeBlock(patch ?? JSON.stringify(data, null, 2), patch ? "diff" : "json", details),
+  );
   node.append(details);
 }
 
@@ -1039,7 +974,7 @@ function content(
       node.append(image);
     }
   }
-  if (message.role === "toolResult") toolDetails(node, resultDetails(message));
+  if (message.role === "toolResult") toolDetails(node, message.details);
   if (
     message.role === "toolResult" &&
     !message.isError &&
@@ -1167,11 +1102,11 @@ export function render(snapshot: RenderState): void {
     }
   if (partial)
     for (const block of partial.content) if (block.type === "toolCall") calls.set(block.id, block);
-  const slots = [...(live?.tools ?? []), ...(live?.nestedTools ?? [])];
+  const slots = live?.tools ?? [];
   const buildTool = (call: Call): HTMLElement => {
     const result = results.get(call.id);
     const slot = slots.find((tool) => tool.callId === call.id);
-    const failed = result?.message.isError || (slot && "summary" in slot && slot.summary?.isError);
+    const failed = result?.message.isError;
     const state = failed
       ? "failed"
       : result
@@ -1184,9 +1119,7 @@ export function render(snapshot: RenderState): void {
     details.dataset.disclosure = `call:${call.id}`;
     details.dataset.state = state;
     details.open = !!failed;
-    const durationMs =
-      result?.message.durationMs ??
-      (slot && "summary" in slot ? slot.summary?.durationMs : undefined);
+    const durationMs = result?.message.durationMs;
     details.append(toolSummary(toolCommand(call.name, call.arguments), state, durationMs));
     if (result) {
       const output = document.createElement("div");
@@ -1196,30 +1129,24 @@ export function render(snapshot: RenderState): void {
     } else if (slot) {
       if (slot.output) details.append(codeBlock(slot.output));
       toolDetails(details, slot.details);
-      if ("summary" in slot && slot.summary?.error) details.append(codeBlock(slot.summary.error));
     }
     const output = result
       ? result.message.content
           .filter((block) => block.type === "text")
           .map((block) => block.text)
           .join("\n\n")
-      : (slot?.output ?? (slot && "summary" in slot ? slot.summary?.error : undefined));
+      : slot?.output;
     const actions = messageActions(
       result?.entry,
       result?.message,
       toolCopies(
         toolInput(call.name, call.arguments).text,
         output,
-        result ? resultDetails(result.message) : slot?.details,
+        result ? result.message.details : slot?.details,
       ),
     );
     actions.setAttribute("aria-label", "Tool actions");
     details.append(actions);
-    for (const child of live?.nestedTools ?? [])
-      if (child.parentCallId === call.id)
-        details.append(
-          buildTool({ id: child.callId, name: child.name, arguments: child.arguments }),
-        );
     // Stable disclosure keys keep input/output expansion independent when a
     // running call gains its result or a sibling finishes out of order.
     details.querySelectorAll("details:not([data-disclosure])").forEach((node, index) => {
@@ -1238,9 +1165,7 @@ export function render(snapshot: RenderState): void {
               ? busy
               : undefined,
             results.get(call.id),
-            slots.filter(
-              (slot) => slot.callId === call.id || slot.callId.startsWith(`${call.id}/`),
-            ),
+            slots.filter((slot) => slot.callId === call.id),
           ])
       : undefined;
   for (const entry of [...entries.values()].sort((a, b) => a.id - b.id)) {
@@ -1307,18 +1232,13 @@ export function render(snapshot: RenderState): void {
     );
   for (const tool of slots) {
     if (calls.has(tool.callId) || results.has(tool.callId)) continue;
-    if (
-      "parentCallId" in tool &&
-      (calls.has(tool.parentCallId) || slots.some((parent) => parent.callId === tool.parentCallId))
-    )
-      continue;
-    item(`tool:${tool.callId}`, [tool, live?.nestedTools], (node) => {
+    item(`tool:${tool.callId}`, tool, (node) => {
       node.dataset.role = "toolResult";
       node.append(
         buildTool({
           id: tool.callId,
           name: tool.name,
-          arguments: "arguments" in tool ? tool.arguments : {},
+          arguments: {},
         }),
       );
     });
@@ -2581,7 +2501,7 @@ window.addEventListener("resize", () => {
 });
 function messageText(message: Message): string {
   if (typeof message.content === "string") return message.content;
-  let text = message.content
+  const text = message.content
     .map((block) => {
       if (block.type === "text") return block.text;
       if (block.type === "thinking") return block.thinking;
@@ -2590,8 +2510,6 @@ function messageText(message: Message): string {
       return "[image]";
     })
     .join("\n\n");
-  if (message.role === "toolResult" && message.nestedCalls)
-    text += `\n\n${JSON.stringify(message.nestedCalls, null, 2)}`;
   if (message.role === "toolResult" && "details" in message && message.details) {
     const data = message.details;
     const patch =

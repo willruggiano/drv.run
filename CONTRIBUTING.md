@@ -6,7 +6,6 @@ requirement. If you haven't already, read [[README.md]].
 - Read `justfile` for essential development commands
 - Use Conventional Commit messages: `<type>(<scope>): <subject>`
   - `<scope>` is optional, apply it when necessary
-- Use `codemode` to batch tool calls
 - Be frugal about adding _new_ files. Prefer inlining code unless it is
   genuinely shared across modules.
 - No `./example/*` dependencies in core drv.run modules and tests. The examples
@@ -72,13 +71,13 @@ Sequential runs, without competing Nix builds:
 - Test with `nix flake check` or by building a specific check, eg.
   `nix build .#checks.x86_64-linux.host-basic`
 
-### Pi extension tests
+### TypeScript tests
 
-- Put them in `<extension>/tests/*.test.ts`
+- Put them in `<package>/tests/*.test.ts`
 - Use `node:test` and `node:assert/strict`
-- Test observable extension behavior, especially event ordering and lifecycle
-  boundaries. Add a focused regression test for bug fixes.
+- Test observable behavior, especially event ordering and lifecycle boundaries.
+  Add a focused regression test for bug fixes.
 - Keep tests deterministic and offline. Use temporary directories and register
   cleanup with the test context.
 - Keep harnesses minimal. Test doubles may use narrow local interfaces and one
-  cast at the extension boundary; do not weaken production types.
+  cast at the interface boundary; do not weaken production types.

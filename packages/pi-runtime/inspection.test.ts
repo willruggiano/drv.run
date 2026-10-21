@@ -126,7 +126,7 @@ await test("inspection preserves durable baseline, compaction, tool ordering and
   assert.equal(f.faux.state.callCount, 0);
 });
 
-await test("inspection derives protocol fields without exposing content, schemas or nested-call details", async (t) => {
+await test("inspection derives protocol fields without exposing content or schemas", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   const file = {

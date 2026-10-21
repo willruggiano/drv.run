@@ -1,5 +1,4 @@
 {
-  "defaultTools": ["+codemode"],
   "theme": "system",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-6-astra",

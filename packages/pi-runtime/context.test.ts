@@ -201,47 +201,30 @@ await test("baseline context precedes the first request and CONTRIBUTING blocks 
   );
 });
 
-await test("parallel direct mutations and nested read/write calls cannot authorize their own batch", async (t) => {
-  for (const nested of [false, true])
-    await t.test(nested ? "codemode" : "direct", async (t) => {
-      const { f, run } = await configured(t);
-      await writeFile(join(f.workspace, "CONTRIBUTING.md"), "Contribute.");
-      await writeFile(join(f.workspace, "edit.json"), "0");
-      const session = await f.create();
-      const mutation = nested
-        ? fauxAssistantMessage(
-            fauxToolCall("codemode", {
-              code: `
-      await tools.read({ path: "CONTRIBUTING.md" });
-      await Promise.allSettled([
-        tools.write({ path: "result.json", content: "1" }),
-        tools.edit({ path: "edit.json", edits: [{ oldText: "0", newText: "1" }] }),
-      ]);
-      try { await tools.write({ path: "result.json", content: "1" }); } catch {}
-    `,
-            }),
-            { stopReason: "toolUse" },
-          )
-        : fauxAssistantMessage(
-            [
-              fauxToolCall("write", { path: "result.json", content: "1" }),
-              fauxToolCall("edit", { path: "edit.json", edits: [{ oldText: "0", newText: "1" }] }),
-            ],
-            { stopReason: "toolUse" },
-          );
-      f.faux.setResponses([
-        mutation,
-        async () => {
-          assert.equal(await exists(join(f.workspace, "result.json")), false);
-          assert.equal(JSON.parse(await readFile(join(f.workspace, "edit.json"), "utf8")), 0);
-          return mutation;
-        },
-        done(),
-      ]);
-      await run(session.root);
-      assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
-      assert.equal(JSON.parse(await readFile(join(f.workspace, "edit.json"), "utf8")), 1);
-    });
+await test("parallel mutations cannot authorize their own batch", async (t) => {
+  const { f, run } = await configured(t);
+  await writeFile(join(f.workspace, "CONTRIBUTING.md"), "Contribute.");
+  await writeFile(join(f.workspace, "edit.json"), "0");
+  const session = await f.create();
+  const mutation = fauxAssistantMessage(
+    [
+      fauxToolCall("write", { path: "result.json", content: "1" }),
+      fauxToolCall("edit", { path: "edit.json", edits: [{ oldText: "0", newText: "1" }] }),
+    ],
+    { stopReason: "toolUse" },
+  );
+  f.faux.setResponses([
+    mutation,
+    async () => {
+      assert.equal(await exists(join(f.workspace, "result.json")), false);
+      assert.equal(JSON.parse(await readFile(join(f.workspace, "edit.json"), "utf8")), 0);
+      return mutation;
+    },
+    done(),
+  ]);
+  await run(session.root);
+  assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
+  assert.equal(JSON.parse(await readFile(join(f.workspace, "edit.json"), "utf8")), 1);
 });
 
 await test("changed instructions block mutation until the changed content reaches a new request", async (t) => {

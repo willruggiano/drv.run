@@ -3,7 +3,7 @@ import { resolve, isAbsolute } from "node:path";
 import { BACKGROUND_CONTEXT, awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { RemoteExecutionEnv, type Connection } from "@earendil-works/pi-env";
-import { connectInstance, listInstances, type Options } from "../pi-extensions/drv-run/index.ts";
+import { connectInstance, listInstances, type Options } from "../pi-drv-run/index.ts";
 import { openCodingSessions } from "../pi-runtime/coding.ts";
 import {
   Environment,

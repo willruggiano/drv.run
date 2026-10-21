@@ -56,7 +56,6 @@ await test("mobile browser Context follows the approved mock, isolates late even
         content: "",
         timestamp: 1,
         sections: {
-          codemode: text(640),
           preamble: text(200),
           cwd: "<cwd>\n/workspace/drv.run\n</cwd>",
           context: JSON.stringify({
@@ -68,7 +67,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
             ],
           }),
         },
-        toolsAdded: ["read", "write", "edit", "bash", "codemode", "ask_user"].map((name) => ({
+        toolsAdded: ["read", "write", "edit", "bash", "ask_user"].map((name) => ({
           name,
           description: text(450),
           parameters: { type: "object", properties: {} },
@@ -95,7 +94,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
       ["read", "packages/pi-runtime/index.ts", 12400],
       ["read", "packages/pi-runtime/runtime.test.ts", 10800],
       ["edit", "packages/pi-runtime/context.ts", 20],
-      ["codemode", "", 7120],
+      ["bash", "", 7120],
     ] as const
   ).entries()) {
     if (index === 1) await append({ kind: "pi.user", model: [user(1600)] });
@@ -107,7 +106,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
               path,
               ...(name === "edit" ? { edits: [{ oldText: text(3000), newText: text(3200) }] } : {}),
             }
-          : { code: "await tools.bash({ command: 'just check' });" },
+          : { command: "just check" },
       ),
       id: `call-${index}`,
     };

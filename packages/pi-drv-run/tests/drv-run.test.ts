@@ -1,4 +1,4 @@
-import * as runtime from "../../../pi-runtime/index.ts";
+import * as runtime from "../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -7,8 +7,8 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { Connection, RemoteExecutionEnv, sshArguments } from "@earendil-works/pi-env";
-import { resolveBaseDirectory } from "../../../pi-runtime/index.ts";
-import { readHistory, code, exists, model, waitFor } from "../../../pi-runtime/testing.ts";
+import { resolveBaseDirectory } from "../../pi-runtime/index.ts";
+import { readHistory, code, exists, model, waitFor } from "../../pi-runtime/testing.ts";
 import { connectInstance, listInstances } from "../index.ts";
 import { remoteFixture } from "./fixture.ts";
 
@@ -87,7 +87,7 @@ await test("lease pins the owner route and host key, uses /workspace and cleans 
   assert.equal(close.mock.callCount(), 1);
 });
 
-await test("faux turns use the daemon for read/write/edit; extension removal preserves history and forbids local fallback", async (t) => {
+await test("faux turns use the daemon for read/write/edit; integration removal preserves history and forbids local fallback", async (t) => {
   const f = await remoteFixture(t);
   // The local daemon needs an existing cwd even when tool paths are absolute.
   await f.reopen({ targets: f.targets });
@@ -124,39 +124,6 @@ await test("faux turns use the daemon for read/write/edit; extension removal pre
   restored.harness.resume();
   assert.equal(f.faux.state.callCount, 4);
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
-});
-
-await test("codemode nested tools use the bound remote daemon", async (t) => {
-  const f = await remoteFixture(t);
-  await f.reopen({ targets: f.targets });
-  const file = join(f.workspace, "codemode-remote.json");
-  f.faux.setResponses([
-    fauxAssistantMessage(
-      fauxToolCall("codemode", {
-        code: `
-      await tools.write({ path: ${JSON.stringify(file)}, content: "1" });
-      await tools.edit({ path: ${JSON.stringify(file)}, edits: [{ oldText: "1", newText: "2" }] });
-      await tools.read({ path: ${JSON.stringify(file)} });
-    `,
-      }),
-      { stopReason: "toolUse" },
-    ),
-    fauxAssistantMessage("Done."),
-  ]);
-  const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "");
-  await session.root.submit(
-    { type: "input", content: "Use codemode in the guest.", requestId: randomUUID() },
-    context,
-  );
-  await session.root.waitForIdle(context);
-  const results = (await readHistory(session.root))
-    .flatMap((entry) => entry.model ?? [])
-    .filter((message) => message.role === "toolResult");
-  assert.equal(results.length, 1);
-  assert.equal(results[0].toolName, "codemode");
-  assert.equal(results[0].isError, false);
-  assert.equal(JSON.parse(await readFile(file, "utf8")), 2);
-  assert.equal(f.connections.length, 1);
 });
 
 await test("stopping an instance blocks existing sessions without opening another connection", async (t) => {
@@ -366,12 +333,9 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
   assert.equal((await fork.agent(context)).cwd, join(f.workspace, "one"));
   await fork.configure({ cwd: await f.sessions.baseDirectory(f.binding, "/two") }, context);
   f.faux.setResponses([
-    fauxAssistantMessage(
-      fauxToolCall("codemode", {
-        code: 'await tools.write({ path: "branch.txt", content: "branch" });',
-      }),
-      { stopReason: "toolUse" },
-    ),
+    fauxAssistantMessage(fauxToolCall("write", { path: "branch.txt", content: "branch" }), {
+      stopReason: "toolUse",
+    }),
     fauxAssistantMessage("Done."),
   ]);
   const before = f.connections.length;

@@ -9,7 +9,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import { readHistory, model, waitFor, code } from "../packages/pi-runtime/testing.ts";
 import { join } from "node:path";
 import { test } from "node:test";
-import { remoteFixture } from "../packages/pi-extensions/drv-run/tests/fixture.ts";
+import { remoteFixture } from "../packages/pi-drv-run/tests/fixture.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -64,7 +64,7 @@ await test("ask and fresh review use pi-env without a host fallback", async (t) 
   assert.equal(f.connections.length, 1);
 });
 
-await test("HTTP composition runs pi-env codemode and preserves work after disconnect", async (t) => {
+await test("HTTP composition runs pi-env tools and preserves work after disconnect", async (t) => {
   const f = await remoteFixture(t);
   await f.reopen({ targets: f.targets });
   const base = await serve(t, f.sessions);
@@ -77,12 +77,10 @@ await test("HTTP composition runs pi-env codemode and preserves work after disco
   });
   assert.equal(created.status, 201);
   f.faux.setResponses([
-    fauxAssistantMessage(
-      fauxToolCall("codemode", {
-        code: 'await tools.write({ path: "http.json", content: "{\\"ok\\":true}" }); await tools.read({ path: "http.json" });',
-      }),
-      { stopReason: "toolUse" },
-    ),
+    fauxAssistantMessage(fauxToolCall("write", { path: "http.json", content: '{"ok":true}' }), {
+      stopReason: "toolUse",
+    }),
+    fauxAssistantMessage(fauxToolCall("read", { path: "http.json" }), { stopReason: "toolUse" }),
     fauxAssistantMessage("Done."),
   ]);
   const url = `${base}/api/harness/${id}`;
@@ -108,5 +106,5 @@ await test("HTTP composition runs pi-env codemode and preserves work after disco
       .filter((message: { role: string }) => message.role === "user").length,
     1,
   );
-  assert.equal(f.faux.state.callCount, 2);
+  assert.equal(f.faux.state.callCount, 3);
 });

@@ -96,13 +96,12 @@ article.trace-continues {
 .tool-status[data-state=running] > span { border-radius: 50%; background: currentColor; animation: tool-spinner 900ms linear infinite; }
 @keyframes tool-spinner { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .tool-status[data-state=running] > span { animation: none; opacity: .6; } }
-.tool-call[data-state=failed] > summary .tool-status, .tool-call[data-state=error] > summary .tool-status { color: var(--danger); }
-.tool-status:is([data-state=running], [data-state=completed], [data-state=ok], [data-state=done]) { color: var(--accent); }
+.tool-call[data-state=failed] > summary .tool-status { color: var(--danger); }
+.tool-status:is([data-state=running], [data-state=completed]) { color: var(--accent); }
 .context-history { display: block; font: 14px/1.6 var(--font-ui); color: var(--fg); }
 .context-event > summary { font-family: var(--font-ui); }
 .tool-result { min-width: 0; }
 .tool-call > .message-actions { display: block; }
-.tool-call .tool-call { margin-left: 6px; }
 .message-actions { margin-left: auto; min-height: 24px; font-weight: normal; opacity: 0; } .message-actions:focus-visible { opacity: 1; }
 @media (hover: hover) and (pointer: fine) { article:hover > header > .message-actions, .tool-call:hover > .message-actions { opacity: 1; } }
 .text { white-space: pre-wrap; } .text p { margin: 0 0 10px; } .text p:last-child { margin-bottom: 0; }

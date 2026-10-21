@@ -5,7 +5,7 @@ import { Connection, localDaemon, type SshConnectOptions } from "@earendil-works
 import { tmpdir } from "node:os";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { openApplication, type ApplicationOptions } from "../../../pi-serve/application.ts";
+import { openApplication, type ApplicationOptions } from "../../pi-serve/application.ts";
 import { listInstances } from "../index.ts";
 
 /** Real inventory files and daemon; only systemd state and the SSH transport are substituted. */

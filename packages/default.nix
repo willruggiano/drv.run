@@ -15,18 +15,6 @@
       '';
     };
 
-  withExtensions = pi: exts:
-    pkgs.symlinkJoin {
-      name = "${pi.pname}-${pi.version}-extended";
-      paths = [pi];
-      nativeBuildInputs = [pkgs.makeWrapper];
-      postBuild = ''
-        wrapProgram "$out/bin/pi" \
-          ${lib.concatMapStringsSep " " (ext: "--add-flag -e --add-flag ${lib.escapeShellArg (toString ext)}") exts}
-      '';
-      inherit (pi) meta;
-    };
-
   llm-context = pkgs.writeTextDir "etc/xdg/llms.txt" ''
     Nix store paths:
     deploy-rs -> ${inputs.deploy-rs.outPath}
@@ -55,7 +43,7 @@ in {
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
 
   pi-runtime = pkgs.callPackage ./pi-runtime {};
-  pi-drv-run = pkgs.callPackage ./pi-extensions/drv-run {};
+  pi-drv-run = pkgs.callPackage ./pi-drv-run {};
   pi-serve = pkgs.callPackage ./pi-serve {};
 
   # pi packages and wrapped harnesses
@@ -64,20 +52,8 @@ in {
   pi-unwrapped = inputs.pi.packages.${pkgs.stdenv.hostPlatform.system}.default;
   pi-workspace = pkgs.callPackage ./pi-workspace {src = inputs.pi;};
   pi-development-node-modules = pkgs.callPackage ./pi-workspace/development.nix {};
-  # base pi + some core extensions
-  pi-with-extensions = withExtensions pkgs.pi-unwrapped (
-    with pkgs; [
-      pi-ask
-      pi-autoresearch
-      pi-notify
-      pi-parallel-web
-      pi-path-rules
-      pi-queued-compact
-      pi-review
-    ]
-  );
-  # base pi + core extensions + a system prompt with handy nix store links
-  pi-with-store-paths = appendSystemPrompt pkgs.pi-with-extensions "${llm-context}/etc/xdg/llms.txt";
+  # base pi + a system prompt with handy nix store links
+  pi-with-store-paths = appendSystemPrompt pkgs.pi-unwrapped "${llm-context}/etc/xdg/llms.txt";
   # that^ but in jail, suitable for quick local iterations
   pi-jailed = let
     jail = inputs.jail.lib.init pkgs;
@@ -144,19 +120,4 @@ in {
     '';
   in
     appendSystemPrompt drv "${prompt}/share/youve-been-jailed.txt";
-
-  # extensions/packages:
-  pi-ask = pkgs.callPackage ./pi-extensions/pi-ask {};
-  pi-autoresearch = pkgs.callPackage ./pi-extensions/pi-autoresearch {};
-  pi-notify = pkgs.callPackage ./pi-extensions/pi-notify {};
-  pi-parallel-web = pkgs.callPackage ./pi-extensions/pi-parallel {};
-  pi-path-rules = pkgs.runCommandLocal "path-rules" {} ''
-    mkdir -p "$out/extensions"
-    cp -r ${./pi-extensions/rules} "$out/extensions/path-rules"
-  '';
-  pi-queued-compact = pkgs.runCommandLocal "queued-compact" {} ''
-    mkdir -p "$out/extensions"
-    cp -r ${./pi-extensions/queue} "$out/extensions/queue"
-  '';
-  pi-review = pkgs.callPackage ./pi-extensions/pi-review {};
 }

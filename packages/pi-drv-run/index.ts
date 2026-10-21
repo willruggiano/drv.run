@@ -4,7 +4,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { sshConnection } from "@earendil-works/pi-env";
-import { SessionError, stateDirectory } from "../../pi-runtime/index.ts";
+import { SessionError, stateDirectory } from "../pi-runtime/index.ts";
 
 const exec = promisify(execFile);
 const instanceId = /^[a-zA-Z0-9]+$/;

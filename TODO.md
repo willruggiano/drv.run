@@ -4,9 +4,9 @@
 
 - Usability improvements:
   - [ ] Automate the host deployment
-  - [ ] (pi-serve) web worker?
   - [ ] git push
-  - [ ] Automate port exposure (see below "HTTP proxy")
+  - [ ] Scratchpad off to the side on desktop
+  - [ ] Executable specs / RLM
 - [ ] [[security.md]]
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
 - [ ] Automate/declarative guest port exposure / service publishing (proof of
@@ -17,7 +17,6 @@
 - [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
       insight into pre/start/post activation timing, including cold and warm
       boots on flake's of varying (closure) size
-- [ ] Clean up pi-serve nixos test, module, align with "modular services" idiom?
 - [ ] Add an owner-scoped host command that obtains the guest connection FD from
       systemd-ssh-proxy
       (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
@@ -74,12 +73,12 @@
 
 ## Low priority ideas
 
-- [ ] Implement a [headlong] inspired RLM using pi-durable and codemode. There
-      are two primary things to determine here: (1) the model-code-model loop
-      (the core RLM machinery), and (2) trajectory projection (ie. context). The
-      latter will be quite interesting as both a context/fork problem (to
-      implement "context as a projection of trajectory") and a compaction
-      problem (to implement "tiered context compaction").
+- [ ] Implement a [headlong] inspired RLM using pi-durable. There are two
+      primary things to determine here: (1) the model-code-model loop (the core
+      RLM machinery), and (2) trajectory projection (ie. context). The latter
+      will be quite interesting as both a context/fork problem (to implement
+      "context as a projection of trajectory") and a compaction problem (to
+      implement "tiered context compaction").
 
 ## Stuff to look into
 
