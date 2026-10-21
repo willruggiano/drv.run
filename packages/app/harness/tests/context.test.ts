@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { test, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Message } from "@earendil-works/pi-ai";
 import {
   fauxAssistantMessage,
   fauxToolCall,
@@ -21,26 +20,13 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { FileError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { ContextFiles, contextPaths, loadContextFiles, type ContextFile } from "../context.ts";
+import { createContextExtension, contextPaths, loadContextFiles } from "../context.ts";
 import { openHarness } from "../index.ts";
 
 const context = BACKGROUND_CONTEXT;
 const done = () => fauxAssistantMessage("Done.");
 const write = (path = "result.json", content = "1") =>
   fauxAssistantMessage(fauxToolCall("write", { path, content }), { stopReason: "toolUse" });
-function promptContext(messages: readonly Message[]): {
-  files: ContextFile[];
-  contributing: boolean;
-} {
-  let value: string | null | undefined;
-  for (const message of messages) {
-    if (message.role === "system" && message.sections && "context" in message.sections)
-      value = message.sections.context;
-  }
-  assert(value);
-  return JSON.parse(value);
-}
-
 async function readHistory(conversation: Conversation): Promise<EntryRecord[]> {
   const entries: EntryRecord[] = [];
   let cursor: Cursor | undefined;
@@ -50,16 +36,6 @@ async function readHistory(conversation: Conversation): Promise<EntryRecord[]> {
     cursor = page.next;
   } while (cursor !== undefined);
   return entries;
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
-    throw error;
-  }
 }
 
 async function configured(t: TestContext) {
@@ -127,6 +103,16 @@ async function configured(t: TestContext) {
   return { f, home, user, system, environment, run };
 }
 
+await test("context extension only renders a prompt section", () => {
+  const extension = createContextExtension();
+  assert.deepEqual(
+    extension.sections?.map((section) => section.key),
+    ["context"],
+  );
+  assert.equal(extension.hooks, undefined);
+  assert.equal(extension.wraps, undefined);
+});
+
 await test("XDG context paths use defaults, absolute overrides and low-to-high precedence", () => {
   assert.deepEqual(contextPaths("/home/pi", "", ""), [
     "/etc/xdg/llms.txt",
@@ -181,11 +167,11 @@ await test("context discovery uses the execution environment, not server HOME or
     return reader(local, options, ctx);
   };
   assert.deepEqual(
-    (await loadContextFiles(env, false, context)).files,
-    [...files].slice(0, 3).map(([path, content], i) => ({
+    await loadContextFiles(env, context),
+    [...files].map(([path, content], i) => ({
       path,
       content,
-      level: ["system", "user", "repo"][i],
+      level: ["system", "user", "project", "project"][i],
     })),
   );
 });
@@ -209,19 +195,16 @@ await test("repository context uses worktree roots, follows symlinked documents 
   await writeFile(join(root, "CONTRIBUTING.md"), "Contribute.");
   const env = environment(sub);
   t.after(() => env.cleanup(context));
-  const baseline = await loadContextFiles(env, false, context);
-  assert.deepEqual(baseline.files, [
+  assert.deepEqual(await loadContextFiles(env, context), [
     { level: "system", path: join(system, "llms.txt"), content: "System." },
     { level: "user", path: join(user, "llms.txt"), content: "User." },
-    { level: "repo", path: join(root, "README.md"), content: "Right worktree." },
-  ]);
-  assert.deepEqual((await loadContextFiles(env, true, context)).files, [
-    ...baseline.files,
-    { level: "repo", path: join(root, "CONTRIBUTING.md"), content: "Contribute." },
+    { level: "project", path: join(root, "README.md"), content: "Right worktree." },
+
+    { level: "project", path: join(root, "CONTRIBUTING.md"), content: "Contribute." },
   ]);
 });
 
-await test("baseline context precedes the first request and CONTRIBUTING blocks the first mutation", async (t) => {
+await test("all context is supplied before the first mutation", async (t) => {
   const { f, system, user, run } = await configured(t);
   await writeFile(join(system, "llms.txt"), "System.");
   await writeFile(join(user, "llms.txt"), "User.");
@@ -230,212 +213,94 @@ await test("baseline context precedes the first request and CONTRIBUTING blocks 
   const session = await f.create();
   f.faux.setResponses([
     ({ messages }) => {
-      assert.deepEqual(
-        promptContext(messages).files.map((file) => file.level),
-        ["system", "user", "repo"],
-      );
-      assert.equal(promptContext(messages).contributing, false);
-      return write();
-    },
-    async ({ messages }) => {
-      assert.equal(await exists(join(f.workspace, "result.json")), false);
-      assert.equal(promptContext(messages).contributing, true);
-      assert.deepEqual(promptContext(messages).files.at(-1), {
-        level: "repo",
-        path: join(f.workspace, "CONTRIBUTING.md"),
-        content: "Contribute.",
-      });
+      assert(messages.some((message) => message.role === "system" && message.sections?.context));
       return write();
     },
     done(),
   ]);
   await run(session.root);
-  assert.equal(f.faux.state.callCount, 3);
+  assert.equal(f.faux.state.callCount, 2);
   assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
   assert.deepEqual(
     (await readHistory(session.root))
       .filter((entry) => ToolResultEntry.is(entry))
       .map((entry) => entry.data.diagnostics.map((d) => d.code)),
-    [["context_required"], []],
+    [[]],
   );
 });
 
-await test("parallel mutations cannot authorize their own batch", async (t) => {
-  const { f, run } = await configured(t);
-  await writeFile(join(f.workspace, "CONTRIBUTING.md"), "Contribute.");
-  await writeFile(join(f.workspace, "edit.json"), "0");
-  const session = await f.create();
-  const mutation = fauxAssistantMessage(
-    [
-      fauxToolCall("write", { path: "result.json", content: "1" }),
-      fauxToolCall("edit", { path: "edit.json", edits: [{ oldText: "0", newText: "1" }] }),
-    ],
-    { stopReason: "toolUse" },
-  );
-  f.faux.setResponses([
-    mutation,
-    async () => {
-      assert.equal(await exists(join(f.workspace, "result.json")), false);
-      assert.equal(JSON.parse(await readFile(join(f.workspace, "edit.json"), "utf8")), 0);
-      return mutation;
-    },
-    done(),
-  ]);
-  await run(session.root);
-  assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
-  assert.equal(JSON.parse(await readFile(join(f.workspace, "edit.json"), "utf8")), 1);
-});
-
-await test("changed instructions block mutation until the changed content reaches a new request", async (t) => {
-  for (const name of ["README.md", "CONTRIBUTING.md"])
-    await t.test(name, async (t) => {
-      const { f, run } = await configured(t);
-      const file = join(f.workspace, name);
-      await writeFile(file, "Before.");
-      const session = await f.create();
-      f.faux.setResponses(name === "CONTRIBUTING.md" ? [write(), done()] : [done()]);
-      await run(session.root);
-      f.faux.setResponses([
-        async () => {
-          await writeFile(file, "After.");
-          return write();
-        },
-        async ({ messages }) => {
-          assert.equal(await exists(join(f.workspace, "result.json")), false);
-          assert.equal(
-            promptContext(messages).files.find((item) => item.path === file)?.content,
-            "After.",
-          );
-          return write();
-        },
-        done(),
-      ]);
-      await run(session.root);
-      assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
-    });
-});
-
-await test("missing files allow mutation; newly created CONTRIBUTING requires disclosure", async (t) => {
-  const { f, run } = await configured(t);
-  const session = await f.create();
-  f.faux.setResponses([write(), done()]);
-  await run(session.root);
-  assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
-  f.faux.setResponses([
-    async () => {
-      await writeFile(join(f.workspace, "CONTRIBUTING.md"), "New.");
-      return write("result.json", "2");
-    },
-    async () => {
-      assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
-      return write("result.json", "2");
-    },
-    done(),
-  ]);
-  await run(session.root);
-  assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 2);
-});
-
-await test("instruction failures block mutations, never retain stale context, and recover", async (t) => {
-  const { f, run } = await configured(t);
-  const file = join(f.workspace, "README.md");
-  await writeFile(file, "Valid.");
-  const session = await f.create();
-  f.faux.setResponses([done()]);
-  await run(session.root);
-  await rm(file);
-  await mkdir(file);
-  f.faux.setResponses([write(), done()]);
-  await run(session.root);
-  assert.equal(f.faux.state.callCount, 3);
-  assert.equal(await exists(join(f.workspace, "result.json")), false);
-  await rm(file, { recursive: true });
-  await writeFile(file, "Fixed.");
-  f.faux.setResponses([write(), done()]);
-  await run(session.root);
-  assert.equal(f.faux.state.callCount, 5);
-  assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
-});
-
-await test("unreadable CONTRIBUTING blocks mutations and oversized instructions fail without truncation", async (t) => {
-  const { f, run, environment } = await configured(t);
-  await mkdir(join(f.workspace, "CONTRIBUTING.md"));
-  const session = await f.create();
-  f.faux.setResponses([write(), done()]);
-  await run(session.root);
-  assert.equal(await exists(join(f.workspace, "result.json")), false);
-  const results = (await readHistory(session.root))
-    .flatMap((entry) => entry.model ?? [])
-    .filter((message) => message.role === "toolResult");
-  assert.equal(results[0]?.isError, true);
-  await writeFile(join(f.workspace, "README.md"), "x".repeat(1024 * 1024 + 1));
+await test("missing context files are omitted", async (t) => {
+  const { environment } = await configured(t);
   const env = environment();
   t.after(() => env.cleanup(context));
-  await assert.rejects(loadContextFiles(env, false, context));
+  assert.deepEqual(await loadContextFiles(env, context), []);
 });
 
-await test("activation survives restart and compaction, forks as-of, and resets independently", async (t) => {
+await test("context discovery reloads changed project files", async (t) => {
+  const { f, environment } = await configured(t);
+  const env = environment();
+  t.after(() => env.cleanup(context));
+  const path = join(f.workspace, "CONTRIBUTING.md");
+  await writeFile(path, "Before.");
+  assert.deepEqual(await loadContextFiles(env, context), [
+    { level: "project", path, content: "Before." },
+  ]);
+  await writeFile(path, "After.");
+  assert.deepEqual(await loadContextFiles(env, context), [
+    { level: "project", path, content: "After." },
+  ]);
+});
+
+await test("unreadable and oversized instructions fail without truncation", async (t) => {
+  const { f, environment } = await configured(t);
+  const env = environment();
+  t.after(() => env.cleanup(context));
+  const file = join(f.workspace, "CONTRIBUTING.md");
+  await mkdir(file);
+  await assert.rejects(loadContextFiles(env, context));
+  await rm(file, { recursive: true });
+  await writeFile(join(f.workspace, "README.md"), "x".repeat(1024 * 1024 + 1));
+  await assert.rejects(loadContextFiles(env, context));
+});
+
+await test("context is supplied after restart, fork, compaction and reset", async (t) => {
   const { f, run } = await configured(t);
   await writeFile(join(f.workspace, "CONTRIBUTING.md"), "Contribute.");
   let session = await f.create();
   f.faux.setResponses([done()]);
   await run(session.root);
   const before = (await readHistory(session.root)).at(-1)!;
-  f.faux.setResponses([write(), done()]);
-  await run(session.root);
-  const after = (await readHistory(session.root)).at(-1)!;
-  assert.equal(
-    (await session.harness.snapshot(ContextFiles, session.root.id, context))?.contributing,
-    true,
-  );
   session = await f.reopen();
-  const early = await session.root.fork(before.id, { ownership: { kind: "ownerless" } }, context);
-  const late = await session.root.fork(after.id, { ownership: { kind: "ownerless" } }, context);
-  for (const [conversation, expected] of [
-    [early, false],
-    [late, true],
-    [session.root, true],
-  ] as const) {
-    f.faux.setResponses([
-      ({ messages }) => {
-        assert.equal(promptContext(messages).contributing, expected);
-        return done();
-      },
-    ]);
+  const branch = await session.root.fork(before.id, { ownership: { kind: "ownerless" } }, context);
+  for (const conversation of [branch, session.root]) {
+    const calls = f.faux.state.callCount;
+    f.faux.setResponses([write(), done()]);
     await run(conversation);
+    assert.equal(f.faux.state.callCount, calls + 2);
   }
-  await late.submit(
-    { type: "write", entry: { kind: "pi.compaction", data: { reason: "manual" }, head: after.id } },
+  await branch.submit(
+    {
+      type: "write",
+      entry: { kind: "pi.compaction", data: { reason: "manual" }, head: before.id },
+    },
     context,
   );
-  f.faux.setResponses([
-    ({ messages }) => {
-      assert.equal(promptContext(messages).contributing, true);
-      return done();
-    },
-  ]);
-  await run(late);
-  await late.reset(undefined, context);
-  // A compaction before the next request must not hide that reset from the loader.
-  const reset = (await readHistory(late)).at(-1)!;
-  await late.submit(
+  f.faux.setResponses([write(), done()]);
+  await run(branch);
+  assert.equal(f.faux.state.callCount, 7);
+  await branch.reset(undefined, context);
+  const reset = (await readHistory(branch)).at(-1)!;
+  await branch.submit(
     { type: "write", entry: { kind: "pi.compaction", data: { reason: "manual" }, head: reset.id } },
     context,
   );
-  f.faux.setResponses([
-    ({ messages }) => {
-      assert.equal(promptContext(messages).contributing, false);
-      return done();
-    },
-  ]);
-  await run(late);
-  assert.equal(
-    (await session.harness.snapshot(ContextFiles, session.root.id, context))?.contributing,
-    true,
-  );
+  f.faux.setResponses([write(), done()]);
+  await run(branch);
+  assert.equal(f.faux.state.callCount, 9);
+  assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
 });
 
-await test("changing base directory removes the previous repository context and activation", async (t) => {
+await test("changing base directory supplies the new project context before mutation", async (t) => {
   const { f, run } = await configured(t);
   await mkdir(join(f.workspace, ".git"));
   await writeFile(join(f.workspace, "README.md"), "First.");
@@ -448,20 +313,8 @@ await test("changing base directory removes the previous repository context and 
   f.faux.setResponses([write(), done()]);
   await run(session.root);
   await session.root.configure({ cwd: other }, context);
-  f.faux.setResponses([
-    ({ messages }) => {
-      assert.deepEqual(promptContext(messages), {
-        ...promptContext(messages),
-        files: [{ level: "repo", path: join(other, "README.md"), content: "Second." }],
-        contributing: false,
-      });
-      return write();
-    },
-    done(),
-  ]);
-  await run(session.root);
-  assert.equal(await exists(join(other, "result.json")), false);
   f.faux.setResponses([write(), done()]);
   await run(session.root);
+  assert.equal(f.faux.state.callCount, 4);
   assert.equal(JSON.parse(await readFile(join(other, "result.json"), "utf8")), 1);
 });

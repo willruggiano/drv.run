@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import type { Context } from "@earendil-works/chord/context";
 import {
   Harness,
@@ -35,13 +34,7 @@ export async function openHarness(
       ],
     }),
   );
-  registry.install(
-    createContextExtension(async (id, context) => {
-      const conversation = await harness.conversation(id, context);
-      assert(conversation, "Context conversation must exist.");
-      return conversation;
-    }),
-  );
+  registry.install(createContextExtension());
   registry.install(createWebExtension());
   const extensions = registry.snapshot().installed();
   const harness = await Harness.open(
