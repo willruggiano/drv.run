@@ -1,4 +1,0 @@
-{
-  "extends": "../pi-runtime/tsconfig.json",
-  "include": ["index.ts", "tests/*.ts"]
-}

@@ -61,7 +61,7 @@
 
     # per-system outputs
     checks = eachSystem (pkgs: {
-      inherit (pkgs) pi-serve pi-drv-run;
+      inherit (pkgs) pi-serve harness;
       # FIXME: this should live with the bench package, not here.
       bench-test =
         pkgs.runCommand "bench-tests" {

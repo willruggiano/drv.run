@@ -4,9 +4,11 @@
 
 - Usability improvements:
   - [ ] Automate the host deployment
-  - [ ] git push
+  - [ ] git push (depends on mitm)
   - [ ] Scratchpad off to the side on desktop
   - [ ] Executable specs / RLM
+  - [ ] `/cd` and `/rename` commands
+  - [ ] Project management features, or integrate Linear (via mcp?)
 - [ ] [[security.md]]
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
 - [ ] Automate/declarative guest port exposure / service publishing (proof of

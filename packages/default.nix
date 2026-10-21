@@ -42,9 +42,8 @@ in {
   subtrace = pkgs.callPackage ./subtrace.nix {};
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
 
-  pi-runtime = pkgs.callPackage ./pi-runtime {};
-  pi-drv-run = pkgs.callPackage ./pi-drv-run {};
-  pi-serve = pkgs.callPackage ./pi-serve {};
+  harness = pkgs.callPackage ./harness {};
+  pi-serve = pkgs.callPackage ./serve {};
 
   # pi packages and wrapped harnesses
 

@@ -7,7 +7,7 @@
 }: let
   dependencies = importNpmLock.buildNodeModules {
     inherit nodejs;
-    npmRoot = ../pi-serve;
+    npmRoot = ../serve;
     derivationArgs = {
       pname = "pi-development-npm-deps";
       npmFlags = ["--legacy-peer-deps"];
