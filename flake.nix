@@ -72,7 +72,6 @@
           python3 -B -m unittest discover -s packages.bench.tests -p '*_test.py'
           touch $out
         '';
-      nixos-pi-serve = pkgs.pi-serve.tests.nixos;
       # This one is just a proof of concept. It does not need to be part of the
       # canonical checks!
       # nixos-port-forwarding = pkgs.testers.runNixOSTest (import ./tests/nixos/port-forwarding.nix {

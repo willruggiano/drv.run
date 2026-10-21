@@ -56,7 +56,7 @@ in {
 
   pi-runtime = pkgs.callPackage ./pi-runtime {};
   pi-drv-run = pkgs.callPackage ./pi-extensions/drv-run {};
-  pi-serve = pkgs.callPackage ./pi-serve {inherit (inputs.self) nixosModules;};
+  pi-serve = pkgs.callPackage ./pi-serve {};
 
   # pi packages and wrapped harnesses
 

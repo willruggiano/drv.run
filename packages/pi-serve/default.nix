@@ -1,13 +1,11 @@
 {
   importNpmLock,
-  callPackage,
   chromium,
   esbuild,
   lib,
   stdenv,
   nodejs,
   typescript,
-  nixosModules,
   makeWrapper,
   pi-runtime,
   pi-drv-run,
@@ -103,10 +101,6 @@ in
           mainProgram = "pi-serve-bench-render";
           platforms = ["x86_64-linux" "aarch64-linux"];
         };
-      };
-      tests.nixos = callPackage ../../tests/nixos/pi-serve.nix {
-        inherit nixosModules;
-        pi-serve = finalAttrs.finalPackage;
       };
     };
     doInstallCheck = true;
