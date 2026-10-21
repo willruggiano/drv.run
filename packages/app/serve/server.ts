@@ -305,10 +305,8 @@ export function httpServer(
   sessions: Sessions,
   host: string,
   assets = dirname(fileURLToPath(import.meta.url)),
-  publicOrigin?: string,
   settings?: GlobalSettingsStore,
 ) {
-  const external = publicOrigin === undefined ? undefined : new URL(validateOrigin(publicOrigin));
   const server = createServer((request, response) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -321,16 +319,14 @@ export function httpServer(
       // No authentication, but reject cross-site writes and DNS rebinding.
       const authority = request.headers.host;
       if (!authority) throw new RequestError(400, "Host header required.");
-      const proxied = external?.host === authority;
-      const origin = proxied ? external : new URL(`http://${authority}`);
+      const origin = new URL(`http://${authority}`);
       const hostname = origin.hostname.replace(/^\[|\]$/g, "");
       const address = server.address();
       const port = address && typeof address === "object" ? address.port : 80;
       const destination = host === "0.0.0.0" ? request.socket.localAddress : host;
       if (
-        !proxied &&
-        (![destination, ...(destination === "127.0.0.1" ? ["localhost"] : [])].includes(hostname) ||
-          Number(origin.port || 80) !== port)
+        ![destination, ...(destination === "127.0.0.1" ? ["localhost"] : [])].includes(hostname) ||
+        Number(origin.port || 80) !== port
       )
         throw new RequestError(403, "Unexpected Host.");
       if (
@@ -770,74 +766,12 @@ export function httpServer(
   return server;
 }
 
-function validateOrigin(value: string): string {
-  const url = new URL(value);
-  if (
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash
-  )
-    throw new Error(
-      "--origin must be an HTTPS origin, without credentials, path, query or fragment.",
-    );
-  return url.origin;
-}
-
-export function parseOptions(args: string[]) {
-  let host = "0.0.0.0",
-    port = 8080,
-    directory = join(stateDirectory(), "pi-serve"),
-    cwd = process.cwd(),
-    local = true,
-    drvRun = false;
-  let publicOrigin: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    const option = args[i];
-    if (option === "--drv-run") {
-      drvRun = true;
-      continue;
-    }
-    if (option === "--no-local") {
-      local = false;
-      continue;
-    }
-    const value = args[++i];
-    if (!value) throw new Error(`Missing value for ${option}`);
-    if (option === "--host") host = value;
-    else if (option === "--port") port = Number(value);
-    else if (option === "--state") directory = resolve(value);
-    else if (option === "--cwd") cwd = resolve(value);
-    else if (option === "--origin") publicOrigin = validateOrigin(value);
-    else throw new Error(`Unknown option: ${option}`);
-  }
+export async function main(): Promise<void> {
+  const host = process.env.HOST ?? "127.0.0.1";
+  const port = Number(process.env.PORT ?? "8080");
   if (!isIP(host) || host === "::")
-    throw new Error("--host must be an IP address; IPv6 wildcard binding is not supported.");
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid port.");
-  if (!local && !drvRun) throw new Error("--no-local requires --drv-run.");
-  return { host, port, directory, cwd, local, drvRun, publicOrigin };
-}
-
-export async function main(args: string[]): Promise<void> {
-  if (args.includes("--help")) {
-    console.log(`Usage: pi-serve [--host IP] [--port PORT] [--state DIRECTORY]
-                [--cwd DIRECTORY] [--drv-run] [--no-local] [--origin HTTPS_ORIGIN]
-
-Runs pi-durable with a web frontend. Defaults to local tools in the launch directory.
-The standard application installs coding extensions and selects available environments.
-Uses ~/.pi/agent model settings and credentials (PI_CODING_AGENT_DIR supported).
-Run pi /login to configure credentials.
-History survives restart; opening does not resume interrupted work.
-Default: unauthenticated HTTP on 0.0.0.0:8080. No TLS or browser authentication.
-HTTP does not provide secure-context PWA features outside localhost.
-For a trusted HTTPS reverse proxy, bind --host 127.0.0.1 and set --origin to its
-exact HTTPS origin. The proxy must preserve Host. Forwarded headers are ignored.
-This does not add authentication: restrict access at the proxy/network boundary.`);
-    return;
-  }
-  const { host, port, directory, cwd, drvRun, local, publicOrigin } = parseOptions(args);
+    throw new Error("HOST must be an IP address; IPv6 wildcard binding is not supported.");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT.");
   process.umask(0o077);
   const models = await ModelRuntime.create();
   const settings = new GlobalSettingsStore(
@@ -845,15 +779,13 @@ This does not add authentication: restrict access at the proxy/network boundary.
   );
   const sessions = await openApplication(
     settings.bind({
-      directory,
+      directory: join(stateDirectory(), "pi-serve"),
       models,
-      cwd,
-      local,
-      drvRun: drvRun ? ownerOptions() : undefined,
+      drvRun: ownerOptions(),
       onReport: (error) => console.error("pi-serve session", error),
     }),
   );
-  const server = httpServer(sessions, host, undefined, publicOrigin, settings);
+  const server = httpServer(sessions, host, undefined, settings);
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -893,5 +825,5 @@ This does not add authentication: restrict access at the proxy/network boundary.
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  await main(process.argv.slice(2));
+  await main();
 }

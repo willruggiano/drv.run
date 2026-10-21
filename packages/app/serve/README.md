@@ -1,5 +1,17 @@
 # pi-serve
 
+## Running
+
+Run as the drv.run instance owner:
+
+```sh
+nix run .#app
+```
+
+There are no command-line options. `HOST` defaults to `127.0.0.1`; `PORT`
+defaults to `8080`. The server is unauthenticated. Execution uses drv.run guests
+only; there is no local execution target.
+
 ## Keyboard shortcuts
 
 Ctrl/⌘+K opens Sessions. Outside text fields and native selects, `t` opens the
@@ -12,7 +24,7 @@ conversation search matches when those controls have focus.
 Focused browser tests (with Chromium on PATH):
 
 ```sh
-node --test packages/pi-serve/key-mappings.test.ts
+NODE_OPTIONS=--conditions=development node --test packages/app/serve/tests/key-mappings.chromium.ts
 ```
 
 ## Base directory
@@ -28,15 +40,14 @@ Suggestions list directories in the selected guest, including nested paths; type
 `.` to include hidden directories. The setting uses Durable's native `cwd`, so
 it persists across restarts and is inherited by forks. File tools, commands, `@`
 completion, and repository status all use the current conversation's directory.
-Local targets keep their existing launch-directory behavior.
 
 ## Mentions and commands
 
-Type `@` at a word boundary to browse paths in the session's workspace (local or
-remote). Completion matches name prefixes; select a directory to browse inside
-it. Type `.` to include hidden entries. Paths containing spaces are quoted
-automatically. Mentions insert path references, not file contents. Listing is
-bounded to 5,000 entries per directory and 50 suggestions.
+Type `@` at a word boundary to browse paths in the session's guest workspace.
+Completion matches name prefixes; select a directory to browse inside it. Type
+`.` to include hidden entries. Paths containing spaces are quoted automatically.
+Mentions insert path references, not file contents. Listing is bounded to 5,000
+entries per directory and 50 suggestions.
 
 Type `/` at the start of a message for commands: `/sessions`, `/new`,
 `/settings`, `/model`, `/compact [instructions]`, `/reset [handoff]`, `/stop`,
@@ -53,7 +64,7 @@ closed.
 Run the focused tests with Chromium and esbuild on PATH:
 
 ```sh
-node --test packages/pi-serve/completions.test.ts
+NODE_OPTIONS=--conditions=development node --test packages/app/serve/tests/completions.*.ts
 ```
 
 ## Benchmarks
@@ -77,7 +88,7 @@ network and completed paint. Timing samples are unprofiled; small differences
 between these runs are not evidence of a rendering speedup.
 
 ```sh
-nix run .#pi-serve.bench.render > benchmark.json
+nix run .#app.bench.render > benchmark.json
 ```
 
 Add `-- --profile` for a separate diagnostic run with CPU profiles and browser

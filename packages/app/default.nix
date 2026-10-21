@@ -33,7 +33,7 @@
   piLocks;
 in
   buildNpmPackage (finalAttrs: {
-    pname = "pi-serve";
+    pname = "app";
     inherit (manifest) version;
     src = lib.fileset.toSource {
       root = ./.;
@@ -96,37 +96,14 @@ in
         --replace-fail '?? "systemctl"' '?? "${systemd}/bin/systemctl"'
       makeWrapper ${nodejs}/bin/node "$out/bin/pi-serve" \
         --add-flags "$out/lib/app/serve/dist/server.js"
-      ln -s app/harness "$out/lib/harness"
       runHook postInstall
     '';
-    passthru = {
-      # Entering a development shell must not require compiling or testing the
-      # application. Only manifests and the shared dependency graph are needed.
-      nodeModules = importNpmLock.buildNodeModules {
-        inherit nodejs;
-        npmRoot = ./.;
-        derivationArgs = {
-          pname = "drv-run-app-node-modules";
-          src = lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [./package.json ./package-lock.json ./harness/package.json ./serve/package.json];
-          };
-          dontUnpack = false;
-          inherit (finalAttrs) npmDeps npmRebuildFlags buildInputs;
-          nativeBuildInputs = [autoPatchelfHook];
-          postInstall = ''
-            rm "$out/node_modules/harness" "$out/node_modules/pi-serve"
-            rm -rf "$out/node_modules/.bin"
-          '';
-        };
-      };
-      bench.render = writeShellApplication {
-        name = "pi-serve-bench-render";
-        runtimeInputs = [chromium esbuild];
-        text = ''
-          exec ${lib.getExe nodejs} ${finalAttrs.finalPackage.dev}/serve/dist/benchmark.js "$@"
-        '';
-      };
+    passthru.bench.render = writeShellApplication {
+      name = "pi-serve-bench-render";
+      runtimeInputs = [chromium esbuild];
+      text = ''
+        exec ${lib.getExe nodejs} ${finalAttrs.finalPackage.dev}/serve/dist/benchmark.js "$@"
+      '';
     };
     doInstallCheck = true;
     installCheckPhase = ''

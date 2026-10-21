@@ -156,7 +156,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
   const history = await readHistory(session.root);
   const assets = join(f.directory, "assets");
   await buildAssets(fileURLToPath(new URL("..", import.meta.url)), assets);
-  const base = await serve(t, sessions, assets, "127.0.0.1", undefined, store);
+  const base = await serve(t, sessions, assets, "127.0.0.1", store);
   const initial = await snapshot(`${base}/api/harness/${session.id}/watch`);
   assert(initial.inspection.state === "available");
   const browser = await chromium.launch({

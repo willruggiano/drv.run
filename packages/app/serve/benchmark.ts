@@ -240,7 +240,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
   const { chromium } = await import("playwright");
   assert(
     options.executablePath,
-    "Chromium is required; set --chromium or use nix run .#pi-serve.bench.render",
+    "Chromium is required; set --chromium or use nix run .#app.bench.render",
   );
   const directory = await mkdtemp(join(tmpdir(), "pi-serve-bench-"));
   let sessions: Sessions | undefined;

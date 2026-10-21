@@ -266,13 +266,7 @@
           pi = {
             enable = true;
             user = "me";
-            package = let
-              pi = drv-run.packages.${pkgs.stdenv.hostPlatform.system};
-            in
-              pkgs.writeShellScriptBin "pi-serve" ''
-                exec ${lib.getExe pi.pi-serve} --no-local \
-                  --drv-run "$@"
-              '';
+            host = "0.0.0.0";
           };
         };
       };

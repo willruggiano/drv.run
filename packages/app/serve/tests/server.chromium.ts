@@ -1015,7 +1015,7 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   t.after(() => sessions.close());
   const assets = join(f.workspace, "assets");
   await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
-  const base = await serve(t, sessions, assets, "127.0.0.1", undefined, store);
+  const base = await serve(t, sessions, assets, "127.0.0.1", store);
   const browser = await chromium.launch({
     executablePath: chromiumExecutable(),
   });
@@ -1302,7 +1302,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
   const store = new GlobalSettingsStore(SettingsManager.inMemory());
   const assets = join(f.workspace, "assets");
   await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
-  const base = await serve(t, f.sessions, assets, "127.0.0.1", undefined, store);
+  const base = await serve(t, f.sessions, assets, "127.0.0.1", store);
   const browser = await chromium.launch({
     executablePath: chromiumExecutable(),
   });

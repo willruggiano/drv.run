@@ -13,7 +13,7 @@ in {
     enable = lib.mkEnableOption "pi-durable web frontend";
     package = lib.mkOption {
       type = lib.types.package;
-      default = packages.pi-serve;
+      default = packages.app;
     };
     user = lib.mkOption {
       type = lib.types.str;
@@ -21,7 +21,7 @@ in {
     };
     host = lib.mkOption {
       type = lib.types.str;
-      default = "0.0.0.0";
+      default = "127.0.0.1";
       description = "Serve pi on this interface";
     };
     port = lib.mkOption {
@@ -47,15 +47,13 @@ in {
       description = "pi server";
       wantedBy = ["default.target"];
       unitConfig.ConditionUser = cfg.user;
+      environment = {
+        HOST = cfg.host;
+        PORT = toString cfg.port;
+      };
       serviceConfig = {
         Type = "exec";
-        ExecStart = utils.escapeSystemdExecArgs [
-          (lib.getExe cfg.package)
-          "--host"
-          cfg.host
-          "--port"
-          cfg.port
-        ];
+        ExecStart = utils.escapeSystemdExecArgs [(lib.getExe cfg.package)];
         WorkingDirectory = "%h";
         UMask = "0077";
         TimeoutStopSec = 20;

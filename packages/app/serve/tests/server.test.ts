@@ -1,5 +1,4 @@
 import { Sessions } from "../sessions.ts";
-import { openApplication } from "../application.ts";
 import * as runtime from "../sessions.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -18,7 +17,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { readHistory, fixture, model } from "./sessions-testing.ts";
 import { chromiumExecutable, directoryFixture, serve, snapshot, post } from "./testing.ts";
-import { GlobalSettingsStore, parseOptions } from "../server.ts";
+import { GlobalSettingsStore } from "../server.ts";
 import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
 import { buildAssets } from "../build.ts";
 
@@ -144,48 +143,42 @@ async function checkCLI(
   }
 }
 
-await test("server starts standalone without host commands", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-serve-cli-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  {
-    const reservation = createServer();
-    await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
-    const port = (reservation.address() as AddressInfo).port;
-    await new Promise<void>((resolve) => reservation.close(() => resolve()));
-    const child = spawn(
-      process.execPath,
-      [
-        fileURLToPath(new URL("../server.ts", import.meta.url)),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        String(port),
-        "--state",
-        join(directory, "state"),
-        "--cwd",
-        directory,
-      ],
-      {
-        env: {
-          ...process.env,
-          PATH: "",
-          PI_OFFLINE: "1",
-          PI_CODING_AGENT_DIR: join(directory, "agent"),
-        },
-        stdio: ["ignore", "ignore", "pipe"],
-      },
-    );
-    await checkCLI(child, `http://127.0.0.1:${port}/api/catalog`, (catalog) => {
-      assert.deepEqual(catalog.sessions, []);
-      assert.deepEqual(catalog.targets, [
+await test("server reads HOST/PORT and starts with no local execution target", async (t) => {
+  for (const host of [undefined, "127.0.0.2"]) {
+    await t.test(host ?? "default host", async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), "pi-serve-startup-"));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const address = host ?? "127.0.0.1";
+      const reservation = createServer();
+      await new Promise<void>((resolve) => reservation.listen(0, address, resolve));
+      const port = (reservation.address() as AddressInfo).port;
+      await new Promise<void>((resolve) => reservation.close(() => resolve()));
+      const child = spawn(
+        process.execPath,
+        [
+          // The fixture has an empty inventory; use a fixed instance-owner identity.
+          "--import",
+          'data:text/javascript,import { mock } from "node:test"; mock.method(process, "getuid", () => 1000);',
+          fileURLToPath(new URL("../server.ts", import.meta.url)),
+        ],
         {
-          provider: "local",
-          target: directory,
-          cwd: directory,
-          label: `Local · ${directory}`,
-          available: true,
+          env: {
+            ...process.env,
+            HOST: host,
+            PORT: String(port),
+            HOME: directory,
+            XDG_STATE_HOME: join(directory, "state"),
+            PATH: "",
+            PI_OFFLINE: "1",
+            PI_CODING_AGENT_DIR: join(directory, "agent"),
+          },
+          stdio: ["ignore", "ignore", "pipe"],
         },
-      ]);
+      );
+      await checkCLI(child, `http://${address}:${port}/api/catalog`, (catalog) => {
+        assert.deepEqual(catalog.sessions, []);
+        assert.deepEqual(catalog.targets, []);
+      });
     });
   }
 });
@@ -432,38 +425,6 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
   assert.equal((await fetch(`http://localhost:${port}/api/catalog`)).status, 200);
 });
 
-await test("CLI defaults to local execution and accepts explicit integration composition", () => {
-  const defaults = parseOptions([]);
-  assert.equal(defaults.host, "0.0.0.0");
-  assert.equal(defaults.port, 8080);
-  assert.equal(defaults.local, true);
-  assert.equal(defaults.cwd, process.cwd());
-  assert.equal(defaults.drvRun, false);
-  const custom = parseOptions([
-    "--no-local",
-    "--drv-run",
-    "--port",
-    "9000",
-    "--cwd",
-    "/work",
-    "--state",
-    "/state",
-  ]);
-  assert.equal(custom.local, false);
-  assert.equal(custom.drvRun, true);
-  assert.equal(custom.cwd, "/work");
-  assert.equal(custom.directory, "/state");
-  assert.equal(custom.port, 9000);
-  for (const args of [
-    ["--no-local"],
-    ["--port", "0"],
-    ["--host", "::"],
-    ["--cwd"],
-    ["--unknown", "x"],
-  ])
-    assert.throws(() => parseOptions(args), Error);
-});
-
 await test("built highlighter preserves selected languages and is served as a static module", async (t) => {
   const assets = await mkdtemp(join(tmpdir(), "pi-serve-build-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
@@ -617,9 +578,9 @@ await test("conversation controls validate input and keep forks scoped to their 
   );
 });
 
-await test("HTTPS proxy origin is explicit and forwarded headers cannot bypass origin checks", async (t) => {
+await test("forwarded headers cannot bypass origin checks", async (t) => {
   const f = await fixture(t);
-  const base = await serve(t, f.sessions, undefined, "127.0.0.1", "https://pi.example");
+  const base = await serve(t, f.sessions);
   const status = (headers: Record<string, string>) =>
     new Promise<number | undefined>((resolve, reject) => {
       const req = request(base + "/api/catalog", { headers }, (response) => {
@@ -629,7 +590,7 @@ await test("HTTPS proxy origin is explicit and forwarded headers cannot bypass o
       req.once("error", reject);
       req.end();
     });
-  assert.equal(await status({ Host: "pi.example", Origin: "https://pi.example" }), 200);
+  assert.equal(await status({ Host: "pi.example", Origin: "https://pi.example" }), 403);
   assert.equal(await status({ Host: "pi.example", Origin: "https://evil.example" }), 403);
   assert.equal(
     await status({
@@ -638,18 +599,6 @@ await test("HTTPS proxy origin is explicit and forwarded headers cannot bypass o
       "X-Forwarded-Proto": "https",
     }),
     403,
-  );
-  for (const value of [
-    "http://pi.example",
-    "https://pi.example/path",
-    "https://user:pass@pi.example",
-    "https://pi.example?query",
-    "https://pi.example#fragment",
-  ])
-    assert.throws(() => parseOptions(["--origin", value]));
-  assert.equal(
-    parseOptions(["--origin", "https://pi.example/"]).publicOrigin,
-    "https://pi.example",
   );
 });
 
@@ -754,15 +703,11 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   const store = new GlobalSettingsStore(
     SettingsManager.create(f.workspace, agentDir, { projectTrusted: false }),
   );
-  const options = store.bind({
-    directory: f.directory,
-    models: f.options.models,
-    cwd: f.workspace,
-  });
-  const sessions = await openApplication(options);
+  const options = store.bind(f.options);
+  const sessions = await Sessions.open(options);
   assert.equal(sessions.options.defaults, options.defaults);
   t.after(() => sessions.close());
-  const base = await serve(t, sessions, undefined, "127.0.0.1", undefined, store);
+  const base = await serve(t, sessions, undefined, "127.0.0.1", store);
   const current = await sessions.create(randomUUID(), f.binding, model);
   assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "medium");
   assert.equal(options.settings?.compaction?.reserveTokens, 12345);

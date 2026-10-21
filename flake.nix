@@ -61,7 +61,7 @@
 
     # per-system outputs
     checks = eachSystem (pkgs: {
-      inherit (pkgs) pi-serve harness;
+      inherit (pkgs) app;
       # FIXME: this should live with the bench package, not here.
       bench-test =
         pkgs.runCommand "bench-tests" {
@@ -95,18 +95,14 @@
       jail = pkgs.mkShell {
         inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
+        # Local workspace links await https://github.com/NixOS/nixpkgs/pull/522939.
+        nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook];
         packages = [pkgs.pi-jailed];
       };
       toolchain = pkgs.mkShell {
-        nativeBuildInputs = [pkgs.systemd.dev pkgs.importNpmLock.hooks.linkNodeModulesHook];
-        npmDeps = pkgs.pi-app.nodeModules;
+        nativeBuildInputs = [pkgs.systemd.dev];
+        npmDeps = pkgs.app.dev;
         npmRoot = "packages/app";
-        shellHook = ''
-          linkNodeModulesHook
-          # Workspace imports must follow local edits, not the store checkout.
-          ln -sfn ../harness packages/app/node_modules/harness
-          ln -sfn ../serve packages/app/node_modules/pi-serve
-        '';
         packages = with pkgs; [
           ast-grep
           bash

@@ -34,10 +34,9 @@ export async function serve(
   sessions: Sessions,
   assets?: string,
   host = "127.0.0.1",
-  publicOrigin?: string,
   settings?: GlobalSettingsStore,
 ) {
-  const server = httpServer(sessions, host, assets, publicOrigin, settings);
+  const server = httpServer(sessions, host, assets, settings);
   await new Promise<void>((resolve) => server.listen(0, host, resolve));
   t.after(async () => {
     server.closeAllConnections();

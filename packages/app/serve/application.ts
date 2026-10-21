@@ -1,7 +1,5 @@
-import { stat } from "node:fs/promises";
-import { resolve, isAbsolute } from "node:path";
+import { isAbsolute } from "node:path";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { DrvRunEnv } from "harness";
 import { listInstances, type Options } from "./instances.ts";
 import {
@@ -12,33 +10,16 @@ import {
   type SessionOptions,
 } from "./sessions.ts";
 
-/** Standard server application; custom applications may supply Sessions directly to httpServer. */
+/** Server application backed by drv.run instances. */
 export type ApplicationOptions = Omit<SessionOptions, "close"> & {
-  cwd: string;
-  local?: boolean;
-  drvRun?: Options;
+  drvRun: Options;
 };
 export async function openApplication(options: ApplicationOptions) {
-  const cwd = resolve(options.cwd);
-  const environments = new Map<string, NodeExecutionEnv | DrvRunEnv>();
+  const environments = new Map<string, DrvRunEnv>();
   async function resolveEnvironment({ provider, target, cwd }: ExecutionBinding, context: Context) {
     context.abortSignal?.throwIfAborted();
     const key = JSON.stringify([provider, target, cwd]);
-    if (provider === "local" && options.local !== false) {
-      if (!isAbsolute(target) || !cwd || !isAbsolute(cwd))
-        throw new SessionError("invalid", "Invalid local directory.");
-      const directory = await stat(cwd).catch(() => undefined);
-      context.abortSignal?.throwIfAborted();
-      if (!directory?.isDirectory())
-        throw new SessionError("unavailable", `Local directory is unavailable: ${cwd}`);
-      let env = environments.get(key);
-      if (!env) {
-        env = new NodeExecutionEnv({ cwd });
-        environments.set(key, env);
-      }
-      return env;
-    }
-    if (provider !== "drv.run" || !options.drvRun)
+    if (provider !== "drv.run")
       throw new SessionError("unavailable", `Execution provider is unavailable: ${provider}`);
     if (!cwd || !isAbsolute(cwd)) throw new SessionError("invalid", "Invalid guest directory.");
     if (
@@ -62,24 +43,15 @@ export async function openApplication(options: ApplicationOptions) {
       context.abortSignal?.throwIfAborted();
       if (options.targets) return options.targets(context);
       const targets = [];
-      if (options.local !== false)
+      for (const instance of await listInstances(options.drvRun, context.abortSignal))
         targets.push({
-          provider: "local",
-          target: cwd,
-          cwd,
-          label: `Local · ${cwd}`,
-          available: (await stat(cwd).catch(() => undefined))?.isDirectory() ?? false,
+          provider: "drv.run",
+          target: instance.id,
+          cwd: "/workspace",
+          directoryRoot: "/workspace",
+          label: `${instance.id} · ${instance.reference}`,
+          available: instance.running,
         });
-      if (options.drvRun)
-        for (const instance of await listInstances(options.drvRun, context.abortSignal))
-          targets.push({
-            provider: "drv.run",
-            target: instance.id,
-            cwd: "/workspace",
-            directoryRoot: "/workspace",
-            label: `${instance.id} · ${instance.reference}`,
-            available: instance.running,
-          });
       return targets;
     },
     directoryEnv: options.directoryEnv ?? resolveEnvironment,

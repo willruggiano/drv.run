@@ -55,7 +55,7 @@ process.stdout.write(JSON.parse(readFileSync(${JSON.stringify(states)}, "utf8"))
       return { connection, remote: () => undefined };
     },
   };
-  const application = { directory, models, cwd: workspace, local: false, drvRun: options };
+  const application = { directory, models, drvRun: options };
   let sessions = await openApplication(application);
   t.after(async () => {
     await sessions.close();

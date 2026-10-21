@@ -48,8 +48,15 @@ await test("inventory excludes invalid and incomplete instances; readiness requi
   await assert.rejects(listInstances({ ...f.options, systemctl: join(f.directory, "missing") }));
 });
 
-await test("environment admission rejects stopped and absent instances without connecting", async (t) => {
+await test("environment admission rejects local execution and stopped or absent instances without connecting", async (t) => {
   const f = await remoteFixture(t);
+  assert((await f.sessions.catalog()).targets.every((target) => target.provider === "drv.run"));
+  const local = await f.sessions.create(
+    randomUUID(),
+    { provider: "local", target: f.workspace, cwd: f.workspace },
+    model,
+  );
+  await assert.rejects(runtime.environment(local), code("unavailable"));
   for (const target of ["../test1", "-test", "test;echo", "missing"]) {
     const session = await f.sessions.create(randomUUID(), { ...f.binding, target }, model);
     await assert.rejects(runtime.environment(session), code("unavailable"));
@@ -60,7 +67,7 @@ await test("environment admission rejects stopped and absent instances without c
   assert.equal(f.connections.length, 0);
 });
 
-await test("faux turns use the daemon for read/write/edit; integration removal preserves history and forbids local fallback", async (t) => {
+await test("faux turns use the daemon for read/write/edit; instance removal preserves history and forbids local fallback", async (t) => {
   const f = await remoteFixture(t);
   // The local daemon needs an existing cwd even when tool paths are absolute.
   await f.reopen({ targets: f.targets });
@@ -90,7 +97,8 @@ await test("faux turns use the daemon for read/write/edit; integration removal p
     .filter((message) => message.role === "toolResult");
   assert.equal(results.length, 3);
   assert(results.every((result) => !result.isError));
-  await f.reopen({ drvRun: undefined, local: true });
+  await rm(join(f.directory, "drv.run", "test1"), { recursive: true });
+  await f.reopen();
   const restored = await f.sessions.get(session.id);
   assert.deepEqual(await readHistory(restored.root), history);
   await assert.rejects(runtime.environment(restored), code("unavailable"));
