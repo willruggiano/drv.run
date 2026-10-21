@@ -1725,6 +1725,49 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
   }
 });
 
+await test("session catalog refresh preserves row focus without stealing focus from the filter", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const assets = join(f.workspace, "assets");
+  await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
+  const base = await serve(t, f.sessions, assets);
+  const browser = await chromium.launch({ executablePath: chromiumExecutable() });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.goto(`${base}/?session=${session.id}`);
+  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#sessions button", { state: "attached" });
+
+  for (const focusFilter of [false, true]) {
+    const requested = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    await page.route("**/api/catalog", async (route) => {
+      requested.resolve();
+      await release.promise;
+      await route.continue();
+    });
+    await page.click("#title");
+    await requested.promise;
+    await page.focus("#session-filter");
+    await page.keyboard.press("Control+j");
+    const focused = await page.locator("#sessions button:focus").getAttribute("data-session");
+    assert(focused);
+    if (focusFilter) await page.focus("#session-filter");
+    const added = await f.create();
+    release.resolve();
+    await page.waitForSelector(`#sessions button[data-session="${added.id}"]`);
+    assert.equal(
+      await page
+        .locator(focusFilter ? "#session-filter" : `#sessions button[data-session="${focused}"]`)
+        .evaluate((node) => node === document.activeElement),
+      true,
+    );
+    await page.unroute("**/api/catalog");
+    await page.click("#close-view");
+  }
+});
+
 await test("mobile browser branch refresh preserves keyboard focus while loading new conversations", async (t) => {
   const f = await fixture(t);
   const session = await f.create();

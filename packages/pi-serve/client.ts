@@ -357,6 +357,11 @@ function sessionTitle(session: SessionInfo): string {
 }
 function renderSessions(): void {
   if (!catalog) return;
+  const focused = document.activeElement;
+  const focusedSession =
+    focused instanceof HTMLButtonElement && sessions.contains(focused)
+      ? focused.dataset.session
+      : undefined;
   sessions.replaceChildren();
   const query = sessionFilter.value.trim().toLocaleLowerCase();
   for (const session of catalog.sessions) {
@@ -369,7 +374,9 @@ function renderSessions(): void {
       !`${sessionTitle(session)} ${label} ${session.id}`.toLocaleLowerCase().includes(query)
     )
       continue;
-    sessions.append(sessionRow(session));
+    const row = sessionRow(session);
+    sessions.append(row);
+    if (session.id === focusedSession) row.focus({ preventScroll: true });
   }
   recentSessions.replaceChildren(...catalog.sessions.slice(0, 5).map(sessionRow));
   element("recent-empty", HTMLParagraphElement).hidden = catalog.sessions.length > 0;
