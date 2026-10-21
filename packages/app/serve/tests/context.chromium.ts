@@ -90,10 +90,10 @@ await test("mobile browser Context follows the approved mock, isolates late even
   });
   for (const [index, [name, path, result]] of (
     [
-      ["read", "packages/harness/default.nix", 2800],
-      ["read", "packages/serve/sessions.ts", 12400],
-      ["read", "packages/serve/tests/sessions.test.ts", 10800],
-      ["edit", "packages/harness/context.ts", 20],
+      ["read", "packages/app/default.nix", 2800],
+      ["read", "packages/app/serve/sessions.ts", 12400],
+      ["read", "packages/app/serve/tests/sessions.test.ts", 10800],
+      ["edit", "packages/app/harness/context.ts", 20],
       ["bash", "", 7120],
     ] as const
   ).entries()) {

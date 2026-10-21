@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { DrvRunEnv } from "../harness/index.ts";
+import { DrvRunEnv } from "harness";
 import { stateDirectory } from "./sessions.ts";
 
 const exec = promisify(execFile);

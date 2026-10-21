@@ -30,6 +30,6 @@ export async function buildAssets(source: string, destination: string): Promise<
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  assert.equal(process.argv.length, 3, "Usage: node packages/serve/build.ts $out");
+  assert.equal(process.argv.length, 3, "Usage: node packages/app/serve/build.ts $out");
   await buildAssets(dirname(fileURLToPath(import.meta.url)), resolve(process.argv[2]));
 }

@@ -23,7 +23,7 @@ import type { RenderState } from "./client.ts";
 import { httpServer } from "./server.ts";
 import { buildAssets } from "./build.ts";
 
-const usage = `Usage: node packages/serve/benchmark.ts [options]
+const usage = `Usage: node packages/app/serve/benchmark.ts [options]
   --runs N       Fresh browser launches (default 3, maximum 100)
   --turns N      History turns, each with a user, assistant and tool result (default 200)
   --cpu-rate N   Chromium CPU slowdown factor, >= 1 (default 1)

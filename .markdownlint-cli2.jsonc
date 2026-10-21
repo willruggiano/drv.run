@@ -1,5 +1,6 @@
 {
   "globs": ["*.md", ".agents/**/*.md", "docs/**/*.md", "packages/**/*.md"],
+  "ignores": ["**/node_modules/**", "packages/app/*/dist/**"],
 
   // documentation.md: internal references must use [[file.md]] wiki-links.
   "customRules": ["./scripts/markdownlint-wiki-links.cjs"],

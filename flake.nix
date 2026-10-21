@@ -88,19 +88,25 @@
       inherit (self.devShells.${pkgs.stdenv.hostPlatform.system}) toolchain;
     in {
       default = pkgs.mkShell {
-        inherit (toolchain) npmDeps;
+        inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
         packages = [pkgs.pi-with-store-paths];
       };
       jail = pkgs.mkShell {
-        inherit (toolchain) npmDeps;
+        inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
-        nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook];
         packages = [pkgs.pi-jailed];
       };
       toolchain = pkgs.mkShell {
-        nativeBuildInputs = [pkgs.systemd.dev];
-        npmDeps = pkgs.pi-development-node-modules;
+        nativeBuildInputs = [pkgs.systemd.dev pkgs.importNpmLock.hooks.linkNodeModulesHook];
+        npmDeps = pkgs.pi-app.nodeModules;
+        npmRoot = "packages/app";
+        shellHook = ''
+          linkNodeModulesHook
+          # Workspace imports must follow local edits, not the store checkout.
+          ln -sfn ../harness packages/app/node_modules/harness
+          ln -sfn ../serve packages/app/node_modules/pi-serve
+        '';
         packages = with pkgs; [
           ast-grep
           bash

@@ -1,0 +1,20 @@
+{
+  "name": "drv-run-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "harness",
+    "serve"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=harness && npm run build --workspace=pi-serve",
+    "check": "npm run check --workspaces",
+    "test": "NODE_OPTIONS=--conditions=development node --test 'harness/tests/*.test.ts' 'serve/tests/*.test.ts'",
+    "test:browser": "NODE_OPTIONS=--conditions=development node --test 'serve/tests/*.chromium.ts'"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "playwright": "1.64.1"
+  }
+}

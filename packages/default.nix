@@ -42,15 +42,14 @@ in {
   subtrace = pkgs.callPackage ./subtrace.nix {};
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
 
-  harness = pkgs.callPackage ./harness {};
-  pi-serve = pkgs.callPackage ./serve {};
+  pi-app = pkgs.callPackage ./app {pi-src = inputs.pi;};
+  harness = pkgs.pi-app;
+  pi-serve = pkgs.pi-app;
 
   # pi packages and wrapped harnesses
 
   # base pi (from github:earendil-works/pi)
   pi-unwrapped = inputs.pi.packages.${pkgs.stdenv.hostPlatform.system}.default;
-  pi-workspace = pkgs.callPackage ./pi-workspace {src = inputs.pi;};
-  pi-development-node-modules = pkgs.callPackage ./pi-workspace/development.nix {};
   # base pi + a system prompt with handy nix store links
   pi-with-store-paths = appendSystemPrompt pkgs.pi-unwrapped "${llm-context}/etc/xdg/llms.txt";
   # that^ but in jail, suitable for quick local iterations

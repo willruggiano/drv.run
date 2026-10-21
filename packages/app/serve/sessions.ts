@@ -23,7 +23,7 @@ import {
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
-import { openHarness } from "../harness/index.ts";
+import { openHarness } from "harness";
 import { describeContext, type ContextInspection } from "./inspection.ts";
 export type { ContextInspection } from "./inspection.ts";
 // pi-coding-agent/core/defaults is not exported by Pi's public API.

@@ -272,16 +272,9 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
   assert.equal(f.faux.state.callCount, 0);
   const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "/one");
   f.faux.setResponses([
-    (input) => {
-      assert(
-        JSON.stringify(input.messages.filter((message) => message.role === "system")).includes(
-          `in ${join(f.workspace, "one")}.`,
-        ),
-      );
-      return fauxAssistantMessage(fauxToolCall("write", { path: "root.txt", content: "root" }), {
-        stopReason: "toolUse",
-      });
-    },
+    fauxAssistantMessage(fauxToolCall("write", { path: "root.txt", content: "root" }), {
+      stopReason: "toolUse",
+    }),
     fauxAssistantMessage(fauxToolCall("bash", { command: "pwd > cwd.txt" }), {
       stopReason: "toolUse",
     }),

@@ -11,8 +11,7 @@ check:
     treefmt --quiet --fail-on-change
     markdownlint-cli2 >/dev/null
     ast-grep scan --error --report-style=short --globs '!microvm.nix/**'
-    tsc -p packages/harness/tsconfig.json
-    tsc -p packages/serve/tsconfig.json
+    npm --prefix packages/app run check
     oxlint --type-aware --format=unix
     ruff format --quiet --check --extend-exclude microvm.nix
     ruff check --quiet --extend-exclude microvm.nix
@@ -44,7 +43,7 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
     ast-grep test --skip-snapshot-tests
-    node --test "**/*.test.ts"
+    NODE_OPTIONS=--conditions=development node --test "**/*.test.ts"
     python3 -B -m unittest discover -s packages.bench.tests -p '*_test.py'
     if ! command -v nix >/dev/null 2>&1; then
         printf '%s\n' \
@@ -56,7 +55,7 @@ test:
 
 # Run Chromium integration tests and renderer benchmarks
 chromium:
-    node --test "**/*.chromium.ts"
+    npm --prefix packages/app run test:browser
 
 # Run updater scripts
 update:

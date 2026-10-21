@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { resolve, isAbsolute } from "node:path";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { DrvRunEnv } from "../harness/index.ts";
+import { DrvRunEnv } from "harness";
 import { listInstances, type Options } from "./instances.ts";
 import {
   Environment,

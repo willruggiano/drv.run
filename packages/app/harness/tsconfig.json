@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "allowImportingTsExtensions": true,
+    "customConditions": ["development"],
     "erasableSyntaxOnly": true,
     "forceConsistentCasingInFileNames": true,
     "module": "NodeNext",
@@ -9,7 +10,7 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "ES2024",
-    "lib": ["ES2024", "DOM", "DOM.Iterable"]
+    "lib": ["ES2024"]
   },
   "include": ["*.ts", "tests/*.ts"]
 }

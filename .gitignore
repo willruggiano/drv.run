@@ -2,5 +2,6 @@
 .envrc
 .scratch/
 node_modules/
+packages/app/*/dist/
 result
 result-*
