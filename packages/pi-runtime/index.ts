@@ -215,6 +215,7 @@ export class Sessions {
 
   async catalog(): Promise<Catalog> {
     const names = await readdir(this.options.directory);
+    const targets = (await this.options.targets?.()) ?? [];
     const sessions = await Promise.all(
       names
         .filter((name) => name.endsWith(".sqlite") && uuid.test(name.slice(0, -7)))
@@ -223,7 +224,7 @@ export class Sessions {
           const watch = await session.root.watch(context);
           try {
             return {
-              ...(await sessionInfo(session)),
+              ...(await sessionInfo(session, session.root, targets)),
               context: contextStatus(session, watch.value),
             };
           } finally {
@@ -231,7 +232,6 @@ export class Sessions {
           }
         }),
     );
-    const targets = (await this.options.targets?.()) ?? [];
     return {
       targets,
       sessions: sessions.sort((a, b) => b.created - a.created),
@@ -564,11 +564,13 @@ export function contextStatus(session: Session, view: ConversationView): Context
 export async function sessionInfo(
   session: Session,
   conversation = session.root,
+  targets?: readonly ExecutionTarget[],
 ): Promise<SessionInfo> {
   const agent = await conversation.agent(context);
   const metadata = await session.harness.snapshot(Metadata, session.root.id, context);
   const selected = await session.harness.snapshot(Environment, conversation.id, context);
-  const target = (await session.owner.options.targets?.())?.find(
+  targets ??= (await session.owner.options.targets?.()) ?? [];
+  const target = targets.find(
     (item) => item.provider === selected?.provider && item.target === selected.target,
   );
   const inspection = await session.harness.inspect(context);

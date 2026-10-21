@@ -42,6 +42,32 @@ await test("creation is read-only and validates persistence identities and model
   );
 });
 
+await test("catalog uses one fresh target discovery for every session row", async (t) => {
+  const f = await fixture(t);
+  for (let i = 0; i < 3; i++) await f.create();
+  let discoveries = 0;
+  await f.reopen({
+    targets: async () => {
+      discoveries++;
+      return [
+        { ...f.binding, label: "Local", available: true, directoryRoot: `/root/${discoveries}` },
+      ];
+    },
+  });
+  for (let i = 1; i <= 2; i++) {
+    const catalog = await f.sessions.catalog();
+    t.diagnostic(`Target discoveries after catalog request ${i}: ${discoveries}`);
+    assert.equal(discoveries, i);
+    assert.equal(catalog.sessions.length, 3);
+    assert.deepEqual(
+      catalog.sessions.map((session) => session.directoryRoot),
+      Array(3).fill(`/root/${i}`),
+    );
+    assert.equal(catalog.targets[0].directoryRoot, `/root/${i}`);
+  }
+  assert.equal(f.faux.state.callCount, 0);
+});
+
 await test("environment selection persists independently and forks inherit selection at the entry", async (t) => {
   const f = await fixture(t);
   const second = join(f.workspace, "second");
