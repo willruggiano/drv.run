@@ -360,7 +360,7 @@ function renderSessions(): void {
     if (session.id === focusedSession) row.focus({ preventScroll: true });
   }
   recentSessions.replaceChildren(...catalog.sessions.slice(0, 5).map(sessionRow));
-  element("recent-empty", HTMLParagraphElement).hidden = catalog.sessions.length > 0;
+  element("recent-title", HTMLHeadingElement).hidden = catalog.sessions.length === 0;
   const empty = element("sessions-empty", HTMLParagraphElement);
   empty.hidden = !!sessions.childElementCount;
   empty.textContent = query ? "No matching sessions" : "No sessions";

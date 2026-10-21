@@ -26,7 +26,7 @@ async function landingFixture(t: TestContext) {
   t.after(() => assert.deepEqual(errors, []));
   const open = async () => {
     await page.goto(base);
-    await page.locator("#recent-empty:not([hidden]), #recent-sessions button").first().waitFor();
+    await page.locator('#models option[value="0"]').waitFor({ state: "attached" });
     await page.click("#new-options-toggle");
     await page.selectOption("#models", "0");
   };

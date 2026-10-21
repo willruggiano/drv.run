@@ -40,8 +40,28 @@ await test("landing lists the newest five sessions regardless of target availabi
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
+  const catalogRequested = Promise.withResolvers<void>();
+  const releaseCatalog = Promise.withResolvers<void>();
+  await page.route("**/api/catalog", async (route) => {
+    catalogRequested.resolve();
+    await releaseCatalog.promise;
+    await route.continue();
+  });
   await page.goto(base);
-  await page.locator("#recent-empty:not([hidden])").waitFor();
+  await catalogRequested.promise;
+  assert.equal(await page.locator("#recent-title").isVisible(), false);
+  assert.equal(
+    await page.locator("#recent-sessions").evaluate((node) => node.childElementCount),
+    0,
+  );
+  releaseCatalog.resolve();
+  await page.locator('#models option[value="0"]').waitFor({ state: "attached" });
+  await page.unroute("**/api/catalog");
+  assert.equal(await page.locator("#recent-title").isVisible(), false);
+  assert.equal(
+    await page.locator("#recent-sessions").evaluate((node) => node.childElementCount),
+    0,
+  );
   assert.equal(await page.locator("#recent-sessions button").count(), 0);
   assert.equal(await page.locator("#composer #create").isVisible(), true);
   assert.equal(await page.locator("#send").isVisible(), false);
@@ -68,7 +88,7 @@ await test("landing lists the newest five sessions regardless of target availabi
         .evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.session)),
       ids.slice(0, 5),
     );
-    assert.equal(await page.locator("#recent-empty").isVisible(), false);
+    assert.equal(await page.locator("#recent-title").isVisible(), true);
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
@@ -107,7 +127,7 @@ await test("landing lists the newest five sessions regardless of target availabi
   );
   await page.reload();
   await page.locator("#notice:not([hidden])").waitFor();
-  assert.equal(await page.locator("#recent-empty").isVisible(), false);
+  assert.equal(await page.locator("#recent-title").isVisible(), false);
   assert.equal(await page.locator("#create").isDisabled(), true);
   assert.deepEqual(errors, []);
 });
