@@ -4,7 +4,7 @@
   impermanence,
   self,
   ...
-}: {
+} @ inputs: {
   config,
   lib,
   pkgs,
@@ -46,7 +46,25 @@
   environment.etc."udev/udev.conf.d/10-drv-run.conf".text = ''
     children_max=${toString (2 * config.microvm.vcpu)}
   '';
-  environment.etc."xdg/llms.txt".source = "${pkgs.llm-context}/etc/xdg/llms.txt";
+  environment.etc."xdg/llms.txt".text = ''
+    Nix store paths:
+    deploy-rs -> ${inputs.deploy-rs.outPath}
+    drv.run -> ${inputs.self.outPath}
+    impermanence -> ${inputs.impermanence.outPath}
+    jail.nix -> ${inputs.jail.outPath}
+    microvm.nix -> ${inputs.microvm.outPath}
+    nixpkgs -> ${inputs.nixpkgs.outPath}
+               `-- docs -> /doc
+               `-- nixos manual -> /nixos/doc/manual
+    nix -> ${pkgs.nix.doc}
+    pi -> ${inputs.pi.outPath}
+          `-- pi-durable -> /packages/durable/README.md
+    sops-nix -> ${inputs.sops-nix.outPath}
+
+    Man pages (read with `man -l`, ignore locale warnings):
+    openssh -> ${pkgs.openssh.man}
+    systemd -> ${pkgs.systemd.man}
+  '';
   environment.persistence."/persist" = {
     directories = [
       # /nix is mounted in the initrd, before its nested store mounts.

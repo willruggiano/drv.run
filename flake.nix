@@ -90,7 +90,6 @@
       default = pkgs.mkShell {
         inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
-        packages = [pkgs.pi-with-store-paths];
       };
       jail = pkgs.mkShell {
         inherit (toolchain) npmDeps npmRoot;
@@ -136,7 +135,6 @@
           openssh
           oxlint
           patch
-          pi-with-store-paths
           pkg-config
           procps
           python3
