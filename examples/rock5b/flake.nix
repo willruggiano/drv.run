@@ -224,6 +224,20 @@
                   memoryPercent = 50;
                 };
 
+                programs.git = {
+                  enable = true;
+                  config.user = {
+                    name = "root";
+                    email = "root@guest";
+                  };
+                };
+
+                environment.etc."jj/config.toml".text = ''
+                  [user]
+                  name = "root"
+                  email = "root@guest"
+                '';
+
                 environment.systemPackages = with pkgs; [
                   kitty.terminfo
                 ];
