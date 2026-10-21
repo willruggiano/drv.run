@@ -201,6 +201,15 @@
           restartUnits = ["tailscaled-autoconnect.service"];
         };
 
+        # Create this SOPS-encrypted binary file locally, using the same host age
+        # recipient as tailscale-auth-key. No plaintext key enters the Nix store.
+        sops.secrets.parallel-api-key = lib.mkIf (builtins.pathExists ./secrets/parallel-api-key) {
+          sopsFile = ./secrets/parallel-api-key;
+          format = "binary";
+          owner = config.services.pi.user;
+          mode = "0400";
+        };
+
         networking.firewall.interfaces.${config.services.tailscale.interfaceName}.allowedTCPPorts = [config.services.pi.port];
 
         services = {
@@ -267,6 +276,7 @@
             enable = true;
             user = "me";
             host = "0.0.0.0";
+            parallelApiKeyFile = lib.mkIf (builtins.pathExists ./secrets/parallel-api-key) config.sops.secrets.parallel-api-key.path;
           };
         };
       };

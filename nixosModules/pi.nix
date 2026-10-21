@@ -24,6 +24,11 @@ in {
       default = "127.0.0.1";
       description = "Serve pi on this interface";
     };
+    parallelApiKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Host-only Parallel API key file, readable by the pi user. Never a Nix store path.";
+    };
     port = lib.mkOption {
       type = lib.types.port;
       default = 8080;
@@ -47,10 +52,14 @@ in {
       description = "pi server";
       wantedBy = ["default.target"];
       unitConfig.ConditionUser = cfg.user;
-      environment = {
-        HOST = cfg.host;
-        PORT = toString cfg.port;
-      };
+      environment =
+        {
+          HOST = cfg.host;
+          PORT = toString cfg.port;
+        }
+        // lib.optionalAttrs (cfg.parallelApiKeyFile != null) {
+          PARALLEL_API_KEY_FILE = cfg.parallelApiKeyFile;
+        };
       serviceConfig = {
         Type = "exec";
         ExecStart = utils.escapeSystemdExecArgs [(lib.getExe cfg.package)];

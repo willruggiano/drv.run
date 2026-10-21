@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createContextExtension } from "./context.ts";
+import { createWebExtension } from "./web.ts";
 
 export { DrvRunEnv } from "./drv-run.ts";
 
@@ -41,6 +42,7 @@ export async function openHarness(
       return conversation;
     }),
   );
+  registry.install(createWebExtension());
   const extensions = registry.snapshot().installed();
   const harness = await Harness.open(
     storage,
