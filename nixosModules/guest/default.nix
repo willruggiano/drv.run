@@ -117,14 +117,6 @@
     settings = {
       experimental-features = ["nix-command" "flakes"];
       flake-registry = "";
-      substituters = [
-        "https://microvm.cachix.org"
-        "https://willruggiano.cachix.org"
-      ];
-      trusted-public-keys = [
-        "microvm.cachix.org-1:oXnBc6hRE3eX5rSYdRyMYXnfzcCxC7yKPTbZXALsqys="
-        "willruggiano.cachix.org-1:rz00ME8/uQfWe+tN3njwK5vc7P8GLWu9qbAjjJbLoSw="
-      ];
     };
   };
   nixpkgs.overlays = [self.overlays.default];
