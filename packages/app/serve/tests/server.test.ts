@@ -57,7 +57,7 @@ await test("HTTP fixtures and benchmark inputs load without Playwright", async (
 });
 
 await test("browser executable lookup follows PATH and rejects unusable candidates", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-serve-browser-path-"));
+  const directory = await mkdtemp(join(tmpdir(), "serve-browser-path-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const missing = join(directory, "missing");
   const blocked = join(directory, "non-executable");
@@ -146,7 +146,7 @@ async function checkCLI(
 await test("server reads HOST/PORT and starts with no local execution target", async (t) => {
   for (const host of [undefined, "127.0.0.2"]) {
     await t.test(host ?? "default host", async (t) => {
-      const directory = await mkdtemp(join(tmpdir(), "pi-serve-startup-"));
+      const directory = await mkdtemp(join(tmpdir(), "serve-startup-"));
       t.after(() => rm(directory, { recursive: true, force: true }));
       const address = host ?? "127.0.0.1";
       const reservation = createServer();
@@ -426,7 +426,7 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
 });
 
 await test("built highlighter preserves selected languages and is served as a static module", async (t) => {
-  const assets = await mkdtemp(join(tmpdir(), "pi-serve-build-"));
+  const assets = await mkdtemp(join(tmpdir(), "serve-build-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
   await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
   const { default: highlighter }: { default: typeof import("highlight.js") } = await import(

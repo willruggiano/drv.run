@@ -273,7 +273,7 @@ export async function assertLayout(page: Page, name: string): Promise<void> {
     await page.screenshot({ path: join(screenshots, `${name}.png`), fullPage: true });
 }
 export async function browserFixture(t: TestContext, sessions: Sessions) {
-  const assets = await mkdtemp(join(tmpdir(), "pi-serve-assets-"));
+  const assets = await mkdtemp(join(tmpdir(), "serve-assets-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
   const source = dirname(dirname(fileURLToPath(import.meta.url)));
   const screenshots = process.env.PI_SCREENSHOT_DIR;

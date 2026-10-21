@@ -135,7 +135,7 @@ await test("landing lists the newest five sessions regardless of target availabi
 await test("mobile browser renderer benchmark returns complete JSON-compatible samples", async () => {
   const report = await benchmark(benchmarkOptions(["--runs", "2", "--turns", "2"]));
   assert.equal(report.schemaVersion, 1);
-  assert.equal(report.benchmark, "pi-serve.render");
+  assert.equal(report.benchmark, "serve.render");
   assert.equal(report.measurement.profiling, false);
   assert.equal(report.measurement.freshBrowserPerRun, true);
   assert.equal(report.workload.entries, 6);
@@ -154,7 +154,7 @@ await test("mobile browser renderer benchmark returns complete JSON-compatible s
 });
 
 await test("mobile browser renderer profiling saves separate per-phase CPU and timeline data", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-serve-profile-test-"));
+  const directory = await mkdtemp(join(tmpdir(), "serve-profile-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const report = await benchmark(
     benchmarkOptions(["--runs", "1", "--turns", "2", "--profile", "--profile-dir", directory]),

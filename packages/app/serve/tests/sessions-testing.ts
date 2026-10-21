@@ -31,8 +31,8 @@ export async function readHistory(conversation: Conversation): Promise<EntryReco
 }
 
 export async function fixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), "pi-serve-state-"));
-  const workspace = await mkdtemp(join(tmpdir(), "pi-serve-work-"));
+  const directory = await mkdtemp(join(tmpdir(), "serve-state-"));
+  const workspace = await mkdtemp(join(tmpdir(), "serve-work-"));
   const faux = fauxProvider({ models: [{ id: "faux-1", reasoning: true }] });
   const models = createModels();
   models.setProvider(faux.provider);

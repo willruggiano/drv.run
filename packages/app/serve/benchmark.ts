@@ -242,7 +242,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
     options.executablePath,
     "Chromium is required; set --chromium or use nix run .#app.bench.render",
   );
-  const directory = await mkdtemp(join(tmpdir(), "pi-serve-bench-"));
+  const directory = await mkdtemp(join(tmpdir(), "serve-bench-"));
   let sessions: Sessions | undefined;
   let server: ReturnType<typeof httpServer> | undefined;
   try {
@@ -289,7 +289,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       : null;
     if (profile) {
       await mkdir(options.profileDir, { recursive: true });
-      profile.directory = await mkdtemp(join(options.profileDir, "pi-serve-profile-"));
+      profile.directory = await mkdtemp(join(options.profileDir, "serve-profile-"));
     }
     let browserVersion = "";
     for (let run = 1; run <= options.runs + (profile ? 1 : 0); run++) {
@@ -404,7 +404,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
     }
     return {
       schemaVersion: 1,
-      benchmark: "pi-serve.render",
+      benchmark: "serve.render",
       units: "ms",
       measurement: {
         includes: ["json-parse", "render", "synchronous-layout"],

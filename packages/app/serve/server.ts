@@ -779,10 +779,10 @@ export async function main(): Promise<void> {
   );
   const sessions = await openApplication(
     settings.bind({
-      directory: join(stateDirectory(), "pi-serve"),
+      directory: join(stateDirectory(), "pi-durable"),
       models,
       drvRun: ownerOptions(),
-      onReport: (error) => console.error("pi-serve session", error),
+      onReport: (error) => console.error("serve session", error),
     }),
   );
   const server = httpServer(sessions, host, undefined, settings);
@@ -799,7 +799,7 @@ export async function main(): Promise<void> {
     throw error;
   }
   console.error(
-    `WARN pi-serve: http://${host.includes(":") ? `[${host}]` : host}:${port} is unauthenticated. Anyone who can reach it can control its agents and execution targets.`,
+    `WARN serve: http://${host.includes(":") ? `[${host}]` : host}:${port} is unauthenticated. Anyone who can reach it can control its agents and execution targets.`,
   );
   let stopping = false;
   const shutdown = () => {

@@ -94,12 +94,12 @@ in
         --replace-fail '?? "ssh"' '?? "${openssh}/bin/ssh"'
       substituteInPlace "$out/lib/app/serve/dist/instances.js" \
         --replace-fail '?? "systemctl"' '?? "${systemd}/bin/systemctl"'
-      makeWrapper ${nodejs}/bin/node "$out/bin/pi-serve" \
+      makeWrapper ${nodejs}/bin/node "$out/bin/serve" \
         --add-flags "$out/lib/app/serve/dist/server.js"
       runHook postInstall
     '';
     passthru.bench.render = writeShellApplication {
-      name = "pi-serve-bench-render";
+      name = "serve-bench-render";
       runtimeInputs = [chromium esbuild];
       text = ''
         exec ${lib.getExe nodejs} ${finalAttrs.finalPackage.dev}/serve/dist/benchmark.js "$@"
@@ -119,7 +119,7 @@ in
         await import("./serve/dist/server.js");
         assert.deepEqual(Object.keys(api).sort(), ["DrvRunEnv", "openHarness"]);
         for (const workspace of ["harness", "serve"]) {
-          assert.equal(realpathSync(`node_modules/''${workspace === "serve" ? "pi-serve" : workspace}`), realpathSync(workspace));
+          assert.equal(realpathSync(`node_modules/''${workspace}`), realpathSync(workspace));
         }
         const harness = new URL("./harness/dist/index.js", import.meta.url);
         const serve = new URL("./serve/dist/server.js", import.meta.url);
@@ -143,7 +143,7 @@ in
     '';
     meta = {
       description = "Coding harness and web frontend for drv.run";
-      mainProgram = "pi-serve";
+      mainProgram = "serve";
       platforms = ["x86_64-linux" "aarch64-linux"];
       license = lib.licenses.mit;
     };
