@@ -1,7 +1,7 @@
 import * as runtime from "./index.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import { estimateMessageTokens, estimateTextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -338,6 +338,48 @@ await test("inspection uses captured boundaries, caches live-only revisions and 
   assert.equal(changed.fraction, null);
   assert.deepEqual(changed.model, { provider: "missing", modelId: "missing" });
 });
+
+await test(
+  "canceling an inspection waiter preserves the shared projection and its cache",
+  { timeout: 5000 },
+  async (t) => {
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    const f = await fixture(t);
+    const session = await f.create();
+    await append(session.root, { kind: "pi.user", model: [user("shared")] });
+    const snapshot = await view(session.root);
+    const entered = Promise.withResolvers<void>();
+    const original = session.harness.conversation.bind(session.harness);
+    const opening = t.mock.method(
+      session.harness,
+      "conversation",
+      async (...args: Parameters<typeof original>) => {
+        assert.equal(args[1].abortSignal, undefined);
+        entered.resolve();
+        await release.promise;
+        return original(...args);
+      },
+    );
+    const controller = new AbortController();
+    const reason = new Error("Caller left");
+    const abandoned = runtime.inspectContext(
+      session,
+      snapshot,
+      withAbortSignal(controller.signal, context),
+    );
+    const active = runtime.inspectContext(session, snapshot);
+    await entered.promise;
+    controller.abort(reason);
+    await assert.rejects(abandoned, reason);
+    release.resolve();
+    const result = await active;
+    assert.equal(result.state, "available");
+    assert.equal(await runtime.inspectContext(session, snapshot), result);
+    assert.equal(opening.mock.callCount(), 1);
+    assert.equal(f.faux.state.callCount, 0);
+  },
+);
 
 await test("inspection reads no execution environment, starts no work and writes no durable state", async (t) => {
   const f = await fixture(t);

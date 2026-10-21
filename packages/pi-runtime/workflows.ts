@@ -493,6 +493,7 @@ export async function prepareReview(
 export async function workflows(
   session: Session,
   conversation = session.root,
+  context = BACKGROUND_CONTEXT,
 ): Promise<WorkflowView> {
   const state = await session.harness.snapshot(Workflows, conversation.id, context);
   return {

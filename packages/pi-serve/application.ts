@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { resolve, isAbsolute } from "node:path";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { RemoteExecutionEnv, type Connection } from "@earendil-works/pi-env";
 import { connectInstance, listInstances, type Options } from "../pi-extensions/drv-run/index.ts";
@@ -22,12 +22,15 @@ export async function openApplication(options: ApplicationOptions) {
   const cwd = resolve(options.cwd);
   const connections = new Map<string, Promise<Connection>>();
   const environments = new Map<string, NodeExecutionEnv | RemoteExecutionEnv>();
-  async function resolveEnvironment({ provider, target, cwd }: ExecutionBinding) {
+  async function resolveEnvironment({ provider, target, cwd }: ExecutionBinding, context: Context) {
+    context.abortSignal?.throwIfAborted();
     const key = JSON.stringify([provider, target, cwd]);
     if (provider === "local" && options.local !== false) {
       if (!isAbsolute(target) || !cwd || !isAbsolute(cwd))
         throw new SessionError("invalid", "Invalid local directory.");
-      if (!(await stat(cwd).catch(() => undefined))?.isDirectory())
+      const directory = await stat(cwd).catch(() => undefined);
+      context.abortSignal?.throwIfAborted();
+      if (!directory?.isDirectory())
         throw new SessionError("unavailable", `Local directory is unavailable: ${cwd}`);
       let env = environments.get(key);
       if (!env) {
@@ -40,23 +43,22 @@ export async function openApplication(options: ApplicationOptions) {
       throw new SessionError("unavailable", `Execution provider is unavailable: ${provider}`);
     if (!cwd || !isAbsolute(cwd)) throw new SessionError("invalid", "Invalid guest directory.");
     if (
-      !(await listInstances(options.drvRun)).some(
+      !(await listInstances(options.drvRun, context.abortSignal)).some(
         (instance) => instance.id === target && instance.running,
       )
     )
       throw new SessionError("unavailable", "Instance is not running or no longer exists.");
+    context.abortSignal?.throwIfAborted();
     let opening = connections.get(target);
     if (!opening) {
       opening = connectInstance(options.drvRun, target);
       connections.set(target, opening);
+      // The application owns connection startup, not any one caller waiting for it.
+      void opening.catch(() => {
+        if (connections.get(target) === opening) connections.delete(target);
+      });
     }
-    let connection: Connection;
-    try {
-      connection = await opening;
-    } catch (error) {
-      connections.delete(target);
-      throw error;
-    }
+    const connection = await awaitWithContext(opening, context);
     let env = environments.get(key);
     if (!env) {
       env = new RemoteExecutionEnv({ connection, id: `drv.run.${target}`, cwd });
@@ -66,8 +68,9 @@ export async function openApplication(options: ApplicationOptions) {
   }
   return openCodingSessions({
     ...options,
-    async targets() {
-      if (options.targets) return options.targets();
+    async targets(context) {
+      context.abortSignal?.throwIfAborted();
+      if (options.targets) return options.targets(context);
       const targets = [];
       if (options.local !== false)
         targets.push({
@@ -78,7 +81,7 @@ export async function openApplication(options: ApplicationOptions) {
           available: (await stat(cwd).catch(() => undefined))?.isDirectory() ?? false,
         });
       if (options.drvRun)
-        for (const instance of await listInstances(options.drvRun))
+        for (const instance of await listInstances(options.drvRun, context.abortSignal))
           targets.push({
             provider: "drv.run",
             target: instance.id,
@@ -94,11 +97,14 @@ export async function openApplication(options: ApplicationOptions) {
       if (options.env) return options.env(target, context);
       const selected = await target.read.snapshot(Environment, target.conversationId, context);
       if (!selected?.provider || !selected.target) return undefined;
-      return resolveEnvironment({
-        provider: selected.provider,
-        target: selected.target,
-        cwd: target.cwd ?? "",
-      });
+      return resolveEnvironment(
+        {
+          provider: selected.provider,
+          target: selected.target,
+          cwd: target.cwd ?? "",
+        },
+        context,
+      );
     },
     async close() {
       try {

@@ -21,7 +21,8 @@ function isMissing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
-export async function listInstances(options: Options): Promise<Instance[]> {
+export async function listInstances(options: Options, signal?: AbortSignal): Promise<Instance[]> {
+  signal?.throwIfAborted();
   let names: string[];
   try {
     names = await readdir(join(options.stateDirectory, "drv.run"));
@@ -37,7 +38,10 @@ export async function listInstances(options: Options): Promise<Instance[]> {
           let reference: string;
           try {
             reference = (
-              await readFile(join(options.stateDirectory, "drv.run", id, "reference"), "utf8")
+              await readFile(join(options.stateDirectory, "drv.run", id, "reference"), {
+                encoding: "utf8",
+                signal,
+              })
             ).trim();
           } catch (error) {
             if (isMissing(error)) return undefined;
@@ -46,7 +50,7 @@ export async function listInstances(options: Options): Promise<Instance[]> {
           const { stdout } = await exec(
             options.systemctl ?? "systemctl",
             ["--user", "show", `drv.run@${id}.service`, "--property=ActiveState", "--value"],
-            { timeout: 10_000 },
+            { timeout: 10_000, signal },
           );
           let ready = false;
           try {
@@ -56,6 +60,7 @@ export async function listInstances(options: Options): Promise<Instance[]> {
           } catch (error) {
             if (!isMissing(error)) throw error;
           }
+          signal?.throwIfAborted();
           return { id, reference, running: stdout.trim() === "active" && ready };
         }),
     )

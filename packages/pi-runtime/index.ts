@@ -1,7 +1,12 @@
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, posix } from "node:path";
-import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import {
+  BACKGROUND_CONTEXT,
+  awaitWithContext,
+  withoutAbortSignal,
+  type Context,
+} from "@earendil-works/chord/context";
 import type { AssistantMessage, Models, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import {
@@ -97,7 +102,7 @@ export type SessionOptions = {
     binding: ExecutionBinding,
     context: Context,
   ) => ExecutionEnv | Promise<ExecutionEnv>;
-  targets?: () => Promise<ExecutionTarget[]>;
+  targets?: (context: Context) => Promise<ExecutionTarget[]>;
   close?: () => Promise<void>;
   defaults?: {
     readonly model?: ModelRef;
@@ -167,12 +172,15 @@ async function listPaths(
   env: ExecutionEnv,
   query: string,
   directoriesOnly = false,
+  context = BACKGROUND_CONTEXT,
 ): Promise<string[]> {
+  context.abortSignal?.throwIfAborted();
   const slash = query.lastIndexOf("/");
   const directory = query.slice(0, slash + 1);
   const prefix = query.slice(slash + 1).toLowerCase();
   const opened = await env.openDirReader(posix.join(env.cwd, directory), context);
   if (!opened.ok) {
+    context.abortSignal?.throwIfAborted();
     if (["not_found", "not_directory"].includes(opened.error.code)) return [];
     throw new SessionError("unavailable", "Cannot list paths in this workspace.");
   }
@@ -181,6 +189,7 @@ async function listPaths(
     // Bound both scanning and the response; completion must not walk entire trees.
     for (let count = 0; count < 5000; count += 100) {
       const page = await opened.value.next(100, context);
+      context.abortSignal?.throwIfAborted();
       if (!page.ok) throw new SessionError("unavailable", "Cannot list paths in this workspace.");
       for (const file of page.value.entries) {
         if (directoriesOnly && file.kind !== "directory") continue;
@@ -196,7 +205,7 @@ async function listPaths(
       if (page.value.done) break;
     }
   } finally {
-    await opened.value.close(context);
+    await opened.value.close(withoutAbortSignal(context));
   }
   return paths.sort((a, b) => a.localeCompare(b)).slice(0, 50);
 }
@@ -217,18 +226,21 @@ export class Sessions {
     return sessions;
   }
 
-  async catalog(): Promise<Catalog> {
+  async catalog(context = BACKGROUND_CONTEXT): Promise<Catalog> {
+    context.abortSignal?.throwIfAborted();
     const names = await readdir(this.options.directory);
-    const targets = (await this.options.targets?.()) ?? [];
+    context.abortSignal?.throwIfAborted();
+    const targets = (await this.options.targets?.(context)) ?? [];
+    context.abortSignal?.throwIfAborted();
     const sessions = await Promise.all(
       names
         .filter((name) => name.endsWith(".sqlite") && uuid.test(name.slice(0, -7)))
         .map(async (name) => {
-          const session = await this.get(name.slice(0, -7));
+          const session = await awaitWithContext(this.get(name.slice(0, -7)), context);
           const watch = await session.root.watch(context);
           try {
             return {
-              ...(await sessionInfo(session, session.root, targets)),
+              ...(await sessionInfo(session, session.root, targets, context)),
               context: contextStatus(session, watch.value),
             };
           } finally {
@@ -250,8 +262,13 @@ export class Sessions {
     };
   }
 
-  async baseDirectory(binding: ExecutionBinding, value: string): Promise<string> {
-    const target = (await this.options.targets?.())?.find(
+  async baseDirectory(
+    binding: ExecutionBinding,
+    value: string,
+    context = BACKGROUND_CONTEXT,
+  ): Promise<string> {
+    context.abortSignal?.throwIfAborted();
+    const target = (await this.options.targets?.(context))?.find(
       (item) => item.provider === binding.provider && item.target === binding.target,
     );
     if (!target?.directoryRoot)
@@ -259,13 +276,18 @@ export class Sessions {
     return resolveBaseDirectory(target.directoryRoot, value);
   }
 
-  async completeDirectories(binding: ExecutionBinding, query: string): Promise<string[]> {
+  async completeDirectories(
+    binding: ExecutionBinding,
+    query: string,
+    context = BACKGROUND_CONTEXT,
+  ): Promise<string[]> {
     if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
-    const root = await this.baseDirectory(binding, "");
+    const root = await this.baseDirectory(binding, "", context);
     resolveBaseDirectory(root, query);
+    context.abortSignal?.throwIfAborted();
     const env = await this.options.directoryEnv?.({ ...binding, cwd: root }, context);
     if (!env) throw new SessionError("unavailable", "Directory browsing is unavailable.");
-    return listPaths(env, query, true);
+    return listPaths(env, query, true, context);
   }
 
   resolveThinking(ref: ModelRef, requested?: ModelThinkingLevel): ModelThinkingLevel {
@@ -388,8 +410,10 @@ async function openSession(owner: Sessions, id: string, create?: InitialSession)
 export async function environment(
   session: Session,
   conversation = session.root,
+  context = BACKGROUND_CONTEXT,
 ): Promise<ExecutionEnv> {
   const agent = await conversation.agent(context);
+  context.abortSignal?.throwIfAborted();
   const env = await session.owner.options.env?.(
     { conversationId: conversation.id, cwd: agent.cwd, read: session.harness },
     context,
@@ -416,6 +440,7 @@ export async function completePaths(
   session: Session,
   query: string,
   conversation = session.root,
+  context = BACKGROUND_CONTEXT,
 ): Promise<string[]> {
   if (
     query.length > 4096 ||
@@ -424,16 +449,17 @@ export async function completePaths(
     query.split("/").includes("..")
   )
     throw new SessionError("invalid", "Expected a workspace-relative path.");
-  const env = await environment(session, conversation);
-  return listPaths(env, query);
+  const env = await environment(session, conversation, context);
+  return listPaths(env, query, false, context);
 }
 
 export async function repository(
   session: Session,
   conversation = session.root,
+  context = BACKGROUND_CONTEXT,
 ): Promise<RepositoryStatus> {
   try {
-    const env = await environment(session, conversation);
+    const env = await environment(session, conversation, context);
     let output = "";
     const result = await env.exec(
       `if ! command -v git >/dev/null 2>&1; then
@@ -455,12 +481,14 @@ fi`,
       },
       context,
     );
+    context.abortSignal?.throwIfAborted();
     if (!result.ok || result.value.exitCode !== 0) return { state: "unavailable" };
     const [state, branch, revision] = output.split("\n");
     if (state === "none") return { state };
     if (state !== "repository") return { state: "unavailable" };
     return { state, branch: branch || null, revision: revision || null };
   } catch {
+    context.abortSignal?.throwIfAborted();
     // A disconnected guest must not break the transcript or fall back to host Git.
     return { state: "unavailable" };
   }
@@ -471,6 +499,7 @@ fi`,
 export function inspectContext(
   session: Session,
   view: ConversationView,
+  caller = BACKGROUND_CONTEXT,
 ): Promise<ContextInspection> {
   const id = view.conversation.id;
   const model = (view.docs["pi.agent"] as AgentState | undefined)?.model ?? null;
@@ -483,7 +512,8 @@ export function inspectContext(
   const tail = first !== undefined && (last === undefined || first > last) ? first : last;
   const key = JSON.stringify([tail, model, capacity, policy]);
   const cached = session.inspections.get(id);
-  if (cached?.key === key) return cached.result;
+  if (cached?.key === key) return awaitWithContext(cached.result, caller);
+  // The session owns this shared projection. Cancellation ends only the caller's wait.
   const result = (async (): Promise<ContextInspection> => {
     try {
       const projection =
@@ -498,7 +528,7 @@ export function inspectContext(
     }
   })();
   session.inspections.set(id, { key, result });
-  return result;
+  return awaitWithContext(result, caller);
 }
 
 export function contextStatus(session: Session, view: ConversationView): ContextStatus {
@@ -552,11 +582,13 @@ export async function sessionInfo(
   session: Session,
   conversation = session.root,
   targets?: readonly ExecutionTarget[],
+  context = BACKGROUND_CONTEXT,
 ): Promise<SessionInfo> {
   const agent = await conversation.agent(context);
   const metadata = await session.harness.snapshot(Metadata, session.root.id, context);
   const selected = await session.harness.snapshot(Environment, conversation.id, context);
-  targets ??= (await session.owner.options.targets?.()) ?? [];
+  context.abortSignal?.throwIfAborted();
+  targets ??= (await session.owner.options.targets?.(context)) ?? [];
   const target = targets.find(
     (item) => item.provider === selected?.provider && item.target === selected.target,
   );
@@ -595,7 +627,12 @@ export async function rename(session: Session, name: string): Promise<void> {
   }, context);
 }
 
-export async function getConversation(session: Session, id?: number): Promise<Conversation> {
+export async function getConversation(
+  session: Session,
+  id?: number,
+  context = BACKGROUND_CONTEXT,
+): Promise<Conversation> {
+  context.abortSignal?.throwIfAborted();
   if (id === undefined) return session.root;
   if (!Number.isSafeInteger(id) || id < 0)
     throw new SessionError("invalid", "Invalid conversation ID.");

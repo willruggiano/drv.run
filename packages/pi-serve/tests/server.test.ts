@@ -13,10 +13,11 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, awaitWithContext, type Context } from "@earendil-works/chord/context";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { readHistory, fixture, model } from "../../pi-runtime/testing.ts";
-import { chromiumExecutable, serve, snapshot, post } from "./testing.ts";
+import { chromiumExecutable, directoryFixture, serve, snapshot, post } from "./testing.ts";
 import { GlobalSettingsStore, parseOptions } from "../server.ts";
 import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
 import { buildAssets } from "../build.ts";
@@ -651,6 +652,79 @@ await test("HTTPS proxy origin is explicit and forwarded headers cannot bypass o
     "https://pi.example",
   );
 });
+
+await test(
+  "HTTP disconnect cancels application IO and closes readers without closing the environment",
+  { timeout: 10000 },
+  async (t) => {
+    let release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    const f = await directoryFixture(t);
+    const env = new NodeExecutionEnv({ cwd: f.workspace });
+    t.after(() => env.cleanup(context));
+    const cleanup = t.mock.method(env, "cleanup");
+    let entered = Promise.withResolvers<Context>();
+    let finished = Promise.withResolvers<Context>();
+    env.openDirReader = async () => ({
+      ok: true,
+      value: {
+        async next(_limit, context) {
+          entered.resolve(context);
+          await awaitWithContext(release.promise, context);
+          return { ok: true, value: { entries: [], done: true } };
+        },
+        async close(context) {
+          finished.resolve(context);
+        },
+      },
+    });
+    const exec = env.exec.bind(env);
+    t.mock.method(env, "exec", async (...args: Parameters<typeof exec>) => {
+      const context = args[2];
+      entered.resolve(context);
+      try {
+        await awaitWithContext(release.promise, context);
+        return await exec(...args);
+      } finally {
+        finished.resolve(context);
+      }
+    });
+    await f.reopen({ ...f.execution, env: () => env, directoryEnv: () => env });
+    const session = await f.sessions.create(randomUUID(), f.binding, model);
+    const base = await serve(t, f.sessions);
+    for (const operation of ["directories", "completions", "repository"]) {
+      entered = Promise.withResolvers<Context>();
+      finished = Promise.withResolvers<Context>();
+      release = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      t.after(() => controller.abort());
+      const pending =
+        operation === "directories"
+          ? fetch(base + "/api/directories", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ binding: f.binding, query: "" }),
+              signal: controller.signal,
+            })
+          : fetch(`${base}/api/sessions/${session.id}/${operation}`, { signal: controller.signal });
+      const rejected = assert.rejects(pending, { name: "AbortError" });
+      const running = await entered.promise;
+      assert(running.abortSignal);
+      controller.abort();
+      await rejected;
+      const completed = await finished.promise;
+      assert.equal(running.abortSignal.aborted, true);
+      if (operation !== "repository") assert.equal(completed.abortSignal, undefined);
+      assert.equal(cleanup.mock.callCount(), 0);
+      release.resolve();
+    }
+    const result = await env.exec("true", {}, context);
+    assert(result.ok);
+    assert.equal(result.value.exitCode, 0);
+    assert.equal((await session.harness.inspect(context)).scheduling, "paused");
+    assert.equal(f.faux.state.callCount, 0);
+  },
+);
 
 await test("global settings persist through Pi, preserve unrelated keys, and drive live Durable policy", async (t) => {
   const f = await fixture(t);

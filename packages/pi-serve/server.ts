@@ -10,7 +10,11 @@ import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import {
+  BACKGROUND_CONTEXT,
+  withAbortSignal,
+  awaitWithContext,
+} from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -209,8 +213,6 @@ function isThinkingLevel(value: unknown): value is ModelThinkingLevel {
   return thinkingLevels.some((level) => level === value);
 }
 
-const context = BACKGROUND_CONTEXT;
-
 export class RequestError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -342,6 +344,9 @@ export function httpServer(
       )
         throw new RequestError(403, "Cross-origin requests are not allowed.");
       const url = new URL(request.url ?? "/", origin);
+      const controller = new AbortController();
+      response.once("close", () => controller.abort());
+      const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
       if (request.method === "GET" && url.pathname === "/api/settings/watch") {
         if (!settings) return json(response, 200, null);
         response.writeHead(200, { "Content-Type": "text/event-stream", Connection: "keep-alive" });
@@ -365,7 +370,7 @@ export function httpServer(
         throw new RequestError(405, "Method not allowed.");
       }
       if (request.method === "GET" && url.pathname === "/api/catalog")
-        return json(response, 200, await sessions.catalog());
+        return json(response, 200, await sessions.catalog(context));
       if (request.method === "POST" && url.pathname === "/api/directories") {
         const data = await body(request);
         const binding = object(data.binding);
@@ -380,6 +385,7 @@ export function httpServer(
               cwd: string(binding.cwd, 4096),
             },
             data.query,
+            context,
           ),
         );
       }
@@ -407,16 +413,14 @@ export function httpServer(
       }
       const harnessRoute = /^\/api\/harness\/([^/]+)\/([a-zA-Z/]+)$/.exec(url.pathname);
       if (harnessRoute) {
-        const controller = new AbortController();
-        response.once("close", () => controller.abort());
-        const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
-        const session = await sessions.get(harnessRoute[1]);
+        const session = await awaitWithContext(sessions.get(harnessRoute[1]), context);
         const harness = session.harness;
         const conversation = await runtime.getConversation(
           session,
           url.searchParams.has("conversation")
             ? Number(url.searchParams.get("conversation"))
             : undefined,
+          context,
         );
         const method = harnessRoute[2];
         if (request.method === "GET") {
@@ -609,18 +613,23 @@ export function httpServer(
           url.pathname,
         );
       if (match) {
-        const session = await sessions.get(match[1]);
+        const session = await awaitWithContext(sessions.get(match[1]), context);
         const conversation = await runtime.getConversation(
           session,
           url.searchParams.has("conversation")
             ? Number(url.searchParams.get("conversation"))
             : undefined,
+          context,
         );
         if (request.method === "GET") {
           if (match[2] === "info")
-            return json(response, 200, await runtime.sessionInfo(session, conversation));
+            return json(
+              response,
+              200,
+              await runtime.sessionInfo(session, conversation, undefined, context),
+            );
           if (match[2] === "workflows")
-            return json(response, 200, await workflow.workflows(session, conversation));
+            return json(response, 200, await workflow.workflows(session, conversation, context));
           if (match[2] === "completions")
             return json(
               response,
@@ -629,10 +638,11 @@ export function httpServer(
                 session,
                 url.searchParams.get("query") ?? "",
                 conversation,
+                context,
               ),
             );
           if (match[2] === "repository")
-            return json(response, 200, await runtime.repository(session, conversation));
+            return json(response, 200, await runtime.repository(session, conversation, context));
           if (match[2] === "inspection" || match[2] === "context-status") {
             const watch = await conversation.watch(context);
             try {
@@ -640,7 +650,7 @@ export function httpServer(
                 response,
                 200,
                 match[2] === "inspection"
-                  ? await runtime.inspectContext(session, watch.value)
+                  ? await runtime.inspectContext(session, watch.value, context)
                   : runtime.contextStatus(session, watch.value),
               );
             } finally {

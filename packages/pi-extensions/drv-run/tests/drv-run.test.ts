@@ -4,11 +4,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { Connection, RemoteExecutionEnv, sshArguments } from "@earendil-works/pi-env";
 import { resolveBaseDirectory } from "../../../pi-runtime/index.ts";
-import { readHistory, code, exists, model } from "../../../pi-runtime/testing.ts";
+import { readHistory, code, exists, model, waitFor } from "../../../pi-runtime/testing.ts";
 import { connectInstance, listInstances } from "../index.ts";
 import { remoteFixture } from "./fixture.ts";
 
@@ -211,6 +211,74 @@ await test("repository inspection uses the guest environment and fails closed wh
   await writeFile(f.states, JSON.stringify({ test1: "inactive" }));
   assert.deepEqual(await runtime.repository(session), { state: "unavailable" });
   assert.equal(exec.mock.callCount(), 1);
+});
+
+await test(
+  "canceling inventory discovery terminates its systemctl process",
+  { timeout: 10000 },
+  async (t) => {
+    const f = await remoteFixture(t);
+    const marker = join(f.directory, "discovery-pid");
+    const systemctl = join(f.directory, "blocked-systemctl");
+    await writeFile(
+      systemctl,
+      `#!${process.execPath}
+import { writeFile } from "node:fs/promises";
+process.stdin.resume();
+await writeFile(${JSON.stringify(marker)}, String(process.pid));
+`,
+      { mode: 0o700 },
+    );
+    let pid: number | undefined;
+    function alive() {
+      if (pid === undefined) return false;
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ESRCH") return false;
+        throw error;
+      }
+    }
+    const controller = new AbortController();
+    t.after(() => {
+      controller.abort();
+      if (pid !== undefined && alive()) process.kill(pid);
+    });
+    const pending = listInstances({ ...f.options, systemctl }, controller.signal);
+    const rejected = assert.rejects(pending, { name: "AbortError" });
+    await waitFor(() => exists(marker));
+    pid = Number(await readFile(marker, "utf8"));
+    assert(Number.isSafeInteger(pid) && pid > 0);
+    assert(alive());
+    controller.abort();
+    await rejected;
+    await waitFor(async () => !alive());
+    assert.equal(f.connections.length, 0);
+  },
+);
+
+await test("canceling an environment waiter does not evict or close shared connection startup", async (t) => {
+  const f = await remoteFixture(t);
+  const session = await f.sessions.create(randomUUID(), f.binding, model);
+  const controller = new AbortController();
+  const reason = new Error("Caller left");
+  await session.root.configure({ cwd: f.workspace }, context);
+  const connect = f.options.connect.bind(f.options);
+  t.mock.method(f.options, "connect", (...args: Parameters<typeof connect>) => {
+    controller.abort(reason);
+    return connect(...args);
+  });
+  await assert.rejects(
+    runtime.environment(session, session.root, withAbortSignal(controller.signal, context)),
+    reason,
+  );
+  const env = await runtime.environment(session);
+  const result = await env.exec("true", {}, context);
+  assert(result.ok);
+  assert.equal(result.value.exitCode, 0);
+  assert.equal(f.connections.length, 1);
+  assert.equal(f.faux.state.callCount, 0);
 });
 
 await test("base directory input is always workspace-relative and invalid paths fail closed", async (t) => {
