@@ -1,5 +1,4 @@
 import * as workflow from "./workflows.ts";
-import * as runtime from "./index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -13,7 +12,7 @@ import { FileError, getOrThrow } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { ContextFiles, contextPaths, loadContextFiles, type ContextFile } from "./context.ts";
 import type { SessionOptions } from "./index.ts";
-import { fixture, exists } from "./testing.ts";
+import { readHistory, fixture, exists } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 const done = () => fauxAssistantMessage("Done.");
@@ -195,7 +194,7 @@ await test("baseline context precedes the first request and CONTRIBUTING blocks 
   assert.equal(f.faux.state.callCount, 3);
   assert.equal(JSON.parse(await readFile(join(f.workspace, "result.json"), "utf8")), 1);
   assert.deepEqual(
-    (await runtime.history(session))
+    (await readHistory(session.root))
       .filter((entry) => ToolResultEntry.is(entry))
       .map((entry) => entry.data.diagnostics.map((d) => d.code)),
     [["context_required"], []],
@@ -323,7 +322,7 @@ await test("unreadable CONTRIBUTING blocks mutations and oversized instructions 
   f.faux.setResponses([write(), done()]);
   await run(session.root);
   assert.equal(await exists(join(f.workspace, "result.json")), false);
-  const results = (await runtime.history(session))
+  const results = (await readHistory(session.root))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
   assert.equal(results[0]?.isError, true);
@@ -339,10 +338,10 @@ await test("activation survives restart and compaction, forks as-of, and resets 
   let session = await f.create();
   f.faux.setResponses([done()]);
   await run(session.root);
-  const before = (await runtime.history(session)).at(-1)!;
+  const before = (await readHistory(session.root)).at(-1)!;
   f.faux.setResponses([write(), done()]);
   await run(session.root);
-  const after = (await runtime.history(session)).at(-1)!;
+  const after = (await readHistory(session.root)).at(-1)!;
   assert.equal(
     (await session.harness.snapshot(ContextFiles, session.root.id, context))?.contributing,
     true,
@@ -378,7 +377,7 @@ await test("activation survives restart and compaction, forks as-of, and resets 
   await run(late);
   await late.reset(undefined, context);
   // A compaction before the next request must not hide that reset from the loader.
-  const reset = (await runtime.history(session, late)).at(-1)!;
+  const reset = (await readHistory(late)).at(-1)!;
   await late.submit(
     { type: "write", entry: { kind: "pi.compaction", data: { reason: "manual" }, head: reset.id } },
     context,

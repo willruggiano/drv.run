@@ -8,11 +8,28 @@ import type { TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import type { Conversation, Cursor, EntryRecord } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Environment, SessionError, type SessionOptions } from "./index.ts";
 import { openCodingSessions } from "./coding.ts";
 
 export const model = { provider: "faux", modelId: "faux-1" };
+
+export async function readHistory(conversation: Conversation): Promise<EntryRecord[]> {
+  const entries: EntryRecord[] = [];
+  let cursor: Cursor | undefined;
+  do {
+    const page = await conversation.entries(
+      { order: "ascending" },
+      256,
+      cursor,
+      BACKGROUND_CONTEXT,
+    );
+    entries.push(...page.items);
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return entries;
+}
 
 export async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "pi-runtime-state-"));

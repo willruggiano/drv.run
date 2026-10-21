@@ -16,7 +16,7 @@ import {
 import { UsageDoc } from "@earendil-works/pi-durable";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { chromium, type Page } from "playwright";
-import { fixture, model, waitFor } from "../../pi-runtime/testing.ts";
+import { readHistory, fixture, model, waitFor } from "../../pi-runtime/testing.ts";
 import { chromiumExecutable, directoryFixture, serve, snapshot } from "./testing.ts";
 import {
   assertLayout,
@@ -690,7 +690,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.setViewportSize({ width: 390, height: 844 });
 
   // Fork history is isolated and survives a browser reload.
-  const originalEntries = await runtime.history(session);
+  const originalEntries = await readHistory(session.root);
   await openMessageActions(reconnected, reconnected.locator("article .message-actions").last());
   await reconnected.click("#fork-message");
   await reconnected.waitForFunction(() => new URL(location.href).searchParams.has("conversation"));
@@ -712,7 +712,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     3,
   );
   await branch.waitForIdle(context);
-  assert.equal((await runtime.history(session)).length, originalEntries.length);
+  assert.equal((await readHistory(session.root)).length, originalEntries.length);
   await reconnected.fill("#prompt", "Unsent branch draft");
   await reconnected.reload();
   await reconnected.waitForFunction(
@@ -795,7 +795,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   release();
   await branch.waitForIdle(context);
   await reconnected.waitForFunction(() => document.querySelector("#queue")?.hasAttribute("hidden"));
-  const afterQueue = await runtime.history(session, branch);
+  const afterQueue = await readHistory(branch);
   assert.equal(
     afterQueue.filter((entry) =>
       entry.model?.some(
@@ -857,7 +857,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   );
   await branch.waitForIdle(context);
   assert(
-    (await runtime.history(session, branch)).some((entry) =>
+    (await readHistory(branch)).some((entry) =>
       entry.model?.some(
         (message) =>
           message.role === "user" &&
@@ -936,7 +936,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.waitForFunction(
     () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
   );
-  assert((await runtime.history(session, branch)).some((entry) => entry.kind === "pi.reset"));
+  assert((await readHistory(branch)).some((entry) => entry.kind === "pi.reset"));
   assert.equal((await branch.context(context)).messages.length, 0);
   await reconnected.waitForFunction(
     () => document.querySelector<HTMLElement>("#footer-context")?.dataset.tokens === "",
@@ -1032,7 +1032,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   assert.deepEqual(JSON.parse(await readFile(join(f.workspace, "codemode.json"), "utf8")), {
     value: 2,
   });
-  const codeResult = (await runtime.history(session, branch))
+  const codeResult = (await readHistory(branch))
     .flatMap((entry) => entry.model ?? [])
     .find((message) => message.role === "toolResult" && message.toolCallId === "real-codemode");
   assert(codeResult?.role === "toolResult");
@@ -1729,7 +1729,7 @@ await test("mobile browser branch refresh preserves keyboard focus while loading
   const f = await fixture(t);
   const session = await f.create();
   await session.root.reset(undefined, context);
-  const last = (await runtime.history(session)).at(-1);
+  const last = (await readHistory(session.root)).at(-1);
   assert(last);
   const assets = join(f.workspace, "assets");
   await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
@@ -2007,7 +2007,7 @@ await test("mobile browser compaction and reset archive unchanged conversation n
       .evaluate((node) => (node as HTMLDetailsElement).open),
     true,
   );
-  const cutoff = (await runtime.history(session)).at(-1);
+  const cutoff = (await readHistory(session.root)).at(-1);
   assert(cutoff);
   const branch = await session.root.fork(cutoff.id, { ownership: { kind: "ownerless" } }, context);
   await page.goto(`${base}/?session=${session.id}&conversation=${branch.id}`);

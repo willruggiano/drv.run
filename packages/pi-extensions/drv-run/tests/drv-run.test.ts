@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { Connection, RemoteExecutionEnv, sshArguments } from "@earendil-works/pi-env";
 import { resolveBaseDirectory } from "../../../pi-runtime/index.ts";
-import { code, exists, model } from "../../../pi-runtime/testing.ts";
+import { readHistory, code, exists, model } from "../../../pi-runtime/testing.ts";
 import { connectInstance, listInstances } from "../index.ts";
 import { remoteFixture } from "./fixture.ts";
 
@@ -111,7 +111,7 @@ await test("faux turns use the daemon for read/write/edit; extension removal pre
   await session.root.waitForIdle(context);
   assert.equal(JSON.parse(await readFile(file, "utf8")), 2);
   assert.equal(f.connections.length, 1);
-  const history = await runtime.history(session);
+  const history = await readHistory(session.root);
   const results = history
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
@@ -119,7 +119,7 @@ await test("faux turns use the daemon for read/write/edit; extension removal pre
   assert(results.every((result) => !result.isError));
   await f.reopen({ drvRun: undefined, local: true });
   const restored = await f.sessions.get(session.id);
-  assert.deepEqual(await runtime.history(restored), history);
+  assert.deepEqual(await readHistory(restored.root), history);
   await assert.rejects(runtime.environment(restored), code("unavailable"));
   restored.harness.resume();
   assert.equal(f.faux.state.callCount, 4);
@@ -149,7 +149,7 @@ await test("codemode nested tools use the bound remote daemon", async (t) => {
     context,
   );
   await session.root.waitForIdle(context);
-  const results = (await runtime.history(session))
+  const results = (await readHistory(session.root))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
   assert.equal(results.length, 1);
@@ -167,7 +167,7 @@ await test("stopping an instance blocks existing sessions without opening anothe
   session.harness.resume();
   assert.equal(f.connections.length, 0);
   assert.equal(f.faux.state.callCount, 0);
-  assert.equal((await runtime.history(session)).length, 0);
+  assert.equal((await readHistory(session.root)).length, 0);
 });
 
 await test("transport failure reports tool errors without touching local files", async (t) => {
@@ -191,7 +191,7 @@ await test("transport failure reports tool errors without touching local files",
   await session.root.submit({ type: "input", content: "Work.", requestId: randomUUID() }, context);
   await session.root.waitForIdle(context);
   assert.equal(await exists(file), false);
-  const results = (await runtime.history(session))
+  const results = (await readHistory(session.root))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
   assert.equal(results.length, 1);
@@ -285,7 +285,7 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
     (await readFile(join(f.workspace, "one/cwd.txt"), "utf8")).trim(),
     join(f.workspace, "one"),
   );
-  const history = await runtime.history(session);
+  const history = await readHistory(session.root);
   const fork = await session.root.fork(
     history.at(-1)!.id,
     { ownership: { kind: "ownerless" } },

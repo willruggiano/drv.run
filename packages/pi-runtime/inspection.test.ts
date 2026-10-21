@@ -11,7 +11,7 @@ import {
   type EntryDraft,
 } from "@earendil-works/pi-durable";
 import { describeContext } from "./inspection.ts";
-import { fixture, model } from "./testing.ts";
+import { readHistory, fixture, model } from "./testing.ts";
 import type { Session } from "./index.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -275,11 +275,11 @@ await test("inspection follows edits, fork-as-of, reset and persisted unavailabl
     edits: [{ target: first.id, action: "replace", messages: first.model! }],
   });
   assert.equal((await inspect(session)).tokens, original.tokens);
-  const history = await runtime.history(session);
+  const history = await readHistory(session.root);
   await f.reopen({ env: undefined, targets: async () => [] });
   const restored = await f.sessions.get(session.id);
   assert.equal((await inspect(restored)).tokens, original.tokens);
-  assert.deepEqual(await runtime.history(restored), history);
+  assert.deepEqual(await readHistory(restored.root), history);
   assert.equal(f.faux.state.callCount, 0);
   await restored.root.reset(undefined, context);
   const empty = await inspect(restored);
@@ -352,10 +352,10 @@ await test("inspection reads no execution environment, starts no work and writes
   const entry = await append(session.root, { kind: "pi.user", model: [user("committed")] });
   const branch = await session.root.fork(entry.id, { ownership: { kind: "ownerless" } }, context);
   const before = await session.harness.inspect(context);
-  const history = await runtime.history(session);
+  const history = await readHistory(session.root);
   for (const conversation of [session.root, branch, session.root])
     await inspect(session, conversation);
-  assert.deepEqual(await runtime.history(session), history);
+  assert.deepEqual(await readHistory(session.root), history);
   assert.deepEqual(await session.harness.inspect(context), before);
   assert.equal(opens, 0);
   assert.equal(f.faux.state.callCount, 0);

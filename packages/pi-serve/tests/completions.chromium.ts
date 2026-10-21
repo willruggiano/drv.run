@@ -9,7 +9,7 @@ import { test, type TestContext } from "node:test";
 import { chromium, type Page } from "playwright";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { fixture, waitFor } from "../../pi-runtime/testing.ts";
+import { readHistory, fixture, waitFor } from "../../pi-runtime/testing.ts";
 import type { Session } from "../../pi-runtime/index.ts";
 import { commandCompletions } from "../completions.ts";
 import { buildAssets } from "../build.ts";
@@ -38,7 +38,7 @@ async function landingFixture(t: TestContext) {
 }
 
 async function userMessages(session: Session) {
-  return (await runtime.history(session))
+  return (await readHistory(session.root))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "user")
     .map((message) => message.content);

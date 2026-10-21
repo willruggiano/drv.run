@@ -17,9 +17,6 @@ import {
   type Conversation,
   type ConversationView,
   type ConversationId,
-  type ConversationRecord,
-  type Cursor,
-  type EntryRecord,
   type ModelRef,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
@@ -607,20 +604,6 @@ export async function rename(session: Session, name: string): Promise<void> {
   }, context);
 }
 
-export async function conversations(session: Session): Promise<ConversationRecord[]> {
-  const records: ConversationRecord[] = [];
-  let cursor: Cursor | undefined;
-  do {
-    const page = await session.harness.commit(
-      (tx) => tx.scanConversations({}, 256, cursor),
-      context,
-    );
-    records.push(...page.items);
-    cursor = page.next;
-  } while (cursor !== undefined);
-  return records;
-}
-
 export async function getConversation(session: Session, id?: number): Promise<Conversation> {
   if (id === undefined) return session.root;
   if (!Number.isSafeInteger(id) || id < 0)
@@ -628,18 +611,4 @@ export async function getConversation(session: Session, id?: number): Promise<Co
   const conversation = await session.harness.conversation(id as ConversationId, context);
   if (!conversation) throw new SessionError("not_found", "Conversation not found.");
   return conversation;
-}
-
-export async function history(
-  session: Session,
-  conversation = session.root,
-): Promise<EntryRecord[]> {
-  const entries: EntryRecord[] = [];
-  let cursor: Cursor | undefined;
-  do {
-    const page = await conversation.entries({ order: "ascending" }, 256, cursor, context);
-    entries.push(...page.items);
-    cursor = page.next;
-  } while (cursor !== undefined);
-  return entries;
 }

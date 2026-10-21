@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { fixture, model } from "../../pi-runtime/testing.ts";
+import { readHistory, fixture, model } from "../../pi-runtime/testing.ts";
 import { chromiumExecutable, serve, snapshot, post } from "./testing.ts";
 import { GlobalSettingsStore, parseOptions } from "../server.ts";
 import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
@@ -553,7 +553,7 @@ await test("conversation controls validate input and keep forks scoped to their 
   f.faux.setResponses([fauxAssistantMessage("A completed turn.")]);
   await session.root.submit({ type: "input", content: "Begin.", requestId: randomUUID() }, context);
   await session.root.waitForIdle(context);
-  const history = await runtime.history(session);
+  const history = await readHistory(session.root);
   for (const [action, data] of [
     ["submit", { type: "input", content: "No", whenBusy: "invalid" }],
     ["submit", { type: "input", content: 123 }],
@@ -584,7 +584,7 @@ await test("conversation controls validate input and keep forks scoped to their 
     (await (await fetch(base + "/api/catalog")).json()).sessions[0].name,
     "Counter cleanup",
   );
-  assert.deepEqual(await runtime.history(session), history);
+  assert.deepEqual(await readHistory(session.root), history);
   assert.equal((await fetch(`${url}/watch?conversation=-1`)).status, 400);
   assert.equal((await fetch(`${url}/watch?conversation=9999999`)).status, 404);
   const forkResponse = await post(`${url}/fork`, {
@@ -594,14 +594,14 @@ await test("conversation controls validate input and keep forks scoped to their 
   assert.equal(forkResponse.status, 200);
   const fork = await forkResponse.json();
   const branch = await runtime.getConversation(session, fork.id);
-  assert.deepEqual(await runtime.history(session, branch), history);
+  assert.deepEqual(await readHistory(branch), history);
   assert.equal((await fetch(`${url}/scanConversations`)).status, 200);
   const reset = await post(`${url}/reset?conversation=${fork.id}`, {
     handoff: "Carry this forward.",
   });
   assert.equal(reset.status, 200);
   assert.equal((await branch.context(context)).messages.length, 1);
-  assert.deepEqual(await runtime.history(session), history);
+  assert.deepEqual(await readHistory(session.root), history);
   const exported = await (await fetch(`${url}/entries?conversation=${fork.id}`)).json();
   assert.equal(exported.items.length, history.length + 1);
   assert.equal((await post(`${url}/compact?conversation=${fork.id}`, {})).status, 200);
@@ -848,19 +848,19 @@ await test("queued compaction duration resolves its submission, including after 
   const receipt = await session.harness.waitForTask(taskId, context);
   assert.equal(receipt.state.outcome.status, "completed");
   assert.equal(
-    (await runtime.history(session)).some((entry) => entry.kind === "pi.compaction"),
+    (await readHistory(session.root)).some((entry) => entry.kind === "pi.compaction"),
     false,
   );
   release.resolve();
   await session.root.waitForIdle(context);
-  const entry = (await runtime.history(session)).find((entry) => entry.kind === "pi.compaction");
+  const entry = (await readHistory(session.root)).find((entry) => entry.kind === "pi.compaction");
   assert(entry);
   assert.notEqual(entry.byTaskId, taskId);
   const task = await session.harness.getTask(taskId, context);
   assert(task?.startedAt !== undefined && task.endedAt !== undefined);
   const duration = task.endedAt - task.startedAt;
   await session.root.reset(undefined, context);
-  const last = (await runtime.history(session)).at(-1);
+  const last = (await readHistory(session.root)).at(-1);
   assert(last);
   const branch = await session.root.fork(last.id, { ownership: { kind: "ownerless" } }, context);
   const base = await serve(t, sessions);

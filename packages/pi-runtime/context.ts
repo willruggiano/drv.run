@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
-import type { Message, Models } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 import {
   defineDoc,
   defineExtension,
@@ -170,21 +170,6 @@ function requestContext(messages: readonly Message[]): ContextPrompt | undefined
   return value;
 }
 
-/** Durable reports hook errors and continues. Validate at dispatch, where errors actually stop the request. */
-export function withContextValidation(models: Models): Models {
-  const streamSimple: Models["streamSimple"] = (model, transcript, options) => {
-    requestContext(transcript.messages);
-    return models.streamSimple(model, transcript, options);
-  };
-  return new Proxy(models, {
-    get(target, property) {
-      if (property === "streamSimple") return streamSimple;
-      const value: unknown = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
 export function createContextExtension(
   conversation: (id: ConversationId, context: Context) => Promise<Conversation>,
 ) {
@@ -241,8 +226,8 @@ export function createContextExtension(
             } satisfies ContextPrompt);
           } catch (error) {
             if (context.abortSignal?.aborted) throw error;
-            // Durable keeps old section text when a renderer throws. Emit an explicit failure instead;
-            // the model dispatch guard rejects it, so stale instructions cannot authorize work.
+            // Durable keeps old section text when a renderer throws. Emit an explicit failure
+            // rather than retaining stale instructions.
             return JSON.stringify({
               error: error instanceof Error ? error.message : String(error),
             });

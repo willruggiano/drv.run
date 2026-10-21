@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { chromium, type Page } from "playwright";
-import { fixture, waitFor } from "../../pi-runtime/testing.ts";
+import { readHistory, fixture, waitFor } from "../../pi-runtime/testing.ts";
 import type { AskRequest } from "../../pi-runtime/workflows.ts";
 import {
   chromiumExecutable,
@@ -241,7 +241,7 @@ await test(
     );
     assert.equal(f.faux.state.callCount, beforeHandoff);
     assert.equal(
-      (await runtime.history(session)).filter((entry) => entry.kind === "app.review").length,
+      (await readHistory(session.root)).filter((entry) => entry.kind === "app.review").length,
       1,
     );
     await page.locator('.review-finding input[value="updates"]').check();
@@ -251,7 +251,7 @@ await test(
       (url) => Number(url.searchParams.get("conversation")) === session.root.id,
     );
     await session.root.waitForIdle(context);
-    const fixes = (await runtime.history(session)).filter(
+    const fixes = (await readHistory(session.root)).filter(
       (entry) => entry.kind === "app.review-fix",
     );
     assert.equal(fixes.length, 1);

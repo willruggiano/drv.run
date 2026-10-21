@@ -1,5 +1,4 @@
 import { openCodingSessions } from "../../pi-runtime/coding.ts";
-import * as runtime from "../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -17,7 +16,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { EntryDraft } from "@earendil-works/pi-durable";
 import { chromium } from "playwright";
-import { fixture, model } from "../../pi-runtime/testing.ts";
+import { readHistory, fixture, model } from "../../pi-runtime/testing.ts";
 import { chromiumExecutable, serve, snapshot, post } from "./testing.ts";
 import { buildAssets } from "../build.ts";
 
@@ -155,7 +154,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
   });
   const empty = await session.root.fork(last.id, { ownership: { kind: "ownerless" } }, context);
   await empty.reset(undefined, context);
-  const history = await runtime.history(session);
+  const history = await readHistory(session.root);
   const assets = join(f.directory, "assets");
   await buildAssets(fileURLToPath(new URL("..", import.meta.url)), assets);
   const base = await serve(t, sessions, assets, "127.0.0.1", undefined, store);
@@ -243,7 +242,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
     node.scrollTop = 530;
   });
   await shot("context-mobile-inventory");
-  assert.deepEqual(await runtime.history(session), history);
+  assert.deepEqual(await readHistory(session.root), history);
   assert.equal(opens, 0);
   assert.equal(faux.state.callCount, 0);
 

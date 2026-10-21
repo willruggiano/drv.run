@@ -22,7 +22,7 @@ import {
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Sessions, SessionError, stateDirectory } from "./index.ts";
-import { fixture, code, exists, model, waitFor } from "./testing.ts";
+import { readHistory, fixture, code, exists, model, waitFor } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -97,10 +97,10 @@ await test("missing environments preserve history and permit upstream progress w
   f.faux.setResponses([fauxAssistantMessage("Done.")]);
   await session.root.submit({ type: "input", content: "Work." }, context);
   await session.root.waitForIdle(context);
-  const before = await runtime.history(session);
+  const before = await readHistory(session.root);
   await f.reopen({ env: undefined, targets: async () => [] });
   const restored = await f.sessions.get(session.id);
-  assert.deepEqual(await runtime.history(restored), before);
+  assert.deepEqual(await readHistory(restored.root), before);
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("write", { path: "never.json", content: "1" }), {
@@ -111,7 +111,7 @@ await test("missing environments preserve history and permit upstream progress w
   await restored.root.submit({ type: "input", content: "Try the missing environment." }, context);
   await restored.root.waitForIdle(context);
   assert.equal(await exists(join(f.workspace, "never.json")), false);
-  const results = (await runtime.history(restored))
+  const results = (await readHistory(restored.root))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
   assert.equal(results.length, 1);
@@ -135,7 +135,7 @@ await test("application environment ownership is lazy and closes after all harne
   });
   const a = await f.create(),
     b = await f.create();
-  await runtime.history(a);
+  await readHistory(a.root);
   await f.sessions.catalog();
   assert.equal(resolutions, 0);
   f.faux.setResponses([fauxAssistantMessage("Done.")]);
@@ -170,7 +170,7 @@ await test("environment failure is a tool failure and a later attempt can resolv
   await session.root.waitForIdle(context);
   assert.equal(await exists(join(f.workspace, "never.json")), false);
   assert.equal(
-    (await runtime.history(session))
+    (await readHistory(session.root))
       .flatMap((entry) => entry.model ?? [])
       .filter((message) => message.role === "toolResult")[0].isError,
     true,
@@ -265,7 +265,7 @@ await test("local coding tools use the bound directory, not the state directory"
   });
   assert.equal(await exists(join(f.workspace, "command-ran")), true);
   assert.equal(await exists(join(f.directory, "state.json")), false);
-  const messages = (await runtime.history(session)).flatMap((entry) => entry.model ?? []);
+  const messages = (await readHistory(session.root)).flatMap((entry) => entry.model ?? []);
   const results = messages.filter((message) => message.role === "toolResult");
   assert.equal(results.length, 4);
   assert.equal(
@@ -309,7 +309,7 @@ await test("codemode is enabled and runs parallel coding tools in the bound dire
     context,
   );
   await session.root.waitForIdle(context);
-  const history = await runtime.history(session);
+  const history = await readHistory(session.root);
   const results = history
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
@@ -335,7 +335,7 @@ await test("codemode is enabled and runs parallel coding tools in the bound dire
   assert.equal(await exists(join(f.directory, "code.json")), false);
   await f.reopen();
   const restored = await f.sessions.get(session.id);
-  assert.deepEqual(await runtime.history(restored), history);
+  assert.deepEqual(await readHistory(restored.root), history);
   f.faux.setResponses([
     fauxAssistantMessage(
       fauxToolCall("codemode", {
@@ -370,14 +370,14 @@ await test("codemode reports script and nested tool errors without breaking late
       context,
     );
     await session.root.waitForIdle(context);
-    const result = (await runtime.history(session))
+    const result = (await readHistory(session.root))
       .flatMap((entry) => entry.model ?? [])
       .filter((message) => message.role === "toolResult")
       .at(-1);
     assert.equal(result?.isError, true);
     assert.equal((await session.harness.inspect(context)).tasks.length, 0);
   }
-  const result = (await runtime.history(session))
+  const result = (await readHistory(session.root))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult")
     .at(-1);
@@ -456,7 +456,7 @@ await test("opening persisted work is read-only; progress is scoped to its harne
   assert.equal((await runtime.sessionInfo(restored)).needsResume, true);
   await runtime.rename(restored, "Interrupted work");
   assert.equal((await runtime.sessionInfo(restored)).name, "Interrupted work");
-  await runtime.history(restored);
+  await readHistory(restored.root);
   await f.sessions.catalog();
   assert.equal(f.faux.state.callCount, 1);
   f.faux.setResponses([fauxAssistantMessage("Other session."), fauxAssistantMessage("Resumed.")]);
@@ -574,7 +574,7 @@ await test("footer context uses the selected model and active context, not lifet
   f.faux.setResponses([fauxAssistantMessage("Measured response.")]);
   await session.root.submit({ type: "input", content: "Hello.", requestId: randomUUID() }, context);
   await session.root.waitForIdle(context);
-  const history = await runtime.history(session);
+  const history = await readHistory(session.root);
   const entry = history.at(-1);
   const message = entry?.model?.[0];
   assert(entry && message?.role === "assistant");
@@ -835,11 +835,11 @@ await test("legacy metadata and history remain intact until an environment is ex
     { type: "write", entry: { kind: "marker", data: { retained: true } } },
     context,
   );
-  const before = await runtime.history(session);
+  const before = await readHistory(session.root);
   await sessions.close();
   sessions = await openCodingSessions({ ...f.options, directory });
   const restored = await sessions.get(session.id);
-  assert.deepEqual(await runtime.history(restored), before);
+  assert.deepEqual(await readHistory(restored.root), before);
   assert.deepEqual(await restored.harness.snapshot(LegacyMetadata, restored.root.id, context), {
     binding: f.binding,
     created: 1,
@@ -849,6 +849,6 @@ await test("legacy metadata and history remain intact until an environment is ex
   assert.equal((await restored.harness.inspect(context)).scheduling, "paused");
   await runtime.selectEnvironment(restored, f.binding);
   assert.equal((await runtime.environment(restored)).cwd, f.workspace);
-  assert.deepEqual(await runtime.history(restored), before);
+  assert.deepEqual(await readHistory(restored.root), before);
   assert.equal(f.faux.state.callCount, 0);
 });

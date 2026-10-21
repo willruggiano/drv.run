@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { fixture } from "../../pi-runtime/testing.ts";
+import { readHistory, fixture } from "../../pi-runtime/testing.ts";
 import { serve, snapshot } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -18,10 +18,10 @@ await test("Context HTTP inspection is scoped, read-only and available without i
     { type: "write", entry: { kind: "pi.user", model: [user(20)] } },
     context,
   );
-  const last = (await runtime.history(session)).at(-1)!;
+  const last = (await readHistory(session.root)).at(-1)!;
   const branch = await session.root.fork(last.id, { ownership: { kind: "ownerless" } }, context);
   await branch.reset(undefined, context);
-  const before = await runtime.history(session);
+  const before = await readHistory(session.root);
   await f.reopen({ env: undefined, targets: async () => [] });
   const restored = await f.sessions.get(session.id);
   const base = await serve(t, f.sessions);
@@ -42,7 +42,7 @@ await test("Context HTTP inspection is scoped, read-only and available without i
     );
   }
   assert.equal((await fetch(`${url}?conversation=999999`)).status, 404);
-  assert.deepEqual(await runtime.history(restored), before);
+  assert.deepEqual(await readHistory(restored.root), before);
   assert.equal(f.faux.state.callCount, 0);
   assert.equal((await restored.harness.inspect(context)).tasks.length, 0);
 });

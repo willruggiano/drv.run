@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { fixture, waitFor, code } from "./testing.ts";
+import { readHistory, fixture, waitFor, code } from "./testing.ts";
 import {
   validateAsk,
   validateAnswer,
@@ -163,7 +163,7 @@ for (const action of ["submit", "cancel", "elaborate"] as const) {
     const saved = (await workflow.workflows(session)).asks[0];
     assert.deepEqual(saved.response, response);
     assert.equal(saved.actionable, false);
-    const results = (await runtime.history(session))
+    const results = (await readHistory(session.root))
       .flatMap((entry) => entry.model ?? [])
       .filter((message) => message.role === "toolResult");
     assert.equal(results.length, 1);
@@ -193,7 +193,7 @@ await test("ask recovers the original request after restart without admitting a 
   restored.harness.resume();
   await restored.root.waitForIdle(context);
   assert.equal((await workflow.workflows(restored)).asks.length, 1);
-  const messages = (await runtime.history(restored)).flatMap((entry) => entry.model ?? []);
+  const messages = (await readHistory(restored.root)).flatMap((entry) => entry.model ?? []);
   assert.equal(messages.filter((message) => message.role === "user").length, 1);
   assert.equal(messages.filter((message) => message.role === "toolResult").length, 1);
 });
@@ -208,7 +208,7 @@ await test("ask ownership, concurrent responses, fork isolation and stop use exi
   await session.root.submit({ type: "input", content: "Ask.", requestId: randomUUID() }, context);
   await waitFor(async () => (await workflow.workflows(session)).asks.length === 1);
   const ask = (await workflow.workflows(session)).asks[0];
-  const entry = (await runtime.history(session))[0];
+  const entry = (await readHistory(session.root))[0];
   const fork = await session.root.fork(entry.id, { ownership: { kind: "ownerless" } }, context);
   assert.deepEqual((await workflow.workflows(session, fork)).asks, []);
   await assert.rejects(workflow.answer(session, ask.id, answer, fork), workflowCode("not_found"));
@@ -331,9 +331,7 @@ await test("review has fresh context and normal tools; report, passive handoff a
       ),
     );
   assert(reviewerAgent.tools.some((tool) => tool.name === "submit_review"));
-  const reviewMessages = (await runtime.history(session, reviewer)).flatMap(
-    (entry) => entry.model ?? [],
-  );
+  const reviewMessages = (await readHistory(reviewer)).flatMap((entry) => entry.model ?? []);
   assert.equal(reviewMessages.filter((message) => message.role === "user").length, 1);
   const saved = (await workflow.workflows(session, reviewer)).review!;
   assert.equal(saved.origin, session.root.id);
@@ -383,7 +381,7 @@ await test("review has fresh context and normal tools; report, passive handoff a
   await workflow.finishReview(session, { action: "handoff", findings: [], requestId }, reviewer);
   await workflow.finishReview(session, { action: "handoff", findings: [], requestId }, reviewer);
   assert.equal(f.faux.state.callCount, calls);
-  const handoffs = (await runtime.history(session)).filter((entry) => entry.kind === "app.review");
+  const handoffs = (await readHistory(session.root)).filter((entry) => entry.kind === "app.review");
   assert.equal(handoffs.length, 1);
   assert.deepEqual(handoffs[0].data, { reviewer: reviewer.id, report });
   f.faux.setResponses([fauxAssistantMessage("Fixed the selected issue.")]);
@@ -394,7 +392,9 @@ await test("review has fresh context and normal tools; report, passive handoff a
   );
   await session.root.waitForIdle(context);
   assert.equal(f.faux.state.callCount, calls + 1);
-  const fixes = (await runtime.history(session)).filter((entry) => entry.kind === "app.review-fix");
+  const fixes = (await readHistory(session.root)).filter(
+    (entry) => entry.kind === "app.review-fix",
+  );
   assert.equal(fixes.length, 1);
   assert.deepEqual(fixes[0].data, {
     reviewer: reviewer.id,

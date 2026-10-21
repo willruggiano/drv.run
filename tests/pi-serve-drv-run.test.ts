@@ -1,13 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { serve, post } from "../packages/pi-serve/tests/testing.ts";
 import * as workflow from "../packages/pi-runtime/workflows.ts";
-import * as runtime from "../packages/pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { model, waitFor, code } from "../packages/pi-runtime/testing.ts";
+import { readHistory, model, waitFor, code } from "../packages/pi-runtime/testing.ts";
 import { join } from "node:path";
 import { test } from "node:test";
 import { remoteFixture } from "../packages/pi-extensions/drv-run/tests/fixture.ts";
@@ -47,7 +46,7 @@ await test("ask and fresh review use pi-env without a host fallback", async (t) 
   await reviewer.waitForIdle(BACKGROUND_CONTEXT);
   assert.equal((await reviewer.agent(BACKGROUND_CONTEXT)).cwd, f.workspace);
   assert.deepEqual((await workflow.workflows(session, reviewer)).review?.report, report);
-  const results = (await runtime.history(session, reviewer))
+  const results = (await readHistory(reviewer))
     .flatMap((entry) => entry.model ?? [])
     .filter((message) => message.role === "toolResult");
   assert.equal(results.length, 2);
