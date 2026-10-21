@@ -83,7 +83,79 @@
         inherit pkgs;
       });
     });
-    devShells = eachSystem (pkgs: import ./nix/devshells.nix pkgs);
+
+    devShells = eachSystem (pkgs: let
+      inherit (self.devShells.${pkgs.stdenv.hostPlatform.system}) toolchain;
+    in {
+      default = pkgs.mkShell {
+        inherit (toolchain) npmDeps;
+        inputsFrom = [toolchain];
+        packages = [pkgs.pi-with-store-paths];
+      };
+      jail = pkgs.mkShell {
+        inherit (toolchain) npmDeps;
+        inputsFrom = [toolchain];
+        nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook];
+        packages = [pkgs.pi-jailed];
+      };
+      toolchain = pkgs.mkShell {
+        nativeBuildInputs = [pkgs.systemd.dev];
+        npmDeps = pkgs.pi-development-node-modules;
+        packages = with pkgs; [
+          ast-grep
+          bash
+          basedpyright
+          coreutils
+          chromium
+          curl
+          diffutils
+          esbuild
+          fd
+          file
+          findutils
+          gawk
+          gh
+          git
+          gnugrep
+          gnused
+          gnutar
+          gzip
+          hunk
+          jq
+          jujutsu
+          just
+          less
+          libnotify
+          man
+          markdownlint-cli2
+          nix-update
+          nodejs
+          nq
+          openssh
+          oxlint
+          patch
+          pi-with-store-paths
+          pkg-config
+          procps
+          python3
+          ripgrep
+          ruff
+          scc
+          sd
+          stdenv.cc
+          tree
+          treefmt-wrapped
+          tsgolint
+          typescript # tsgo
+          unzip
+          vtsls
+          wget
+          which
+          zmx
+        ];
+      };
+    });
+
     formatter = eachSystem (pkgs: pkgs.treefmt-wrapped);
     packages = eachSystem (pkgs: import ./packages {inherit inputs lib pkgs;});
   };
