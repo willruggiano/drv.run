@@ -16,15 +16,6 @@ export async function openCodingSessions(options: Omit<SessionOptions, "open">):
   try {
     return await Sessions.open({
       ...options,
-      get defaultModel() {
-        return options.defaultModel;
-      },
-      get thinkingLevel() {
-        return options.thinkingLevel;
-      },
-      get modelThinkingLevels() {
-        return options.modelThinkingLevels;
-      },
       async open(storage) {
         const registry = createRegistry();
         registry.install(CodingTools);

@@ -87,21 +87,22 @@ export class GlobalSettingsStore {
   // model/thinking remain persisted in the conversation, not changed by defaults.
   bind<T extends Omit<SessionOptions, "open">>(
     options: T,
-  ): T &
-    Pick<SessionOptions, "settings" | "defaultModel" | "thinkingLevel" | "modelThinkingLevels"> {
+  ): T & Pick<SessionOptions, "settings" | "defaults"> {
     const manager = this.manager;
     return {
       ...options,
-      get defaultModel() {
-        const provider = manager.getDefaultProvider(),
-          modelId = manager.getDefaultModel();
-        return provider && modelId ? { provider, modelId } : undefined;
-      },
-      get thinkingLevel() {
-        return manager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
-      },
-      get modelThinkingLevels() {
-        return manager.getAllModelThinkingLevels();
+      defaults: {
+        get model() {
+          const provider = manager.getDefaultProvider(),
+            modelId = manager.getDefaultModel();
+          return provider && modelId ? { provider, modelId } : undefined;
+        },
+        get thinkingLevel() {
+          return manager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
+        },
+        get modelThinkingLevels() {
+          return manager.getAllModelThinkingLevels();
+        },
       },
       settings: {
         get stream() {

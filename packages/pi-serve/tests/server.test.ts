@@ -1,4 +1,5 @@
 import { openCodingSessions } from "../../pi-runtime/coding.ts";
+import { openApplication } from "../application.ts";
 import * as runtime from "../../pi-runtime/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -679,8 +680,13 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   const store = new GlobalSettingsStore(
     SettingsManager.create(f.workspace, agentDir, { projectTrusted: false }),
   );
-  const options = store.bind(f.options);
-  const sessions = await openCodingSessions(options);
+  const options = store.bind({
+    directory: f.directory,
+    models: f.options.models,
+    cwd: f.workspace,
+  });
+  const sessions = await openApplication(options);
+  assert.equal(sessions.options.defaults, options.defaults);
   t.after(() => sessions.close());
   const base = await serve(t, sessions, undefined, "127.0.0.1", undefined, store);
   const current = await sessions.create(randomUUID(), f.binding, model);

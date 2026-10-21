@@ -95,9 +95,11 @@ export type SessionOptions = {
   env?: HarnessOptions["env"];
   targets?: () => Promise<ExecutionTarget[]>;
   close?: () => Promise<void>;
-  defaultModel?: ModelRef;
-  thinkingLevel?: ModelThinkingLevel;
-  modelThinkingLevels?: Record<string, ModelThinkingLevel>;
+  defaults?: {
+    readonly model?: ModelRef;
+    readonly thinkingLevel?: ModelThinkingLevel;
+    readonly modelThinkingLevels?: Record<string, ModelThinkingLevel>;
+  };
   settings?: HarnessSettings;
   onReport?: (error: unknown) => void;
 };
@@ -240,7 +242,7 @@ export class Sessions {
         thinkingLevels: getSupportedThinkingLevels(model),
         defaultThinkingLevel: this.resolveThinking({ provider: model.provider, modelId: model.id }),
       })),
-      defaultModel: this.options.defaultModel,
+      defaultModel: this.options.defaults?.model,
     };
   }
 
@@ -285,8 +287,8 @@ export class Sessions {
     return clampThinkingLevel(
       model,
       requested ??
-        this.options.modelThinkingLevels?.[`${ref.provider}/${ref.modelId}`] ??
-        this.options.thinkingLevel ??
+        this.options.defaults?.modelThinkingLevels?.[`${ref.provider}/${ref.modelId}`] ??
+        this.options.defaults?.thinkingLevel ??
         DEFAULT_THINKING_LEVEL,
     );
   }

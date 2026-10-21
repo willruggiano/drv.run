@@ -680,8 +680,7 @@ await test("thinking defaults follow Pi precedence and model capabilities, and p
   await f.sessions.close();
   const sessions = await openCodingSessions({
     ...f.options,
-    thinkingLevel: "low",
-    modelThinkingLevels: { "faux/faux-1": "high" },
+    defaults: { thinkingLevel: "low", modelThinkingLevels: { "faux/faux-1": "high" } },
   });
   t.after(() => sessions.close());
   const catalog = await sessions.catalog();

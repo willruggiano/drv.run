@@ -19,15 +19,6 @@ export async function openApplication(options: ApplicationOptions) {
   const environments = new Map<string, NodeExecutionEnv | RemoteExecutionEnv>();
   return openCodingSessions({
     ...options,
-    get defaultModel() {
-      return options.defaultModel;
-    },
-    get thinkingLevel() {
-      return options.thinkingLevel;
-    },
-    get modelThinkingLevels() {
-      return options.modelThinkingLevels;
-    },
     async targets() {
       if (options.targets) return options.targets();
       const targets = [];
