@@ -103,6 +103,16 @@ export async function directoryFixture(t: TestContext, root?: string) {
   let available = true;
   let connections = 0;
   const environments = new Map<string, NodeExecutionEnv>();
+  function remoteEnvironment(cwd: string) {
+    if (!available) throw new SessionError("unavailable", "Guest stopped.");
+    let env = environments.get(cwd);
+    if (!env) {
+      connections++;
+      env = new NodeExecutionEnv({ cwd });
+      environments.set(cwd, env);
+    }
+    return env;
+  }
   const execution: Partial<Omit<SessionOptions, "open">> = {
     async targets() {
       return [
@@ -115,15 +125,12 @@ export async function directoryFixture(t: TestContext, root?: string) {
       if (selected?.provider === "local") return f.options.env(target, context);
       assert.equal(selected?.provider, binding.provider);
       assert.equal(selected?.target, binding.target);
-      if (!available) throw new SessionError("unavailable", "Guest stopped.");
-      const cwd = target.cwd ?? binding.cwd;
-      let env = environments.get(cwd);
-      if (!env) {
-        connections++;
-        env = new NodeExecutionEnv({ cwd });
-        environments.set(cwd, env);
-      }
-      return env;
+      return remoteEnvironment(target.cwd ?? binding.cwd);
+    },
+    directoryEnv(selected) {
+      assert.equal(selected.provider, binding.provider);
+      assert.equal(selected.target, binding.target);
+      return remoteEnvironment(selected.cwd);
     },
     async close() {
       await f.options.close();

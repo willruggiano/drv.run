@@ -1,7 +1,7 @@
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, posix } from "node:path";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Models, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import {
@@ -12,7 +12,6 @@ import {
   type Harness,
   type HarnessOptions,
   type Storage,
-  MemoryStorage,
   configure,
   type Conversation,
   type ConversationView,
@@ -93,6 +92,11 @@ export type SessionOptions = {
   models: Models;
   open(storage: Storage): Promise<Harness>;
   env?: HarnessOptions["env"];
+  /** Pre-session browsing resolves a binding without creating a durable conversation. */
+  directoryEnv?: (
+    binding: ExecutionBinding,
+    context: Context,
+  ) => ExecutionEnv | Promise<ExecutionEnv>;
   targets?: () => Promise<ExecutionTarget[]>;
   close?: () => Promise<void>;
   defaults?: {
@@ -259,26 +263,9 @@ export class Sessions {
     if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
     const root = await this.baseDirectory(binding, "");
     resolveBaseDirectory(root, query);
-    const harness = await this.options.open(new MemoryStorage());
-    try {
-      const conversation = await harness.root(context, {
-        agent: { cwd: root },
-        init: async (tx, id) => {
-          Object.assign(await tx.doc(Environment, id), {
-            provider: binding.provider,
-            target: binding.target,
-          });
-        },
-      });
-      const env = await this.options.env?.(
-        { conversationId: conversation.id, cwd: root, read: harness },
-        context,
-      );
-      if (!env) throw new SessionError("unavailable", "No execution environment selected.");
-      return await listPaths(env, query, true);
-    } finally {
-      await harness.close(context);
-    }
+    const env = await this.options.directoryEnv?.({ ...binding, cwd: root }, context);
+    if (!env) throw new SessionError("unavailable", "Directory browsing is unavailable.");
+    return listPaths(env, query, true);
   }
 
   resolveThinking(ref: ModelRef, requested?: ModelThinkingLevel): ModelThinkingLevel {

@@ -249,6 +249,7 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
   for (const path of ["one", "two", "space name", ".hidden", "one/nested"])
     await mkdir(join(f.workspace, path));
   await writeFile(join(f.workspace, "file.txt"), "not a directory");
+  const opening = t.mock.method(f.sessions.options, "open");
   assert.deepEqual(await f.sessions.completeDirectories(f.binding, ""), [
     "one/",
     "space name/",
@@ -258,6 +259,9 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
   assert.deepEqual(await f.sessions.completeDirectories(f.binding, "one/n"), ["one/nested/"]);
   assert.deepEqual(await f.sessions.completeDirectories(f.binding, "."), [".hidden/"]);
   assert.deepEqual(await f.sessions.completeDirectories(f.binding, "absent/"), []);
+  assert.equal(opening.mock.callCount(), 0, "directory browsing must not open a harness");
+  assert.equal(f.connections.length, 1);
+  assert.equal(f.faux.state.callCount, 0);
   const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "/one");
   f.faux.setResponses([
     (input) => {
