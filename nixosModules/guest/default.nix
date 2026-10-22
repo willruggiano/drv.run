@@ -115,6 +115,7 @@
     enable = true;
     registry.nixpkgs.flake = nixpkgs;
     settings = {
+      accept-flake-config = true;
       experimental-features = ["nix-command" "flakes"];
       flake-registry = "";
     };
