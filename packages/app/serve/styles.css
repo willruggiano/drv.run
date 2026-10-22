@@ -370,6 +370,25 @@ body.stacked-layout {
   .stacked-layout #app-footer { grid-area: 3 / 1 / auto / -1; }
 }
 
+/* Panel headers stay outside the scrolling pane; body owns the safe-area insets. */
+#page:has(#landing) #app-header > .bar { display: none; }
+#page:has(#preferences, #global-preferences, #context-view) {
+  & #app-header > .bar { display: flex; border-bottom: 0; }
+  & .header-title { padding: 0; min-height: 0; color: var(--muted); }
+  & #close-view { position: static; width: 44px; height: 44px; color: var(--muted); }
+  & #close-view:hover { color: var(--fg); }
+  & #close-view .glyph { width: 14px; height: 14px; }
+}
+@media (min-width: 1200px) {
+  .stacked-layout #page:has(#preferences, #global-preferences, #context-view) {
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    & #app-header { grid-area: 1 / 1 / auto / -1; }
+    & #main-area { grid-row: 2; }
+    & #queue { grid-row: 3; }
+    & #app-footer { grid-row: 4; }
+  }
+}
+
 /* Message actions remain transient; every action retains its accessible name. */
 #message-menu { width: auto; max-width: calc(100% - 16px); padding: 2px; border-radius: 4.5px; inset: auto; }
 #message-menu:popover-open { display: flex; flex-wrap: wrap; gap: 1px; }

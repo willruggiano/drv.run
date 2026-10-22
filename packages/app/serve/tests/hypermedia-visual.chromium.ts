@@ -245,8 +245,8 @@ await test("main panes reach the top on mobile and wide screens without mobile h
     await page.setViewportSize({ width: 390, height: 900 });
     await page.locator("#footer-model").click();
     await page.locator("#preferences").waitFor();
-    assert.equal(await page.locator(".bar").isVisible(), false);
-    assert.equal(await page.locator("#close-view").isVisible(), false);
+    assert.equal(await page.locator(".bar").isVisible(), true);
+    assert.equal(await page.locator("#close-view").isVisible(), true);
     await returnToConversation(page);
     await page.locator("#preferences").waitFor({ state: "hidden" });
     await page.locator("#prompt").fill("/unknown-command");
@@ -259,4 +259,76 @@ await test("main panes reach the top on mobile and wide screens without mobile h
     assert(mainBox.y >= errorBox.y + errorBox.height);
     assert.equal(await page.locator(".bar").isVisible(), false);
   }
+});
+
+await test("panel headers respect safe areas, stay above scrolling content and close to their origin", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const path = conversationURL(session);
+  const b = await browserFixture(t, f.sessions);
+  const page = b.page;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+    insets: { top: 47, bottom: 34, left: 12, right: 12 },
+  });
+  const panels = [
+    { url: `${path}/settings`, title: "Session settings", pane: "#preferences", composer: true },
+    {
+      url: `/sessions/settings?return=${encodeURIComponent(path)}`,
+      title: "Default preferences",
+      pane: "#global-preferences",
+      composer: true,
+    },
+    { url: `${path}/context`, title: "Context", pane: "#context-view", composer: false },
+  ];
+  for (const width of [320, 390, 650, 651, 1199, 1200, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const panel of panels) {
+      await page.goto(b.base + panel.url);
+      const bar = page.locator("#app-header > .bar");
+      const close = page.locator("#close-view");
+      assert.equal(await bar.isVisible(), true);
+      assert.equal(await bar.locator("h1").textContent(), panel.title);
+      assert.equal(await close.isVisible(), true);
+      assert.equal(await page.locator("#app-footer").isVisible(), panel.composer);
+      const header = await bar.boundingBox();
+      const label = await bar.locator("h1").boundingBox();
+      const button = await close.boundingBox();
+      const pane = page.locator(panel.pane);
+      const content = await pane.boundingBox();
+      assert(header && label && button && content);
+      assert.equal(header.y, 47);
+      assert(label.x < button.x);
+      assert(button.width >= 44 && button.height >= 44);
+      assert(button.x + button.width <= width - 12);
+      assert(content.y >= header.y + header.height);
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+        false,
+      );
+      // Force overflow even when a fixture has only a few settings/messages.
+      await page.addStyleTag({
+        content: `${panel.pane}::after { content: ""; display: block; height: 2000px; }`,
+      });
+      await pane.evaluate((node) => {
+        node.scrollTop = node.scrollHeight;
+      });
+      assert(await pane.evaluate((node) => node.scrollTop > 0));
+      assert.deepEqual(await bar.boundingBox(), header);
+      assert.deepEqual(await close.boundingBox(), button);
+      await close.click();
+      await page.waitForURL(b.base + path);
+      await page.locator("#conversation-scroll").waitFor();
+    }
+    await page.goto(b.base + "/sessions");
+    await page.locator("#landing").waitFor();
+    assert.equal(await page.locator("#app-header > .bar").isVisible(), false);
+    assert.equal((await page.locator("#main-area").boundingBox())?.y, 47);
+  }
+  await page.goto(b.base + "/sessions/settings");
+  assert.equal(await page.locator("#app-footer").isVisible(), false);
+  await page.locator("#close-view").click();
+  await page.waitForURL(b.base + "/sessions");
+  await page.locator("#landing").waitFor();
+  assert.deepEqual(b.errors, []);
 });

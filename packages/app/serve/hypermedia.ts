@@ -110,7 +110,7 @@ export function htmlPage(
   // htmx must see readyState=loading so initialization waits for DOMContentLoaded,
   // after the deferred extensions and module have registered their handlers.
   const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/hypermedia.css"><script src="/htmx.js"></script><script src="/hx-sse.js" defer></script><script src="/hypermedia-morph.js" defer></script><script type="module" src="/hypermedia-client.js"></script></head>`;
-  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="Return to conversation">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div><p id="request-error" role="alert"></p></header>`;
+  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div><p id="request-error" role="alert"></p></header>`;
   return renderHTML(
     h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${header}${content}</main></body></html>`,
   );
@@ -709,7 +709,7 @@ export async function hypermedia(
         const conversation = await getConversation(session, Number(parts[4]), context);
         frame = await panelFrame(session, conversation, settings, context, content);
       }
-      html(response, frame, 200, back, "Defaults and preferences");
+      html(response, frame, 200, back, "Default preferences");
       return;
     }
     if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
