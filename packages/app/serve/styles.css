@@ -293,6 +293,11 @@ body.stacked-layout {
 #queue { grid-row: 3; }
 #app-footer { grid-row: 4; }
 #main-area { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+/* Keep chronological order and normal scroll coordinates. Spare space belongs
+   above the conversation; overflowing history remains reachable from the top. */
+.bottom-align :is(#main-area > #transcript, #conversation-scroll) { display: flex; flex-direction: column; }
+.bottom-align :is(#main-area > #transcript, #conversation-scroll) > :first-child { margin-top: auto; }
+.bottom-align :is(#main-area > #transcript, #conversation-scroll) > * { flex: none; }
 .pane { grid-row: 1; min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 12px max(20px, calc((100% - 820px)/2)) 20px; }
 :is(#preferences, #global-preferences, #new-options) label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: start; gap: 16px; margin: 0; padding: 2px 0; }
 :is(#preferences, #global-preferences, #new-options) label > span { margin: 0; padding: 7px 0; font-size: 12px; text-align: left; }

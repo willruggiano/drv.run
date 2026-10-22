@@ -2574,25 +2574,31 @@ element("fork-message", HTMLButtonElement).onclick = () => {
     })
     .catch(report);
 };
-const wrap = element("wrap-code", HTMLSelectElement);
-function setWrap(value: boolean): void {
-  document.body.classList.toggle("wrap-code", value);
-  wrap.value = String(value);
-}
-try {
-  setWrap(localStorage.getItem("pi.wrapCode") === "true");
-} catch {
-  /* Browser storage may be disabled. */
-}
-wrap.onchange = () => {
-  const value = wrap.value === "true";
-  setWrap(value);
+for (const [id, key, fallback] of [
+  ["wrap-code", "pi.wrapCode", false],
+  ["bottom-align", "pi.bottomAlign", true],
+] as const) {
+  const select = element(id, HTMLSelectElement);
+  const apply = (value: boolean) => {
+    document.body.classList.toggle(id, value);
+    select.value = String(value);
+  };
   try {
-    localStorage.setItem("pi.wrapCode", String(value));
+    const stored = localStorage.getItem(key);
+    apply(stored === null ? fallback : stored === "true");
   } catch {
     /* Browser storage may be disabled. */
   }
-};
+  select.onchange = () => {
+    const value = select.value === "true";
+    apply(value);
+    try {
+      localStorage.setItem(key, String(value));
+    } catch {
+      /* Browser storage may be disabled. */
+    }
+  };
+}
 function updateLatest(): void {
   element("latest", HTMLButtonElement).hidden =
     view !== "conversation" ||

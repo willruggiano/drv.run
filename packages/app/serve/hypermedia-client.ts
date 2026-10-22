@@ -5,6 +5,11 @@ import { installSelectKeyMappings, navigationDirection, moveFocus } from "./key-
 // The pinned standalone htmx distribution is loaded before this module.
 declare const htmx: Htmx;
 
+const localPreferences = {
+  "wrap-code": { key: "pi.html.wrap-code", fallback: false },
+  "bottom-align": { key: "pi.bottomAlign", fallback: true },
+} as const;
+
 type Draft = { text: string; files: File[]; requestId: string; creationId?: string };
 const drafts = new Map<string, Draft>();
 const requestPages = new WeakMap<HtmxRequestCtx, number>();
@@ -407,8 +412,10 @@ function enhance(root: ParentNode) {
     );
     code.parentElement!.append(button);
   }
-  const preference = document.querySelector<HTMLSelectElement>("[data-preference=wrap-code]");
-  if (preference) preference.value = String(document.body.classList.contains("wrap-code"));
+  for (const name of Object.keys(localPreferences)) {
+    const preference = document.querySelector<HTMLSelectElement>(`[data-preference=${name}]`);
+    if (preference) preference.value = String(document.body.classList.contains(name));
+  }
   localStatus();
   installStatus();
 }
@@ -1065,10 +1072,11 @@ document.addEventListener("focusout", (event) => {
 document.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLSelectElement)) return;
-  if (target.hasAttribute("data-preference")) {
-    document.body.classList.toggle("wrap-code", target.value === "true");
+  const preference = target.dataset.preference;
+  if (preference === "wrap-code" || preference === "bottom-align") {
+    document.body.classList.toggle(preference, target.value === "true");
     try {
-      localStorage.setItem("pi.html.wrap-code", target.value);
+      localStorage.setItem(localPreferences[preference].key, target.value);
     } catch {
       /* Optional local preference. */
     }
@@ -1168,7 +1176,10 @@ if ("serviceWorker" in navigator) {
   });
 }
 try {
-  document.body.classList.toggle("wrap-code", localStorage.getItem("pi.html.wrap-code") === "true");
+  for (const [name, { key, fallback }] of Object.entries(localPreferences)) {
+    const stored = localStorage.getItem(key);
+    document.body.classList.toggle(name, stored === null ? fallback : stored === "true");
+  }
 } catch {
   /* Optional local preference. */
 }

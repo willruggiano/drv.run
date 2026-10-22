@@ -9,7 +9,7 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body class="stacked-layout">
+<body class="stacked-layout bottom-align">
   <header id="app-header">
     <div class="bar">
       <h1><button id="title" class="header-title" type="button" data-view="sessions" title="Sessions">No session</button><span id="status" class="session-status" data-state="none" role="status" title="No session"><span class="sr-only">No session</span></span><span id="view-title" class="header-title" tabindex="-1" hidden></span></h1>
@@ -45,6 +45,7 @@
         <label><span>Thinking override for this model</span><select id="model-thinking-default"></select></label>
       </section></div>
       <label id="wrap-field"><span>Wrap code</span><select id="wrap-code"><option value="false">Off</option><option value="true">On</option></select></label>
+      <label><span>Bottom-align messages</span><select id="bottom-align"><option value="true">On</option><option value="false">Off</option></select></label>
       <section class="settings-group" id="app-settings" aria-label="App" hidden><button id="install" hidden>Install app</button></section>
     </section>
     <section id="context-view" class="pane" aria-labelledby="view-title" hidden></section>
