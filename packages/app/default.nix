@@ -117,7 +117,7 @@ in
         import * as api from "harness";
         import { localDaemon } from "@earendil-works/pi-env";
         await import("./serve/dist/server.js");
-        assert.deepEqual(Object.keys(api).sort(), ["DrvRunEnv", "openHarness"]);
+        assert.deepEqual(Object.keys(api).sort(), ["DrvRunEnv", "Review", "openHarness"]);
         for (const workspace of ["harness", "serve"]) {
           assert.equal(realpathSync(`node_modules/''${workspace}`), realpathSync(workspace));
         }

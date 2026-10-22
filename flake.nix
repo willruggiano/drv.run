@@ -102,7 +102,7 @@
         nativeBuildInputs = [pkgs.systemd.dev];
         npmDeps = pkgs.app.dev;
         npmRoot = "packages/app";
-        packages = with pkgs; [
+        packages = with pkgs; (map pkgs.lib.getBin [
           ast-grep
           bash
           basedpyright
@@ -152,7 +152,7 @@
           wget
           which
           zmx
-        ];
+        ]);
       };
     });
 

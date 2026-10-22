@@ -11,7 +11,9 @@ import {
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createContextExtension } from "./context.ts";
 import { createWebExtension } from "./web.ts";
+import { createReviewExtension } from "./review.ts";
 
+export { Review } from "./review.ts";
 export { DrvRunEnv } from "./drv-run.ts";
 
 type Options = Omit<HarnessOptions, "registry" | "settings"> & {
@@ -36,6 +38,7 @@ export async function openHarness(
   );
   registry.install(createContextExtension());
   registry.install(createWebExtension());
+  registry.install(createReviewExtension(options.env));
   const extensions = registry.snapshot().installed();
   const harness = await Harness.open(
     storage,

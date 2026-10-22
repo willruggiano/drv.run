@@ -20,7 +20,7 @@ import * as api from "harness";
 const context = BACKGROUND_CONTEXT;
 
 await test("public API opens a native, paused harness with the fixed extensions", async (t) => {
-  assert.deepEqual(Object.keys(api).sort(), ["DrvRunEnv", "openHarness"]);
+  assert.deepEqual(Object.keys(api).sort(), ["DrvRunEnv", "Review", "openHarness"]);
   const Marker = defineDoc<{ created: boolean }>({
     kind: "test.created",
     version: 1,
@@ -49,7 +49,7 @@ await test("public API opens a native, paused harness with the fixed extensions"
   const agent = await root.agent(context);
   assert.deepEqual(
     agent.extensions.map((extension) => extension.name),
-    ["coding-tools", "coding", "context", "web"],
+    ["coding-tools", "coding", "context", "web", "review"],
   );
   assert.deepEqual(agent.tools.map((tool) => tool.name).sort(), [
     "bash",
