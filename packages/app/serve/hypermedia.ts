@@ -1,3 +1,4 @@
+import { html as h, renderHTML, type SafeHtml } from "./html.ts";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@earendil-works/chord/context";
@@ -7,7 +8,6 @@ import type { GlobalSettingsStore } from "./server.ts";
 import { settingFields } from "./settings.ts";
 import { commands, pathCompletion } from "./completions.ts";
 import {
-  escapeHTML,
   hidden,
   icon,
   link,
@@ -16,6 +16,7 @@ import {
   message,
   tool,
   toolID,
+  timing,
   contextHTML,
   compactTokens,
   type Call,
@@ -30,7 +31,6 @@ import {
   modelKey,
   targetKey,
 } from "./hypermedia-forms.ts";
-export { escapeHTML } from "./hypermedia-render.ts";
 import {
   InboxDoc,
   LiveDoc,
@@ -58,6 +58,7 @@ import {
   Metadata,
   SessionError,
   type Sessions,
+  type Catalog,
   type Session,
 } from "./sessions.ts";
 
@@ -69,28 +70,44 @@ export class FormError extends Error {
   }
 }
 
-const e = escapeHTML;
 export const conversationURL = (session: Session, id = session.root.id) =>
   `/sessions/${session.id}/conversations/${id}`;
+
+function sessionRow(item: Catalog["sessions"][number], back?: string): SafeHtml {
+  const context = item.context;
+  const percent =
+    context.window && context.lastResponse
+      ? (context.lastResponse.tokens / context.window) * 100
+      : undefined;
+  const heading = h`<span class="session-heading"><strong>${item.name || "Untitled session"}</strong><time data-date-only datetime="${new Date(item.created).toISOString()}">${new Date(item.created).toISOString().slice(0, 10)}</time></span>`;
+  const environment = h`<span class="session-environment">${item.binding ? `${item.binding.provider === "local" ? "local" : item.binding.target} · ${item.cwd}` : "No execution environment"}</span>`;
+  const model = h`<span class="model-summary"><span class="model-name">${item.model?.modelId ?? "No model"}</span><span class="footer-dot" aria-hidden="true"></span><span class="model-effort">${item.thinkingLevel}</span></span>`;
+  const usage = h`<span class="context-usage">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${context.window ? compactTokens(context.window) : "?"}${context.autoCompact ? " (auto)" : ""}</span>`;
+  return h`<a class="session" href="/sessions/${item.id}" aria-current="${back?.startsWith(`/sessions/${item.id}/`) ?? false}">${heading}<span class="session-detail">${environment}<span class="footer-dot" aria-hidden="true"></span>${model}<span class="footer-dot" aria-hidden="true"></span>${usage}</span></a>`;
+}
 
 function returnPath(value: string | null): string | undefined {
   return value && /^\/sessions\/[0-9a-f-]+\/conversations\/\d+$/.test(value) ? value : undefined;
 }
 export function htmlPage(
-  content: string,
+  content: SafeHtml,
   back?: string,
   title = "Sessions",
   conversation = false,
 ): string {
   const sessionsPath = `/sessions${back ? `?return=${encodeURIComponent(back)}` : "?view=sessions"}`;
   const heading = conversation
-    ? `<a id="conversation-title" class="header-title" href="${e(sessionsPath)}" aria-label="Sessions" title="Sessions" data-command="sessions">${e(title)}</a>${!back ? '<span id="status" class="session-status" data-state="none" role="status" aria-label="No session"></span>' : `<button class="status-menu" type="button" popovertarget="conversation-menu" aria-label="Conversation actions"><span id="status" class="session-status" data-state="ready" role="status"><span class="sr-only">Ready</span></span></button>`}`
-    : `<span class="header-title">${e(title)}</span>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${e(title)}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/hypermedia.css"><script src="/htmx.js" defer></script><script type="module" src="/hypermedia-client.js"></script></head><body class="stacked-layout"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace"><header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? `<a id="close-view" class="icon" href="${e(back ?? "/sessions")}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="Return to conversation">${icon("close")}</a>` : `<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div><p id="request-error" role="alert"></p></header>${content}</main></body></html>`;
+    ? h`<a id="conversation-title" class="header-title" href="${sessionsPath}" aria-label="Sessions" title="Sessions" data-command="sessions">${title}</a>${!back ? h`<span id="status" class="session-status" data-state="none" role="status" aria-label="No session"></span>` : h`<button class="status-menu" type="button" popovertarget="conversation-menu" aria-label="Conversation actions"><span id="status" class="session-status" data-state="ready" role="status"><span class="sr-only">Ready</span></span></button>`}`
+    : h`<span class="header-title">${title}</span>`;
+  const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/hypermedia.css"><script src="/htmx.js" defer></script><script type="module" src="/hypermedia-client.js"></script></head>`;
+  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="Return to conversation">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div><p id="request-error" role="alert"></p></header>`;
+  return renderHTML(
+    h`<!doctype html><html lang="en">${head}<body class="stacked-layout"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${header}${content}</main></body></html>`,
+  );
 }
 export function html(
   response: ServerResponse,
-  content: string,
+  content: SafeHtml,
   status = 200,
   back?: string,
   title?: string,
@@ -146,57 +163,56 @@ function field(data: FormData, key: string, max = 100_000): string {
 }
 
 type ReviewState = { original?: number; active?: number };
-function controls(url: string, view: ConversationView, review: ReviewState): string {
+function controls(url: string, view: ConversationView, review: ReviewState): SafeHtml {
   const live = view.docs[LiveDoc.definition.kind] as LiveState | undefined;
   const busy = live?.run !== undefined;
-  return `<div id="controls" class="actions" data-state="${busy ? "working" : "ready"}"><button id="input-toggle" class="icon enhanced-only" type="button" data-file-picker="images" aria-label="Upload attachments" title="Upload attachments">+</button><div id="review-menu" popover aria-label="Review actions">${
+  return h`<div id="controls" class="actions" data-state="${busy ? "working" : "ready"}"><button id="input-toggle" class="icon enhanced-only" type="button" data-file-picker="images" aria-label="Upload attachments" title="Upload attachments">+</button><div id="review-menu" popover aria-label="Review actions">${
     review.original !== undefined
-      ? link(url.replace(/\d+$/, String(review.original)), "Visit original") +
-        action(`${url}/end-review`, "End review and return", "endreview")
+      ? h`${link(url.replace(/\d+$/, String(review.original)), "Visit original")}${action(`${url}/end-review`, "End review and return", "endreview")}`
       : review.active !== undefined
-        ? link(url.replace(/\d+$/, String(review.active)), "Open review", 'data-command="review"')
+        ? link(url.replace(/\d+$/, String(review.active)), "Open review", h`data-command="review"`)
         : busy
           ? ""
           : action(`${url}/review`, "Start review", "review")
-  }</div><span class="spacer"></span>${busy ? `<button class="submission-mode" form="composer" name="whenBusy" value="steer">Steer</button>${action(`${url}/abort`, "×", "stop").replace("<button>", '<button id="stop" class="icon" aria-label="Stop" title="Stop">')}` : ""}<button id="send" class="icon" form="composer" name="whenBusy" value="${busy ? "followUp" : "reject"}" aria-label="${busy ? "Queue" : "Send"}" title="${busy ? "Queue" : "Send"} (Ctrl/⌘ Enter)"><span aria-hidden="true">↑</span></button></div>`;
+  }</div><span class="spacer"></span>${busy ? h`<button class="submission-mode" form="composer" name="whenBusy" value="steer">Steer</button>${action(`${url}/abort`, "×", "stop", h``, h` id="stop" class="icon" aria-label="Stop" title="Stop"`)}` : ""}<button id="send" class="icon" form="composer" name="whenBusy" value="${busy ? "followUp" : "reject"}" aria-label="${busy ? "Queue" : "Send"}" title="${busy ? "Queue" : "Send"} (Ctrl/⌘ Enter)"><span aria-hidden="true">↑</span></button></div>`;
 }
 function composerHTML(
   path: string,
   view: ConversationView,
   review: ReviewState,
-  metadata: string,
-): string {
-  return `<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div class="composer-shell"><div class="compose-box"><form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop" data-completions="${path}/completions">${hidden("requestId", randomUUID())}<textarea id="prompt" name="content" aria-label="Message" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>${controls(path, view, review)}</div></div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
+  metadata: SafeHtml,
+): SafeHtml {
+  return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div class="composer-shell"><div class="compose-box"><form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop" data-completions="${path}/completions">${hidden("requestId", randomUUID())}<textarea id="prompt" name="content" aria-label="Message" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>${controls(path, view, review)}</div></div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
 }
 async function panelFrame(
   session: Session,
   conversation: Conversation,
   settings: GlobalSettingsStore | undefined,
   context: Context,
-  content: string,
-): Promise<string> {
+  content: SafeHtml,
+): Promise<SafeHtml> {
   const path = conversationURL(session, conversation.id);
   const watch = await conversation.watch(context);
   try {
     const review = (await session.harness.snapshot(Review, conversation.id, context)) ?? {};
-    return `${navigation(path)}<section class="conversation-layout" data-events="${path}/events"><main id="main-area">${content}</main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`;
+    return h`${navigation(path)}<section class="conversation-layout" data-events="${path}/events"><main id="main-area">${content}</main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`;
   } finally {
     await watch.stop();
   }
 }
-function liveHTML(view: ConversationView, calls: ReadonlyMap<string, Call> = new Map()): string {
+function liveHTML(view: ConversationView, calls: ReadonlyMap<string, Call> = new Map()): SafeHtml {
   const live = view.docs[LiveDoc.definition.kind] as LiveState | undefined;
-  return `<section id="live" aria-label="Live output">${live?.generation?.message ? message(live.generation.message) : ""}${[...(live?.tools ?? []).filter((slot) => !calls.has(slot.callId)), ...(live?.nestedTools ?? [])].map((slot) => tool({ id: slot.callId, name: slot.name, arguments: "arguments" in slot ? slot.arguments : {} }, undefined, slot, !!live?.run)).join("")}${live?.generation?.retry ? `<p class="notice" hx-ignore>Retry ${live.generation.attempt}: ${e(live.generation.retry.error)}</p>` : ""}${live?.generation?.deferred ? '<p class="notice">Waiting for provider response…</p>' : ""}${(live?.compactions ?? []).map((item) => `<p class="notice">${item.blocking ? "Compacting context" : "Background compaction"} · ${e(item.reason)} · Attempt ${item.attempt}${item.retry ? ` · ${e(item.retry.error)}` : ""}</p>`).join("")}${live?.compactionFailure ? `<p class="error" hx-ignore>Compaction failed: ${e(live.compactionFailure.error)}</p>` : ""}</section>`;
+  return h`<section id="live" aria-label="Live output">${live?.generation?.message ? message(live.generation.message) : ""}${h`${[...(live?.tools ?? []).filter((slot) => !calls.has(slot.callId)), ...(live?.nestedTools ?? [])].map((slot) => tool({ id: slot.callId, name: slot.name, arguments: "arguments" in slot ? slot.arguments : {} }, undefined, slot, !!live?.run))}`}${live?.generation?.retry ? h`<p class="notice" hx-ignore>Retry ${live.generation.attempt}: ${live.generation.retry.error}</p>` : ""}${live?.generation?.deferred ? h`<p class="notice">Waiting for provider response…</p>` : ""}${h`${(live?.compactions ?? []).map((item) => h`<p class="notice">${item.blocking ? "Compacting context" : "Background compaction"} · ${item.reason} · Attempt ${item.attempt}${item.retry ? ` · ${item.retry.error}` : ""}</p>`)}`}${live?.compactionFailure ? h`<p class="error" hx-ignore>Compaction failed: ${live.compactionFailure.error}</p>` : ""}</section>`;
 }
-function queueHTML(view: ConversationView, path = ""): string {
+function queueHTML(view: ConversationView, path = ""): SafeHtml {
   const inbox = view.docs[InboxDoc.definition.kind] as InboxState | undefined;
-  return `<section id="queue" aria-label="Queued submissions">${(inbox?.items ?? []).map((item) => `<div>${e(item.mode)}: ${e("content" in item ? (typeof item.content === "string" ? item.content : JSON.stringify(item.content)) : typeof item.entry.kind === "string" ? item.entry.kind : JSON.stringify(item.entry.kind))}${path && item.mode !== "write" ? action(`${path}/cancel`, "Cancel queued message", "", hidden("id", String(item.id))) : ""}</div>`).join("")}</section>`;
+  return h`<section id="queue" aria-label="Queued submissions">${h`${(inbox?.items ?? []).map((item) => h`<div>${item.mode}: ${"content" in item ? (typeof item.content === "string" ? item.content : JSON.stringify(item.content)) : typeof item.entry.kind === "string" ? item.entry.kind : JSON.stringify(item.entry.kind)}${path && item.mode !== "write" ? action(`${path}/cancel`, "Cancel queued message", "", hidden("id", String(item.id))) : ""}</div>`)}`}</section>`;
 }
-function usageHTML(view: ConversationView): string {
+function usageHTML(view: ConversationView): SafeHtml {
   const usage = view.docs[UsageDoc.definition.kind] as UsageState | undefined;
   const rows = [...Object.entries(usage?.models ?? {}), ...Object.entries(usage?.tools ?? {})];
   const totals = rows.map(([, value]) => value);
-  return `<details id="usage"><summary>${totals.reduce((sum, item) => sum + item.totalTokens, 0).toLocaleString()} tokens · $${totals.reduce((sum, item) => sum + item.cost.total, 0).toFixed(4)}</summary><div class="usage-table"><table><thead><tr><th>Model / tool</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Cost</th></tr></thead><tbody>${rows.map(([name, item]) => `<tr><th hx-ignore>${e(name)}</th><td>${item.input}</td><td>${item.output}</td><td>${item.cacheRead}</td><td>${item.cacheWrite}</td><td>$${item.cost.total.toFixed(4)}</td></tr>`).join("")}</tbody></table></div></details>`;
+  return h`<details id="usage"><summary>${totals.reduce((sum, item) => sum + item.totalTokens, 0).toLocaleString()} tokens · $${totals.reduce((sum, item) => sum + item.cost.total, 0).toFixed(4)}</summary><div class="usage-table"><table><thead><tr><th>Model / tool</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Cost</th></tr></thead><tbody>${h`${rows.map(([name, item]) => h`<tr><th hx-ignore>${name}</th><td>${item.input}</td><td>${item.output}</td><td>${item.cacheRead}</td><td>${item.cacheWrite}</td><td>$${item.cost.total.toFixed(4)}</td></tr>`)}`}</tbody></table></div></details>`;
 }
 
 /** One projection per subscriber. Completed entries are immutable; document-only
@@ -205,11 +221,12 @@ function usageHTML(view: ConversationView): string {
 export class ConversationFragments {
   private entries: readonly EntryRecord[] | undefined;
   private readonly records = new Map<number, EntryRecord>();
-  private readonly rendered = new Map<number, string>();
+  private readonly rendered = new Map<number, SafeHtml>();
   private readonly regions = new Map<string, unknown>();
   private readonly calls = new Map<string, Call>();
   private readonly results = new Map<string, Result>();
   private readonly retain: boolean;
+  private liveState: LiveState | undefined;
   readonly metrics = { frames: 0, bytes: 0, entries: 0, renderMs: 0 };
   readonly url: string;
   constructor(url: string, history?: EntryRecord[]) {
@@ -217,30 +234,35 @@ export class ConversationFragments {
     this.retain = history !== undefined;
     for (const record of history ?? []) this.records.set(record.id, record);
   }
-  live(view: ConversationView): string {
+  live(view: ConversationView): SafeHtml {
     return liveHTML(view, this.calls);
   }
-  transcript(times = new Map<number, number>()): string {
-    let html = "";
+  transcript(times = new Map<number, number>()): SafeHtml {
+    let content = h``;
     for (const [id, record] of this.records) {
-      const rendered = (this.rendered.get(id) ?? "").replace(
-        `<span id="duration-${id}" class="tool-duration"></span>`,
-        timing(id, times.get(id)),
-      );
-      html =
+      content =
         record.kind === "pi.reset" || record.kind === "pi.compaction"
-          ? rendered.replace(
-              `<div id="archive-${id}" class="context-history"></div>`,
-              `<div id="archive-${id}" class="context-history">${html}</div>`,
+          ? entry(
+              record,
+              this.url,
+              this.calls,
+              this.results,
+              this.liveState,
+              content,
+              times.get(id),
             )
-          : html + rendered;
+          : h`${content}${this.rendered.get(id)}`;
     }
-    return html;
+    return content;
   }
   render(view: ConversationView, review: ReviewState): string {
+    return renderHTML(this.fragments(view, review));
+  }
+  fragments(view: ConversationView, review: ReviewState): SafeHtml {
     const start = performance.now();
-    const parts: string[] = [];
+    const parts: SafeHtml[] = [];
     const live = view.docs[LiveDoc.definition.kind] as LiveState | undefined;
+    this.liveState = live;
     if (this.entries !== view.entries) {
       if (!this.retain) this.records.clear();
       for (const record of view.entries) this.records.set(record.id, record);
@@ -266,21 +288,20 @@ export class ConversationFragments {
         top.push(record.id);
       }
       layout.transcript = top;
-      const added = records
+      const added = h`${records
         .filter((record) => !this.rendered.has(record.id))
         .map((record) => {
           this.metrics.entries++;
           const html = entry(record, this.url, this.calls, this.results, live);
           this.rendered.set(record.id, html);
           return html;
-        })
-        .join("");
+        })}`;
       parts.push(
-        `<template data-entries="${records.map((record) => record.id).join(" ")}" data-layout="${e(JSON.stringify(layout))}">${added}</template>`,
+        h`<template data-entries="${records.map((record) => record.id).join(" ")}" data-layout="${JSON.stringify(layout)}">${added}</template>`,
       );
       this.entries = view.entries;
     }
-    const regions: [string, unknown, () => string][] = [
+    const regions: [string, unknown, () => SafeHtml][] = [
       ["live", live, () => liveHTML(view, this.calls)],
       ["queue", view.docs[InboxDoc.definition.kind], () => queueHTML(view, this.url)],
       ["usage", view.docs[UsageDoc.definition.kind], () => usageHTML(view)],
@@ -298,12 +319,12 @@ export class ConversationFragments {
     for (const [id, value, render] of regions) {
       if (this.regions.has(id) && this.regions.get(id) === value) continue;
       this.regions.set(id, value);
-      parts.push(`<template data-region="${id}">${render()}</template>`);
+      parts.push(h`<template data-region="${id}">${render()}</template>`);
     }
-    const output = parts.join("");
-    if (output) {
+    const output = h`${parts}`;
+    if (output.length) {
       this.metrics.frames++;
-      this.metrics.bytes += Buffer.byteLength(output);
+      this.metrics.bytes += Buffer.byteLength(renderHTML(output));
     }
     this.metrics.renderMs += performance.now() - start;
     return output;
@@ -399,25 +420,25 @@ async function events(
           metadata = true;
           previousRun = run;
         }
-        let fragment = "";
+        let fragment = h``;
         if (inspection) {
           const inspected = await inspectContext(session, current, context);
           if (inspected !== previousInspection)
-            fragment = `<template data-region="context-view">${contextHTML(inspected)}</template>`;
+            fragment = h`<template data-region="context-view">${contextHTML(inspected)}</template>`;
           previousInspection = inspected;
-        } else fragment = renderer.render(current, review ?? {});
+        } else fragment = renderer.fragments(current, review ?? {});
         if (!inspection && timingsDirty) {
           timingsDirty = false;
           for (const [entry, ms] of await compactionTimes(session, context))
-            fragment += `<template data-region="duration-${entry}">${timing(entry, ms)}</template>`;
+            fragment = h`${fragment}<template data-region="duration-${entry}">${timing(entry, ms)}</template>`;
         }
         if (!inspection && metadata) {
           metadata = false;
-          fragment += `<template data-region="session-meta">${await metadataHTML(session, conversation, current, settings, context)}</template>`;
+          fragment = h`${fragment}<template data-region="session-meta">${await metadataHTML(session, conversation, current, settings, context)}</template>`;
         }
-        if (fragment && !response.destroyed)
+        if (fragment.length && !response.destroyed)
           response.write(
-            `event: fragments\ndata: ${fragment.replace(/\r\n?|\n/g, "\ndata: ")}\n\n`,
+            `event: fragments\ndata: ${renderHTML(fragment).replace(/\r\n?|\n/g, "\ndata: ")}\n\n`,
           );
       }
     } finally {
@@ -455,7 +476,7 @@ export async function hypermedia(
       const query = url.searchParams.get("q")?.toLocaleLowerCase() ?? "";
       const back = returnPath(url.searchParams.get("return"));
       const picker = !!back || url.searchParams.get("view") === "sessions";
-      let metadata = "";
+      let metadata = h``;
       if (back) {
         const parts = back.split("/");
         const session = await sessions.get(parts[2]);
@@ -470,19 +491,10 @@ export async function hypermedia(
       const list = catalog.sessions.filter((item) =>
         `${item.name} ${item.binding?.target} ${item.id}`.toLocaleLowerCase().includes(query),
       );
-      const rows = (picker ? list : list.slice(0, 5))
-        .map((item) => {
-          const context = item.context;
-          const percent =
-            context.window && context.lastResponse
-              ? (context.lastResponse.tokens / context.window) * 100
-              : undefined;
-          return `<a class="session" href="/sessions/${item.id}" aria-current="${back?.startsWith(`/sessions/${item.id}/`) ?? false}"><span class="session-heading"><strong>${e(item.name || "Untitled session")}</strong><time data-date-only datetime="${new Date(item.created).toISOString()}">${new Date(item.created).toISOString().slice(0, 10)}</time></span><span class="session-detail"><span class="session-environment">${e(item.binding ? `${item.binding.provider === "local" ? "local" : item.binding.target} · ${item.cwd}` : "No execution environment")}</span><span class="footer-dot" aria-hidden="true"></span><span class="model-summary"><span class="model-name">${e(item.model?.modelId ?? "No model")}</span><span class="footer-dot" aria-hidden="true"></span><span class="model-effort">${e(item.thinkingLevel)}</span></span><span class="footer-dot" aria-hidden="true"></span><span class="context-usage">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${context.window ? compactTokens(context.window) : "?"}${context.autoCompact ? " (auto)" : ""}</span></span></a>`;
-        })
-        .join("");
+      const rows = h`${(picker ? list : list.slice(0, 5)).map((item) => sessionRow(item, back))}`;
       html(
         response,
-        `<main id="main-area"><section id="${picker ? "picker" : "landing"}" class="pane"><div>${!picker && rows ? '<h2 id="recent-title">Recent sessions</h2>' : ""}<div id="session-list">${rows}</div>${rows ? "" : '<p id="sessions-empty">No sessions</p>'}</div></section></main><form id="session-filter-form" method="get" action="/sessions" hidden>${back ? hidden("return", back) : hidden("view", "sessions")}</form>${createForm(catalog, randomUUID(), picker, query, metadata)}`,
+        h`<main id="main-area"><section id="${picker ? "picker" : "landing"}" class="pane"><div>${!picker && rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main><form id="session-filter-form" method="get" action="/sessions" hidden>${back ? hidden("return", back) : hidden("view", "sessions")}</form>${createForm(catalog, randomUUID(), picker, query, metadata)}`,
         200,
         picker ? (back ?? "/sessions") : undefined,
         picker ? "Sessions" : "No session",
@@ -540,7 +552,7 @@ export async function hypermedia(
   if (url.pathname === "/sessions/offline" && request.method === "GET") {
     html(
       response,
-      '<h1>Offline</h1><p>Conversation history is not cached in this browser.</p><p><a href="/sessions">Reconnect</a></p>',
+      h`<h1>Offline</h1><p>Conversation history is not cached in this browser.</p><p><a href="/sessions">Reconnect</a></p>`,
     );
     return;
   }
@@ -576,7 +588,7 @@ export async function hypermedia(
         : [];
     html(
       response,
-      `<div id="completions" role="listbox">${items.map((item) => `<button type="button" role="option" data-completion="/${item.name} ">/${item.name} · ${e(item.description)}</button>`).join("")}</div>`,
+      h`<div id="completions" role="listbox">${h`${items.map((item) => h`<button type="button" role="option" data-completion="/${item.name} ">/${item.name} · ${item.description}</button>`)}`}</div>`,
     );
     return;
   }
@@ -600,7 +612,7 @@ export async function hypermedia(
     );
     html(
       response,
-      `<datalist id="directories">${paths.map((path) => `<option value="${e(path)}"></option>`).join("")}</datalist>`,
+      h`<datalist id="directories">${h`${paths.map((path) => h`<option value="${path}"></option>`)}`}</datalist>`,
     );
     return;
   }
@@ -608,8 +620,8 @@ export async function hypermedia(
     const back = returnPath(url.searchParams.get("return"));
     const settingsPath = `/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}`;
     if (request.method === "GET") {
-      const content = `<section id="global-preferences" class="pane">${globalForm(await sessions.catalog(context), settings?.read(), url.searchParams.get("model") ?? undefined, settingsPath)}</section>`;
-      let frame = `<main id="main-area">${content}</main>`;
+      const content = h`<section id="global-preferences" class="pane">${globalForm(await sessions.catalog(context), settings?.read(), url.searchParams.get("model") ?? undefined, settingsPath)}</section>`;
+      let frame = h`<main id="main-area">${content}</main>`;
       if (back) {
         const parts = back.split("/");
         const session = await sessions.get(parts[2]);
@@ -668,7 +680,7 @@ export async function hypermedia(
     reset: "Reset context",
   };
   const page = (
-    content: string,
+    content: SafeHtml,
     title = titles[operation ?? ""] ?? "Conversation",
     conversationPage = false,
   ) => html(response, content, 200, path, title, conversationPage);
@@ -682,7 +694,7 @@ export async function hypermedia(
         conversation,
         settings,
         context,
-        `<section id="preferences" class="pane">${sessionForm(path, catalog, info, agent)}</section>`,
+        h`<section id="preferences" class="pane">${sessionForm(path, catalog, info, agent)}</section>`,
       ),
     );
     return;
@@ -702,7 +714,7 @@ export async function hypermedia(
       records.map(async (record) => {
         const review = await session.harness.snapshot(Review, record.id, context);
         const parent = review?.original ?? record.parent?.conversationId;
-        return `<a href="${conversationURL(session, record.id)}" class="session" data-conversation="${record.id}" aria-current="${record.id === conversation.id}"><strong>${review?.original !== undefined ? `Review ${record.id}` : record.id === session.root.id ? "Main" : `Branch ${record.id}`}</strong>${parent === undefined ? "" : `<small>From ${parent}</small>`}</a>`;
+        return h`<a href="${conversationURL(session, record.id)}" class="session" data-conversation="${record.id}" aria-current="${record.id === conversation.id}"><strong>${review?.original !== undefined ? `Review ${record.id}` : record.id === session.root.id ? "Main" : `Branch ${record.id}`}</strong>${parent === undefined ? "" : h`<small>From ${parent}</small>`}</a>`;
       }),
     );
     page(
@@ -711,7 +723,7 @@ export async function hypermedia(
         conversation,
         settings,
         context,
-        `<section id="branch-picker" class="pane"><div id="branches">${items.join("")}</div></section>`,
+        h`<section id="branch-picker" class="pane"><div id="branches">${h`${items}`}</div></section>`,
       ),
     );
     return;
@@ -742,14 +754,13 @@ export async function hypermedia(
             }))
         : (await completePaths(session, query, conversation, context)).map(pathCompletion);
     page(
-      `<div id="completions" role="listbox">${completions.map((item) => `<button type="button" role="option" data-completion="${e(item.value)}">${e(item.label)}</button>`).join("")}</div>`,
+      h`<div id="completions" role="listbox">${h`${completions.map((item) => h`<button type="button" role="option" data-completion="${item.value}">${item.label}</button>`)}`}</div>`,
     );
     return;
   }
   if (request.method === "GET" && (operation === "reset" || operation === "compact")) {
     page(
-      navigation(path) +
-        `<main id="main-area"><section class="pane"><h1>${operation === "reset" ? "Reset context" : "Compact context"}</h1><p>History is preserved.</p><form method="post" action="${path}/${operation}" data-command="${operation}">${hidden("requestId", url.searchParams.get("requestId") ?? "")}<label>${operation === "reset" ? "Handoff" : "Instructions"}<textarea name="argument" data-command-argument maxlength="100000">${e(url.searchParams.get("argument") ?? "")}</textarea></label><button>${operation === "reset" ? "Confirm reset" : "Compact"}</button></form></section></main>`,
+      h`${navigation(path)}<main id="main-area"><section class="pane"><h1>${operation === "reset" ? "Reset context" : "Compact context"}</h1><p>History is preserved.</p><form method="post" action="${path}/${operation}" data-command="${operation}">${hidden("requestId", url.searchParams.get("requestId") ?? "")}<label>${operation === "reset" ? "Handoff" : "Instructions"}<textarea name="argument" data-command-argument maxlength="100000">${url.searchParams.get("argument") ?? ""}</textarea></label><button>${operation === "reset" ? "Confirm reset" : "Compact"}</button></form></section></main>`,
     );
     return;
   }
@@ -757,8 +768,7 @@ export async function hypermedia(
     const watch = await conversation.watch(context);
     try {
       page(
-        navigation(path) +
-          `<main id="main-area" data-events="${path}/events?pane=context">${contextHTML(await inspectContext(session, watch.value, context))}<p id="connection" class="sr-only" role="status"></p></main>`,
+        h`${navigation(path)}<main id="main-area" data-events="${path}/events?pane=context">${contextHTML(await inspectContext(session, watch.value, context))}<p id="connection" class="sr-only" role="status"></p></main>`,
       );
     } finally {
       await watch.stop();
@@ -792,12 +802,11 @@ export async function hypermedia(
       }
       const history = await conversation.entries({ order: "descending" }, 100, cursor, context);
       page(
-        `<main id="main-area"><section class="pane"><h1>History</h1>${history.items
+        h`<main id="main-area"><section class="pane"><h1>History</h1>${h`${history.items
           .toReversed()
-          .map((record) => entry(record, path))
-          .join(
-            "",
-          )}${history.next ? link(`${path}/history?cursor=${encodeURIComponent(JSON.stringify(history.next))}`, "Older history") : ""}</section></main>`,
+          .map((record) =>
+            entry(record, path),
+          )}`}${history.next ? link(`${path}/history?cursor=${encodeURIComponent(JSON.stringify(history.next))}`, "Older history") : ""}</section></main>`,
       );
       return;
     }
@@ -810,7 +819,7 @@ export async function hypermedia(
       const renderer = new ConversationFragments(path, records);
       renderer.render(watch.value, review);
       page(
-        `${navigation(path)}<section class="conversation-layout" data-events="${path}/events"><main id="main-area"><div class="scrollport pane" id="conversation-scroll" tabindex="0" aria-label="Conversation"><div id="transcript">${renderer.transcript(records.some((record) => record.kind === "pi.compaction") ? await compactionTimes(session, context) : undefined)}</div>${renderer.live(watch.value)}</div></main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`,
+        h`${navigation(path)}<section class="conversation-layout" data-events="${path}/events"><main id="main-area"><div class="scrollport pane" id="conversation-scroll" tabindex="0" aria-label="Conversation"><div id="transcript">${renderer.transcript(records.some((record) => record.kind === "pi.compaction") ? await compactionTimes(session, context) : undefined)}</div>${renderer.live(watch.value)}</div></main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`,
         info.name || "Untitled session",
         true,
       );
@@ -992,8 +1001,11 @@ async function history(conversation: Conversation, context: Context) {
   } while (cursor);
   return records;
 }
-function navigation(path: string): string {
-  return `<nav id="conversation-menu" class="conversation-nav" popover aria-label="Conversation actions">${link(path, "Conversation", "data-return")}${link(`${path}/settings`, "Settings", 'data-command="settings"')}${link(`${path}/settings`, "Model", 'data-command="model"')}${link(`${path}/branches`, "Branches", 'data-command="fork"')}${link(`${path}/context`, "Context")}${link(`${path}/history`, "History")}${link(`${path}/compact`, "Compact")}${link(`${path}/reset`, "Reset")}${link(`${path}/export`, "Export JSON", 'hx-boost="false" data-command="export" download')}<button type="button" data-command="search" data-search-toggle>Search</button><button type="button" popovertarget="review-menu">Review actions</button><button type="button" popovertarget="usage-menu">Usage</button><a href="/" hx-boost="false">Original UI</a></nav><div hidden>${action(`${path}/compact`, "Compact", "compact", '<input type="hidden" name="argument" data-command-argument>')}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div><div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
+function navigation(path: string): SafeHtml {
+  const menu = h`<nav id="conversation-menu" class="conversation-nav" popover aria-label="Conversation actions">${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/context`, "Context")}${link(`${path}/history`, "History")}${link(`${path}/compact`, "Compact")}${link(`${path}/reset`, "Reset")}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button><button type="button" popovertarget="review-menu">Review actions</button><button type="button" popovertarget="usage-menu">Usage</button><a href="/" hx-boost="false">Original UI</a></nav>`;
+  const commands = h`<div hidden>${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
+  const search = h`<div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
+  return h`${menu}${commands}${search}`;
 }
 
 async function metadataHTML(
@@ -1002,7 +1014,7 @@ async function metadataHTML(
   view: ConversationView,
   settings: GlobalSettingsStore | undefined,
   context: Context,
-): Promise<string> {
+): Promise<SafeHtml> {
   const [info, inspection, repository] = await Promise.all([
     sessionInfo(session, conversation, undefined, context),
     session.harness.inspect(context),
@@ -1021,15 +1033,17 @@ async function metadataHTML(
   const sum = (key: "input" | "output" | "cacheRead") =>
     totals.reduce((total, item) => total + item[key], 0);
   const cost = totals.reduce((total, item) => total + item.cost.total, 0);
-  const dot = '<span class="footer-dot" aria-hidden="true"></span>';
+  const dot = h`<span class="footer-dot" aria-hidden="true"></span>`;
   const display = settings?.read().values;
   const id = randomUUID();
-  return `<section id="session-meta" data-name="${e(info.name || `Conversation ${conversation.id}`)}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}"><div id="bottom-line" aria-label="Conversation statistics"><div class="footer-row"><span id="footer-instance" title="${e(repository.state === "repository" ? (repository.branch ?? repository.revision ?? "unborn") : repository.state === "none" ? "no repository" : "repository unavailable")}">${e(info.binding ? `${info.binding.provider === "local" ? "local" : info.binding.target} · ${info.cwd}` : "No execution environment")}</span><a id="footer-stats" href="${path}/context" aria-label="Context"><span id="footer-input">↑${count(sum("input"))}</span><span id="footer-output">↓${count(sum("output"))}</span><span id="footer-read">R${count(sum("cacheRead"))}</span><span id="footer-hit">${status.lastResponse?.cacheHit == null ? "CH—" : `CH${status.lastResponse.cacheHit.toFixed(1)}%`}</span><span id="footer-cost">$${cost.toFixed(3)}</span></a><a id="footer-model" class="model-summary" href="${path}/settings" aria-label="Model and thinking settings"><span class="model-name">${e(info.model?.modelId ?? "No model")}</span>${dot}<span class="model-effort">${e(info.thinkingLevel)}</span></a>${dot}<a id="footer-context" class="context-usage" href="${path}/context" aria-label="Context usage details" data-level="${percent !== undefined && percent > 90 ? "critical" : percent !== undefined && percent > 70 ? "warning" : "normal"}">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${count(status.window)}${status.autoCompact ? " (auto)" : ""}</a></div></div>${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${info.binding && info.model ? `<form method="post" action="/sessions" data-command="new"><input type="hidden" name="id" value="${id}" data-command-request><input type="hidden" name="requestId" value="${id}" data-command-request>${hidden("target", targetKey(info.binding))}${hidden("model", modelKey(info.model))}${hidden("thinkingLevel", info.thinkingLevel)}${hidden("baseDirectory", info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/") ? info.cwd.slice(info.directoryRoot.length + 1) : "")}<button>New session</button></form>` : ""}</section>`;
+  const instance = h`<span id="footer-instance" title="${repository.state === "repository" ? (repository.branch ?? repository.revision ?? "unborn") : repository.state === "none" ? "no repository" : "repository unavailable"}">${info.binding ? `${info.binding.provider === "local" ? "local" : info.binding.target} · ${info.cwd}` : "No execution environment"}</span>`;
+  const statistics = h`<a id="footer-stats" href="${path}/context" aria-label="Context"><span id="footer-input">↑${count(sum("input"))}</span><span id="footer-output">↓${count(sum("output"))}</span><span id="footer-read">R${count(sum("cacheRead"))}</span><span id="footer-hit">${status.lastResponse?.cacheHit == null ? "CH—" : `CH${status.lastResponse.cacheHit.toFixed(1)}%`}</span><span id="footer-cost">$${cost.toFixed(3)}</span></a>`;
+  const model = h`<a id="footer-model" class="model-summary" href="${path}/settings" aria-label="Model and thinking settings"><span class="model-name">${info.model?.modelId ?? "No model"}</span>${dot}<span class="model-effort">${info.thinkingLevel}</span></a>`;
+  const contextUsage = h`<a id="footer-context" class="context-usage" href="${path}/context" aria-label="Context usage details" data-level="${percent !== undefined && percent > 90 ? "critical" : percent !== undefined && percent > 70 ? "warning" : "normal"}">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${count(status.window)}${status.autoCompact ? " (auto)" : ""}</a>`;
+  const newSession = h`${info.binding && info.model ? h`<form method="post" action="/sessions" data-command="new"><input type="hidden" name="id" value="${id}" data-command-request><input type="hidden" name="requestId" value="${id}" data-command-request>${hidden("target", targetKey(info.binding))}${hidden("model", modelKey(info.model))}${hidden("thinkingLevel", info.thinkingLevel)}${hidden("baseDirectory", info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/") ? info.cwd.slice(info.directoryRoot.length + 1) : "")}<button>New session</button></form>` : ""}`;
+  return h`<section id="session-meta" data-name="${info.name || `Conversation ${conversation.id}`}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}"><div id="bottom-line" aria-label="Conversation statistics"><div class="footer-row">${instance}${statistics}${model}${dot}${contextUsage}</div></div>${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${newSession}</section>`;
 }
 
-function timing(entry: number, ms?: number): string {
-  return `<span id="duration-${entry}" class="tool-duration"${ms === undefined ? "" : ` data-duration-ms="${ms}" title="Duration: ${ms}ms"`}>${ms === undefined ? "" : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`}</span>`;
-}
 async function compactionTimes(session: Session, context: Context): Promise<Map<number, number>> {
   const times = new Map<number, number>();
   let cursor: Cursor | undefined;

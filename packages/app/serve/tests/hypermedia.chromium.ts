@@ -8,7 +8,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { LiveDoc } from "@earendil-works/pi-durable";
 import { Review } from "harness";
-import { conversationURL } from "../hypermedia.ts";
+import { html, renderHTML, type SafeHtml } from "../html.ts";
+import { conversationURL, htmlPage } from "../hypermedia.ts";
 import { browserFixture, htmlAction } from "./browser-testing.ts";
 import { fixture, readHistory, waitFor } from "./sessions-testing.ts";
 
@@ -26,6 +27,46 @@ const partial = (text: string) => {
     content: [{ type: "text" as const, text }],
   };
 };
+
+await test("HTML templates escape text and attributes, and compose only branded markup", async (t) => {
+  const f = await fixture(t);
+  const { page } = await browserFixture(t, f.sessions);
+  // These assignments must fail to compile if render boundaries accept strings.
+  const acceptsString: string extends Parameters<typeof htmlPage>[0] ? true : false = false;
+  const acceptsConcatenation: string extends SafeHtml ? true : false = false;
+  assert.equal(acceptsString, false);
+  assert.equal(acceptsConcatenation, false);
+  const attack = `"'&><button id="injected">Injected</button>`;
+  const text = html`<p id="text">${attack}</p>`;
+  const attribute = html`<input id="attribute" value="${attack}" title="${attack}" />`;
+  const nested = html`<section id="nested">${[text, attribute]}</section>`;
+  await page.setContent(
+    renderHTML(
+      html`${nested}<textarea>${"</textarea>" + attack}</textarea
+        ><output>${0}${false}${true}${null}${undefined}</output>`,
+    ),
+  );
+  assert.equal(await page.locator("#text").textContent(), attack);
+  assert.deepEqual(
+    await page
+      .locator("#attribute")
+      .evaluate((node) =>
+        Object.fromEntries(Array.from(node.attributes, (attr) => [attr.name, attr.value])),
+      ),
+    { id: "attribute", value: attack, title: attack },
+  );
+  assert.equal(await page.locator("input").inputValue(), attack);
+  assert.equal(await page.locator("textarea").inputValue(), "</textarea>" + attack);
+  assert.equal(await page.locator("button").count(), 0);
+  assert.deepEqual(
+    await page
+      .locator("#nested")
+      .evaluate((node) => Array.from(node.children, (child) => child.tagName)),
+    ["P", "INPUT"],
+  );
+  assert.equal(await page.locator("output").textContent(), "0falsetrue");
+  assert(Object.isFrozen(text));
+});
 
 await test("HTML workflow: create, submit, review, navigate without ending, end, back/forward", async (t) => {
   const f = await fixture(t);

@@ -1,5 +1,6 @@
+import { html as h } from "./html.ts";
 import * as runtime from "./sessions.ts";
-import { hypermedia, html, escapeHTML, FormError } from "./hypermedia.ts";
+import { hypermedia, html, FormError } from "./hypermedia.ts";
 import { Review } from "harness";
 import { startReview, endReview } from "./review.ts";
 import { openApplication } from "./application.ts";
@@ -786,7 +787,7 @@ export function httpServer(
         }
         return html(
           response,
-          `<h1>Request failed</h1><p id="form-error">${escapeHTML(error instanceof Error ? error.message : "Internal server error.")}</p><p><a href="/sessions">Sessions</a></p>`,
+          h`<h1>Request failed</h1><p id="form-error">${error instanceof Error ? error.message : "Internal server error."}</p><p><a href="/sessions">Sessions</a></p>`,
           status,
         );
       }
