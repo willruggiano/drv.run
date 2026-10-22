@@ -213,7 +213,17 @@ export function httpServer(
   host: string,
   assets = dirname(fileURLToPath(import.meta.url)),
   settings?: GlobalSettingsStore,
+  externalOrigin?: string,
 ) {
+  const configuredOrigin = externalOrigin === undefined ? undefined : new URL(externalOrigin);
+  if (configuredOrigin) {
+    if (configuredOrigin.protocol !== "https:" || configuredOrigin.origin !== externalOrigin)
+      throw new Error(
+        "ORIGIN must be a canonical HTTPS origin without credentials, path or query.",
+      );
+    if (host !== "127.0.0.1" && host !== "::1")
+      throw new Error("ORIGIN requires HOST to be 127.0.0.1 or ::1.");
+  }
   const server = createServer((request, response) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -226,16 +236,23 @@ export function httpServer(
       // No authentication, but reject cross-site writes and DNS rebinding.
       const authority = request.headers.host;
       if (!authority) throw new RequestError(400, "Host header required.");
-      const origin = new URL(`http://${authority}`);
-      const hostname = origin.hostname.replace(/^\[|\]$/g, "");
-      const address = server.address();
-      const port = address && typeof address === "object" ? address.port : 80;
-      const destination = host === "0.0.0.0" ? request.socket.localAddress : host;
-      if (
-        ![destination, ...(destination === "127.0.0.1" ? ["localhost"] : [])].includes(hostname) ||
-        Number(origin.port || 80) !== port
-      )
-        throw new RequestError(403, "Unexpected Host.");
+      // The proxy preserves Host. Trust only the configured origin, never forwarded headers.
+      const origin = configuredOrigin ?? new URL(`http://${authority}`);
+      if (configuredOrigin) {
+        if (authority !== configuredOrigin.host) throw new RequestError(403, "Unexpected Host.");
+      } else {
+        const hostname = origin.hostname.replace(/^\[|\]$/g, "");
+        const address = server.address();
+        const port = address && typeof address === "object" ? address.port : 80;
+        const destination = host === "0.0.0.0" ? request.socket.localAddress : host;
+        if (
+          ![destination, ...(destination === "127.0.0.1" ? ["localhost"] : [])].includes(
+            hostname,
+          ) ||
+          Number(origin.port || 80) !== port
+        )
+          throw new RequestError(403, "Unexpected Host.");
+      }
       if (
         (request.headers.origin && request.headers.origin !== origin.origin) ||
         request.headers["sec-fetch-site"] === "cross-site"
@@ -350,8 +367,10 @@ export async function main(): Promise<void> {
       onReport: (error) => console.error("serve session", error),
     }),
   );
-  const server = httpServer(sessions, host, undefined, settings);
+  const origin = process.env.ORIGIN;
+  let server: ReturnType<typeof httpServer>;
   try {
+    server = httpServer(sessions, host, undefined, settings, origin);
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(port, host, () => {
@@ -364,7 +383,7 @@ export async function main(): Promise<void> {
     throw error;
   }
   console.error(
-    `WARN serve: http://${host.includes(":") ? `[${host}]` : host}:${port} is unauthenticated. Anyone who can reach it can control its agents and execution targets.`,
+    `WARN serve: ${origin ?? `http://${host.includes(":") ? `[${host}]` : host}:${port}`} is unauthenticated. Anyone who can reach it can control its agents and execution targets.`,
   );
   let stopping = false;
   const shutdown = () => {

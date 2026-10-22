@@ -15,7 +15,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { readHistory, fixture, model } from "./sessions-testing.ts";
 import { checkCLI, chromiumExecutable, directoryFixture, serve, post } from "./testing.ts";
-import { GlobalSettingsStore } from "../server.ts";
+import { GlobalSettingsStore, httpServer } from "../server.ts";
 import { conversationURL } from "../hypermedia.ts";
 import { modelKey, targetKey } from "../hypermedia-forms.ts";
 import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
@@ -548,6 +548,86 @@ await test("conversation controls validate input and keep forks scoped to their 
     manifest.icons.map((icon: { sizes: string }) => icon.sizes),
     ["192x192", "512x512"],
   );
+});
+
+await test("external origins require canonical HTTPS and loopback binding", async (t) => {
+  const f = await fixture(t);
+  for (const origin of [
+    "",
+    "not a URL",
+    "http://pi.example",
+    "https://pi.example/",
+    "https://pi.example/path",
+    "https://pi.example?query",
+    "https://pi.example#fragment",
+    "https://user:password@pi.example",
+    "https://pi.example:443",
+  ])
+    assert.throws(() => httpServer(f.sessions, "127.0.0.1", undefined, undefined, origin));
+  for (const host of ["0.0.0.0", "::", "192.0.2.1"])
+    assert.throws(() => httpServer(f.sessions, host, undefined, undefined, "https://pi.example"));
+  for (const host of ["127.0.0.1", "::1"])
+    httpServer(f.sessions, host, undefined, undefined, "https://pi.example").close();
+});
+
+await test("external origin validates preserved Host and browser Origin without trusting forwarded headers", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const path = conversationURL(session);
+  const origin = "https://pi.example:8443";
+  const base = await serve(t, f.sessions, undefined, "127.0.0.1", undefined, origin);
+  const data = { content: "Through HTTPS", requestId: randomUUID(), whenBusy: "reject" };
+  const send = (headers: Record<string, string>, submit = false) =>
+    new Promise<number | undefined>((resolve, reject) => {
+      const req = request(
+        base + path + (submit ? "/submit" : ""),
+        {
+          method: submit ? "POST" : "GET",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
+        },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode);
+        },
+      );
+      req.once("error", reject);
+      req.end(submit ? new URLSearchParams(data).toString() : undefined);
+    });
+  const headers = { Host: new URL(origin).host, Origin: origin };
+  assert.equal(await send({ Host: headers.Host }), 200);
+  assert.equal(await send(headers), 200);
+  assert.equal(
+    await send({ ...headers, "X-Forwarded-Host": "evil.example", "X-Forwarded-Proto": "http" }),
+    200,
+  );
+  const invalidHeaders: Record<string, string>[] = [
+    { ...headers, Host: "evil.example" },
+    { ...headers, Host: "pi.example" },
+    { ...headers, Host: new URL(base).host },
+    { ...headers, Origin: "https://evil.example" },
+    { ...headers, Origin: "https://pi.example" },
+    { ...headers, Origin: "http://pi.example:8443" },
+    { ...headers, Origin: base },
+    { ...headers, Origin: "null" },
+    { ...headers, "Sec-Fetch-Site": "cross-site" },
+    { Host: "evil.example", Origin: origin, "X-Forwarded-Host": headers.Host },
+    { ...headers, Origin: base, "X-Forwarded-Proto": "https" },
+    { ...headers, Origin: base, Forwarded: `host=${headers.Host};proto=https` },
+  ];
+  for (const invalid of invalidHeaders) {
+    assert.equal(await send(invalid), 403);
+    assert.equal(await send(invalid, true), 403);
+  }
+  assert.equal(await send({ Host: headers.Host }, true), 403);
+  assert.deepEqual(await readHistory(session.root), []);
+  f.faux.setResponses([fauxAssistantMessage("Done.")]);
+  assert.equal(await send(headers, true), 303);
+  await session.root.waitForIdle(context);
+  const history = await readHistory(session.root);
+  assert(history.some((entry) => entry.kind === "pi.user"));
+  assert.equal(await send(headers, true), 303);
+  assert.deepEqual(await readHistory(session.root), history);
+  assert.equal(f.faux.state.callCount, 1);
 });
 
 await test("forwarded headers cannot bypass origin checks", async (t) => {

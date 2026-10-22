@@ -24,6 +24,11 @@ in {
       default = "127.0.0.1";
       description = "Serve pi on this interface";
     };
+    origin = lib.mkOption {
+      type = lib.types.nullOr lib.types.nonEmptyStr;
+      default = null;
+      description = "Canonical external HTTPS origin behind a Host-preserving reverse proxy. Requires loopback binding.";
+    };
     parallelApiKeyFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -46,6 +51,14 @@ in {
         assertion = user.linger;
         message = "services.pi requires user.linger.";
       }
+      {
+        assertion = cfg.origin == null || builtins.elem cfg.host ["127.0.0.1" "::1"];
+        message = "services.pi.origin requires a loopback services.pi.host.";
+      }
+      {
+        assertion = cfg.origin == null || builtins.match "https://[^/?#@[:space:]]+" cfg.origin != null;
+        message = "services.pi.origin must be an HTTPS origin without credentials, path, query or fragment.";
+      }
     ];
 
     systemd.user.services.pi = {
@@ -56,6 +69,9 @@ in {
         {
           HOST = cfg.host;
           PORT = toString cfg.port;
+        }
+        // lib.optionalAttrs (cfg.origin != null) {
+          ORIGIN = cfg.origin;
         }
         // lib.optionalAttrs (cfg.parallelApiKeyFile != null) {
           PARALLEL_API_KEY_FILE = cfg.parallelApiKeyFile;

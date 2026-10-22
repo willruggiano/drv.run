@@ -217,7 +217,20 @@
           restartUnits = ["mitm-proxy.service"];
         };
 
-        networking.firewall.interfaces.${config.services.tailscale.interfaceName}.allowedTCPPorts = [config.services.pi.port];
+        # Foreground Serve owns its configuration for the lifetime of this unit.
+        # HTTPS must first be enabled in the tailnet; never use Funnel for Pi.
+        systemd.services.pi-https = {
+          description = "Pi HTTPS over Tailscale";
+          wantedBy = ["multi-user.target"];
+          wants = ["tailscaled-autoconnect.service"];
+          after = ["tailscaled-autoconnect.service"];
+          serviceConfig = {
+            Type = "exec";
+            ExecStart = "${lib.getExe config.services.tailscale.package} serve --https=443 http://127.0.0.1:${toString config.services.pi.port}";
+            Restart = "always";
+            RestartSec = 5;
+          };
+        };
 
         services = {
           tailscale = {
@@ -286,7 +299,8 @@
           pi = {
             enable = true;
             user = "me";
-            host = "0.0.0.0";
+            host = "127.0.0.1";
+            origin = "https://rock5b.tailc7072.ts.net";
             parallelApiKeyFile = lib.mkIf (builtins.pathExists ./secrets/parallel-api-key) config.sops.secrets.parallel-api-key.path;
           };
         };

@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash, X509Certificate } from "node:crypto";
+import { request } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { chromium } from "playwright";
+import { buildAssets } from "../build.ts";
+import { chromiumExecutable, serve } from "./testing.ts";
 import { test } from "node:test";
 import type { Htmx } from "htmx.org";
 import type { ServerResponse } from "node:http";
@@ -28,6 +35,147 @@ const partial = (text: string) => {
     content: [{ type: "text" as const, text }],
   };
 };
+
+await test(
+  "HTTPS proxy preserves origins, drafts, submissions and SSE reconnects",
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const assets = join(f.directory, "assets");
+    await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
+    // Test-only certificate. Trust exactly this public key in Chromium, not arbitrary TLS errors.
+    const key = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgBeMawVVAX+USxIC3
+mh4WKcOShd6sG/v7TLx63ff1nd+hRANCAARGMGaWK1nXQ+6ma9uDlHpdzxm23gJu
+jovGLHl5zq1daqoaUPvjWRgbO6JDQX4jiHD9SJtlCQCCFEnYApOcxJef
+-----END PRIVATE KEY-----`;
+    const cert = `-----BEGIN CERTIFICATE-----
+MIIBKjCB0aADAgECAgEBMAoGCCqGSM49BAMCMBIxEDAOBgNVBAMMB3BpLnRlc3Qw
+IBcNMjAwMTAxMDAwMDAwWhgPMjEyMDAxMDEwMDAwMDBaMBIxEDAOBgNVBAMMB3Bp
+LnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARGMGaWK1nXQ+6ma9uDlHpd
+zxm23gJujovGLHl5zq1daqoaUPvjWRgbO6JDQX4jiHD9SJtlCQCCFEnYApOcxJef
+oxYwFDASBgNVHREECzAJggdwaS50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIQDOFQbk
+rgDC1kjDOMb67KNp86h7CXTJQoYnrpmbefKWOwIgNmfuL69Y3Q2qnRpBHYJ2VBq4
+f7sGgC4vOScTNKjjH5M=
+-----END CERTIFICATE-----`;
+    let backend: string | undefined;
+    let connections = 0;
+    const streams = new Set<ServerResponse>();
+    const proxy = createHttpsServer({ key, cert }, (incoming, outgoing) => {
+      assert(backend);
+      const upstream = request(new URL(incoming.url!, backend), {
+        method: incoming.method,
+        // Tailscale Serve preserves Host and Origin; forwarded headers are not authoritative.
+        headers: { ...incoming.headers, "x-forwarded-proto": "https" },
+      });
+      if (new URL(incoming.url!, backend).pathname.endsWith("/events")) {
+        connections++;
+        streams.add(outgoing);
+        outgoing.once("close", () => streams.delete(outgoing));
+      }
+      upstream.on("response", (response) => {
+        outgoing.writeHead(response.statusCode!, response.headers);
+        response.pipe(outgoing);
+      });
+      upstream.on("error", () => outgoing.destroy());
+      outgoing.once("close", () => upstream.destroy());
+      incoming.pipe(upstream);
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    t.after(async () => {
+      proxy.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        proxy.close((error) => (error ? reject(error) : resolve())),
+      );
+    });
+    const origin = `https://pi.test:${(proxy.address() as AddressInfo).port}`;
+    backend = await serve(t, f.sessions, assets, "127.0.0.1", undefined, origin);
+    const fingerprint = createHash("sha256")
+      .update(new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" }))
+      .digest("base64");
+    const browser = await chromium.launch({
+      executablePath: chromiumExecutable(),
+      args: [
+        "--host-resolver-rules=MAP pi.test 127.0.0.1",
+        `--ignore-certificate-errors-spki-list=${fingerprint}`,
+      ],
+    });
+    t.after(() => browser.close());
+    const page = await browser.newPage();
+    const errors: Error[] = [];
+    page.on("pageerror", (error) => errors.push(error));
+    await page.goto(origin + conversationURL(session));
+    await page.waitForFunction(
+      () => document.querySelector("#connection")?.textContent === "Connected",
+    );
+    assert.deepEqual(await page.evaluate(() => [isSecureContext, typeof crypto.randomUUID]), [
+      true,
+      "function",
+    ]);
+    const text = page.getByRole("textbox", { name: "Message" });
+    const send = page.getByRole("button", { name: "Send", exact: true });
+    const requestId = page.locator('#composer [name="requestId"]');
+    const originalId = await requestId.inputValue();
+    assert.equal(await send.isDisabled(), true);
+    await text.fill("First HTTPS message");
+    assert.equal(await send.isEnabled(), true);
+    assert.notEqual(await requestId.inputValue(), originalId);
+    const draft = await page.evaluate(() => {
+      const form = document.querySelector<HTMLFormElement>("#composer")!;
+      return JSON.parse(sessionStorage.getItem(`pi.html.draft:${form.action}`)!);
+    });
+    assert.deepEqual(draft, {
+      text: "First HTTPS message",
+      requestId: await requestId.inputValue(),
+    });
+    await text.fill("");
+    assert.equal(await send.isDisabled(), true);
+    await text.fill("First HTTPS message");
+    const firstId = await requestId.inputValue();
+    await page.reload();
+    await page.waitForFunction(
+      () => document.querySelector("#connection")?.textContent === "Connected",
+    );
+    assert.equal(await text.inputValue(), "First HTTPS message");
+    assert.equal(await requestId.inputValue(), firstId);
+    assert.equal(await send.isEnabled(), true);
+    f.faux.setResponses([fauxAssistantMessage("First reply.")]);
+    await send.click();
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    await session.root.waitForIdle(context);
+    const beforeReconnect = connections;
+    for (const stream of streams) stream.destroy();
+    await waitFor(async () => connections > beforeReconnect);
+    await page.waitForFunction(
+      () => document.querySelector("#connection")?.textContent === "Connected",
+    );
+    assert.notEqual(await requestId.inputValue(), firstId);
+    f.faux.setResponses([fauxAssistantMessage("Second reply.")]);
+    await text.fill("Second HTTPS message");
+    await send.click();
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    await session.root.waitForIdle(context);
+    const history = await readHistory(session.root);
+    assert.deepEqual(
+      history
+        .flatMap((entry) => entry.model ?? [])
+        .filter((message) => message.role === "user")
+        .map((message) => message.content),
+      ["First HTTPS message", "Second HTTPS message"],
+    );
+    await page.waitForFunction(
+      (length) => document.querySelectorAll("#transcript article").length === length,
+      history.length,
+    );
+    assert.equal(await send.isDisabled(), true);
+    assert.deepEqual(errors, []);
+  },
+);
 
 await test("HTML templates escape text and attributes, and compose only branded markup", async (t) => {
   const f = await fixture(t);
