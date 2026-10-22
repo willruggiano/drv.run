@@ -465,6 +465,9 @@ await test("built highlighter preserves selected languages and is served as a st
 
 await test("renderer benchmark validates options and builds deterministic paired history", () => {
   const options = benchmarkOptions([]);
+  assert.equal(options.frontend, undefined);
+  assert.equal(benchmarkOptions(["--frontend", "original"]).frontend, "original");
+  assert.equal(benchmarkOptions(["--frontend", "hypermedia"]).frontend, "hypermedia");
   assert.equal(options.runs, 3);
   assert.equal(options.turns, 200);
   assert.equal(options.cpuRate, 1);
@@ -476,6 +479,8 @@ await test("renderer benchmark validates options and builds deterministic paired
   );
   assert.equal(benchmarkOptions(["--cpu-rate", "2.5"]).cpuRate, 2.5);
   for (const args of [
+    ["--frontend", "unknown"],
+    ["--frontend"],
     ["--runs", "0"],
     ["--runs", "1.5"],
     ["--runs", "101"],

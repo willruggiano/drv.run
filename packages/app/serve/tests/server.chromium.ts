@@ -153,6 +153,34 @@ await test("mobile browser renderer benchmark returns complete JSON-compatible s
   assert.deepEqual(JSON.parse(JSON.stringify(report)), report);
 });
 
+await test("page benchmarks drive both production streams and count HTTP response bytes", async () => {
+  for (const frontend of ["original", "hypermedia"]) {
+    const report = await benchmark(
+      benchmarkOptions(["--frontend", frontend, "--runs", "1", "--turns", "2"]),
+    );
+    assert.equal(report.frontend, frontend);
+    assert.deepEqual(report.environment.viewport, { width: 390, height: 844 });
+    assert.equal(report.workload.entries, 6);
+    assert.equal(report.runs.length, 1);
+    const run = report.runs[0];
+    assert(run.initialDomElements > 0);
+    assert.equal(run.streamingMs.length, 40);
+    assert.equal(run.streamingBytes?.length, 40);
+    assert.equal(run.transitionsMs.length, 10);
+    assert.equal(run.transitionsBytes?.length, 10);
+    for (const ms of [run.initialMs, run.startMs, ...run.streamingMs, ...run.transitionsMs])
+      assert(Number.isFinite(ms) && ms > 0);
+    for (const bytes of [
+      run.initialBytes,
+      run.startBytes,
+      ...run.streamingBytes!,
+      ...run.transitionsBytes!,
+    ])
+      assert(bytes !== undefined && Number.isSafeInteger(bytes) && bytes > 0);
+    assert.deepEqual(JSON.parse(JSON.stringify(report)), report);
+  }
+});
+
 await test("mobile browser renderer profiling saves separate per-phase CPU and timeline data", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "serve-profile-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

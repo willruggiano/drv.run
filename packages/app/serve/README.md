@@ -94,6 +94,41 @@ nix run .#app.bench.render > benchmark.json
 Add `-- --profile` for a separate diagnostic run with CPU profiles and browser
 traces; artifact paths appear in the JSON report.
 
+### Frontend delivery baseline
+
+Production frontend sources: `7d9a1b02`. Medians from three fresh browsers per
+frontend, run sequentially without competing tests: Chromium 153.0.8010.47, Node
+24.20.0, Linux ARM64/Cortex-A76, 4 available CPUs, no throttling, 390×844 mobile
+viewport. Same 200 turns (600 entries), 40 streaming updates and 10 busy/idle
+transitions as the renderer workload above.
+
+| Frontend | Initial (ms) | Start streaming (ms) | Stream update (ms) | Busy/idle (ms) | HTTP bytes/update |
+| -------- | -----------: | -------------------: | -----------------: | -------------: | ----------------: |
+| Original |       758.90 |                51.20 |              54.35 |          48.00 |         635,177.0 |
+| htmx POC |       740.20 |                93.00 |              59.50 |          65.40 |             821.5 |
+
+Initial time runs from navigation start to transcript layout. Updates include
+Durable commits, browser-control transport, real HTTP/SSE delivery, rendering
+and synchronous layout; they exclude completed paint. These are not comparable
+to the renderer-only timings above. CDP network observation waits for the first
+SSE frame, then stops before streaming measurements. CPU profiles and traces
+remain confined to separate diagnostic runs.
+
+Bytes count actual server socket writes: HTTP response headers, bodies and chunk
+framing, including supplementary reads; not TCP/IP overhead. No compression is
+configured. Per-update ranges were 634,280–636,074 bytes (original) and
+373–1,270 bytes (POC). Median initial delivery, including assets and the first
+SSE frame, was 1,433,490 and 7,253,776 bytes respectively. The POC currently
+retransmits history on first connect.
+
+```sh
+NODE_OPTIONS=--conditions=development node packages/app/serve/benchmark.ts --frontend original > original.json
+NODE_OPTIONS=--conditions=development node packages/app/serve/benchmark.ts --frontend hypermedia > hypermedia.json
+```
+
+Reports contain every timing and byte sample. Omitting `--frontend` retains the
+renderer-only benchmark; `--profile` also works with either frontend.
+
 ### Asset size
 
 Served bytes before HTTP compression, including license notices.
