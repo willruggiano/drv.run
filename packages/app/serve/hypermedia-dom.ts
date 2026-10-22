@@ -10,11 +10,13 @@ export function controls(form: HTMLFormElement) {
 }
 export function updateSend() {
   const form = composer();
-  const button = document.querySelector<HTMLButtonElement>("#send");
-  if (form && button) {
-    const { text, files } = controls(form);
-    button.disabled = text.readOnly || (!text.value.trim() && !files.files?.length);
-  }
+  if (!form) return;
+  const { text, files } = controls(form);
+  const pending = form.dataset.submitting === "true";
+  for (const button of document.querySelectorAll<HTMLButtonElement>("button[form=composer]"))
+    button.disabled = pending || (!text.value.trim() && !files.files?.length);
+  const create = form.querySelector<HTMLButtonElement>("#create");
+  if (create) create.disabled = pending;
 }
 export function resizePrompt() {
   const text = composer()?.querySelector<HTMLTextAreaElement>('textarea[name="content"]');

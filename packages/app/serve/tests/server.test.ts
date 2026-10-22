@@ -18,6 +18,8 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { readHistory, fixture, model } from "./sessions-testing.ts";
 import { chromiumExecutable, directoryFixture, serve, snapshot, post } from "./testing.ts";
 import { GlobalSettingsStore } from "../server.ts";
+import { conversationURL } from "../hypermedia.ts";
+import { targetKey } from "../hypermedia-forms.ts";
 import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
 import { buildAssets } from "../build.ts";
 
@@ -335,12 +337,12 @@ await test("HTTP disconnect does not abort work; reconnect includes history and 
   assert.equal((await session.harness.inspect(context)).tasks.length, 0);
 });
 
-await test("HTTP validates origins, IDs, methods, JSON and request size", async (t) => {
+await test("HTML HTTP validates origins, IDs, methods, malformed forms and request size", async (t) => {
   const f = await fixture(t);
   const base = await serve(t, f.sessions);
   assert.equal(
     (
-      await fetch(base + "/api/catalog", {
+      await fetch(base + "/sessions", {
         headers: { Origin: "https://untrusted.example" },
       })
     ).status,
@@ -348,7 +350,7 @@ await test("HTTP validates origins, IDs, methods, JSON and request size", async 
   );
   const rebinding = await new Promise<number | undefined>((resolve, reject) => {
     const req = request(
-      base + "/api/catalog",
+      base + "/sessions",
       { headers: { Host: "untrusted.example" } },
       (response) => {
         response.resume();
@@ -361,29 +363,34 @@ await test("HTTP validates origins, IDs, methods, JSON and request size", async 
   assert.equal(rebinding, 403);
   assert.equal(
     (
-      await fetch(base + "/api/catalog", {
+      await fetch(base + "/sessions", {
         headers: { "Sec-Fetch-Site": "cross-site" },
       })
     ).status,
     403,
   );
-  assert.equal((await fetch(base + "/api/catalog")).status, 200);
-  assert.equal((await fetch(base + "/api/harness/bad/watch")).status, 404);
-  assert.equal((await post(base + "/api/sessions", {})).status, 400);
-  assert.equal(
-    (
-      await fetch(base + "/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{",
-      })
-    ).status,
-    400,
-  );
-  assert.equal((await post(base + "/api/sessions", { data: "a".repeat(129 * 1024) })).status, 413);
+  assert.equal((await fetch(base + "/sessions")).status, 200);
+  assert.equal((await fetch(base + "/sessions/" + randomUUID())).status, 404);
+  const malformed = await fetch(base + "/sessions", {
+    method: "POST",
+    headers: { Origin: base, "Content-Type": "multipart/form-data" },
+    body: "missing boundary",
+  });
+  assert.equal(malformed.status, 400);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
-  assert.equal((await fetch(base + `/api/harness/${session.id}/abort`)).status, 405);
-  assert.equal((await fetch(base + "/manifest.webmanifest")).status, 200);
+  const settings = base + conversationURL(session) + "/settings";
+  const send = (body: BodyInit, contentType?: string) =>
+    fetch(settings, {
+      method: "POST",
+      headers: { Origin: base, ...(contentType ? { "Content-Type": contentType } : {}) },
+      body,
+      redirect: "manual",
+    });
+  assert.equal((await send(new URLSearchParams())).status, 400);
+  assert.equal((await send("{}", "application/json")).status, 415);
+  assert.equal((await send(new URLSearchParams({ name: "a".repeat(129 * 1024) }))).status, 413);
+  assert.equal((await fetch(base + conversationURL(session) + "/abort")).status, 405);
+  assert.equal((await fetch(base + "/sessions/manifest.webmanifest")).status, 200);
   const icon = await fetch(base + "/icon.svg");
   assert.equal(icon.status, 200);
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
@@ -394,7 +401,7 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
   const base = await serve(t, f.sessions, undefined, "0.0.0.0");
   const port = new URL(base).port;
   for (const address of ["127.0.0.1", "127.0.0.2"]) {
-    const url = `http://${address}:${port}/api/catalog`;
+    const url = `http://${address}:${port}/sessions`;
     assert.equal(
       (await fetch(url, { headers: { Origin: `http://${address}:${port}` } })).status,
       200,
@@ -422,7 +429,7 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
       assert.equal(code, 403);
     }
   }
-  assert.equal((await fetch(`http://localhost:${port}/api/catalog`)).status, 200);
+  assert.equal((await fetch(`http://localhost:${port}/sessions`)).status, 200);
 });
 
 await test("built highlighter preserves selected languages and is served as a static module", async (t) => {
@@ -629,7 +636,7 @@ await test("forwarded headers cannot bypass origin checks", async (t) => {
   const base = await serve(t, f.sessions);
   const status = (headers: Record<string, string>) =>
     new Promise<number | undefined>((resolve, reject) => {
-      const req = request(base + "/api/catalog", { headers }, (response) => {
+      const req = request(base + "/sessions", { headers }, (response) => {
         response.resume();
         resolve(response.statusCode);
       });
@@ -693,15 +700,13 @@ await test(
       release = Promise.withResolvers<void>();
       const controller = new AbortController();
       t.after(() => controller.abort());
-      const pending =
+      const resource =
         operation === "directories"
-          ? fetch(base + "/api/directories", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ binding: f.binding, query: "" }),
-              signal: controller.signal,
-            })
-          : fetch(`${base}/api/sessions/${session.id}/${operation}`, { signal: controller.signal });
+          ? "/sessions/directories?" +
+            new URLSearchParams({ target: targetKey(f.binding), baseDirectory: "" })
+          : conversationURL(session) +
+            (operation === "completions" ? "/completions?kind=path" : "");
+      const pending = fetch(base + resource, { signal: controller.signal });
       const rejected = assert.rejects(pending, { name: "AbortError" });
       const running = await entered.promise;
       assert(running.abortSignal);
@@ -953,49 +958,50 @@ await test("queued compaction duration resolves its submission, including after 
   }
 });
 
-await test("HTTP preserves upstream scan filters, pages, and cursor ordering defaults", async (t) => {
+await test("Durable scans preserve filters, pages, and cursor ordering defaults", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   for (let n = 0; n < 5; n++)
     await session.root.submit({ type: "write", entry: { kind: "marker", data: { n } } }, context);
-  const base = await serve(t, f.sessions);
-  const url = `${base}/api/harness/${session.id}/entries`;
-  for (const method of ["entries", "scanTasks", "scanConversations"]) {
-    const resource = `${base}/api/harness/${session.id}/${method}`;
-    for (const parameter of ["query", "cursor"])
-      for (const invalid of ["not-json", "[]", "null"])
-        assert.equal((await fetch(`${resource}?${parameter}=${invalid}`)).status, 400);
-    assert.equal((await fetch(resource)).status, 200);
-  }
-  const first = await (
-    await fetch(
-      url + "?limit=2&query=" + encodeURIComponent(JSON.stringify({ order: "ascending" })),
-    )
-  ).json();
-  const expected = await session.root.entries({ order: "ascending" }, 2, undefined, context);
+  const history = await readHistory(session.root);
+  const first = await session.root.entries({ order: "ascending" }, 2, undefined, context);
   assert.deepEqual(
-    first.items.map((entry: { id: number }) => entry.id),
-    expected.items.map((entry) => entry.id),
+    first.items.map((entry) => entry.id),
+    history.slice(0, 2).map((entry) => entry.id),
   );
-  assert.deepEqual(first.next, expected.next);
-  const second = await (
-    await fetch(url + "?limit=2&cursor=" + encodeURIComponent(JSON.stringify(first.next)))
-  ).json();
-  const next = await session.root.entries({}, 2, expected.next, context);
+  assert(first.next);
+  // The cursor carries the order; the next call need not repeat it.
+  const second = await session.root.entries({}, 2, first.next, context);
   assert.deepEqual(
-    second.items.map((entry: { id: number }) => entry.id),
-    next.items.map((entry) => entry.id),
+    second.items.map((entry) => entry.id),
+    history.slice(2, 4).map((entry) => entry.id),
+  );
+  assert(second.next);
+  const last = await session.root.entries({}, 2, second.next, context);
+  assert.deepEqual(
+    last.items.map((entry) => entry.id),
+    history.slice(4).map((entry) => entry.id),
   );
   const query = {
     minEntryId: first.items[1].id,
     maxEntryId: second.items[0].id,
-    order: "ascending",
+    order: "ascending" as const,
   };
-  const bounded = await (
-    await fetch(url + "?query=" + encodeURIComponent(JSON.stringify(query)))
-  ).json();
+  const bounded = await session.root.entries(query, 256, undefined, context);
   assert.deepEqual(
-    bounded.items.map((entry: { id: number }) => entry.id),
+    bounded.items.map((entry) => entry.id),
     [query.minEntryId, query.maxEntryId],
+  );
+  const scans = await session.harness.commit(
+    async (tx) => ({
+      tasks: await tx.scanTasks({}, 256),
+      conversations: await tx.scanConversations({}, 256),
+    }),
+    context,
+  );
+  assert.deepEqual(scans.tasks.items, []);
+  assert.deepEqual(
+    scans.conversations.items.map((conversation) => conversation.id),
+    [session.root.id],
   );
 });

@@ -85,7 +85,7 @@ export function installKeys() {
           ? "button[form=composer][value=followUp]"
           : "#send, #composer button[type=submit]:not([hidden]), #composer button:not([type]):not([hidden])",
       );
-      if (submitter) form?.requestSubmit(submitter);
+      if (submitter && !submitter.disabled) form?.requestSubmit(submitter);
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key === "k" && !event.shiftKey) {
@@ -103,6 +103,8 @@ export function installKeys() {
     const control = id && document.getElementById(id);
     if (control) {
       event.preventDefault();
+      const options = control.closest("details");
+      if (options) options.open = true;
       control.focus();
       if (control instanceof HTMLButtonElement) control.click();
     }

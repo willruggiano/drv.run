@@ -199,31 +199,39 @@ await test("HTML shared defaults persist and do not change existing conversation
   assert.deepEqual(b.errors, []);
 });
 
-await test("HTML scoped review command uses the shared review input without submitting slash text", async (t) => {
-  const f = await fixture(t);
-  const session = await f.create();
-  const before = await readHistory(session.root);
-  const b = await browserFixture(t, f.sessions);
-  await b.page.goto(b.base + conversationURL(session));
-  f.faux.setResponses([fauxAssistantMessage("No findings.")]);
-  await b.page.getByRole("textbox", { name: "Message" }).fill("/review packages/app");
-  await b.page.getByRole("button", { name: "Send", exact: true }).click();
-  await (await htmlAction(b.page, "button", "End review and return")).waitFor();
-  const state = await session.harness.snapshot(Review, session.root.id, context);
-  assert(state?.active !== undefined);
-  const review = await session.harness.conversation(state.active, context);
-  assert(review);
-  await review.waitForIdle(context);
-  assert.deepEqual(
-    (await readHistory(review))
-      .flatMap((entry) => entry.model ?? [])
-      .filter((message) => message.role === "user")
-      .map((message) => message.content),
-    ["Review the packages/app and provide prioritized findings."],
-  );
-  assert.deepEqual(await readHistory(session.root), before);
-  assert.deepEqual(b.errors, []);
-});
+for (const [command, scope] of [
+  ["/review packages/app", "packages/app"],
+  ["  /review \t\n", "current code changes (staged, unstaged, and untracked files)"],
+  [
+    "/review\tchanges against main\nwith emphasis on cancellation  ",
+    "changes against main\nwith emphasis on cancellation",
+  ],
+])
+  await test(`HTML scoped review command uses the shared review input: ${JSON.stringify(command)}`, async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const before = await readHistory(session.root);
+    const b = await browserFixture(t, f.sessions);
+    await b.page.goto(b.base + conversationURL(session));
+    f.faux.setResponses([fauxAssistantMessage("No findings.")]);
+    await b.page.getByRole("textbox", { name: "Message" }).fill(command);
+    await b.page.getByRole("button", { name: "Send", exact: true }).click();
+    await (await htmlAction(b.page, "button", "End review and return")).waitFor();
+    const state = await session.harness.snapshot(Review, session.root.id, context);
+    assert(state?.active !== undefined);
+    const review = await session.harness.conversation(state.active, context);
+    assert(review);
+    await review.waitForIdle(context);
+    assert.deepEqual(
+      (await readHistory(review))
+        .flatMap((entry) => entry.model ?? [])
+        .filter((message) => message.role === "user")
+        .map((message) => message.content),
+      [`Review the ${scope} and provide prioritized findings.`],
+    );
+    assert.deepEqual(await readHistory(session.root), before);
+    assert.deepEqual(b.errors, []);
+  });
 
 await test("HTML declarative completions reject stale and dismissed requests and preserve IME and keyboard behavior", async (t) => {
   const f = await fixture(t);
@@ -599,5 +607,197 @@ await test("HTML initial-message retry after reload keeps its creation and submi
   const created = (await f.sessions.catalog()).sessions.find((item) => item.id !== id);
   assert(created);
   assert.deepEqual(await readHistory((await f.sessions.get(created.id)).root), []);
+  assert.deepEqual(b.errors, []);
+});
+
+await test("HTML ordinary messages enable Send and consecutive submissions retain the conversation URL", async (t) => {
+  const f = await fixture(t);
+  const b = await browserFixture(t, f.sessions);
+  const { page } = b;
+  page.setDefaultTimeout(10000);
+  await page.goto(b.base + "/sessions");
+  await page.locator("#create").click();
+  await page.locator("[data-events] #composer").waitFor();
+  const catalog = await f.sessions.catalog();
+  const session = await f.sessions.get(catalog.sessions[0].id);
+  const url = b.base + conversationURL(session);
+  await page.locator("#status[data-state=ready]").waitFor();
+  const prompt = page.getByRole("textbox", { name: "Message" });
+  for (const [index, text] of ["First ordinary message", "Second ordinary message"].entries()) {
+    f.faux.setResponses([fauxAssistantMessage(`Response ${index}`)]);
+    await prompt.pressSequentially(text[0]);
+    assert.equal(await page.locator("#send").isEnabled(), true);
+    await prompt.pressSequentially(text.slice(1));
+    assert.equal(await page.locator("#send").isEnabled(), true);
+    await page.locator("#send").click();
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    await session.root.waitForIdle(context);
+    await page.locator("#status[data-state=ready]").waitFor();
+    assert.equal(page.url(), url);
+  }
+  assert.deepEqual(
+    (await readHistory(session.root))
+      .flatMap((entry) => entry.model ?? [])
+      .filter((message) => message.role === "user")
+      .map((message) => message.content),
+    ["First ordinary message", "Second ordinary message"],
+  );
+  assert.equal((await page.reload())?.status(), 200);
+  assert.equal(page.url(), url);
+  assert.deepEqual(b.errors, []);
+});
+
+await test("HTML submission preserves edits and attachments made while its acknowledgement is pending", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const { page } = b;
+  page.setDefaultTimeout(10000);
+  await page.goto(b.base + conversationURL(session));
+  const requested = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  await page.route("**/submit", async (route) => {
+    const response = await route.fetch();
+    requested.resolve();
+    await release.promise;
+    await route.fulfill({ response });
+  });
+  f.faux.setResponses([fauxAssistantMessage("Received first message")]);
+  const prompt = page.getByRole("textbox", { name: "Message" });
+  await prompt.fill("Original draft");
+  await page.locator("#send").click();
+  await requested.promise;
+  assert.equal(await prompt.isEditable(), true);
+  await prompt.fill("Next draft");
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "next.png",
+    mimeType: "image/png",
+    buffer: Buffer.from([137, 80, 78, 71]),
+  });
+  const identity = await page.locator('#composer [name="requestId"]').inputValue();
+  release.resolve();
+  await page.waitForFunction(
+    () => document.querySelector<HTMLFormElement>("#composer")?.dataset.submitting === undefined,
+  );
+  assert.equal(await prompt.inputValue(), "Next draft");
+  assert.equal(await page.locator('#composer [name="requestId"]').inputValue(), identity);
+  assert.deepEqual(
+    await page
+      .locator('input[type="file"]')
+      .evaluate((node: HTMLInputElement) => Array.from(node.files ?? [], (file) => file.name)),
+    ["next.png"],
+  );
+  assert.deepEqual(
+    (await readHistory(session.root))
+      .flatMap((entry) => entry.model ?? [])
+      .filter((message) => message.role === "user")
+      .map((message) => message.content),
+    ["Original draft"],
+  );
+  assert.deepEqual(b.errors, []);
+});
+
+await test("HTML creation captures options once and carries newer drafts and files into the created conversation", async (t) => {
+  const f = await fixture(t);
+  const plain = fauxProvider({ provider: "plain", models: [{ id: "plain", reasoning: false }] });
+  f.options.models.setProvider(plain.provider);
+  const b = await browserFixture(t, f.sessions);
+  const { page } = b;
+  page.setDefaultTimeout(10000);
+  await page.goto(b.base + "/sessions");
+  for (const [key, id] of [
+    ["t", "targets"],
+    ["m", "models"],
+  ]) {
+    await page.locator("#new-options").evaluate((node: HTMLDetailsElement) => {
+      node.open = false;
+    });
+    await page.locator("#prompt").blur();
+    await page.keyboard.press(key);
+    assert.equal(
+      await page.locator("#new-options").evaluate((node: HTMLDetailsElement) => node.open),
+      true,
+    );
+    assert.equal(await page.evaluate(() => document.activeElement?.id), id);
+    await page.locator(`#${id}`).blur();
+  }
+  await page.selectOption('[name="thinkingLevel"]', "high");
+  const prompt = page.getByRole("textbox", { name: "Message" });
+  await prompt.fill("Captured first message");
+  const requested = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  await page.route("**/sessions", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch();
+    requested.resolve();
+    await release.promise;
+    await route.fulfill({ response });
+  });
+  f.faux.setResponses([fauxAssistantMessage("Created")]);
+  await page.locator("#create").click();
+  await requested.promise;
+  assert.equal(await page.locator("#create").isDisabled(), true);
+  await prompt.fill("Edited during creation");
+  const otherModel = await page.locator("#models option").nth(1).getAttribute("value");
+  assert(otherModel);
+  await page.selectOption("#models", otherModel);
+  await page.waitForFunction(
+    () => document.querySelector<HTMLSelectElement>("#thinking")?.value === "",
+  );
+  assert.equal(await page.locator("#create").isDisabled(), true);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "next.png",
+    mimeType: "image/png",
+    buffer: Buffer.from([137, 80, 78, 71]),
+  });
+  const identity = await page.locator('#composer [name="requestId"]').inputValue();
+  release.resolve();
+  const catalog = await f.sessions.catalog();
+  assert.equal(catalog.sessions.length, 1);
+  const session = await f.sessions.get(catalog.sessions[0].id);
+  await page.waitForURL(b.base + conversationURL(session));
+  await page.locator("[data-events] #composer").waitFor();
+  assert.equal(await prompt.inputValue(), "Edited during creation");
+  assert.equal(await page.locator('#composer [name="requestId"]').inputValue(), identity);
+  assert.deepEqual(
+    await page
+      .locator('input[type="file"]')
+      .evaluate((node: HTMLInputElement) => Array.from(node.files ?? [], (file) => file.name)),
+    ["next.png"],
+  );
+  assert.equal((await session.root.agent(context)).thinkingLevel, "high");
+  assert.deepEqual(
+    (await readHistory(session.root))
+      .flatMap((entry) => entry.model ?? [])
+      .filter((message) => message.role === "user")
+      .map((message) => message.content),
+    ["Captured first message"],
+  );
+  await page.reload();
+  assert.equal(await prompt.inputValue(), "Edited during creation");
+  assert.equal(await page.locator('#composer [name="requestId"]').inputValue(), identity);
+  assert.deepEqual(b.errors, []);
+});
+
+await test("HTML malformed commands never fall through to ordinary prompt submission", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const { page } = b;
+  await page.goto(b.base + conversationURL(session));
+  const prompt = page.getByRole("textbox", { name: "Message" });
+  for (const command of ["/", "/???", "  /missing-command  "]) {
+    await prompt.fill(command);
+    await page.locator("#send").click();
+    assert.notEqual(await page.locator("#request-error").textContent(), "");
+    assert.equal(await prompt.inputValue(), command);
+    assert.deepEqual(await readHistory(session.root), []);
+    assert.equal(f.faux.state.callCount, 0);
+    assert.equal(page.url(), b.base + conversationURL(session));
+  }
   assert.deepEqual(b.errors, []);
 });

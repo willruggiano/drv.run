@@ -6,6 +6,7 @@ type Draft = { text: string; files: File[]; requestId: string; creationId?: stri
 const drafts = new Map<string, Draft>();
 const requestPages = new WeakMap<HtmxRequestCtx, number>();
 let pageRevision = 0;
+const destinations = new WeakMap<HTMLFormElement, string>();
 function saveDraft() {
   resizePrompt();
   const form = composer();
@@ -17,18 +18,21 @@ function saveDraft() {
     requestId: request.value,
     creationId: form.querySelector<HTMLInputElement>('[name="id"]')?.value,
   };
-  drafts.set(form.action, draft);
+  storeDraft(form.action, draft);
+}
+function storeDraft(key: string, draft: Draft) {
+  drafts.set(key, draft);
   try {
     if (draft.text)
       sessionStorage.setItem(
-        `pi.html.draft:${form.action}`,
+        `pi.html.draft:${key}`,
         JSON.stringify({
           text: draft.text,
           requestId: draft.requestId,
           creationId: draft.creationId,
         }),
       );
-    else sessionStorage.removeItem(`pi.html.draft:${form.action}`);
+    else sessionStorage.removeItem(`pi.html.draft:${key}`);
   } catch {
     /* Storage can be disabled. In-memory drafts still work. */
   }
@@ -89,8 +93,10 @@ const commandAcknowledgements = new WeakMap<HtmxRequestCtx, { key: string; reque
 export function installDrafts() {
   document.addEventListener("input", (event) => {
     const form = composer();
-    if (!form || !(event.target instanceof Element) || !form.contains(event.target)) return;
-    controls(form).request.value = crypto.randomUUID();
+    if (!form) return;
+    const { text, files, request } = controls(form);
+    if (event.target !== text && event.target !== files) return;
+    request.value = crypto.randomUUID();
     saveDraft();
   });
   document.addEventListener("htmx:before:request", (event) => {
@@ -102,9 +108,9 @@ export function installDrafts() {
     }
     const form = composer();
     if (!form || event.detail.ctx.sourceElement !== form) return;
-    // FormData is already collected. Lock only until this attempt settles.
-    controls(form).text.readOnly = true;
-    controls(form).files.disabled = true;
+    // FormData is already collected. Keep editing enabled; acknowledgements
+    // clear only the submitted revision, never a newer draft.
+    form.dataset.submitting = "true";
     saveDraft();
   });
   document.addEventListener("htmx:after:request", (event) => {
@@ -137,8 +143,7 @@ export function installDrafts() {
       sourceElement instanceof HTMLFormElement &&
       sourceElement.getAttribute("id") === "composer"
     ) {
-      controls(sourceElement).text.readOnly = false;
-      controls(sourceElement).files.disabled = false;
+      delete sourceElement.dataset.submitting;
       updateSend();
     }
     if (!response && !event.detail.ctx.request.signal?.aborted && sourceElement.isConnected) {
@@ -149,10 +154,12 @@ export function installDrafts() {
   });
   document.addEventListener("submitted", (event) => {
     if (!(event instanceof CustomEvent)) return;
-    const { requestId } = event.detail as { requestId: string };
+    const { requestId, draftAction } = event.detail as { requestId: string; draftAction?: string };
     // A response from an old page may acknowledge its draft, never the new page's.
     for (const [key, draft] of drafts) if (draft.requestId === requestId) deleteDraft(key);
     const form = composer();
+    if (draftAction && form && event.target === form)
+      destinations.set(form, new URL(draftAction, location.href).href);
     if (!form || controls(form).request.value !== requestId) return;
     controls(form).text.value = "";
     controls(form).files.value = "";
@@ -170,6 +177,14 @@ export function installDrafts() {
       event.detail.ctx.swap !== "none"
     ) {
       saveDraft();
+      const form = composer();
+      const destination = form && destinations.get(form);
+      if (form && destination) {
+        const draft = drafts.get(form.action);
+        if (draft && (draft.text || draft.files.length)) storeDraft(destination, draft);
+        deleteDraft(form.action);
+        destinations.delete(form);
+      }
       pageRevision++;
     }
   });
@@ -184,8 +199,8 @@ export function installDrafts() {
       if (!(form instanceof HTMLFormElement) || form.getAttribute("id") !== "composer") return;
       const { text, files, request } = controls(form);
       const match = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(text.value.trim());
-      if (!text.value.startsWith("/")) return;
-      if (event.submitter?.dataset.command === match?.[1]) return;
+      if (!text.value.trimStart().startsWith("/")) return;
+      if (match && event.submitter?.dataset.command === match[1]) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       const control =

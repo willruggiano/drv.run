@@ -45,7 +45,7 @@ export function options(
       ? existing.cwd.slice(existing.directoryRoot.length + 1)
       : "");
   const session = !!existing || values.get("presentation") === "session";
-  const update = h`hx-get="/sessions/options" hx-include="#options" hx-target="#options" hx-select="#options" hx-swap="outerHTML" hx-sync="closest form:replace"`;
+  const update = h`hx-get="/sessions/options" hx-include="#options" hx-target="#options" hx-select="#options" hx-swap="outerHTML" hx-sync="#options:replace"`;
   const targetSelect = h`<label><span>${session ? "Execution environment" : "Environment"}</span><select id="targets" name="target" required ${update}>${!target && selectedTarget ? option(selectedTarget, `${existing?.binding?.target ?? selectedTarget} (unavailable, keep)`, selectedTarget) : ""}${h`${catalog.targets.map((item) => option(targetKey(item), item.label, selectedTarget, !item.available && targetKey(item) !== selectedTarget))}`}</select></label>`;
   const modelSelect = h`<label><span>Model</span><select id="models" name="model" required ${update}>${!model && selectedModel ? option(selectedModel, `${existing?.model?.modelId ?? selectedModel} (unavailable, keep)`, selectedModel) : ""}${h`${catalog.models.map((item) => option(modelKey(item), `${item.provider} / ${item.name}`, selectedModel))}`}</select></label>`;
   const thinkingSelect = h`<label><span>${session ? "Thinking" : "Thinking level"}</span><select id="thinking" name="thinkingLevel">${option("", `Default (${model?.defaultThinkingLevel ?? "off"})`, level)}${h`${(model?.thinkingLevels ?? thinkingLevels).map((item) => option(item, item, level))}`}${level && !model?.thinkingLevels.includes(thinking(level) ?? "off") ? option(level, `${level} (clamped by model)`, level) : ""}</select></label>`;

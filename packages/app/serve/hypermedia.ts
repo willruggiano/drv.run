@@ -536,6 +536,9 @@ export async function hypermedia(
   context: Context,
   settings?: GlobalSettingsStore,
 ): Promise<void> {
+  // htmx 4 boosts forms into history even when HX-Reswap is none. Only the
+  // explicit HX-Location redirect may navigate after a mutation.
+  if (request.method !== "GET") response.setHeader("HX-Push-Url", "false");
   if (url.pathname === "/sessions") {
     if (request.method === "GET") {
       const catalog = await sessions.catalog(context);
@@ -597,18 +600,24 @@ export async function hypermedia(
       const requestId = content === undefined ? undefined : field(data, "requestId", 200);
       if (requestId !== undefined && !requestId.trim())
         throw new FormError(400, "Missing request ID.");
+      const baseDirectory = optional(data, "baseDirectory");
       const session = await sessions.create(
         field(data, "id", 36),
         target,
         { provider: model.provider, modelId: model.modelId },
         thinking(level),
-        optional(data, "baseDirectory") || undefined,
+        target.directoryRoot ? baseDirectory : baseDirectory || undefined,
       );
       if (content !== undefined)
         await session.root.submit({ type: "input", content, requestId }, context);
       response.setHeader(
         "HX-Trigger",
-        JSON.stringify({ submitted: { requestId: optional(data, "requestId") } }),
+        JSON.stringify({
+          submitted: {
+            requestId: optional(data, "requestId"),
+            draftAction: `${conversationURL(session)}/submit`,
+          },
+        }),
       );
       redirect(request, response, conversationURL(session));
       return;

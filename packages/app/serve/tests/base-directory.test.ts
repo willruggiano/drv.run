@@ -14,52 +14,85 @@ import {
   Environment,
   sessionInfo,
 } from "../sessions.ts";
+import { conversationURL } from "../hypermedia.ts";
+import { modelKey, targetKey } from "../hypermedia-forms.ts";
 import { directoryFixture, post, serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-await test("HTTP base directory is stored in Durable cwd, validates input, and defaults to /workspace", async (t) => {
+await test("HTML base directory is stored in Durable cwd, validates input, and defaults to /workspace", async (t) => {
   const f = await directoryFixture(t, "/workspace");
   const base = await serve(t, f.sessions);
-  const create = (baseDirectory?: unknown) =>
-    post(base + "/api/sessions", {
-      id: randomUUID(),
-      binding: f.binding,
-      model,
-      baseDirectory,
+  const post = (path: string, data: BodyInit) =>
+    fetch(base + path, {
+      method: "POST",
+      headers: { Origin: base },
+      body: data,
+      redirect: "manual",
     });
+  const create = async (baseDirectory?: string) => {
+    const id = randomUUID();
+    const response = await post(
+      "/sessions",
+      new URLSearchParams({
+        id,
+        target: targetKey(f.binding),
+        model: modelKey(model),
+        ...(baseDirectory === undefined ? {} : { baseDirectory }),
+      }),
+    );
+    return { id, response };
+  };
   for (const input of [undefined, "", "foo", "/foo", "/foo/"]) {
-    const response = await create(input);
-    assert.equal(response.status, 201);
-    const info = await response.json();
-    const session = await f.sessions.get(info.id);
+    const { id, response } = await create(input);
+    assert.equal(response.status, 303);
+    const session = await f.sessions.get(id);
+    const info = await sessionInfo(session);
     assert.equal(info.cwd, input ? "/workspace/foo" : "/workspace");
     assert.equal((await session.root.agent(context)).cwd, info.cwd);
   }
-  for (const input of [null, 1, {}, "../etc", "a\nb", "x".repeat(4097)])
-    assert.equal((await create(input)).status, 400);
-  const info = await (await create("one")).json();
-  const configure = (cwd?: unknown) => post(`${base}/api/harness/${info.id}/configure`, { cwd });
-  const session = await f.sessions.get(info.id);
-  assert.equal((await configure()).status, 200);
-  assert.equal((await session.root.agent(context)).cwd, "/workspace/one");
-  assert.equal((await configure("/workspace/two")).status, 200);
-  assert.equal((await session.root.agent(context)).cwd, "/workspace/two");
-  assert.equal((await configure(123)).status, 400);
-  assert.equal((await configure(null)).status, 200);
-  assert.equal((await session.root.agent(context)).cwd, undefined);
-  assert.equal((await configure("/workspace")).status, 200);
-  assert.deepEqual((await sessionInfo(session)).binding, f.binding);
-  for (const query of [null, 3, "../", "/../", "\0", "x".repeat(4097)])
-    assert.equal(
-      (await post(base + "/api/directories", { binding: f.binding, query })).status,
-      400,
+  for (const input of ["../etc", "a\nb", "x".repeat(4097)])
+    assert.equal((await create(input)).response.status, 400);
+  const malformed = new FormData();
+  malformed.set("id", randomUUID());
+  malformed.set("target", targetKey(f.binding));
+  malformed.set("model", modelKey(model));
+  malformed.set("baseDirectory", new Blob(["not a text field"]), "path.txt");
+  assert.equal((await post("/sessions", malformed)).status, 400);
+  const { id } = await create("one");
+  const session = await f.sessions.get(id);
+  const configure = (baseDirectory: string) =>
+    post(
+      conversationURL(session) + "/settings",
+      new URLSearchParams({
+        name: "",
+        instructions: "",
+        target: targetKey(f.binding),
+        model: modelKey(model),
+        baseDirectory,
+      }),
     );
+  assert.equal((await session.root.agent(context)).cwd, "/workspace/one");
+  assert.equal((await configure("two")).status, 303);
+  assert.equal((await session.root.agent(context)).cwd, "/workspace/two");
+  assert.equal((await configure("../etc")).status, 400);
+  assert.equal((await session.root.agent(context)).cwd, "/workspace/two");
+  assert.equal((await configure("")).status, 303);
+  assert.equal((await session.root.agent(context)).cwd, "/workspace");
+  assert.deepEqual((await sessionInfo(session)).binding, f.binding);
+  const directories = (query: string) =>
+    fetch(
+      base +
+        "/sessions/directories?" +
+        new URLSearchParams({
+          target: targetKey(f.binding),
+          baseDirectory: query,
+        }),
+    );
+  for (const query of ["../", "/../", "\0", "x".repeat(4097)])
+    assert.equal((await directories(query)).status, 400);
   f.stop();
-  assert.equal(
-    (await post(base + "/api/directories", { binding: f.binding, query: "" })).status,
-    409,
-  );
+  assert.equal((await directories("")).status, 409);
   assert.equal(f.connections, 0, "validation does not connect or execute tools");
 });
 
