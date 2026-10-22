@@ -158,6 +158,12 @@ in {
     upstream.wait_for_unit("fixture.service")
     upstream.wait_for_open_port(443)
     upstream.succeed("cp /srv/git/tls/upstream-ca-cert.pem /tmp/shared/upstream.pem")
+    with subtest("boot activation publishes seed files without proxy credentials"):
+        host.fail("systemctl is-active --quiet mitm-proxy.service")
+        for owner in ["alice", "bob"]:
+            host.fail(f"test -e /run/mitm-proxy-token-{owner}")
+            host.succeed(as_user(owner, f"test -r /run/mitm-proxy/{owner}/placeholder && test -r /run/mitm-proxy/{owner}/ca.pem"))
+
     host.succeed("cp /tmp/shared/upstream.pem /run/upstream.pem; "
                  "umask 077; printf alice_token > /run/mitm-proxy-token-alice; "
                  "printf bob_token > /run/mitm-proxy-token-bob")
@@ -183,6 +189,26 @@ in {
 
     alice = create("alice")
     bob = create("bob")
+    with subtest("activation prepares guest restarts before the system proxy starts"):
+        host.succeed("systemctl stop mitm-proxy.service; "
+                     "cp /run/mitm-proxy/alice/placeholder /run/activation-placeholder; "
+                     "cp /run/mitm-proxy/alice/ca.pem /run/activation-ca; "
+                     "rm -r /run/mitm-proxy")
+        for owner in ["alice", "bob"]:
+            host.succeed(f"mv /run/mitm-proxy-token-{owner} /run/saved-token-{owner}")
+        host.succeed("/run/current-system/activate")
+        host.fail("systemctl is-active --quiet mitm-proxy.service")
+        host.succeed("cmp /run/activation-placeholder /run/mitm-proxy/alice/placeholder; "
+                     "cmp /run/activation-ca /run/mitm-proxy/alice/ca.pem")
+        unit = "drv.run@" + alice.removeprefix("drv.run.") + ".service"
+        host.succeed(as_user("alice", "systemctl --user restart " + unit), timeout=timedelta(minutes=15))
+        guest("alice", alice, 'test "$GH_TOKEN" = "$(cat /run/drv-run-seed/mitm-proxy/placeholder)"')
+        host.fail("systemctl is-active --quiet mitm-proxy.service")
+        for owner in ["alice", "bob"]:
+            host.succeed(f"mv /run/saved-token-{owner} /run/mitm-proxy-token-{owner}")
+        host.succeed("systemctl start mitm-proxy.service")
+        host.wait_for_open_port(3128)
+
     with subtest("gh supplies the placeholder inside nix develop; Git clone and push work"):
         for owner, target in [("alice", alice), ("bob", bob)]:
             guest(owner, target, 'test "$GH_TOKEN" = "$(cat /run/drv-run-seed/mitm-proxy/placeholder)"; systemctl is-active --quiet mitm-proxy.service')

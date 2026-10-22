@@ -9,8 +9,8 @@
   enabled = cfg.owners != {};
   package = pkgs.callPackage ../../packages/mitm-proxy {};
   ownerArgs = lib.concatMap (name: ["--owner" "${name}:${toString config.users.groups.${config.users.users.${name}.group}.gid}"]) (builtins.attrNames cfg.owners);
-  command = operation:
-    utils.escapeSystemdExecArgs (["${package}/bin/mitm-proxy" operation "--port" (toString cfg.port)] ++ ownerArgs);
+  commandArgs = operation: ["${package}/bin/mitm-proxy" operation "--port" (toString cfg.port)] ++ ownerArgs;
+  command = operation: utils.escapeSystemdExecArgs (commandArgs operation);
 in {
   options.services.drv-run.mitm-proxy = {
     port = lib.mkOption {
@@ -56,6 +56,17 @@ in {
       group = "mitm-proxy";
     };
     users.groups.mitm-proxy = {};
+    # switch-to-configuration restarts user services before starting new system
+    # services. Publish guest seed files before those user-service restarts.
+    system.activationScripts.mitm-proxy = {
+      deps = ["users" "groups"];
+      text = ''
+        (
+          umask 0077
+          STATE_DIRECTORY=/var/lib/mitm-proxy ${lib.escapeShellArgs (commandArgs "prepare")}
+        )
+      '';
+    };
     systemd.services.mitm-proxy = {
       description = "drv.run credential proxy";
       wantedBy = ["multi-user.target"];
