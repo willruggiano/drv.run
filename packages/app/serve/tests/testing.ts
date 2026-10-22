@@ -1,4 +1,5 @@
-import type { RenderState } from "../client.ts";
+import type { ChildProcess } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
@@ -46,46 +47,78 @@ export async function serve(
   });
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
-export async function snapshot(url: string): Promise<RenderState> {
-  const controller = new AbortController();
-  const response = await fetch(url, { signal: controller.signal });
-  assert.equal(response.status, 200);
-  assert(response.body);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let text = "";
-  try {
-    while (!text.includes("\n\n")) {
-      const part = await reader.read();
-      assert.equal(part.done, false);
-      text += decoder.decode(part.value, { stream: true });
-    }
-    const view = JSON.parse(text.slice(6, text.indexOf("\n\n"))).value as RenderState["view"];
-    const resource = new URL(url);
-    const id = resource.pathname.split("/")[3];
-    const get = async (path: string) => {
-      const response = await fetch(resource.origin + path + resource.search);
-      assert.equal(response.status, 200);
-      return response.json();
-    };
-    const [session, context, inspection, history] = await Promise.all([
-      get(`/api/sessions/${id}/info`),
-      get(`/api/sessions/${id}/context-status`),
-      get(`/api/sessions/${id}/inspection`),
-      get(`/api/harness/${id}/entries`),
-    ]);
-    return { session, view, context, inspection, history: history.items };
-  } finally {
-    controller.abort();
-    reader.releaseLock();
-  }
-}
-export function post(url: string, data: unknown) {
+export function post(url: string, data: Record<string, string> | FormData) {
   return fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
+    headers: { Origin: new URL(url).origin },
+    body: data instanceof FormData ? data : new URLSearchParams(data),
+    redirect: "manual",
   });
+}
+
+export async function checkCLI<T>(
+  child: ChildProcess,
+  url: string,
+  read: (response: Response) => Promise<T>,
+  check: (catalog: T) => void | Promise<void>,
+  startupTimeout = 30_000,
+): Promise<void> {
+  assert(child.stderr, "CLI stderr must be piped for startup diagnostics.");
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (text: string) => {
+    stderr += text;
+  });
+  const startup = new AbortController();
+  const ended = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+    child.once("close", (code, signal) => resolve([code, signal]));
+  });
+  child.once("error", (error) => startup.abort(error));
+  child.once("exit", (code, signal) => {
+    startup.abort(new Error("CLI exited before readiness", { cause: { code, signal } }));
+  });
+  const timeout = setTimeout(() => {
+    startup.abort(new DOMException("CLI startup timed out", "TimeoutError"));
+  }, startupTimeout);
+  const cleanup = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await ended;
+  };
+  try {
+    let catalog: T;
+    try {
+      for (;;) {
+        startup.signal.throwIfAborted();
+        const response = await fetch(url, { signal: startup.signal }).catch(() => undefined);
+        startup.signal.throwIfAborted();
+        if (response?.ok) {
+          catalog = await read(response);
+          break;
+        }
+        await response?.body?.cancel();
+        await delay(10, undefined, { signal: startup.signal });
+      }
+    } catch (error) {
+      // Drain stderr and reap the child before reporting the original startup failure.
+      const cause = startup.signal.aborted ? startup.signal.reason : error;
+      await cleanup();
+      throw new Error(`CLI startup failed. Stderr:\n${stderr || "(empty)"}`, {
+        cause,
+      });
+    }
+    clearTimeout(timeout);
+    await check(catalog);
+    child.kill("SIGTERM");
+    const forceKill = setTimeout(() => child.kill("SIGKILL"), 5000);
+    try {
+      assert.deepEqual(await ended, [0, null]);
+    } finally {
+      clearTimeout(forceKill);
+    }
+  } finally {
+    clearTimeout(timeout);
+    // Cleanup must not assert graceful shutdown or replace an earlier test failure.
+    await cleanup();
+  }
 }
 
 // Frontend contract fixture. The drv.run suite separately exercises the real pi-env daemon.

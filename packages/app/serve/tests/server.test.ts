@@ -2,30 +2,28 @@ import { Sessions } from "../sessions.ts";
 import * as runtime from "../sessions.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer, request } from "node:http";
-import type { AddressInfo } from "node:net";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { readHistory, fixture, model } from "./sessions-testing.ts";
-import { chromiumExecutable, directoryFixture, serve, snapshot, post } from "./testing.ts";
+import { checkCLI, chromiumExecutable, directoryFixture, serve, post } from "./testing.ts";
 import { GlobalSettingsStore } from "../server.ts";
 import { conversationURL } from "../hypermedia.ts";
-import { targetKey } from "../hypermedia-forms.ts";
+import { modelKey, targetKey } from "../hypermedia-forms.ts";
 import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
 import { buildAssets } from "../build.ts";
 
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Catalog } from "../sessions.ts";
-import type { GlobalSettings } from "../settings.ts";
+import { settingFields } from "../settings.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -81,110 +79,6 @@ await test("browser executable lookup follows PATH and rejects unusable candidat
   assert.throws(() => chromiumExecutable(unusable.join(delimiter)));
 });
 
-async function checkCLI(
-  child: ChildProcess,
-  url: string,
-  check: (catalog: Catalog) => void | Promise<void>,
-  startupTimeout = 30_000,
-): Promise<void> {
-  assert(child.stderr, "CLI stderr must be piped for startup diagnostics.");
-  let stderr = "";
-  child.stderr.setEncoding("utf8").on("data", (text: string) => {
-    stderr += text;
-  });
-  const startup = new AbortController();
-  const ended = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
-    child.once("close", (code, signal) => resolve([code, signal]));
-  });
-  child.once("error", (error) => startup.abort(error));
-  child.once("exit", (code, signal) => {
-    startup.abort(new Error("CLI exited before readiness", { cause: { code, signal } }));
-  });
-  const timeout = setTimeout(() => {
-    startup.abort(new DOMException("CLI startup timed out", "TimeoutError"));
-  }, startupTimeout);
-  const cleanup = async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    await ended;
-  };
-  try {
-    let catalog: Catalog;
-    try {
-      for (;;) {
-        startup.signal.throwIfAborted();
-        const response = await fetch(url, { signal: startup.signal }).catch(() => undefined);
-        startup.signal.throwIfAborted();
-        if (response?.ok) {
-          catalog = await response.json();
-          break;
-        }
-        await response?.body?.cancel();
-        await delay(10, undefined, { signal: startup.signal });
-      }
-    } catch (error) {
-      // Drain stderr and reap the child before reporting the original startup failure.
-      const cause = startup.signal.aborted ? startup.signal.reason : error;
-      await cleanup();
-      throw new Error(`CLI startup failed. Stderr:\n${stderr || "(empty)"}`, {
-        cause,
-      });
-    }
-    clearTimeout(timeout);
-    await check(catalog);
-    child.kill("SIGTERM");
-    const forceKill = setTimeout(() => child.kill("SIGKILL"), 5000);
-    try {
-      assert.deepEqual(await ended, [0, null]);
-    } finally {
-      clearTimeout(forceKill);
-    }
-  } finally {
-    clearTimeout(timeout);
-    // Cleanup must not assert graceful shutdown or replace an earlier test failure.
-    await cleanup();
-  }
-}
-
-await test("server reads HOST/PORT and starts with no local execution target", async (t) => {
-  for (const host of [undefined, "127.0.0.2"]) {
-    await t.test(host ?? "default host", async (t) => {
-      const directory = await mkdtemp(join(tmpdir(), "serve-startup-"));
-      t.after(() => rm(directory, { recursive: true, force: true }));
-      const address = host ?? "127.0.0.1";
-      const reservation = createServer();
-      await new Promise<void>((resolve) => reservation.listen(0, address, resolve));
-      const port = (reservation.address() as AddressInfo).port;
-      await new Promise<void>((resolve) => reservation.close(() => resolve()));
-      const child = spawn(
-        process.execPath,
-        [
-          // The fixture has an empty inventory; use a fixed instance-owner identity.
-          "--import",
-          'data:text/javascript,import { mock } from "node:test"; mock.method(process, "getuid", () => 1000);',
-          fileURLToPath(new URL("../server.ts", import.meta.url)),
-        ],
-        {
-          env: {
-            ...process.env,
-            HOST: host,
-            PORT: String(port),
-            HOME: directory,
-            XDG_STATE_HOME: join(directory, "state"),
-            PATH: "",
-            PI_OFFLINE: "1",
-            PI_CODING_AGENT_DIR: join(directory, "agent"),
-          },
-          stdio: ["ignore", "ignore", "pipe"],
-        },
-      );
-      await checkCLI(child, `http://${address}:${port}/api/catalog`, (catalog) => {
-        assert.deepEqual(catalog.sessions, []);
-        assert.deepEqual(catalog.targets, []);
-      });
-    });
-  }
-});
-
 await test("CLI harness preserves startup and assertion failures while reaping children", async (t) => {
   for (const scenario of [
     "retry",
@@ -238,6 +132,7 @@ await test("CLI harness preserves startup and assertion failures while reaping c
       const result = checkCLI(
         child,
         `http://127.0.0.1:${port}`,
+        (response) => response.json() as Promise<Catalog>,
         (catalog) => {
           checked = true;
           assert.deepEqual(catalog, { sessions: [], targets: [], models: [] });
@@ -291,9 +186,10 @@ await test("CLI harness preserves startup and assertion failures while reaping c
 });
 
 await test("HTTP disconnect does not abort work; reconnect includes history and deduplicates prompts", async (t) => {
-  const f = await fixture(t);
   const started = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<void>();
+  t.after(() => finish.resolve());
+  const f = await fixture(t);
   f.faux.setResponses([
     async () => {
       started.resolve();
@@ -301,35 +197,70 @@ await test("HTTP disconnect does not abort work; reconnect includes history and 
       return fauxAssistantMessage("Done.");
     },
   ]);
-  t.after(() => finish.resolve());
   const base = await serve(t, f.sessions);
   const id = randomUUID();
-  assert.equal((await post(base + "/api/sessions", { id, binding: f.binding, model })).status, 201);
-  const url = `${base}/api/harness/${id}`;
-  const data = { type: "input", content: "Work", requestId: "retryable-input" };
-  assert.equal((await post(url + "/submit", data)).status, 200);
-  await started.promise;
+  assert.equal(
+    (await post(base + "/sessions", { id, target: targetKey(f.binding), model: modelKey(model) }))
+      .status,
+    303,
+  );
   const session = await f.sessions.get(id);
-  const views = t.mock.method(session.root, "watch");
-  assert.equal((await snapshot(url + "/watch")).session.id, id);
-  const view = await views.mock.calls[0].result;
-  assert(view);
-  assert.deepEqual(await view.closed, { reason: "cancelled" });
-  const documents = t.mock.method(session.harness, "watchDoc");
-  const response = await fetch(url + "/watchDoc?kind=pi.agent");
+  const url = base + conversationURL(session);
+  const data = { content: "Work", requestId: "retryable-input", whenBusy: "reject" };
+  assert.equal((await post(url + "/submit", data)).status, 303);
+  await started.promise;
+  const views: Awaited<ReturnType<typeof session.root.watch>>[] = [];
+  const conversation = session.harness.conversation.bind(session.harness);
+  t.mock.method(
+    session.harness,
+    "conversation",
+    async (...args: Parameters<typeof conversation>) => {
+      const selected = await conversation(...args);
+      if (selected) {
+        const watch = selected.watch.bind(selected);
+        t.mock.method(selected, "watch", async (context: Context) => {
+          const result = await watch(context);
+          views.push(result);
+          return result;
+        });
+      }
+      return selected;
+    },
+  );
+  const subscriptions: { closed: boolean }[] = [];
+  const subscribe = session.harness.subscribeCommits.bind(session.harness);
+  t.mock.method(
+    session.harness,
+    "subscribeCommits",
+    (listener: Parameters<typeof subscribe>[0]) => {
+      const state = { closed: false };
+      subscriptions.push(state);
+      const stop = subscribe(listener);
+      return () => {
+        state.closed = true;
+        stop();
+      };
+    },
+  );
+  const response = await fetch(url + "/events");
   assert.equal(response.status, 200);
   assert(response.body);
   await response.body.cancel();
-  const document = await documents.mock.calls[0].result;
-  assert(document);
-  assert.deepEqual(await document.closed, { reason: "cancelled" });
-  assert.equal((await post(url + "/submit", data)).status, 200);
+  assert(views.length > 0);
+  const view = views[0];
+  assert(view);
+  assert.deepEqual(await view.closed, { reason: "cancelled" });
+  assert(subscriptions.length > 0);
+  assert(subscriptions.every((subscription) => subscription.closed));
+  assert.equal((await post(url + "/submit", data)).status, 303);
   finish.resolve();
   await session.root.waitForIdle(context);
-  const reconnected = await snapshot(url + "/watch");
+  const reconnected = await fetch(url + "/export");
+  assert.equal(reconnected.status, 200);
+  assert.deepEqual(await reconnected.json(), await readHistory(session.root));
   assert.equal(
-    reconnected.history
-      ?.flatMap((entry) => entry.model ?? [])
+    (await readHistory(session.root))
+      .flatMap((entry) => entry.model ?? [])
       .filter((message) => message.role === "user").length,
     1,
   );
@@ -472,8 +403,7 @@ await test("built highlighter preserves selected languages and is served as a st
 
 await test("renderer benchmark validates options and builds deterministic paired history", () => {
   const options = benchmarkOptions([]);
-  assert.equal(options.frontend, undefined);
-  assert.equal(benchmarkOptions(["--frontend", "original"]).frontend, "original");
+  assert.equal(options.frontend, "hypermedia");
   assert.equal(benchmarkOptions(["--frontend", "hypermedia"]).frontend, "hypermedia");
   assert.equal(options.runs, 3);
   assert.equal(options.turns, 200);
@@ -493,6 +423,7 @@ await test("renderer benchmark validates options and builds deterministic paired
   assert.equal(benchmarkOptions(["--cpu-rate", "2.5"]).cpuRate, 2.5);
   for (const args of [
     ["--frontend", "unknown"],
+    ["--frontend", "original"],
     ["--frontend"],
     ["--runs", "0"],
     ["--runs", "1.5"],
@@ -500,8 +431,6 @@ await test("renderer benchmark validates options and builds deterministic paired
     ["--turns", "-1"],
     ["--turns", "10001"],
     ["--turns", "NaN"],
-    ["--memory"],
-    ["--entries", "2000"],
     ["--frontend", "hypermedia", "--entries", "0"],
     ["--frontend", "hypermedia", "--entries", "30001"],
     ["--frontend", "hypermedia", "--entries", "1.5"],
@@ -565,65 +494,55 @@ await test("conversation controls validate input and keep forks scoped to their 
   const f = await fixture(t);
   const session = await f.create();
   const base = await serve(t, f.sessions);
-  const url = `${base}/api/harness/${session.id}`;
+  const url = base + conversationURL(session);
   f.faux.setResponses([fauxAssistantMessage("A completed turn.")]);
   await session.root.submit({ type: "input", content: "Begin.", requestId: randomUUID() }, context);
   await session.root.waitForIdle(context);
   const history = await readHistory(session.root);
+  const settings = {
+    name: "",
+    instructions: "",
+    target: targetKey(f.binding),
+    model: modelKey(model),
+  };
   for (const [action, data] of [
-    ["submit", { type: "input", content: "No", whenBusy: "invalid" }],
-    ["submit", { type: "input", content: 123 }],
-    ["configure", { thinkingLevel: "invalid" }],
-    ["abortSubmission", { id: "wrong" }],
-    ["fork", { at: -1 }],
+    ["submit", { content: "No", requestId: randomUUID(), whenBusy: "invalid" }],
+    ["submit", { content: "No", whenBusy: "reject" }],
+    ["settings", { ...settings, thinkingLevel: "invalid" }],
+    ["cancel", { id: "wrong" }],
+    ["fork", { at: "-1" }],
   ] as const)
     assert.equal((await post(`${url}/${action}`, data)).status, 400);
-  assert.equal(
-    (
-      await post(`${url}/configure`, {
-        instructions: null,
-        tools: { remove: [{ name: "not-installed" }] },
-      })
-    ).status,
-    200,
-  );
-  assert.equal((await session.root.agent(context)).instructions, undefined);
-  for (const name of [null, 123, "a".repeat(121), "line\nbreak"]) {
-    assert.equal((await post(`${base}/api/sessions/${session.id}/rename`, { name })).status, 400);
-  }
-  const renamed = await post(`${base}/api/sessions/${session.id}/rename`, {
-    name: "  Counter cleanup  ",
-  });
-  assert.equal(renamed.status, 200);
-  assert.equal((await renamed.json()).name, "Counter cleanup");
-  assert.equal(
-    (await (await fetch(base + "/api/catalog")).json()).sessions[0].name,
-    "Counter cleanup",
-  );
+  assert.equal((await post(`${url}/settings`, settings)).status, 303);
+  assert.equal((await session.root.agent(context)).instructions, "");
+  for (const name of ["a".repeat(121), "line\nbreak"])
+    assert.equal((await post(`${url}/settings`, { ...settings, name })).status, 400);
+  const renamed = await post(`${url}/settings`, { ...settings, name: "  Counter cleanup  " });
+  assert.equal(renamed.status, 303);
+  assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
+  assert.equal((await f.sessions.catalog()).sessions[0].name, "Counter cleanup");
   assert.deepEqual(await readHistory(session.root), history);
-  assert.equal((await fetch(`${url}/watch?conversation=-1`)).status, 400);
-  assert.equal((await fetch(`${url}/watch?conversation=9999999`)).status, 404);
-  const forkResponse = await post(`${url}/fork`, {
-    at: history.at(-1)?.id,
-    options: { ownership: { kind: "ownerless" } },
-  });
-  assert.equal(forkResponse.status, 200);
-  const fork = await forkResponse.json();
-  const branch = await runtime.getConversation(session, fork.id);
+  assert.equal((await fetch(base + `/sessions/${session.id}/conversations/not-an-id`)).status, 404);
+  assert.equal((await fetch(base + `/sessions/${session.id}/conversations/9999999`)).status, 404);
+  const forkResponse = await post(`${url}/fork`, { at: String(history.at(-1)!.id) });
+  assert.equal(forkResponse.status, 303);
+  const forkPath = forkResponse.headers.get("location");
+  assert(forkPath);
+  const branch = await runtime.getConversation(session, Number(forkPath.split("/").at(-1)));
   assert.deepEqual(await readHistory(branch), history);
-  assert.equal((await fetch(`${url}/scanConversations`)).status, 200);
-  const reset = await post(`${url}/reset?conversation=${fork.id}`, {
-    handoff: "Carry this forward.",
-  });
-  assert.equal(reset.status, 200);
+  assert.equal((await fetch(`${url}/branches`)).status, 200);
+  assert.equal(
+    (await post(base + forkPath + "/reset", { argument: "Carry this forward." })).status,
+    303,
+  );
   assert.equal((await branch.context(context)).messages.length, 1);
   assert.deepEqual(await readHistory(session.root), history);
-  const exported = await (await fetch(`${url}/entries?conversation=${fork.id}`)).json();
-  assert.equal(exported.items.length, history.length + 1);
-  assert.equal((await post(`${url}/compact?conversation=${fork.id}`, {})).status, 200);
+  const exported = await (await fetch(base + forkPath + "/export")).json();
+  assert.equal(exported.length, history.length + 1);
+  assert.equal((await post(base + forkPath + "/compact", {})).status, 303);
   await session.harness.waitForIdle(context);
   assert.equal((await session.harness.inspect(context)).tasks.length, 0);
-  const manifest = await (await fetch(base + "/manifest.webmanifest")).json();
+  const manifest = await (await fetch(base + "/sessions/manifest.webmanifest")).json();
   assert.equal(manifest.display, "standalone");
   assert.deepEqual(
     manifest.icons.map((icon: { sizes: string }) => icon.sizes),
@@ -705,7 +624,7 @@ await test(
           ? "/sessions/directories?" +
             new URLSearchParams({ target: targetKey(f.binding), baseDirectory: "" })
           : conversationURL(session) +
-            (operation === "completions" ? "/completions?kind=path" : "");
+            (operation === "completions" ? "/completions?kind=path" : "/repository");
       const pending = fetch(base + resource, { signal: controller.signal });
       const rejected = assert.rejects(pending, { name: "AbortError" });
       const running = await entered.promise;
@@ -763,10 +682,15 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "medium");
   assert.equal(options.settings?.compaction?.reserveTokens, 12345);
   assert.equal(options.settings?.stream?.maxRetries, 0);
-  const get = () =>
-    fetch(base + "/api/settings").then((response) => response.json()) as Promise<GlobalSettings>;
-  assert.equal((await get()).values.defaultThinkingLevel, "medium");
-  const before = await get();
+  const get = () => store.read();
+  const globalForm = () =>
+    Object.fromEntries(
+      settingFields
+        .filter((field) => !("readonly" in field))
+        .map((field) => [field.key, String(get().values[field.key])]),
+    );
+  assert.equal(get().values.defaultThinkingLevel, "medium");
+  const before = get();
   for (const data of [
     { values: { defaultThinkingLevel: "wrong" } },
     { values: { "retry.enabled": "false" } },
@@ -779,24 +703,34 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
     { modelThinkingLevel: "high" },
     { unknown: true },
   ]) {
-    assert.equal((await post(base + "/api/settings", data)).status, 400);
-    assert.deepEqual(await get(), before);
+    await assert.rejects(store.update(data, sessions), { status: 400 });
+    assert.deepEqual(get(), before);
   }
-  const result = await post(base + "/api/settings", {
-    model,
+  for (const [key, value] of [
+    ["defaultThinkingLevel", "wrong"],
+    ["retry.enabled", "not-a-boolean"],
+    ["model", "missing"],
+  ]) {
+    assert.equal(
+      (await post(base + "/sessions/settings", { ...globalForm(), [key]: value })).status,
+      400,
+    );
+    assert.deepEqual(get(), before);
+  }
+  const result = await post(base + "/sessions/settings", {
+    ...globalForm(),
+    model: modelKey(model),
     modelThinkingLevel: "high",
-    values: {
-      defaultThinkingLevel: "low",
-      "compaction.enabled": false,
-      "retry.enabled": false,
-      steeringMode: "all",
-      followUpMode: "all",
-      transport: "sse",
-      hideThinkingBlock: true,
-      "terminal.showImages": false,
-    },
+    defaultThinkingLevel: "low",
+    "compaction.enabled": "false",
+    "retry.enabled": "false",
+    steeringMode: "all",
+    followUpMode: "all",
+    transport: "sse",
+    hideThinkingBlock: "true",
+    "terminal.showImages": "false",
   });
-  assert.equal(result.status, 200);
+  assert.equal(result.status, 303);
   const persisted = SettingsManager.create(f.workspace, agentDir, {
     projectTrusted: false,
   });
@@ -817,43 +751,56 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   assert.equal(options.settings?.steeringMode, "all");
   assert.equal(options.settings?.followUpMode, "all");
   assert.equal(options.settings?.stream?.transport, "sse");
-  const view = await snapshot(base + "/api/harness/" + current.id + "/watch");
+  const watch = await current.root.watch(context);
+  t.after(() => watch.stop());
+  const view = {
+    context: runtime.contextStatus(current, watch.value),
+    inspection: await runtime.inspectContext(current, watch.value, context),
+  };
+  await watch.stop();
   assert.equal(view.context.autoCompact, false);
   assert(view.inspection.state === "available");
   assert.equal(view.inspection.policy.enabled, false);
   assert.equal(view.inspection.policy.reserveTokens, 12345);
   assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "medium");
-  const created = await post(base + "/api/sessions", {
-    id: randomUUID(),
-    binding: f.binding,
-    model,
-  });
-  assert.equal(created.status, 201);
-  assert.equal((await created.json()).thinkingLevel, "high");
-  const override = await post(base + "/api/sessions", {
-    id: randomUUID(),
-    binding: f.binding,
-    model,
-    thinkingLevel: "off",
-  });
-  assert.equal((await override.json()).thinkingLevel, "off");
-  const invalid = await post(base + "/api/sessions", {
-    id: randomUUID(),
-    binding: f.binding,
-    model,
-    thinkingLevel: "invalid",
-  });
-  assert.equal(invalid.status, 400);
-  const configured = await post(base + "/api/harness/" + current.id + "/configure", {
-    model,
-    thinkingLevel: "max",
+  const create = async (thinkingLevel?: string) => {
+    const id = randomUUID();
+    const response = await post(base + "/sessions", {
+      id,
+      target: targetKey(f.binding),
+      model: modelKey(model),
+      ...(thinkingLevel ? { thinkingLevel } : {}),
+    });
+    return { id, response };
+  };
+  const created = await create();
+  assert.equal(created.response.status, 303);
+  assert.equal((await runtime.sessionInfo(await sessions.get(created.id))).thinkingLevel, "high");
+  const override = await create("off");
+  assert.equal(override.response.status, 303);
+  assert.equal((await runtime.sessionInfo(await sessions.get(override.id))).thinkingLevel, "off");
+  assert.equal((await create("invalid")).response.status, 400);
+  // Durable stores the explicit value; forms constrain it to the selected model.
+  await current.root.configure({ thinkingLevel: "max" }, context);
+  assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "max");
+  const configured = await post(base + conversationURL(current) + "/settings", {
+    name: "",
+    target: targetKey(f.binding),
+    model: modelKey(model),
+    thinkingLevel: "high",
     instructions: "",
   });
-  assert.equal(configured.status, 200);
-  assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "max");
+  assert.equal(configured.status, 303);
+  assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "high");
   assert.equal(
-    (await post(base + "/api/settings", { model, modelThinkingLevel: null })).status,
-    200,
+    (
+      await post(base + "/sessions/settings", {
+        ...globalForm(),
+        model: modelKey(model),
+        modelThinkingLevel: "",
+      })
+    ).status,
+    303,
   );
   assert.equal((await sessions.catalog()).models[0].defaultThinkingLevel, "low");
   // Verify the actual generation receives the policy, not only our settings object.
@@ -942,18 +889,21 @@ await test("queued compaction duration resolves its submission, including after 
   const base = await serve(t, sessions);
   for (const conversation of [session.root, branch]) {
     const history = await (
-      await fetch(`${base}/api/harness/${session.id}/entries?conversation=${conversation.id}`)
+      await fetch(base + conversationURL(session, conversation.id) + "/export")
     ).json();
-    assert(history.items.some((item: { id: number }) => item.id === entry.id));
-    const task = await (
-      await fetch(`${base}/api/harness/${session.id}/getTask?id=${taskId}`)
-    ).json();
-    assert.equal(task.endedAt - task.startedAt, duration);
-    const submission = await (
-      await fetch(
-        `${base}/api/harness/${session.id}/submission/status?id=${task.state.outcome.result.submissionId}`,
-      )
-    ).json();
+    assert(history.some((item: { id: number }) => item.id === entry.id));
+    const recorded = await session.harness.getTask(taskId, context);
+    assert(recorded?.startedAt !== undefined && recorded.endedAt !== undefined);
+    assert.equal(recorded.endedAt - recorded.startedAt, duration);
+    assert.equal(recorded.state.outcome?.status, "completed");
+    assert(recorded.state.outcome?.status === "completed");
+    const result = recorded.state.outcome.result as {
+      submissionId: import("@earendil-works/pi-durable").SubmissionId;
+    };
+    const handle = await session.harness.submission(result.submissionId, context);
+    assert(handle);
+    const submission = await handle.status(context);
+    assert(submission);
     assert.equal(submission.entry, entry.id);
   }
 });

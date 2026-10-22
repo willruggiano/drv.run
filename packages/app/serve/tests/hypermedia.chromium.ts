@@ -831,7 +831,6 @@ await test("HTML projection measurements: same 150-entry, 40-update workload as 
     "htmx.js",
     "hypermedia-client.js",
     "hypermedia.css",
-    "client.js",
     "styles.css",
     "highlight.js",
   ]) {
@@ -907,4 +906,64 @@ await test("image submission reaches Durable; generation completes after the HTM
   assert.equal(messages.filter((message) => message.role === "assistant").length, 1);
   assert.equal(f.faux.state.callCount, 1);
   assert.equal((await session.harness.snapshot(LiveDoc, session.root.id, context))?.run, undefined);
+});
+
+await test("HTML retires the removed root worker and its cached shell", async (t) => {
+  const f = await fixture(t);
+  const b = await browserFixture(t, f.sessions);
+  const server = httpServer(f.sessions, "127.0.0.1", b.assets);
+  const handler = server.listeners("request")[0] as import("node:http").RequestListener;
+  server.removeAllListeners("request");
+  let legacy = true;
+  server.on("request", (request, response) => {
+    if (!legacy) return handler(request, response);
+    if (request.url === "/sw.js") {
+      response.setHeader("Content-Type", "text/javascript");
+      response.end(
+        'self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));',
+      );
+    } else {
+      response.setHeader("Content-Type", "text/html");
+      response.end("<!doctype html><title>Legacy worker fixture</title>");
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await b.page.goto(base);
+  await b.page.evaluate(async () => {
+    await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    await navigator.serviceWorker.ready;
+    await (await caches.open("pi-shell-v26")).put("/", new Response("Retired shell"));
+    await caches.open("unrelated-cache");
+  });
+  legacy = false;
+  await b.page.goto(base);
+  await waitFor(() =>
+    b.page.evaluate(async () => {
+      const workers = await navigator.serviceWorker.getRegistrations();
+      return (
+        workers.length === 1 &&
+        !!navigator.serviceWorker.controller &&
+        new URL(navigator.serviceWorker.controller.scriptURL).pathname === "/hypermedia-sw.js" &&
+        !(await caches.keys()).includes("pi-shell-v26")
+      );
+    }),
+  );
+  const state = await b.page.evaluate(async () => ({
+    scopes: (await navigator.serviceWorker.getRegistrations()).map(
+      (worker) => new URL(worker.scope).pathname,
+    ),
+    caches: await caches.keys(),
+  }));
+  assert.deepEqual(state.scopes, ["/sessions"]);
+  assert.equal(state.caches.includes("unrelated-cache"), true);
+  assert.equal(state.caches.includes("pi-shell-v26"), false);
+  assert.equal(await b.page.locator("#composer").count(), 1);
+  assert.deepEqual(b.errors, []);
 });

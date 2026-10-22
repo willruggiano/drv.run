@@ -1,3 +1,5 @@
+import { completePaths } from "../sessions.ts";
+import { conversationURL } from "../hypermedia.ts";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -77,12 +79,15 @@ await test("HTTP path completion uses the session workspace and validates paths"
   const session = await f.create();
   const base = await serve(t, f.sessions);
   const complete = (query: string) =>
-    fetch(`${base}/api/sessions/${session.id}/completions?query=${encodeURIComponent(query)}`);
-  assert.deepEqual(await (await complete("")).json(), ["space name.txt", "src/"]);
-  assert.deepEqual(await (await complete("SRC/e")).json(), []);
-  assert.deepEqual(await (await complete("src/E")).json(), ["src/example.ts"]);
-  assert.deepEqual(await (await complete(".")).json(), [".hidden"]);
-  assert.deepEqual(await (await complete("absent/")).json(), []);
+    fetch(
+      `${base}${conversationURL(session)}/completions?kind=path&query=${encodeURIComponent(query)}`,
+    );
+  assert.equal((await complete("")).status, 200);
+  assert.deepEqual(await completePaths(session, ""), ["space name.txt", "src/"]);
+  assert.deepEqual(await completePaths(session, "SRC/e"), []);
+  assert.deepEqual(await completePaths(session, "src/E"), ["src/example.ts"]);
+  assert.deepEqual(await completePaths(session, "."), [".hidden"]);
+  assert.deepEqual(await completePaths(session, "absent/"), []);
   for (const query of ["../", "src/../../", "/etc/", "\0", "x".repeat(4097)])
     assert.equal((await complete(query)).status, 400, query);
   assert.equal(f.faux.state.callCount, 0);
@@ -90,7 +95,7 @@ await test("HTTP path completion uses the session workspace and validates paths"
   // A missing integration must not fall back to reading the web server's cwd.
   const unavailableBase = await serve(t, f.sessions);
   assert.equal(
-    (await fetch(`${unavailableBase}/api/sessions/${session.id}/completions`)).status,
+    (await fetch(`${unavailableBase}${conversationURL(session)}/completions?kind=path`)).status,
     409,
   );
 });

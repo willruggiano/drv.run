@@ -1,4 +1,4 @@
-// Renderer-only by default; --frontend measures real page and SSE delivery.
+// Measures the production page and SSE delivery.
 // Run with --help for CLI usage. Stdout is one versioned JSON object.
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -15,6 +15,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import {
   ROOT_CONVERSATION_ID,
   LiveDoc,
+  type ConversationView,
   type EntryRecord,
   type LiveState,
   type TaskId,
@@ -22,19 +23,18 @@ import {
 import type { CDPSession, Page } from "playwright";
 import { conversationURL } from "./hypermedia.ts";
 import { Sessions } from "./sessions.ts";
-import type { RenderState } from "./client.ts";
 import { httpServer } from "./server.ts";
 import { buildAssets } from "./build.ts";
 
 const usage = `Usage: node packages/app/serve/benchmark.ts [options]
-  --frontend original|hypermedia
-                 Measure real page/SSE delivery (default: original renderer only)
+  --frontend hypermedia
+                 Measure real page/SSE delivery (the only frontend; also the default)
   --runs N       Fresh browser launches (default 3, maximum 100)
   --turns N      History turns, each with a user, assistant and tool result (default 200)
-  --entries N    Exact history size (page mode only; mutually exclusive with --turns)
+  --entries N    Exact history size (mutually exclusive with --turns)
                  Remainder entries form a final text-only turn
   --memory       Separate fresh-browser runs with forced-GC heap and DOM measurements
-                 Page mode only; memory-run timings are excluded from timing samples
+                 Memory-run timings are excluded from timing samples
   --cpu-rate N   Chromium CPU slowdown factor, >= 1 (default 1)
   --profile      Extra fresh-browser run with CPU profiles and browser traces
   --profile-dir DIR
@@ -69,11 +69,8 @@ export function benchmarkOptions(args: string[]) {
       help: { type: "boolean", default: false },
     },
   });
-  const frontend = values.frontend;
-  assert(
-    frontend === undefined || frontend === "original" || frontend === "hypermedia",
-    "--frontend must be original or hypermedia",
-  );
+  const frontend = values.frontend ?? "hypermedia";
+  assert(frontend === "hypermedia", "--frontend must be hypermedia");
   assert(values.profile || values["profile-dir"] === undefined, "--profile-dir requires --profile");
   const number = (value: string, name: string, max: number, integer = true) => {
     const result = Number(value);
@@ -89,10 +86,6 @@ export function benchmarkOptions(args: string[]) {
   assert(
     values.entries === undefined || values.turns === undefined,
     "Use --entries or --turns, not both",
-  );
-  assert(
-    frontend !== undefined || (values.entries === undefined && !values.memory),
-    "--entries and --memory require --frontend",
   );
   const entries =
     values.entries === undefined
@@ -122,7 +115,10 @@ const timestamp = 1_700_000_000_000;
 const streamUpdates = 40;
 const transitions = 10;
 
-export function benchmarkFixture(turns: number, entryCount = turns * 3): RenderState {
+export function benchmarkFixture(
+  turns: number,
+  entryCount = turns * 3,
+): { view: ConversationView } {
   assert(Number.isSafeInteger(turns) && turns > 0);
   assert(
     Number.isSafeInteger(entryCount) && entryCount > (turns - 1) * 3 && entryCount <= turns * 3,
@@ -185,29 +181,16 @@ export function benchmarkFixture(turns: number, entryCount = turns * 3): RenderS
     };
   }
   return {
-    session: {
-      id: "benchmark",
-      name: "Profile",
-      binding: { provider: "local", target: "local", cwd: "/tmp" },
-      cwd: "/tmp",
-      created: timestamp,
-      model: { provider: "faux", modelId: "faux-1" },
-      thinkingLevel: "off",
-      needsResume: false,
-    },
-    context: { window: 200_000, autoCompact: true, lastResponse: null },
-    inspection: { state: "unavailable", conversation: ROOT_CONVERSATION_ID },
     view: { conversation: { id: ROOT_CONVERSATION_ID }, entries, docs: { "pi.live": {} } },
   };
 }
 
 declare global {
   interface Window {
-    __piBenchmarkRender(snapshot: string): number;
     __piBenchmarkCommit(live: LiveState): Promise<void>;
     __piBenchmarkObserve(expected: { text?: string; busy?: boolean }): Promise<number>;
     __piBenchmarkComplete: Promise<number>;
-    __piBenchmarkStreamReady: boolean;
+    __piBenchmarkStreamReady: number | undefined;
   }
 }
 
@@ -309,10 +292,8 @@ type MemorySample = Awaited<ReturnType<typeof measureMemory>> & {
 // deterministic observations without starting a provider or changing its semantics.
 async function pageWorkload(
   page: Page,
-  cdp: CDPSession,
   sessions: Sessions,
   base: string,
-  frontend: "original" | "hypermedia",
   entries: number,
   bytesWritten: () => number,
   stage: <T>(phase: ProfilePhase, action: () => Promise<T>) => Promise<T>,
@@ -332,7 +313,7 @@ async function pageWorkload(
     }, context),
   );
   await page.addInitScript(
-    ({ frontend, entries }) => {
+    ({ entries }) => {
       window.__piBenchmarkObserve = (expected) =>
         new Promise<number>((resolve, reject) => {
           const start = expected.busy === undefined ? 0 : performance.now();
@@ -341,26 +322,18 @@ async function pageWorkload(
             if (!transcript) return;
             if (expected.busy === undefined) {
               if (
-                transcript.querySelectorAll("article").length !==
-                  (frontend === "original" ? entries - Math.floor(entries / 3) : entries) ||
+                transcript.querySelectorAll("article").length !== entries ||
                 transcript.querySelectorAll(".tool-call").length !== Math.floor(entries / 3)
               )
                 return;
             } else {
-              const status = document.querySelector(
-                frontend === "original" ? "#status" : "#controls",
-              );
+              const status = document.querySelector("#controls");
               if (status?.getAttribute("data-state") !== (expected.busy ? "working" : "ready"))
                 return;
               if (
                 expected.text !== undefined &&
-                document
-                  .querySelector(
-                    frontend === "original"
-                      ? "#transcript > article:last-child .text"
-                      : "#live .text",
-                  )
-                  ?.textContent?.trimEnd() !== expected.text.trimEnd()
+                document.querySelector("#live .text")?.textContent?.trimEnd() !==
+                  expected.text.trimEnd()
               )
                 return;
             }
@@ -394,66 +367,33 @@ async function pageWorkload(
           check();
         });
       window.__piBenchmarkComplete = window.__piBenchmarkObserve({});
-      window.__piBenchmarkStreamReady = false;
+      window.__piBenchmarkStreamReady = undefined;
       document.addEventListener(
         "htmx:sse:after:message",
         () => {
-          window.__piBenchmarkStreamReady = true;
+          window.__piBenchmarkStreamReady = performance.now();
         },
         { once: true },
       );
     },
-    { frontend, entries },
+    { entries },
   );
-  const firstFrame = Promise.withResolvers<void>();
-  let streamRequest: string | undefined;
-  const requested = (event: { requestId: string; request: { url: string } }) => {
-    const path = new URL(event.request.url).pathname;
-    if (
-      path ===
-      (frontend === "original"
-        ? `/api/harness/${session.id}/watch`
-        : `${conversationURL(session)}/events`)
-    )
-      streamRequest = event.requestId;
-  };
-  const received = (event: { requestId: string }) => {
-    if (event.requestId === streamRequest) firstFrame.resolve();
-  };
-  // Observe initial delivery only. Disable network telemetry before token timing.
-  if (frontend === "original") await cdp.send("Network.enable");
-  cdp.on("Network.requestWillBeSent", requested);
-  cdp.on("Network.eventSourceMessageReceived", received);
   const initialBefore = bytesWritten();
   const initialMs = await stage("initial", async () => {
-    const timeout = setTimeout(() => {
-      if (frontend === "original") firstFrame.reject(new Error("Initial SSE frame timed out"));
-    }, 30_000);
-    try {
-      await Promise.all([
-        page.goto(
-          base + (frontend === "original" ? `/?session=${session.id}` : conversationURL(session)),
+    await page.goto(base + conversationURL(session));
+    await page.waitForFunction(() => window.__piBenchmarkStreamReady !== undefined);
+    const elapsed = await page.evaluate(() => window.__piBenchmarkComplete);
+    // Drain the initial event handler and resulting layout before token timing.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
         ),
-        frontend === "original" ? firstFrame.promise : Promise.resolve(),
-      ]);
-      if (frontend === "hypermedia")
-        await page.waitForFunction(() => window.__piBenchmarkStreamReady);
-      const elapsed = await page.evaluate(() => window.__piBenchmarkComplete);
-      // Drain the initial event handler and resulting layout before token timing.
-      await page.evaluate(
-        () =>
-          new Promise<void>((resolve) =>
-            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-          ),
-      );
-      return elapsed;
-    } finally {
-      clearTimeout(timeout);
-      cdp.off("Network.requestWillBeSent", requested);
-      cdp.off("Network.eventSourceMessageReceived", received);
-      if (frontend === "original") await cdp.send("Network.disable");
-    }
+    );
+    return elapsed;
   });
+  const firstUpdateMs = await page.evaluate(() => window.__piBenchmarkStreamReady);
+  assert(firstUpdateMs !== undefined);
   const initialBytes = bytesWritten() - initialBefore;
   const initialDomElements = await page.locator("#transcript *").count();
   const assistant = fauxAssistantMessage("", { timestamp: timestamp + 3 });
@@ -509,6 +449,7 @@ async function pageWorkload(
   });
   return {
     initialMs,
+    firstUpdateMs,
     initialBytes,
     initialDomElements,
     startMs,
@@ -530,30 +471,27 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
   let sessions: Sessions | undefined;
   let server: ReturnType<typeof httpServer> | undefined;
   try {
-    if (existsSync(join(options.assets, "client.ts"))) await buildAssets(options.assets, directory);
+    if (existsSync(join(options.assets, "hypermedia-client.ts")))
+      await buildAssets(options.assets, directory);
     else
       for (const file of [
-        "client.js",
         "highlight.js",
-        "index.html",
         "styles.css",
         "hypermedia-client.js",
+        "hypermedia-sw.js",
+        "icon-192.png",
+        "icon-512.png",
         "hypermedia.css",
         "htmx.js",
         "hx-sse.js",
         "hypermedia-morph.js",
       ])
         await copyFile(join(options.assets, file), join(directory, file));
-    const client = await readFile(
-      join(directory, options.frontend === "hypermedia" ? "hypermedia-client.js" : "client.js"),
-      "utf8",
-    );
-    const html = await readFile(join(directory, "index.html"), "utf8");
+    const client = await readFile(join(directory, "hypermedia-client.js"), "utf8");
     const css = await readFile(join(directory, "styles.css"), "utf8");
     const highlighter = await readFile(join(directory, "highlight.js"), "utf8");
     const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-    // No provider, credentials or tools. Page mode commits the synthetic
-    // history/live documents; renderer-only mode needs only the asset server.
+    // No provider, credentials or tools. Commit synthetic history/live documents.
     sessions = await Sessions.open({
       directory: join(directory, "state"),
       models: createModels(),
@@ -568,18 +506,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
     });
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const viewport = { width: 390, height: 844 };
-    const runs: {
-      run: number;
-      initialMs: number;
-      initialDomElements: number;
-      startMs: number;
-      streamingMs: number[];
-      transitionsMs: number[];
-      initialBytes?: number;
-      startBytes?: number;
-      streamingBytes?: number[];
-      transitionsBytes?: number[];
-    }[] = [];
+    const runs: (Awaited<ReturnType<typeof pageWorkload>> & { run: number })[] = [];
     const profile = options.profile
       ? {
           separateRun: true,
@@ -647,129 +574,43 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
           profile.artifacts.push(result.artifact);
           return result.value;
         };
-        if (options.frontend) {
-          const sample = await pageWorkload(
-            page,
-            cdp,
-            sessions,
-            base,
-            options.frontend,
-            options.entries,
-            bytesWritten,
-            stage,
-          );
-          assert.deepEqual(errors, []);
-          if (memoryRun && memory) {
-            memoryRun.samples.push({ phase: "settled", ...(await measureMemory(cdp, page)) });
-            memory.runs.push(memoryRun);
-          } else if (!profiling) runs.push({ run, ...sample });
-          continue;
-        }
-        await page.goto(base);
-        // Let the ordinary catalog initialization finish before showing the synthetic surface.
-        await page.waitForFunction(
-          () => document.querySelector("#models")?.childElementCount === 1,
+        const sample = await pageWorkload(
+          page,
+          sessions,
+          base,
+          options.entries,
+          bytesWritten,
+          stage,
         );
-        // Import the public renderer export, not private names that minifiers
-        // can rename. The timed code uses the exact served production module.
-        // The literal browser import avoids tsc adding a Node-side import
-        // rewriting helper to a function that Playwright serializes.
-        const frontend = await page.evaluateHandle<{ render: (snapshot: RenderState) => void }>(
-          "import('/client.js')",
-        );
-        await page.evaluate(({ render }) => {
-          const transcript = document.getElementById("transcript");
-          if (!transcript) throw new Error("Missing transcript");
-          // This synthetic workload has no selected session. Show its render
-          // surface explicitly instead of benchmarking the hidden transcript.
-          const landing = document.getElementById("landing");
-          if (!landing) throw new Error("Missing landing page");
-          landing.hidden = true;
-          transcript.hidden = false;
-          window.__piBenchmarkRender = (snapshot) => {
-            const start = performance.now();
-            render(JSON.parse(snapshot) as RenderState);
-            transcript.getBoundingClientRect();
-            return performance.now() - start;
-          };
-        }, frontend);
-        await frontend.dispose();
-        assert.equal(await page.locator("#transcript").isVisible(), true);
-        const snapshot = benchmarkFixture(options.turns);
-        // Serialization and Playwright's transport are outside the browser timer.
-        const measure = () =>
-          page.evaluate((data) => window.__piBenchmarkRender(data), JSON.stringify(snapshot));
-        const initialMs = await stage("initial", measure);
-        assert.equal(await page.locator("#transcript > article").count(), options.turns * 2);
-        assert.equal(await page.locator(".tool-call").count(), options.turns);
-        const initialDomElements = await page.locator("#transcript *").count();
-        const assistant = fauxAssistantMessage("", { timestamp: timestamp + 3 });
-        const partial = {
-          role: assistant.role,
-          content: [{ type: "text" as const, text: "" }],
-          api: assistant.api,
-          provider: assistant.provider,
-          model: assistant.model,
-          usage: assistant.usage,
-          stopReason: assistant.stopReason,
-          timestamp: assistant.timestamp,
-        };
-        const runState = { taskId: 1 as TaskId, inputs: [] };
-        const live: LiveState = {
-          run: runState,
-          generation: { attempt: 1, message: partial },
-        };
-        snapshot.view = { ...snapshot.view, entries: [], docs: { "pi.live": live } };
-        const { startMs, streamingMs } = await stage("streaming", async () => {
-          const startMs = await measure();
-          const streamingMs: number[] = [];
-          for (let update = 1; update <= streamUpdates; update++) {
-            partial.content[0].text = "An incremental update. ".repeat(update);
-            streamingMs.push(await measure());
-          }
-          return { startMs, streamingMs };
-        });
-        const transitionsMs = await stage("transitions", async () => {
-          const timings: number[] = [];
-          for (let transition = 0; transition < transitions; transition++) {
-            snapshot.view = {
-              ...snapshot.view,
-              docs: { "pi.live": transition % 2 ? { run: runState } : {} },
-            };
-            timings.push(await measure());
-          }
-          return timings;
-        });
         assert.deepEqual(errors, []);
-        if (!profiling)
-          runs.push({ run, initialMs, initialDomElements, startMs, streamingMs, transitionsMs });
+        if (memoryRun && memory) {
+          memoryRun.samples.push({ phase: "settled", ...(await measureMemory(cdp, page)) });
+          memory.runs.push(memoryRun);
+        } else if (!profiling) runs.push({ run, ...sample });
       } finally {
         await browser.close();
       }
     }
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       benchmark: "serve.render",
-      frontend: options.frontend ?? "renderer",
+      frontend: options.frontend,
       units: "ms",
       measurement: {
-        includes: options.frontend
-          ? [
-              "page-loading",
-              "commit",
-              "http",
-              "sse-dispatch",
-              "render",
-              "synchronous-layout",
-              "browser-control-transport",
-            ]
-          : ["json-parse", "render", "synchronous-layout"],
-        excludes: options.frontend
-          ? ["completed-paint"]
-          : ["asset-loading", "network", "sse-dispatch", "completed-paint"],
-        bytes: options.frontend
-          ? "HTTP response headers, bodies and chunk framing; excludes TCP/IP overhead"
-          : null,
+        initial:
+          "Navigation start to first transcript layout; excludes later client initialization",
+        firstUpdate: "Navigation start to the first SSE update applied by htmx",
+        includes: [
+          "page-loading",
+          "commit",
+          "http",
+          "sse-dispatch",
+          "render",
+          "synchronous-layout",
+          "browser-control-transport",
+        ],
+        excludes: ["completed-paint"],
+        bytes: "HTTP response headers, bodies and chunk framing; excludes TCP/IP overhead",
         profiling: false,
         freshBrowserPerRun: true,
       },
@@ -790,15 +631,8 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       source: {
         clientSha256: hash(client),
         cssSha256: hash(css),
-        htmlSha256: options.frontend === "hypermedia" ? null : hash(html),
-        htmxSha256:
-          options.frontend === "hypermedia"
-            ? hash(await readFile(join(directory, "htmx.js"), "utf8"))
-            : null,
-        hypermediaCssSha256:
-          options.frontend === "hypermedia"
-            ? hash(await readFile(join(directory, "hypermedia.css"), "utf8"))
-            : null,
+        htmxSha256: hash(await readFile(join(directory, "htmx.js"), "utf8")),
+        hypermediaCssSha256: hash(await readFile(join(directory, "hypermedia.css"), "utf8")),
         highlighterSha256: hash(highlighter),
       },
       workload: {

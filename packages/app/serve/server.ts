@@ -1,39 +1,17 @@
 import { html as h } from "./html.ts";
-import * as runtime from "./sessions.ts";
 import { hypermedia, html, FormError } from "./hypermedia.ts";
-import { Review } from "harness";
-import { startReview, endReview } from "./review.ts";
 import { openApplication } from "./application.ts";
 import { ownerOptions } from "./instances.ts";
 import { readFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer } from "node:http";
 import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  BACKGROUND_CONTEXT,
-  withAbortSignal,
-  awaitWithContext,
-} from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
-import {
-  ConversationBusy,
-  StorageRequestError,
-  type Cursor,
-  type SubmissionId,
-  type SubmissionDraft,
-  type AgentChange,
-  type ConversationCreateOptions,
-  type EntryId,
-  type WatchHandle,
-  AgentDoc,
-  InboxDoc,
-  LiveDoc,
-  UsageDoc,
-  ProviderDoc,
-} from "@earendil-works/pi-durable";
+import { ConversationBusy, StorageRequestError } from "@earendil-works/pi-durable";
 import {
   DEFAULT_THINKING_LEVEL,
   stateDirectory,
@@ -230,81 +208,6 @@ function string(value: unknown, maximum = 100_000): string {
     throw new RequestError(400, "Invalid text value.");
   return value;
 }
-async function body(
-  request: IncomingMessage,
-  maximum = 128 * 1024,
-): Promise<Record<string, unknown>> {
-  if (request.headers["content-type"]?.split(";")[0] !== "application/json")
-    throw new RequestError(415, "Expected application/json.");
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.from(chunk);
-    size += buffer.length;
-    if (size > maximum) throw new RequestError(413, "Request too large.");
-    chunks.push(buffer);
-  }
-  try {
-    return object(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-  } catch (error) {
-    if (error instanceof RequestError) throw error;
-    throw new RequestError(400, "Invalid JSON.");
-  }
-}
-function json(response: ServerResponse, status: number, data: unknown): void {
-  response.writeHead(status, { "Content-Type": "application/json" });
-  response.end(JSON.stringify(data));
-}
-
-async function stream<T>(watch: WatchHandle<T>, response: ServerResponse): Promise<void> {
-  // The watch uses the request context; disconnect cancels it upstream.
-  if (response.destroyed) return;
-  response.writeHead(200, { "Content-Type": "text/event-stream", "X-Accel-Buffering": "no" });
-  async function send(value: T, ops: readonly unknown[]) {
-    if (response.destroyed) return;
-    if (response.writableLength > 1024 * 1024) {
-      response.destroy();
-      return;
-    }
-    if (!response.write(`data: ${JSON.stringify({ value, ops })}\n\n`))
-      await new Promise<void>((resolve) => {
-        const done = () => {
-          response.off("drain", done);
-          response.off("close", done);
-          resolve();
-        };
-        response.once("drain", done);
-        response.once("close", done);
-      });
-  }
-  await send(watch.value, []);
-  if (response.destroyed) return;
-  watch.start(send);
-  const heartbeat = setInterval(() => {
-    if (response.writableLength > 1024 * 1024) response.destroy();
-    else response.write(": heartbeat\n\n");
-  }, 15_000);
-  void watch.closed.then((end) => {
-    clearInterval(heartbeat);
-    if (!response.destroyed) response.end(`event: end\ndata: ${JSON.stringify(end)}\n\n`);
-  });
-}
-
-function queryObject(url: URL, name: "query" | "cursor"): Record<string, unknown> | undefined {
-  const value = url.searchParams.get(name);
-  if (value === null) return undefined;
-  try {
-    return object(JSON.parse(value));
-  } catch {
-    throw new RequestError(400, `Invalid ${name}.`);
-  }
-}
-
-function directoryInput(value: unknown): string {
-  if (typeof value !== "string") throw new RequestError(400, "Invalid base directory.");
-  return value;
-}
-
 export function httpServer(
   sessions: Sessions,
   host: string,
@@ -344,367 +247,15 @@ export function httpServer(
       const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
       if (url.pathname === "/sessions" || url.pathname.startsWith("/sessions/"))
         return await hypermedia(request, response, url, sessions, context, settings);
-      if (request.method === "GET" && url.pathname === "/api/settings/watch") {
-        if (!settings) return json(response, 200, null);
-        response.writeHead(200, { "Content-Type": "text/event-stream", Connection: "keep-alive" });
-        const send = () => {
-          if (response.writableLength > 1024 * 1024) response.destroy();
-          else response.write(`data: ${JSON.stringify(settings.read())}\n\n`);
-        };
-        const stop = settings.watch(send);
-        response.once("close", stop);
-        send();
+      if (url.pathname === "/") {
+        if (request.method !== "GET") throw new RequestError(405, "Method not allowed.");
+        response.writeHead(303, { Location: "/sessions" });
+        response.end();
         return;
-      }
-      if (url.pathname === "/api/settings") {
-        if (!settings) {
-          if (request.method === "GET") return json(response, 200, null);
-          throw new RequestError(503, "Shared settings are not configured.");
-        }
-        if (request.method === "GET") return json(response, 200, settings.read());
-        if (request.method === "POST")
-          return json(response, 200, await settings.update(await body(request), sessions));
-        throw new RequestError(405, "Method not allowed.");
-      }
-      if (request.method === "GET" && url.pathname === "/api/catalog")
-        return json(response, 200, await sessions.catalog(context));
-      if (request.method === "POST" && url.pathname === "/api/directories") {
-        const data = await body(request);
-        const binding = object(data.binding);
-        if (typeof data.query !== "string") throw new RequestError(400, "Invalid directory query.");
-        return json(
-          response,
-          200,
-          await sessions.completeDirectories(
-            {
-              provider: string(binding.provider, 200),
-              target: string(binding.target, 4096),
-              cwd: string(binding.cwd, 4096),
-            },
-            data.query,
-            context,
-          ),
-        );
-      }
-      if (request.method === "POST" && url.pathname === "/api/sessions") {
-        const data = await body(request);
-        const model = data.model === undefined ? undefined : object(data.model);
-        const binding = data.binding === undefined ? undefined : object(data.binding);
-        if (data.thinkingLevel !== undefined && !isThinkingLevel(data.thinkingLevel))
-          throw new RequestError(400, "Invalid thinking level.");
-        const session = await sessions.create(
-          string(data.id, 36),
-          binding && {
-            provider: string(binding.provider, 200),
-            target: string(binding.target, 4096),
-            cwd: string(binding.cwd, 4096),
-          },
-          model && {
-            provider: string(model.provider, 200),
-            modelId: string(model.modelId, 300),
-          },
-          data.thinkingLevel,
-          data.baseDirectory === undefined ? undefined : directoryInput(data.baseDirectory),
-        );
-        return json(response, 201, await runtime.sessionInfo(session));
-      }
-      const harnessRoute = /^\/api\/harness\/([^/]+)\/([a-zA-Z/]+)$/.exec(url.pathname);
-      if (harnessRoute) {
-        const session = await awaitWithContext(sessions.get(harnessRoute[1]), context);
-        const harness = session.harness;
-        const conversation = await runtime.getConversation(
-          session,
-          url.searchParams.has("conversation")
-            ? Number(url.searchParams.get("conversation"))
-            : undefined,
-          context,
-        );
-        const method = harnessRoute[2];
-        if (request.method === "GET") {
-          if (method === "watch") return stream(await conversation.watch(context), response);
-          if (method === "snapshot" || method === "watchDoc") {
-            const kind = url.searchParams.get("kind");
-            // Only the document capabilities this application exposes. Tokens remain server-side.
-            const token = [
-              AgentDoc,
-              InboxDoc,
-              LiveDoc,
-              ProviderDoc,
-              UsageDoc,
-              runtime.Environment,
-              runtime.Metadata,
-              Review,
-            ].find((token) => token.definition.kind === kind);
-            if (!token) throw new RequestError(404, "Document capability is not exposed.");
-            // Each token has the same conversation scope; widening its JSON value does not change its definition.
-            const document = token as import("@earendil-works/pi-durable").ConversationDocToken<
-              import("@earendil-works/pi-durable").JsonObject
-            >;
-            if (method === "snapshot")
-              return json(
-                response,
-                200,
-                (await harness.snapshot(document, conversation.id, context)) ?? null,
-              );
-            const watch = await harness.watchDoc(document, conversation.id, context);
-            if (!watch) return json(response, 200, null);
-            return await stream(watch, response);
-          }
-        }
-        async function invoke(): Promise<unknown> {
-          if (request.method === "GET") {
-            if (method === "entries" || method === "scanTasks" || method === "scanConversations") {
-              const args = [
-                queryObject(url, "query") ?? {},
-                Number(url.searchParams.get("limit") ?? 256),
-                queryObject(url, "cursor") as Cursor | undefined,
-              ] as const;
-              if (method === "entries") return conversation.entries(...args, context);
-              if (method === "scanTasks")
-                return harness.commit((tx) => tx.scanTasks(...args), context);
-              return harness.commit((tx) => tx.scanConversations(...args), context);
-            }
-            if (method === "context")
-              return await conversation.context(
-                context,
-                url.searchParams.has("at")
-                  ? { at: Number(url.searchParams.get("at")) as EntryId }
-                  : undefined,
-              );
-            if (method === "inspect") return await harness.inspect(context);
-            if (method === "getTask")
-              return harness.getTask(
-                Number(url.searchParams.get("id")) as Parameters<typeof harness.getTask>[0],
-                context,
-              );
-            if (method === "submission/status") {
-              const submission = await harness.submission(
-                Number(url.searchParams.get("id")) as SubmissionId,
-                context,
-              );
-              return submission?.status(context);
-            }
-          }
-          if (request.method === "POST") {
-            const data = await body(request, method === "submit" ? 8 * 1024 * 1024 : 128 * 1024);
-            if (method === "submit") {
-              if (data.requestId !== undefined && typeof data.requestId !== "string")
-                throw new RequestError(400, "Invalid requestId.");
-              if (data.type === "input") {
-                if (
-                  data.whenBusy !== undefined &&
-                  (typeof data.whenBusy !== "string" ||
-                    !["steer", "followUp", "reject"].includes(data.whenBusy))
-                )
-                  throw new RequestError(400, "Invalid whenBusy.");
-                if (typeof data.content !== "string") {
-                  if (!Array.isArray(data.content))
-                    throw new RequestError(400, "Invalid input content.");
-                  for (const item of data.content) {
-                    const part = object(item);
-                    if (part.type === "text" && typeof part.text === "string") continue;
-                    if (
-                      part.type === "image" &&
-                      typeof part.data === "string" &&
-                      typeof part.mimeType === "string"
-                    )
-                      continue;
-                    throw new RequestError(400, "Invalid input content.");
-                  }
-                }
-              } else if (data.type === "write") {
-                const entry = object(data.entry);
-                if (typeof entry.kind !== "string")
-                  throw new RequestError(400, "Invalid entry kind.");
-                if (entry.model !== undefined && !Array.isArray(entry.model))
-                  throw new RequestError(400, "Invalid entry messages.");
-              }
-              if (data.type !== "input" && data.type !== "write")
-                throw new RequestError(400, "Invalid submission type.");
-              if (data.type === "input" && typeof data.content === "string") {
-                const command = data.content.trim();
-                const name = command.split(/\s/, 1)[0];
-                if (name === "/cd") {
-                  await runtime.changeDirectory(
-                    session,
-                    command.slice(name.length).trim(),
-                    conversation,
-                    context,
-                  );
-                  return {};
-                }
-                if (name === "/review" || command === "/endreview") {
-                  const { id } =
-                    name === "/review"
-                      ? await startReview(
-                          session,
-                          conversation,
-                          context,
-                          command.slice(name.length),
-                        )
-                      : await endReview(session, conversation, context);
-                  // null selects the session root, matching the client's unqualified URL/draft.
-                  return { conversationId: id === session.root.id ? null : id };
-                }
-              }
-              // Admission, content validation, deduplication and defaults belong to Durable.
-              const submission = await conversation.submit(data as SubmissionDraft, context);
-              return { id: submission.id };
-            }
-            if (method === "configure") {
-              if (
-                data.thinkingLevel !== undefined &&
-                data.thinkingLevel !== null &&
-                !isThinkingLevel(data.thinkingLevel)
-              )
-                throw new RequestError(400, "Invalid thinkingLevel.");
-              for (const key of ["cwd", "instructions"])
-                if (data[key] !== undefined && data[key] !== null && typeof data[key] !== "string")
-                  throw new RequestError(400, `Invalid ${key}.`);
-              if (data.model !== undefined && data.model !== null) {
-                const ref = object(data.model);
-                if (typeof ref.provider !== "string" || typeof ref.modelId !== "string")
-                  throw new RequestError(400, "Invalid model reference.");
-              }
-              for (const key of ["extensions", "tools", "modelTools"]) {
-                const selection = data[key];
-                if (selection === undefined || selection === null) continue;
-                const lists = Array.isArray(selection)
-                  ? [selection]
-                  : Object.values(object(selection));
-                for (const list of lists) {
-                  if (
-                    !Array.isArray(list) ||
-                    list.some((item) => typeof object(item).name !== "string")
-                  )
-                    throw new RequestError(400, `Invalid ${key} references.`);
-                }
-              }
-              // Upstream applyChange persists reference names, not executable definitions.
-              // Selecting a tool here does not install it in the application registry.
-              return conversation.configure(data as AgentChange, context);
-            }
-            if (method === "resume") return harness.resume();
-            if (method === "abort") return conversation.abort(context, data);
-            if (method === "compact")
-              return await conversation.compact(data.instructions as string | undefined, context);
-            if (method === "reset")
-              return conversation.reset(data.handoff as string | undefined, context);
-            if (method === "fork") {
-              if (!Number.isSafeInteger(data.at) || Number(data.at) < 0)
-                throw new RequestError(400, "Invalid entry ID.");
-              const options = object(data.options);
-              object(options.ownership);
-              if (options.init !== undefined)
-                throw new RequestError(
-                  501,
-                  "Conversation initialization callbacks are server-side capabilities.",
-                );
-              const fork = await conversation.fork(
-                data.at as EntryId,
-                data.options as ConversationCreateOptions,
-                context,
-              );
-              return { id: fork.id };
-            }
-            if (method === "abortSubmission") {
-              if (!Number.isSafeInteger(data.id))
-                throw new RequestError(400, "Invalid submission ID.");
-              return await harness.abortSubmission(
-                data.id as SubmissionId,
-                context,
-                data.conversationId as
-                  | import("@earendil-works/pi-durable").ConversationId
-                  | undefined,
-              );
-            }
-            if (method === "submission/wait" || method === "submission/abort") {
-              const submission = await harness.submission(data.id as SubmissionId, context);
-              if (!submission) throw new RequestError(404, "Submission not found.");
-              return method === "submission/wait"
-                ? await submission.wait(context)
-                : await submission.abort(context);
-            }
-          }
-          throw new RequestError(405, "Method not exposed for this resource.");
-        }
-        return json(response, 200, (await invoke()) ?? null);
-      }
-      const match =
-        /^\/api\/sessions\/([^/]+)\/(info|context-status|inspection|rename|repository|completions|environment)$/.exec(
-          url.pathname,
-        );
-      if (match) {
-        const session = await awaitWithContext(sessions.get(match[1]), context);
-        const conversation = await runtime.getConversation(
-          session,
-          url.searchParams.has("conversation")
-            ? Number(url.searchParams.get("conversation"))
-            : undefined,
-          context,
-        );
-        if (request.method === "GET") {
-          if (match[2] === "info")
-            return json(
-              response,
-              200,
-              await runtime.sessionInfo(session, conversation, undefined, context),
-            );
-          if (match[2] === "completions")
-            return json(
-              response,
-              200,
-              await (
-                url.searchParams.get("kind") === "directory"
-                  ? runtime.completeWorkingDirectories
-                  : runtime.completePaths
-              )(session, url.searchParams.get("query") ?? "", conversation, context),
-            );
-          if (match[2] === "repository")
-            return json(response, 200, await runtime.repository(session, conversation, context));
-          if (match[2] === "inspection" || match[2] === "context-status") {
-            const watch = await conversation.watch(context);
-            try {
-              return json(
-                response,
-                200,
-                match[2] === "inspection"
-                  ? await runtime.inspectContext(session, watch.value, context)
-                  : runtime.contextStatus(session, watch.value),
-              );
-            } finally {
-              await watch.stop();
-            }
-          }
-        }
-        if (request.method === "POST") {
-          const data = await body(request);
-          if (match[2] === "rename") {
-            if (typeof data.name !== "string") throw new RequestError(400, "Invalid session name.");
-            await runtime.rename(session, data.name);
-            return json(response, 200, await runtime.sessionInfo(session, conversation));
-          }
-          if (match[2] === "environment") {
-            const selected = object(data.binding);
-            await runtime.selectEnvironment(
-              session,
-              {
-                provider: string(selected.provider),
-                target: string(selected.target),
-                cwd: string(selected.cwd),
-              },
-              conversation,
-            );
-            return json(response, 200, null);
-          }
-        }
-        throw new RequestError(405, "Method not allowed.");
       }
       if (
         request.method === "GET" &&
         [
-          "/",
-          "/client.js",
           "/hypermedia-client.js",
           "/htmx.js",
           "/hx-sse.js",
@@ -713,18 +264,14 @@ export function httpServer(
           "/highlight.js",
           "/styles.css",
           "/design-system.html",
-          "/manifest.webmanifest",
           "/icon.svg",
           "/icon-192.png",
           "/icon-512.png",
-          "/sw.js",
           "/hypermedia-sw.js",
         ].includes(url.pathname)
       ) {
-        const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+        const file = url.pathname.slice(1);
         const types: Record<string, string> = {
-          "index.html": "text/html; charset=utf-8",
-          "client.js": "text/javascript; charset=utf-8",
           "hypermedia-client.js": "text/javascript; charset=utf-8",
           "htmx.js": "text/javascript; charset=utf-8",
           "hx-sse.js": "text/javascript; charset=utf-8",
@@ -733,34 +280,11 @@ export function httpServer(
           "highlight.js": "text/javascript; charset=utf-8",
           "styles.css": "text/css; charset=utf-8",
           "design-system.html": "text/html; charset=utf-8",
-          "manifest.webmanifest": "application/manifest+json",
           "icon.svg": "image/svg+xml",
           "icon-192.png": "image/png",
           "icon-512.png": "image/png",
-          "sw.js": "text/javascript; charset=utf-8",
           "hypermedia-sw.js": "text/javascript; charset=utf-8",
         };
-        if (file === "manifest.webmanifest") {
-          response.setHeader("Content-Type", types[file]);
-          return response.end(
-            JSON.stringify({
-              id: "/",
-              scope: "/",
-              name: "Pi · durable workspace",
-              short_name: "Pi",
-              start_url: "/",
-              display: "standalone",
-              background_color: "#101217",
-              theme_color: "#101217",
-              icons: [192, 512].map((size) => ({
-                src: `/icon-${size}.png`,
-                sizes: `${size}x${size}`,
-                type: "image/png",
-                purpose: "any maskable",
-              })),
-            }),
-          );
-        }
         if (file === "icon.svg") {
           response.setHeader("Content-Type", types[file]);
           return response.end(
@@ -778,57 +302,29 @@ export function httpServer(
         response.destroy();
         return;
       }
-      if (/^\/sessions(?:[/?]|$)/.test(request.url ?? "")) {
-        const status =
-          error instanceof FormError || error instanceof RequestError
-            ? error.status
-            : error instanceof ConversationBusy
-              ? 409
-              : error instanceof TypeError || error instanceof StorageRequestError
-                ? 400
-                : error instanceof SessionError
-                  ? { invalid: 400, not_found: 404, unavailable: 409, conflict: 409, closing: 503 }[
-                      error.code
-                    ]
-                  : 500;
-        if (status === 500) console.error(error);
-        if (request.headers["hx-request"] === "true") {
-          response.setHeader("HX-Retarget", "#request-error");
-          response.setHeader("HX-Reselect", "#form-error");
-          response.setHeader("HX-Reswap", "innerHTML");
-        }
-        return html(
-          response,
-          h`<h1>Request failed</h1><p id="form-error">${error instanceof Error ? error.message : "Internal server error."}</p><p><a href="/sessions">Sessions</a></p>`,
-          status,
-        );
+      const status =
+        error instanceof FormError || error instanceof RequestError
+          ? error.status
+          : error instanceof ConversationBusy
+            ? 409
+            : error instanceof TypeError || error instanceof StorageRequestError
+              ? 400
+              : error instanceof SessionError
+                ? { invalid: 400, not_found: 404, unavailable: 409, conflict: 409, closing: 503 }[
+                    error.code
+                  ]
+                : 500;
+      if (status === 500) console.error(error);
+      if (request.headers["hx-request"] === "true") {
+        response.setHeader("HX-Retarget", "#request-error");
+        response.setHeader("HX-Reselect", "#form-error");
+        response.setHeader("HX-Reswap", "innerHTML");
       }
-      if (error instanceof ConversationBusy)
-        json(response, 409, {
-          error: error.message,
-          name: error.name,
-          conversationId: error.conversationId,
-        });
-      else if (error instanceof TypeError || error instanceof StorageRequestError)
-        json(response, 400, { name: error.name, error: error.message });
-      else if (error instanceof RequestError)
-        json(response, error.status, { error: error.message });
-      else if (error instanceof SessionError) {
-        const statuses = {
-          invalid: 400,
-          not_found: 404,
-          unavailable: 409,
-          conflict: 409,
-          closing: 503,
-        };
-        json(response, statuses[error.code], { error: error.message });
-      } else {
-        console.error(error);
-        json(response, 500, {
-          name: error instanceof Error ? error.name : "Error",
-          error: error instanceof Error ? error.message : "Internal server error.",
-        });
-      }
+      return html(
+        response,
+        h`<h1>Request failed</h1><p id="form-error">${error instanceof Error ? error.message : "Internal server error."}</p><p><a href="/sessions">Sessions</a></p>`,
+        status,
+      );
     });
   });
   server.requestTimeout = 30_000;

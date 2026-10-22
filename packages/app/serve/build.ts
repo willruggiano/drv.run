@@ -6,19 +6,17 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-// One build path for the Nix package, browser tests and renderer benchmark.
+// One build path for the Nix package, browser tests and page benchmark.
 // esbuild is provided by Nix, not shipped in the frontend's runtime closure.
 export async function buildAssets(source: string, destination: string): Promise<void> {
   await mkdir(destination, { recursive: true });
   const { stderr } = await promisify(execFile)("esbuild", [
     ...[
-      "client.ts",
       "hypermedia-client.ts",
       "hypermedia-morph.ts",
       "hypermedia.css",
       "highlight.ts",
       "styles.css",
-      "sw.js",
       "hypermedia-sw.js",
     ].map((file) => join(source, file)),
     "--bundle",
@@ -51,7 +49,7 @@ export async function buildAssets(source: string, destination: string): Promise<
   await appendFile(join(destination, "hx-sse.js"), `\n/*! htmx\n${htmxLicense}*/\n`);
   const license = await readFile(require.resolve("highlight.js/LICENSE"), "utf8");
   await appendFile(join(destination, "highlight.js"), `\n/*! highlight.js\n${license}*/\n`);
-  for (const file of ["index.html", "design-system.html", "icon-192.png", "icon-512.png"])
+  for (const file of ["design-system.html", "icon-192.png", "icon-512.png"])
     await copyFile(join(source, file), join(destination, file));
 }
 

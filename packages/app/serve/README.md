@@ -14,11 +14,11 @@ only; there is no local execution target.
 
 ## Keyboard shortcuts
 
-Ctrl/⌘+K opens Sessions. Outside text fields and native selects, `t` opens the
+`ctrl+k` opens Sessions. Outside text fields and native selects, `t` opens the
 target selector, `m` opens the model selector, and `n` creates a session using
-the selected target/model. `/` focuses the session filter. Escape dismisses the
-dialog. Ctrl+J/K moves to the next/previous filtered session (wrapping at the
-ends); Enter opens it. The same keys navigate menu items, select options, and
+the selected target/model. `/` focuses the session filter. `esc` dismisses the
+dialog. `ctrl+j/k` moves to the next/previous filtered session (wrapping at the
+ends); `enter` opens it. The same keys navigate menu items, select options, and
 conversation search matches when those controls have focus.
 
 Focused browser tests (with Chromium on PATH):
@@ -56,10 +56,10 @@ in Sessions. Reset asks for confirmation and preserves history. Unknown commands
 and failed operations leave the draft intact; commands are never submitted as
 model prompts.
 
-Use ↑/↓ or Ctrl+J/K to navigate suggestions, Enter/Tab or a tap to select, and
-Escape to dismiss. Selecting a command only inserts it; use Send or Ctrl/⌘+Enter
-to execute. Ordinary Enter still inserts a newline when the suggestion list is
-closed.
+Use ↑/↓ or `ctrl+j/k` to navigate suggestions, `enter`/`tab` or a tap to select,
+and `escape` to dismiss. Selecting a command only inserts it; use Send or
+`ctrl+enter` to execute. Ordinary `enter` still inserts a newline when the
+suggestion list is closed.
 
 Run the focused tests with Chromium and esbuild on PATH:
 

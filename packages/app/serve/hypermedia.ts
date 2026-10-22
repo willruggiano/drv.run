@@ -6,7 +6,12 @@ import type { EntryId, SubmissionId, Conversation } from "@earendil-works/pi-dur
 import type { ContextInspection } from "./inspection.ts";
 import type { GlobalSettingsStore } from "./server.ts";
 import { settingFields } from "./settings.ts";
-import { commands, directoryCompletion, pathCompletion } from "./completions.ts";
+import {
+  commands,
+  commandCompletions,
+  directoryCompletion,
+  pathCompletion,
+} from "./completions.ts";
 import {
   hidden,
   icon,
@@ -62,6 +67,7 @@ import {
   type Sessions,
   type Catalog,
   type Session,
+  type SessionInfo,
 } from "./sessions.ts";
 
 export class FormError extends Error {
@@ -734,7 +740,7 @@ export async function hypermedia(
     return;
   }
   const match =
-    /^\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|fork|cd|compact|reset|cancel|context|export|completions))?)?$/.exec(
+    /^\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|fork|cd|compact|reset|cancel|context|export|completions|repository))?)?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -803,6 +809,20 @@ export async function hypermedia(
     );
     return;
   }
+  if (request.method === "GET" && operation === "repository") {
+    const [info, repository] = await Promise.all([
+      sessionInfo(session, conversation, undefined, context),
+      repositoryInfo(session, conversation, context),
+    ]);
+    const title =
+      repository.state === "repository"
+        ? (repository.branch ?? repository.revision ?? "unborn")
+        : repository.state === "none"
+          ? "no repository"
+          : "repository unavailable";
+    page(h`<h1>Repository</h1>${instanceHTML(info, path, title)}<p>${title}</p>`);
+    return;
+  }
   if (request.method === "GET" && operation === "export") {
     response.setHeader("Content-Type", "application/json");
     response.setHeader(
@@ -817,16 +837,10 @@ export async function hypermedia(
     const review = await session.harness.snapshot(Review, conversation.id, context);
     const completions =
       url.searchParams.get("kind") === "command"
-        ? commands
-            .filter(
-              (item) =>
-                (item.name !== "endreview" || review?.original !== undefined) &&
-                item.name.startsWith(query.toLowerCase()),
-            )
-            .map((item) => ({
-              label: `/${item.name} · ${item.description}`,
-              value: `/${item.name} `,
-            }))
+        ? commandCompletions(query, review?.original !== undefined).map((item) => ({
+            ...item,
+            label: `${item.label} · ${item.description}`,
+          }))
         : url.searchParams.get("kind") === "directory"
           ? (await completeWorkingDirectories(session, query, conversation, context)).map(
               directoryCompletion,
@@ -1094,10 +1108,18 @@ async function history(conversation: Conversation, context: Context) {
   return records;
 }
 function navigation(path: string): SafeHtml {
-  const menu = h`<nav id="conversation-menu" class="conversation-nav" popover aria-label="Conversation actions">${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/context`, "Context")}${link(`${path}/history`, "History")}${link(`${path}/compact`, "Compact")}${link(`${path}/reset`, "Reset")}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button><button type="button" popovertarget="review-menu">Review actions</button><button type="button" popovertarget="usage-menu">Usage</button><a href="/" hx-boost="false">Original UI</a></nav>`;
+  const menu = h`<nav id="conversation-menu" class="conversation-nav" popover aria-label="Conversation actions">${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/context`, "Context")}${link(`${path}/history`, "History")}${link(`${path}/compact`, "Compact")}${link(`${path}/reset`, "Reset")}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button><button type="button" popovertarget="review-menu">Review actions</button><button type="button" popovertarget="usage-menu">Usage</button></nav>`;
   const commands = h`<div hidden>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
   const search = h`<div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
   return h`${menu}${commands}${search}`;
+}
+
+function instanceHTML(info: SessionInfo, path: string, title?: string): SafeHtml {
+  return h`<a id="footer-instance" href="${path}/repository"${
+    title === undefined
+      ? h` hx-get="${path}/repository" hx-trigger="pointerenter once, focus once" hx-target="this" hx-select="#footer-instance" hx-swap="outerMorph" hx-sync="this:drop" hx-push-url="false"`
+      : h` title="${title}"`
+  }>${info.binding ? `${info.binding.provider === "local" ? "local" : info.binding.target} · ${info.cwd}` : "No execution environment"}</a>`;
 }
 
 async function metadataHTML(
@@ -1107,10 +1129,9 @@ async function metadataHTML(
   settings: GlobalSettingsStore | undefined,
   context: Context,
 ): Promise<SafeHtml> {
-  const [info, inspection, repository] = await Promise.all([
+  const [info, inspection] = await Promise.all([
     sessionInfo(session, conversation, undefined, context),
     session.harness.inspect(context),
-    repositoryInfo(session, conversation, context),
   ]);
   const path = conversationURL(session, conversation.id);
   const status = contextStatus(session, view);
@@ -1128,7 +1149,7 @@ async function metadataHTML(
   const dot = h`<span class="footer-dot" aria-hidden="true"></span>`;
   const display = settings?.read().values;
   const id = randomUUID();
-  const instance = h`<span id="footer-instance" title="${repository.state === "repository" ? (repository.branch ?? repository.revision ?? "unborn") : repository.state === "none" ? "no repository" : "repository unavailable"}">${info.binding ? `${info.binding.provider === "local" ? "local" : info.binding.target} · ${info.cwd}` : "No execution environment"}</span>`;
+  const instance = instanceHTML(info, path);
   const statistics = h`<a id="footer-stats" href="${path}/context" aria-label="Context"><span id="footer-input">↑${count(sum("input"))}</span><span id="footer-output">↓${count(sum("output"))}</span><span id="footer-read">R${count(sum("cacheRead"))}</span><span id="footer-hit">${status.lastResponse?.cacheHit == null ? "CH—" : `CH${status.lastResponse.cacheHit.toFixed(1)}%`}</span><span id="footer-cost">$${cost.toFixed(3)}</span></a>`;
   const model = h`<a id="footer-model" class="model-summary" href="${path}/settings" aria-label="Model and thinking settings"><span class="model-name">${info.model?.modelId ?? "No model"}</span>${dot}<span class="model-effort">${info.thinkingLevel}</span></a>`;
   const contextUsage = h`<a id="footer-context" class="context-usage" href="${path}/context" aria-label="Context usage details" data-level="${percent !== undefined && percent > 90 ? "critical" : percent !== undefined && percent > 70 ? "warning" : "normal"}">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${count(status.window)}${status.autoCompact ? " (auto)" : ""}</a>`;

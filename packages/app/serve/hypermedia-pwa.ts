@@ -35,7 +35,7 @@ export function installPwa() {
   if ("serviceWorker" in navigator) {
     void navigator.serviceWorker
       .register("/hypermedia-sw.js", { scope: "/sessions" })
-      .then((worker) => {
+      .then(async (worker) => {
         registration = worker;
         worker.addEventListener("updatefound", () =>
           worker.installing?.addEventListener("statechange", installStatus),
@@ -43,6 +43,17 @@ export function installPwa() {
         installStatus();
         // Activation may race a navigation; claim the now-loaded document.
         void navigator.serviceWorker.ready.then((ready) => ready.active?.postMessage("claim"));
+        // Retire the removed frontend's root-scoped worker, not unrelated registrations.
+        const workers = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(
+          workers
+            .filter((item) =>
+              [item.active, item.waiting, item.installing].some(
+                (worker) => worker && new URL(worker.scriptURL).pathname === "/sw.js",
+              ),
+            )
+            .map((item) => item.unregister()),
+        );
       })
       .catch(() => {
         /* Offline first visits still render the supplied document. */

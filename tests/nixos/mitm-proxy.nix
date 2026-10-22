@@ -113,7 +113,11 @@ in {
         bob.gid = 1001;
         carol.gid = 1002;
       };
-      virtualisation.additionalPaths = [shell nixpkgs];
+      virtualisation = {
+        # Four concurrent 512 MiB guests also need room for the host and proxy.
+        memorySize = lib.mkForce 4096;
+        additionalPaths = [shell nixpkgs];
+      };
       nix.settings = {
         experimental-features = ["nix-command" "flakes"];
         substituters = lib.mkForce [];

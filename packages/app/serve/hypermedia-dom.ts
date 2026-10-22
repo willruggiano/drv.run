@@ -16,7 +16,11 @@ export function updateSend() {
   for (const button of document.querySelectorAll<HTMLButtonElement>("button[form=composer]"))
     button.disabled = pending || (!text.value.trim() && !files.files?.length);
   const create = form.querySelector<HTMLButtonElement>("#create");
-  if (create) create.disabled = pending;
+  if (create) {
+    const target = form.querySelector<HTMLSelectElement>("#targets")?.selectedOptions[0];
+    const model = form.querySelector<HTMLSelectElement>("#models")?.selectedOptions[0];
+    create.disabled = pending || !target || target.disabled || !model || model.disabled;
+  }
 }
 export function resizePrompt() {
   const text = composer()?.querySelector<HTMLTextAreaElement>('textarea[name="content"]');

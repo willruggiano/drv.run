@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { stripTypeScriptTypes } from "node:module";
 import { test, type TestContext } from "node:test";
-import { chromium, type Page } from "playwright";
-import { chromiumExecutable } from "./testing.ts";
+import type { Page } from "playwright";
+import { fixture } from "./sessions-testing.ts";
+import { browserFixture } from "./browser-testing.ts";
 
 async function focused(page: Page, id: string) {
   assert.equal(
@@ -13,36 +12,28 @@ async function focused(page: Page, id: string) {
 }
 
 async function setup(t: TestContext): Promise<Page> {
-  const browser = await chromium.launch({
-    executablePath: chromiumExecutable(),
-  });
-  t.after(() => browser.close());
-  const page = await browser.newPage();
-  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
-  await page.setContent(html.replace(/<script[\s\S]*?<\/script>/g, ""));
-  const source = stripTypeScriptTypes(
-    await readFile(new URL("../key-mappings.ts", import.meta.url), "utf8"),
-  );
-  await page.addScriptTag({
-    content:
-      source.replace(/export /g, "") +
-      `
-    const picker = document.querySelector('#picker');
-    installPickerKeyMappings(document, () => !picker.hidden, () => { document.querySelector("#new-options").hidden = false; });
-    installSelectKeyMappings(document);
-    for (const id of ['targets', 'models']) {
-      const select = document.getElementById(id);
-      select.innerHTML = '<option>First</option><option>Next</option>';
-      select.showPicker = () => { select.dataset.opened = 'true'; };
+  const f = await fixture(t);
+  const { page, base, errors } = await browserFixture(t, f.sessions);
+  t.after(() => assert.deepEqual(errors, []));
+  await page.setViewportSize({ width: 820, height: 844 });
+  await page.goto(base + "/sessions?view=sessions");
+  await page.evaluate(() => {
+    document.addEventListener("htmx:config:request", (event) => {
+      if (["targets", "models"].includes(event.detail.ctx.sourceElement.id)) event.preventDefault();
+    });
+    for (const id of ["targets", "models"]) {
+      const select = document.querySelector<HTMLSelectElement>(`#${id}`)!;
+      select.innerHTML = "<option>First</option><option>Next</option>";
+      select.showPicker = () => {
+        select.dataset.opened = "true";
+      };
     }
-    const create = document.getElementById('create');
-    create.disabled = false;
-    create.onclick = () => { create.dataset.clicks = String(Number(create.dataset.clicks || 0) + 1); };
-    picker.hidden = false;
-    document.querySelector("#new-options").hidden = false;
-    document.querySelector("#session-filter-bar").hidden = false;
-    document.querySelector("#close-view").hidden = false;
-  `,
+    const create = document.querySelector<HTMLButtonElement>("#create")!;
+    create.type = "button";
+    create.onclick = () => {
+      create.dataset.clicks = String(Number(create.dataset.clicks || 0) + 1);
+    };
+    document.querySelector<HTMLDetailsElement>("#new-options")!.open = true;
   });
   return page;
 }
@@ -113,10 +104,11 @@ await test("browser key mappings: slash focuses session filter without inserting
 
 await test("browser key mappings: Ctrl+J/K navigate visible sessions and Enter activates", async (t) => {
   const page = await setup(t);
-  await page.locator("#sessions").evaluate((node) => {
+  await page.locator("#session-list").evaluate((node) => {
     node.innerHTML =
-      '<button id="one">One</button><button disabled>Disabled</button><button hidden>Hidden</button><button id="two">Two</button>';
+      '<a id="one" href="#one">One</a><a aria-disabled="true" href="#disabled">Disabled</a><a hidden href="#hidden">Hidden</a><a id="two" href="#two">Two</a>';
     node.addEventListener("click", (event) => {
+      event.preventDefault();
       node.setAttribute("data-selected", (event.target as HTMLElement).id);
     });
   });
@@ -129,22 +121,22 @@ await test("browser key mappings: Ctrl+J/K navigate visible sessions and Enter a
   await focused(page, "one");
   await page.keyboard.press("Control+k");
   await focused(page, "two");
-  assert.equal(await page.locator("#sessions").getAttribute("data-selected"), null);
+  assert.equal(await page.locator("#session-list").getAttribute("data-selected"), null);
   await page.keyboard.press("Enter");
-  assert.equal(await page.locator("#sessions").getAttribute("data-selected"), "two");
+  assert.equal(await page.locator("#session-list").getAttribute("data-selected"), "two");
   await page.focus("#session-filter");
   await page.keyboard.press("Control+k");
   await focused(page, "two");
   // Filtering rebuilds the list; navigation must not retain stale buttons.
-  await page.locator("#sessions").evaluate((node) => {
-    node.innerHTML = '<button id="only">Only match</button>';
+  await page.locator("#session-list").evaluate((node) => {
+    node.innerHTML = '<a id="only" href="#only">Only match</a>';
   });
   await page.focus("#session-filter");
   await page.keyboard.press("Control+j");
   await focused(page, "only");
   await page.keyboard.press("Control+k");
   await focused(page, "only");
-  await page.locator("#sessions").evaluate((node) => node.replaceChildren());
+  await page.locator("#session-list").evaluate((node) => node.replaceChildren());
   await page.focus("#session-filter");
   await page.keyboard.press("Control+j");
   await page.keyboard.press("Control+k");

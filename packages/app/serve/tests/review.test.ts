@@ -1,3 +1,5 @@
+import { Review } from "harness";
+import { conversationURL } from "../hypermedia.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -15,7 +17,7 @@ import { createBashTool, createReadTool, createWriteTool } from "@earendil-works
 import { endReview, startReview } from "../review.ts";
 import { Environment } from "../sessions.ts";
 import { code, exists, fixture, readHistory, waitFor } from "./sessions-testing.ts";
-import { post, serve, snapshot } from "./testing.ts";
+import { post, serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 const call = (name: string, args: JsonObject) =>
@@ -36,45 +38,41 @@ await test("HTTP review commands select conversations without submitting slash t
         : session.root;
       const before = await readHistory(original);
       const base = await serve(t, f.sessions);
-      const resource = `${base}/api/harness/${session.id}`;
-      const submit = (id: number, content: string) =>
-        post(`${resource}/submit?conversation=${id}`, { type: "input", content });
-      assert.equal((await submit(original.id, "/endreview")).status, 409);
+      const resource = `${base}/sessions/${session.id}/conversations`;
+      const submit = (id: number, operation: string) => post(`${resource}/${id}/${operation}`, {});
+      assert.equal((await submit(original.id, "end-review")).status, 409);
       f.faux.setResponses([fauxAssistantMessage("No findings.")]);
-      const response = await submit(original.id, "/review");
-      assert.equal(response.status, 200);
-      const result = await response.json();
-      assert(Number.isSafeInteger(result.conversationId));
-      assert.notEqual(result.conversationId, original.id);
-      assert.deepEqual(await (await submit(original.id, "/review")).json(), result);
-      const review = await session.harness.conversation(result.conversationId, context);
+      const response = await submit(original.id, "review");
+      assert.equal(response.status, 303);
+      const result = response.headers.get("location");
+      const state = await session.harness.snapshot(Review, original.id, context);
+      assert(state?.active !== undefined);
+      assert(Number.isSafeInteger(state.active));
+      assert.notEqual(state.active, original.id);
+      assert.equal((await submit(original.id, "review")).headers.get("location"), result);
+      const review = await session.harness.conversation(state.active, context);
       assert(review);
       await review.waitForIdle(context);
-      assert.equal((await submit(review.id, "/review")).status, 409);
+      assert.equal((await submit(review.id, "review")).status, 409);
       assert.deepEqual(await readHistory(original), before);
-      const view = await snapshot(`${resource}/watch?conversation=${review.id}`);
-      assert.equal(view.view.conversation.id, review.id);
-      assert.equal(view.session.reviewOf, original.id);
-      assert.deepEqual(
-        view.history?.toSorted((a, b) => a.id - b.id),
-        await readHistory(review),
-      );
+      assert.equal(result, conversationURL(session, review.id));
+      const exported = await fetch(base + conversationURL(session, review.id) + "/export");
+      assert.equal(exported.status, 200);
+      const history = await exported.json();
+      assert.deepEqual(history, await readHistory(review));
       assert.equal(
-        view.history?.some((entry) => before.some((old) => old.id === entry.id)),
+        (await readHistory(review)).some((entry) => before.some((old) => old.id === entry.id)),
         false,
       );
-      assert.deepEqual(
-        await (
-          await fetch(`${resource}/snapshot?conversation=${review.id}&kind=app.review`)
-        ).json(),
-        { original: original.id },
-      );
+      assert.deepEqual(await session.harness.snapshot(Review, review.id, context), {
+        original: original.id,
+      });
       f.faux.setResponses([fauxAssistantMessage("Received review.")]);
-      const ended = await submit(review.id, "/endreview");
-      assert.equal(ended.status, 200);
-      const destination = { conversationId: fork ? original.id : null };
-      assert.deepEqual(await ended.json(), destination);
-      assert.deepEqual(await (await submit(review.id, "/endreview")).json(), destination);
+      const ended = await submit(review.id, "end-review");
+      assert.equal(ended.status, 303);
+      const destination = conversationURL(session, original.id);
+      assert.equal(ended.headers.get("location"), destination);
+      assert.equal((await submit(review.id, "end-review")).headers.get("location"), destination);
       await original.waitForIdle(context);
       const reports = (await readHistory(original)).filter((entry) => entry.kind === "app.review");
       assert.equal(reports.length, 1);
@@ -84,16 +82,16 @@ await test("HTTP review commands select conversations without submitting slash t
 });
 
 await test("HTTP review scopes compose the review input and retries preserve the original input", async (t) => {
-  for (const [command, scope] of [
-    ["/review", "current code changes (staged, unstaged, and untracked files)"],
-    ["  /review \t\n", "current code changes (staged, unstaged, and untracked files)"],
-    ["/review packages/app", "packages/app"],
+  for (const [input, scope] of [
+    ["", "current code changes (staged, unstaged, and untracked files)"],
+    [" \t\n", "current code changes (staged, unstaged, and untracked files)"],
+    ["packages/app", "packages/app"],
     [
-      "/review\tchanges against main\nwith emphasis on cancellation  ",
+      "changes against main\nwith emphasis on cancellation  ",
       "changes against main\nwith emphasis on cancellation",
     ],
   ]) {
-    await t.test(command, async (t) => {
+    await t.test(JSON.stringify(input), async (t) => {
       const f = await fixture(t);
       const session = await f.create();
       f.faux.setResponses([
@@ -109,17 +107,20 @@ await test("HTTP review scopes compose the review input and retries preserve the
         },
       ]);
       const base = await serve(t, f.sessions);
-      const url = `${base}/api/harness/${session.id}/submit`;
-      const response = await post(url, { type: "input", content: command });
-      assert.equal(response.status, 200);
-      const result = await response.json();
-      const review = await session.harness.conversation(result.conversationId, context);
+      const url = base + conversationURL(session) + "/review";
+      const response = await post(url, { scope: input });
+      assert.equal(response.status, 303);
+      const result = response.headers.get("location");
+      const state = await session.harness.snapshot(Review, session.root.id, context);
+      assert(state?.active !== undefined);
+      const review = await session.harness.conversation(state.active, context);
       assert(review);
+      assert.equal(result, conversationURL(session, review.id));
       await review.waitForIdle(context);
       const before = await readHistory(review);
-      const retry = await post(url, { type: "input", content: "/review a different scope" });
-      assert.equal(retry.status, 200);
-      assert.deepEqual(await retry.json(), result);
+      const retry = await post(url, { scope: "a different scope" });
+      assert.equal(retry.status, 303);
+      assert.equal(retry.headers.get("location"), result);
       assert.deepEqual(await readHistory(review), before);
       assert.deepEqual(await readHistory(session.root), []);
       assert.equal(f.faux.state.callCount, 1);

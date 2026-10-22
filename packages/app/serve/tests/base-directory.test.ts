@@ -112,11 +112,8 @@ await test("cd updates only the selected conversation, validates directories, an
   );
   const base = await serve(t, f.sessions);
   const submit = (argument: string) =>
-    post(`${base}/api/harness/${session.id}/submit?conversation=${branch.id}`, {
-      type: "input",
-      content: `/cd ${argument}`,
-    });
-  assert.equal((await submit("alias")).status, 200);
+    post(base + conversationURL(session, branch.id) + "/cd", { argument });
+  assert.equal((await submit("alias")).status, 303);
   assert.equal((await branch.agent(context)).cwd, nested);
   assert.equal((await session.root.agent(context)).cwd, f.workspace);
   assert.deepEqual(await session.harness.snapshot(Environment, branch.id, context), {
@@ -124,13 +121,13 @@ await test("cd updates only the selected conversation, validates directories, an
     target: f.binding.target,
   });
   assert.equal((await environment(session, branch)).cwd, nested);
-  assert.equal((await submit("..")).status, 200);
+  assert.equal((await submit("..")).status, 303);
   assert.equal((await branch.agent(context)).cwd, f.workspace);
   for (const path of ["missing", "file", "bad\0path", "bad\npath", "x".repeat(4097)]) {
     assert.equal((await submit(path)).status, 400);
     assert.equal((await branch.agent(context)).cwd, f.workspace);
   }
-  assert.equal((await submit(nested)).status, 200);
+  assert.equal((await submit(nested)).status, 303);
   assert.equal((await branch.agent(context)).cwd, nested);
   // Model an execution environment whose home differs from the server's HOME.
   const env = await environment(session, branch);
@@ -138,11 +135,11 @@ await test("cd updates only the selected conversation, validates directories, an
   const home = t.mock.method(env, "canonicalPath", (path: string, ctx: typeof context) =>
     canonicalPath(path === "~" ? f.workspace : path, ctx),
   );
-  assert.equal((await submit("")).status, 200);
+  assert.equal((await submit("")).status, 303);
   assert.equal(home.mock.calls[0].arguments[0], "~");
   assert.equal((await branch.agent(context)).cwd, f.workspace);
   home.mock.restore();
-  assert.equal((await submit(nested)).status, 200);
+  assert.equal((await submit(nested)).status, 303);
   assert.deepEqual(await readHistory(session.root), before);
   assert.deepEqual(await readHistory(branch), before);
   assert.equal(f.faux.state.callCount, 0);
@@ -166,10 +163,10 @@ await test("directory completion follows cwd, supports parents and absolute path
   const base = await serve(t, f.sessions);
   const complete = async (query: string) => {
     const response = await fetch(
-      `${base}/api/sessions/${session.id}/completions?kind=directory&query=${encodeURIComponent(query)}`,
+      `${base}${conversationURL(session)}/completions?kind=directory&query=${encodeURIComponent(query)}`,
     );
     assert.equal(response.status, 200);
-    return response.json();
+    return completeWorkingDirectories(session, query);
   };
   assert.deepEqual(await complete(""), ["alias/", "space name/"]);
   assert.deepEqual(await complete("."), [".hidden/"]);

@@ -1,5 +1,8 @@
 import { returnToConversation } from "./browser-testing.ts";
-import { Sessions } from "../sessions.ts";
+import type { Htmx } from "htmx.org";
+import { conversationURL } from "../hypermedia.ts";
+import { settingFields } from "../settings.ts";
+import { Sessions, inspectContext } from "../sessions.ts";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -18,7 +21,7 @@ import {
 import type { EntryDraft } from "@earendil-works/pi-durable";
 import { chromium } from "playwright";
 import { readHistory, fixture, model } from "./sessions-testing.ts";
-import { chromiumExecutable, serve, snapshot, post } from "./testing.ts";
+import { chromiumExecutable, serve, post } from "./testing.ts";
 import { buildAssets } from "../build.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -158,7 +161,9 @@ await test("mobile browser Context follows the approved mock, isolates late even
   const assets = join(f.directory, "assets");
   await buildAssets(fileURLToPath(new URL("..", import.meta.url)), assets);
   const base = await serve(t, sessions, assets, "127.0.0.1", store);
-  const initial = await snapshot(`${base}/api/harness/${session.id}/watch`);
+  const watch = await session.root.watch(context);
+  const initial = { inspection: await inspectContext(session, watch.value, context) };
+  await watch.stop();
   assert(initial.inspection.state === "available");
   const browser = await chromium.launch({
     executablePath: chromiumExecutable(),
@@ -167,24 +172,13 @@ await test("mobile browser Context follows the approved mock, isolates late even
   const page = await browser.newPage({ viewport: { width: 1180, height: 1100 } });
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
-  await page.addInitScript(() => {
-    const Native = window.EventSource;
-    const sources: EventSource[] = [];
-    Object.assign(window, { contextTestSources: sources });
-    window.EventSource = class extends Native {
-      constructor(url: string | URL, options?: EventSourceInit) {
-        super(url, options);
-        sources.push(this);
-      }
-    };
-  });
-  await page.goto(`${base}/?session=${session.id}`);
+  await page.goto(base + conversationURL(session));
   await page.waitForSelector("#footer-context");
   await page.click("#footer-context");
   const pane = page.locator("#context-view");
   await page.waitForSelector("#context-view:not([hidden])");
   assert.equal(Number(await pane.getAttribute("data-tokens")), initial.inspection.tokens);
-  assert.equal(await page.locator("#view-title").textContent(), "Context");
+  assert.equal(await page.locator(".bar .header-title").textContent(), "Context");
   assert.equal(await pane.locator(".ctx-big span").textContent(), "/ 200k");
   assert.equal(await page.locator("#app-footer").isVisible(), false);
   assert.equal(await pane.locator("button, input, select, textarea, details, hr").count(), 0);
@@ -199,6 +193,9 @@ await test("mobile browser Context follows the approved mock, isolates late even
       ),
     initial.inspection.messages.map((message) => [message.role, message.tokens]),
   );
+  const oldRoot = await page.locator("#main-area").elementHandle();
+  assert(oldRoot);
+  const oldHTML = await pane.evaluate((node) => node.outerHTML);
   const screenshots = process.env.PI_SCREENSHOT_DIR;
   if (screenshots) await mkdir(screenshots, { recursive: true });
   const shot = async (name: string) => {
@@ -278,11 +275,8 @@ await test("mobile browser Context follows the approved mock, isolates late even
   await returnToConversation(page);
   await page.fill("#prompt", "/fork");
   await page.press("#prompt", "Control+Enter");
-  await page.locator(`#branches button[data-conversation="${empty.id}"]`).click();
-  await page.waitForFunction(
-    (id) => new URL(location.href).searchParams.get("conversation") === String(id),
-    empty.id,
-  );
+  await page.locator(`#branches a[data-conversation="${empty.id}"]`).click();
+  await page.waitForURL(base + conversationURL(session, empty.id));
   await page.click("#footer-context");
   await page.waitForFunction(
     (id) =>
@@ -291,14 +285,22 @@ await test("mobile browser Context follows the approved mock, isolates late even
   );
   assert.equal(await pane.locator(".ctx-message").count(), 0);
   await shot("context-mobile-empty");
-  await page.evaluate((old) => {
-    const sources = (window as unknown as { contextTestSources: EventSource[] }).contextTestSources;
-    sources[0]!.onmessage?.call(sources[0]!, new MessageEvent("message", { data: old }));
-  }, JSON.stringify(initial));
+  const htmx = await page.evaluateHandle<Htmx>("htmx");
+  await page.evaluate(
+    ({ htmx, root, html }) =>
+      htmx.swap({
+        sourceElement: root,
+        target: root,
+        swap: "none",
+        text: `<hx-partial id="context-view" hx-swap="outerMorph">${html}</hx-partial>`,
+      }),
+    { htmx, root: oldRoot, html: oldHTML },
+  );
+  await htmx.dispose();
+  await oldRoot.dispose();
   assert.equal(Number(await pane.getAttribute("data-conversation")), empty.id);
   assert.equal(await pane.locator(".ctx-message").count(), 0);
   await page.reload();
-  await page.click("#footer-context");
   await page.waitForFunction(
     (id) =>
       document.querySelector<HTMLElement>("#context-view")?.dataset.conversation === String(id),
@@ -308,8 +310,17 @@ await test("mobile browser Context follows the approved mock, isolates late even
   // Shared policy updates must refresh an already-open inspector, even without
   // a new transcript entry (including updates from another browser).
   assert.equal(
-    (await post(`${base}/api/settings`, { values: { "compaction.enabled": false } })).status,
-    200,
+    (
+      await post(`${base}/sessions/settings`, {
+        ...Object.fromEntries(
+          settingFields
+            .filter((field) => !("readonly" in field))
+            .map((field) => [field.key, String(store.read().values[field.key])]),
+        ),
+        "compaction.enabled": "false",
+      })
+    ).status,
+    303,
   );
   await page.waitForSelector(".ctx-threshold", { state: "detached" });
   assert.equal(await pane.locator(".ctx-reserved, .ctx-reserve-caption").count(), 0);
@@ -322,8 +333,19 @@ await test("mobile browser Context follows the approved mock, isolates late even
 
   // A failed inspection clears the preceding inventory; recovery does not
   // require a new browser or a durable inspector document.
-  await page.route("**/inspection*", (route) =>
-    route.fulfill({ json: { state: "unavailable", conversation: empty.id } }),
+  let unavailable = true;
+  const conversation = session.harness.conversation.bind(session.harness);
+  t.mock.method(
+    session.harness,
+    "conversation",
+    async (...args: Parameters<typeof conversation>) => {
+      const selected = await conversation(...args);
+      if (selected?.id === empty.id && unavailable)
+        t.mock.method(selected, "context", async () => {
+          throw new Error("Inspection unavailable");
+        });
+      return selected;
+    },
   );
   await empty.configure({ model }, context);
   await page.waitForFunction(
@@ -331,7 +353,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
   );
   assert.equal(await pane.getAttribute("data-tokens"), null);
   await shot("context-mobile-unavailable");
-  await page.unroute("**/inspection*");
+  unavailable = false;
   await empty.commit(async (tx) => {
     for (let index = 0; index < 600; index++)
       await tx.appendEntry(empty.id, { kind: "pi.user", model: [user(10)] });

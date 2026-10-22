@@ -72,7 +72,9 @@ export function installKeys() {
       search(direction || (event.shiftKey ? -1 : 1));
       return;
     }
-    const list = Array.from(document.querySelectorAll<HTMLElement>("#session-list a, #branches a"));
+    const list = Array.from(
+      document.querySelectorAll<HTMLElement>("#picker #session-list a, #branches a"),
+    ).filter((node) => node.checkVisibility() && node.getAttribute("aria-disabled") !== "true");
     if (direction && list.length && !(event.target instanceof HTMLSelectElement)) {
       event.preventDefault();
       moveFocus(list, direction);
@@ -101,11 +103,18 @@ export function installKeys() {
     if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
     const id = { t: "targets", m: "models", n: "create", "/": "session-filter" }[event.key];
     const control = id && document.getElementById(id);
-    if (control) {
+    if (control && !control.matches(":disabled")) {
       event.preventDefault();
       const options = control.closest("details");
       if (options) options.open = true;
       control.focus();
+      if (control instanceof HTMLSelectElement) {
+        try {
+          control.showPicker?.();
+        } catch {
+          /* Unsupported platform or activation. */
+        }
+      }
       if (control instanceof HTMLButtonElement) control.click();
     }
   });

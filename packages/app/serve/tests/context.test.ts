@@ -1,3 +1,4 @@
+import { conversationURL } from "../hypermedia.ts";
 import * as runtime from "../sessions.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -5,7 +6,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { readHistory, fixture } from "./sessions-testing.ts";
-import { serve, snapshot } from "./testing.ts";
+import { serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 const text = (tokens: number) => "x".repeat(Math.floor(tokens * 3.5));
@@ -25,13 +26,23 @@ await test("Context HTTP inspection is scoped, read-only and available without i
   await f.reopen({ env: undefined, targets: async () => [] });
   const restored = await f.sessions.get(session.id);
   const base = await serve(t, f.sessions);
-  const url = `${base}/api/harness/${session.id}/watch`;
+  const url = base + conversationURL(restored);
   for (const selected of [
     restored.root,
     await runtime.getConversation(restored, branch.id),
     restored.root,
   ]) {
-    const state = await snapshot(`${url}?conversation=${selected.id}`);
+    assert.equal(
+      (await fetch(base + conversationURL(restored, selected.id) + "/context")).status,
+      200,
+    );
+    const watch = await selected.watch(context);
+    t.after(() => watch.stop());
+    const state = {
+      view: watch.value,
+      inspection: await runtime.inspectContext(restored, watch.value, context),
+    };
+    await watch.stop();
     assert.equal(state.inspection.state, "available");
     assert(state.inspection.state === "available");
     assert.equal(state.inspection.conversation, state.view.conversation.id);
@@ -41,7 +52,7 @@ await test("Context HTTP inspection is scoped, read-only and available without i
       (await selected.context(context)).messages.map(estimateMessageTokens),
     );
   }
-  assert.equal((await fetch(`${url}?conversation=999999`)).status, 404);
+  assert.equal((await fetch(`${url.replace(/\d+$/, "999999")}/context`)).status, 404);
   assert.deepEqual(await readHistory(restored.root), before);
   assert.equal(f.faux.state.callCount, 0);
   assert.equal((await restored.harness.inspect(context)).tasks.length, 0);

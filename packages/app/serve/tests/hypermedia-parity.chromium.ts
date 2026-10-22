@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -13,12 +13,13 @@ import { Review } from "harness";
 import { GlobalSettingsStore } from "../server.ts";
 import { conversationURL } from "../hypermedia.ts";
 import { modelKey, targetKey } from "../hypermedia-forms.ts";
-import { sessionInfo, Sessions } from "../sessions.ts";
+import { rename, sessionInfo, Sessions } from "../sessions.ts";
 import {
   browserFixture,
   htmlAction,
   htmlMessageActions,
   returnToConversation,
+  openSessions,
 } from "./browser-testing.ts";
 import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
 import { directoryFixture, serve } from "./testing.ts";
@@ -307,7 +308,11 @@ await test("HTML target directory selection, path completions and slash activati
   page.setDefaultTimeout(10000);
   await page.goto(b.base + "/sessions");
   await page.locator("#new-options > summary").click();
+  const options = await page.locator("#options").elementHandle();
+  assert(options);
   await page.selectOption('[name="target"]', targetKey(f.binding));
+  await options.waitForElementState("hidden");
+  await options.dispose();
   await page.locator('[name="baseDirectory"]').fill("project");
   await page.waitForFunction(() =>
     Array.from(document.querySelectorAll<HTMLOptionElement>("#directories option")).some(
@@ -621,7 +626,7 @@ await test("HTML ordinary messages enable Send and consecutive submissions retai
   const catalog = await f.sessions.catalog();
   const session = await f.sessions.get(catalog.sessions[0].id);
   const url = b.base + conversationURL(session);
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   const prompt = page.getByRole("textbox", { name: "Message" });
   for (const [index, text] of ["First ordinary message", "Second ordinary message"].entries()) {
     f.faux.setResponses([fauxAssistantMessage(`Response ${index}`)]);
@@ -634,7 +639,7 @@ await test("HTML ordinary messages enable Send and consecutive submissions retai
       () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
     );
     await session.root.waitForIdle(context);
-    await page.locator("#status[data-state=ready]").waitFor();
+    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
     assert.equal(page.url(), url);
   }
   assert.deepEqual(
@@ -800,4 +805,190 @@ await test("HTML malformed commands never fall through to ordinary prompt submis
     assert.equal(page.url(), b.base + conversationURL(session));
   }
   assert.deepEqual(b.errors, []);
+});
+
+await test("HTML is the only served frontend and removed routes cannot mutate sessions", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const before = await sessionInfo(session);
+  const b = await browserFixture(t, f.sessions);
+  const assets = await readdir(b.assets);
+  for (const removed of ["client.js", "index.html", "sw.js"])
+    assert.equal(assets.includes(removed), false);
+  const root = await fetch(b.base, { redirect: "manual" });
+  assert.equal(root.status, 303);
+  assert.equal(root.headers.get("location"), "/sessions");
+  await b.page.goto(b.base);
+  assert.equal(new URL(b.page.url()).pathname, "/sessions");
+  assert.equal(await b.page.locator("#composer").count(), 1);
+  assert.equal(await b.page.getByRole("link", { name: "Original UI" }).count(), 0);
+  for (const path of [
+    "/api/catalog",
+    "/api/settings",
+    `/api/harness/${session.id}/watch`,
+    "/client.js",
+    "/sw.js",
+    "/index.html",
+    "/manifest.webmanifest",
+  ]) {
+    const response = await fetch(b.base + path);
+    assert.equal(response.status, 404);
+    assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+  }
+  const mutation = await fetch(`${b.base}/api/harness/${session.id}/settings`, {
+    method: "POST",
+    headers: { Origin: b.base, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Removed API must not run" }),
+  });
+  assert.equal(mutation.status, 404);
+  assert.deepEqual(await sessionInfo(session), before);
+  const catalog = await f.sessions.catalog();
+  t.mock.method(f.sessions, "catalog", async () => ({ ...catalog, targets: [] }));
+  await b.page.reload();
+  assert.equal(await b.page.locator("#create").isDisabled(), true);
+  assert.deepEqual(b.errors, []);
+});
+
+await test("HTML landing lists the newest five sessions even when execution is unavailable", async (t) => {
+  const f = await directoryFixture(t);
+  const { page, base, errors } = await browserFixture(t, f.sessions);
+  await page.goto(base);
+  assert.equal(await page.locator("#recent-title").count(), 0);
+  assert.equal(await page.locator("#session-list a").count(), 0);
+  assert.equal(await page.locator("#composer #create").isVisible(), true);
+  assert.equal(await page.locator("#send").count(), 0);
+  const ids: string[] = [];
+  for (let index = 0; index < 7; index++) {
+    const session = await f.sessions.create(crypto.randomUUID(), f.binding, model);
+    await rename(session, `Session ${index}`);
+    ids.unshift(session.id);
+    if (index === 1) {
+      await page.reload();
+      assert.equal(await page.locator("#session-list a").count(), 2);
+    }
+  }
+  f.stop();
+  await page.reload();
+  assert.equal(
+    await page
+      .locator("#targets")
+      .evaluate(
+        (node: HTMLSelectElement, value) =>
+          Array.from(node.options).find((option) => option.value === value)?.disabled,
+        targetKey(f.binding),
+      ),
+    true,
+  );
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    assert.deepEqual(
+      await page
+        .locator("#session-list a")
+        .evaluateAll((nodes) =>
+          nodes.map((node) => new URL((node as HTMLAnchorElement).href).pathname.split("/")[2]),
+        ),
+      ids.slice(0, 5),
+    );
+    assert.equal(await page.locator("#recent-title").isVisible(), true);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    assert.equal(await page.locator("#new-options > summary").isVisible(), true);
+    await openSessions(page);
+    await page.locator("#picker").waitFor();
+    assert.equal(await page.locator("#session-list a").count(), 7);
+    await page.locator("#session-filter").fill("Session 0");
+    await page.waitForFunction(() => document.querySelectorAll("#session-list a").length === 1);
+    await page.goBack();
+    await page.locator("#landing").waitFor();
+    assert.equal(await page.locator("#session-list a").count(), 5);
+    await page.locator("#session-list a").first().click();
+    await page.waitForURL(`${base}/sessions/${ids[0]}/conversations/1`);
+    await page.reload();
+    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+    await page.goto(base);
+  }
+  assert.deepEqual(errors, []);
+});
+
+await test("HTML repository inspection is explicit, works natively and does not navigate on hover", async (t) => {
+  const f = await fixture(t);
+  const env = t.mock.fn(f.options.env.bind(f.options));
+  await f.reopen({ env });
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const path = conversationURL(session);
+  await b.page.setViewportSize({ width: 1440, height: 900 });
+  await b.page.goto(b.base + path);
+  assert.equal(env.mock.callCount(), 0);
+  const instance = b.page.locator("#footer-instance");
+  await instance.hover();
+  await b.page.waitForFunction(
+    () => document.querySelector("#footer-instance")?.getAttribute("title") === "no repository",
+  );
+  assert.equal(env.mock.callCount(), 1);
+  assert.equal(new URL(b.page.url()).pathname, path);
+  const native = await b.browser.newContext({
+    javaScriptEnabled: false,
+    viewport: { width: 1440, height: 900 },
+  });
+  t.after(() => native.close());
+  const page = await native.newPage();
+  await page.goto(b.base + path);
+  assert.equal(env.mock.callCount(), 1);
+  await page.locator("#footer-instance").click();
+  assert.equal(new URL(page.url()).pathname, path + "/repository");
+  assert.equal(await page.locator("#footer-instance").getAttribute("title"), "no repository");
+  assert.equal(env.mock.callCount(), 2);
+  assert.equal(f.faux.state.callCount, 0);
+  assert.deepEqual(b.errors, []);
+});
+
+await test("cd completes directories and changes cwd in HTML without model input", async (t) => {
+  {
+    const f = await fixture(t);
+    const session = await f.create();
+    const nested = join(f.workspace, "space name");
+    await mkdir(nested);
+    await writeFile(join(f.workspace, "spurious-file"), "file");
+    const { page, base, errors } = await browserFixture(t, f.sessions);
+    await page.goto(base + conversationURL(session));
+    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+    await page.fill("#prompt", "/cd");
+    await page.locator("#completions [role=option]").waitFor();
+    await page.press("#prompt", "Tab");
+    assert.equal(await page.inputValue("#prompt"), "/cd ");
+    await page.fill("#prompt", "/cd sp");
+    const option = page.getByRole("option", { name: "space name/", exact: true });
+    await option.waitFor();
+    assert.equal(await page.locator("#completions [role=option]").count(), 1);
+    await option.tap();
+    assert.equal(await page.inputValue("#prompt"), "/cd space name/");
+    await page.press("#prompt", "Control+Enter");
+    await waitFor(async () => (await session.root.agent(context)).cwd === nested);
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    assert.deepEqual(await readHistory(session.root), []);
+    await page.reload();
+    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+    await page.waitForFunction(
+      (path) => document.querySelector("#footer-instance")?.textContent === `local · ${path}`,
+      nested,
+    );
+    await page.fill("#prompt", "/cd ../missing");
+    await page.press("#prompt", "Control+Enter");
+    await page.waitForFunction(() => !!document.querySelector("#request-error")?.textContent);
+    assert.equal(await page.inputValue("#prompt"), "/cd ../missing");
+    assert.equal((await session.root.agent(context)).cwd, nested);
+    await page.fill("#prompt", "/cd ..");
+    await page.press("#prompt", "Control+Enter");
+    await waitFor(async () => (await session.root.agent(context)).cwd === f.workspace);
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    assert.equal(f.faux.state.callCount, 0);
+    assert.deepEqual(errors, []);
+  }
 });
