@@ -14,30 +14,36 @@ requirement. If you haven't already, read [[README.md]].
 
 ## Documentation
 
-- Do not edit Markdown files unless explicitly instructed to do so.
-- Do not add "intent to edit" Markdown files to any plan or working/session
-  document unless explicitly instructed to do so.
-- Do not create new Markdown files unless explicitly instructed to do so.
-- You may delete Markdown files iff they are obsolete.
+- (agents) Do not create/edit Markdown files without explicit approval.
+- (agents) You may delete Markdown files iff they are obsolete.
 
 ### Writing documentation
 
 Writing/editing Markdown requires explicit instruction!
 
 - Use repository-relative wiki links, including `.md`: `[[docs/extensions.md]]`.
-- Use standard Markdown links for external URLs.
-- One H1, do not skip heading levels, and label every fenced code block.
 - One topic per file. Link to the source of truth instead of duplicating it.
 - Keep only concise, verifiable information. Remove stale content and update its
   callers; do not leave migration notes or tombstones.
-- `markdownlint-cli2` is the source of truth for markdown strictness.
-- Several doc files have a header explicitly forbidding you from editing them;
-  do not break this file-specific rule!
+- All Markdown changes must pass `markdownlint-cli2`, no exceptions.
+- (agents) If a doc has a header that says "do not edit", don't edit that file.
 
 ## Testing
 
-- `nix flake check` is the authoritative test suite and required for all changes
-  (except markdown-only ones). It is quite slow so save it for the end.
+- `nix flake check` is the authoritative test suite.
+  - All Nix-defined packages should have at minimum a `checkPhase` in which unit
+    tests run. `installCheckPhase`s probably aren't necessary.
+  - Nix-defined packages with benchmarks and/or nixos/vm tests should expose
+    these through `passthru.bench` and `passthru.tests`. Package nixos tests
+    should be added as flake checks with a `nixos-` prefix.
+  - Never add benchmarks as flake checks.
+  - Be frugal about adding or extending nixos/vm tests. Prefer in order:
+    1. Nodejs tests
+    2. Chromium tests
+    3. Nix flake checks that don't require a nixos vm
+    4. Nixos tests
+  - (temporary) Do NOT run the `nixos-host-basic` check. It is too slow and
+    memory intensive on aarch64 where it has to run under TCG EL2 :/
 - `just check` runs the Nix-free formatters, linters and type checks.
 - `just test` runs Node tests and Nix evaluation; `just pre-commit` also runs
   full Nix validation. See `justfile` for the commands.

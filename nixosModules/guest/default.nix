@@ -47,23 +47,23 @@
     children_max=${toString (2 * config.microvm.vcpu)}
   '';
   environment.etc."xdg/llms.txt".text = ''
-    Nix store paths:
+    drv.run core dependencies:
     deploy-rs -> ${inputs.deploy-rs.outPath}
     drv.run -> ${inputs.self.outPath}
     impermanence -> ${inputs.impermanence.outPath}
     jail.nix -> ${inputs.jail.outPath}
     microvm.nix -> ${inputs.microvm.outPath}
+    nix -> ${pkgs.nix.doc}
     nixpkgs -> ${inputs.nixpkgs.outPath}
                `-- docs -> /doc
                `-- nixos manual -> /nixos/doc/manual
-    nix -> ${pkgs.nix.doc}
+    openssh -> use `man` (${pkgs.openssh.man})
     pi -> ${inputs.pi.outPath}
-          `-- pi-durable -> /packages/durable/README.md
+          `-- durable -> /packages/durable/{docs/,test/examples/,README.md}
+          `-- env -> /packages/pi-env/{docs/,README.md}
+          `-- telemetry -> /packages/telemetry/
     sops-nix -> ${inputs.sops-nix.outPath}
-
-    Man pages (read with `man -l`, ignore locale warnings):
-    openssh -> ${pkgs.openssh.man}
-    systemd -> ${pkgs.systemd.man}
+    systemd -> use `man` (${pkgs.systemd.man})
   '';
   environment.persistence."/persist" = {
     directories = [
