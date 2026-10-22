@@ -14,7 +14,12 @@ import { GlobalSettingsStore } from "../server.ts";
 import { conversationURL } from "../hypermedia.ts";
 import { modelKey, targetKey } from "../hypermedia-forms.ts";
 import { sessionInfo, Sessions } from "../sessions.ts";
-import { browserFixture, htmlAction, htmlMessageActions } from "./browser-testing.ts";
+import {
+  browserFixture,
+  htmlAction,
+  htmlMessageActions,
+  returnToConversation,
+} from "./browser-testing.ts";
 import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
 import { directoryFixture, serve } from "./testing.ts";
 
@@ -31,7 +36,7 @@ await test("HTML native settings, fork, reset, archive, context and export prese
   const b = await browserFixture(t, f.sessions);
   const native = await b.browser.newContext({
     javaScriptEnabled: false,
-    viewport: { width: 390, height: 844 },
+    viewport: { width: 820, height: 844 },
     isMobile: true,
     hasTouch: true,
   });
@@ -47,7 +52,7 @@ await test("HTML native settings, fork, reset, archive, context and export prese
   assert.equal((await sessionInfo(session)).name, "Renamed session");
   assert.equal((await session.root.agent(context)).thinkingLevel, "high");
   assert.equal((await session.root.agent(context)).instructions, "Keep changes surgical.");
-  await page.getByRole("link", { name: "Conversation", exact: true }).click();
+  await returnToConversation(page);
   await page.locator(`#entry-${records.at(-1)!.id} .entry-actions > summary`).click();
   await page
     .locator(`#entry-${records.at(-1)!.id}`)
@@ -107,7 +112,7 @@ await test("HTML session autosaves drain before navigation, retain drafts and re
     await route.continue();
   });
   await page.locator('[name="instructions"]').fill("Persist before leaving.");
-  await page.getByRole("link", { name: "Conversation", exact: true }).click();
+  await returnToConversation(page);
   await requested.promise;
   assert.equal(new URL(page.url()).pathname, path + "/settings");
   release.resolve();
@@ -132,7 +137,7 @@ await test("HTML session autosaves drain before navigation, retain drafts and re
     });
   });
   await page.locator('[name="instructions"]').fill("Retry this change.");
-  await page.getByRole("link", { name: "Conversation", exact: true }).click();
+  await returnToConversation(page);
   await page.waitForFunction(
     () => document.querySelector<HTMLFormElement>("#session-settings")?.dataset.failed === "true",
   );
@@ -170,7 +175,7 @@ await test("HTML shared defaults persist and do not change existing conversation
   await page.selectOption('[name="model"]', modelKey({ provider: "plain", modelId: "plain" }));
   await waitFor(async () => store.read().model?.provider === "plain");
   assert.deepEqual((await session.root.agent(context)).model, model);
-  await page.getByRole("link", { name: "Sessions", exact: true }).click();
+  await page.keyboard.press("Escape");
   assert.equal(
     await page.locator('[name="model"]').inputValue(),
     modelKey({ provider: "plain", modelId: "plain" }),
@@ -218,7 +223,7 @@ await test("HTML target directory selection, path completions and slash activati
   f.faux.setResponses([fauxAssistantMessage("No findings.")]);
   await text.fill("/review");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await (await htmlAction(page, "button", "End review and return")).waitFor();
+  await page.locator('[data-command="endreview"]').waitFor({ state: "attached" });
   const review = await session.harness.snapshot(Review, session.root.id, context);
   assert(review?.active !== undefined);
   const reviewConversation = await session.harness.conversation(review.active, context);
@@ -241,7 +246,7 @@ await test("HTML target directory selection, path completions and slash activati
   );
   const before = await readHistory(session.root);
   assert.notEqual(before.at(-1)?.kind, "pi.reset");
-  await page.getByRole("link", { name: "Conversation", exact: true }).click();
+  await returnToConversation(page);
   await page.waitForFunction(
     () =>
       document.querySelector<HTMLTextAreaElement>('#composer [name="content"]')?.value ===
@@ -308,7 +313,7 @@ await test("HTML rich transcript has paired tools, local copy/quote/search, imag
     (await page.locator('#composer [name="content"]').inputValue()).startsWith("> ## Result"),
     true,
   );
-  await (await htmlAction(page, "button", "Search")).click();
+  await page.keyboard.press("Control+f");
   await page.locator("#search").fill("tool result");
   assert.equal(await page.locator(".search-current").count(), 1);
   await page.locator("#search").press("Escape");

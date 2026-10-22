@@ -19,6 +19,9 @@ import { chromium, type Page } from "playwright";
 import { readHistory, fixture, model, waitFor } from "./sessions-testing.ts";
 import { chromiumExecutable, directoryFixture, serve, snapshot } from "./testing.ts";
 import {
+  openSessions,
+  returnToConversation,
+  openGlobalSettings,
   assertLayout,
   browserFlow,
   browserFixture,
@@ -98,13 +101,13 @@ await test("landing lists the newest five sessions regardless of target availabi
       await mkdir(process.env.PI_SCREENSHOT_DIR, { recursive: true });
       await page.screenshot({ path: join(process.env.PI_SCREENSHOT_DIR, `landing-${width}.png`) });
     }
-    await page.click("#title");
+    await openSessions(page);
     await page.locator("#picker:not([hidden])").waitFor();
     assert.equal(await page.locator("#landing").isVisible(), false);
     assert.equal(await page.locator("#sessions button").count(), 7);
     await page.fill("#session-filter", "Session 0");
     assert.equal(await page.locator("#sessions button").count(), 1);
-    await page.click("#close-view");
+    await returnToConversation(page);
     assert.equal(await page.locator("#recent-sessions button").count(), 5);
     await page.click("#recent-sessions button:first-child");
     await page.waitForFunction(
@@ -113,7 +116,7 @@ await test("landing lists the newest five sessions regardless of target availabi
     );
     assert.equal(await page.locator("#landing").isVisible(), false);
     await page.reload();
-    await page.locator("#status[data-state=ready]").waitFor();
+    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
     assert.equal(await page.locator("#landing").isVisible(), false);
     await page.goto(base);
     await page.locator("#recent-sessions button").nth(4).waitFor();
@@ -338,7 +341,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await reconnected.selectOption("#thinking", "high");
   await reconnected.fill("#session-name", "Counter cleanup");
   await reconnected.fill("#instructions", "Keep changes small and verify them.");
-  await reconnected.click("#close-view");
+  await returnToConversation(reconnected);
   await reconnected.waitForFunction(
     () => document.querySelector<HTMLElement>("#preferences")?.hidden,
   );
@@ -354,8 +357,8 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   const expectedContext = (await snapshot(`${base}/api/harness/${id}/watch`)).context;
   const gallery = async (page: Page, size: string) => {
     await assertHeaderStatus(page, "ready", "Ready");
-    assert.equal(await page.locator(".bar button:visible").count(), 2);
-    assert.equal(await page.locator("#menu-toggle svg").isVisible(), true);
+    assert.equal(await page.locator(".bar button:visible").count(), size === "mobile" ? 0 : 2);
+    assert.equal(await page.locator("#menu-toggle svg").isVisible(), size !== "mobile");
     assert.equal(await page.locator("#title").textContent(), "Counter cleanup");
     assert.equal(await page.locator("#menu-toggle").getAttribute("aria-label"), "Global settings");
     const originalTitle = await page.locator("#title").textContent();
@@ -365,7 +368,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     const layout = await page.locator(".bar").evaluate((bar) => {
       const title = bar.querySelector("#title")!.getBoundingClientRect();
       const menu = bar.querySelector("#menu-toggle")!.getBoundingClientRect();
-      const bounds = bar.getBoundingClientRect();
+      const bounds = document.body.getBoundingClientRect();
       return {
         left: title.left - bounds.left,
         right: bounds.right - menu.right,
@@ -373,7 +376,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
         overflow: document.documentElement.scrollWidth > innerWidth,
       };
     });
-    assert(layout.left <= 16 && layout.right <= 16);
+    if (size !== "mobile") assert(layout.left <= 16 && layout.right <= 16);
     assert.equal(layout.overlap, false);
     assert.equal(layout.overflow, false);
     await assertHeaderStatus(page, "ready", "Ready");
@@ -381,13 +384,13 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await page.locator("#title").evaluate((node, name) => {
       node.textContent = name;
     }, originalTitle);
-    await page.click("#title");
+    await openSessions(page);
     await page.waitForSelector("#picker:not([hidden])");
     assert.equal(await page.locator("#title").isVisible(), false);
     assert.equal(await page.locator("#menu-toggle").isVisible(), false);
     await assertLayout(page, `${size}-sessions`);
-    await page.click("#close-view");
-    await page.click("#menu-toggle");
+    await returnToConversation(page);
+    await openGlobalSettings(page);
     await page.waitForSelector("#global-preferences:not([hidden])");
     assert.equal(await page.locator("#wrap-code").isVisible(), true);
     await page.keyboard.press("Escape");
@@ -470,7 +473,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     assert.equal(await page.locator("#send [aria-hidden=true]").textContent(), "↑");
     assert.equal(await page.locator("#stop [aria-hidden=true]").textContent(), "×");
     assert.equal(await page.locator('label[for="prompt"]').count(), 0);
-    await page.click("#menu-toggle");
+    await openGlobalSettings(page);
     await page.selectOption("#wrap-code", "true");
     await assertLayout(page, `${size}-global`);
     assert.equal(
@@ -522,7 +525,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
     await page.keyboard.press("Escape");
     await page.keyboard.press("Control+k");
     await page.waitForSelector("#picker:not([hidden])");
-    await page.focus("#close-view");
+    await page.focus("#create");
     await page.keyboard.press("/");
     assert.equal(
       await page.locator("#session-filter").evaluate((node) => node === document.activeElement),
@@ -571,7 +574,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
       await page.locator("body").evaluate((node) => node.classList.contains("wrap-code")),
       true,
     );
-    await page.click("#menu-toggle");
+    await openGlobalSettings(page);
     await page.selectOption("#wrap-code", "false");
     await page.keyboard.press("Escape");
     await page.locator("#transcript").evaluate((node) => {
@@ -729,7 +732,7 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   await modelLabel.evaluate((node, text) => {
     node.textContent = text;
   }, modelName);
-  await reconnected.click("#menu-toggle");
+  await openGlobalSettings(reconnected);
   await assertLayout(reconnected, "mobile-narrow-menu");
   await reconnected.keyboard.press("Escape");
   await reconnected.setViewportSize({ width: 768, height: 1024 });
@@ -779,11 +782,11 @@ The new behavior is covered by a focused test. Run \`npm test\` to verify.`),
   );
   await reconnected.keyboard.press("Control+k");
   await reconnected.keyboard.press("Enter");
-  await reconnected.waitForSelector("#title", { state: "visible" });
+  await reconnected.waitForSelector("#title:not([hidden])", { state: "attached" });
   assert.equal(Number(new URL(reconnected.url()).searchParams.get("conversation")), branchId);
   await reconnected.click("#footer-model");
   await reconnected.fill("#instructions", "Branch-only instructions.");
-  await reconnected.click("#close-view");
+  await returnToConversation(reconnected);
   await reconnected.waitForSelector("#preferences", { state: "hidden" });
   assert.equal((await branch.agent(context)).instructions, "Branch-only instructions.");
   assert.equal(
@@ -1072,7 +1075,7 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
   await page.goto(base);
-  await page.click("#title");
+  await openSessions(page);
   await page.waitForSelector("#picker:not([hidden])");
   await page.click("#new-options-toggle");
   assert.equal(await page.locator("#models").inputValue(), "0");
@@ -1090,8 +1093,8 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   );
   const oldOption = await page.locator("#models option").last().elementHandle();
   assert(oldOption);
-  await page.click("#close-view");
-  await page.click("#title");
+  await returnToConversation(page);
+  await openSessions(page);
   await page.waitForFunction((option) => !option.isConnected, oldOption);
   assert.equal(await page.locator("#models").inputValue(), "1");
 
@@ -1107,8 +1110,8 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   });
   const pendingOption = await page.locator("#models option").last().elementHandle();
   assert(pendingOption);
-  await page.click("#close-view");
-  await page.click("#title");
+  await returnToConversation(page);
+  await openSessions(page);
   await requested.promise;
   await page.selectOption("#models", "0");
   release.resolve();
@@ -1117,8 +1120,8 @@ await test("mobile browser edits shared defaults and keeps session settings inde
   assert.equal(await page.locator("#models").inputValue(), "0");
   assert.equal(await page.locator("#new-thinking").inputValue(), "");
 
-  await page.click("#close-view");
-  await page.click("#menu-toggle");
+  await returnToConversation(page);
+  await openGlobalSettings(page);
   await page.selectOption("#default-model", "0");
   await page.selectOption("#model-thinking-default", "high");
   await page.selectOption('[name="defaultThinkingLevel"]', "low");
@@ -1137,14 +1140,14 @@ await test("mobile browser edits shared defaults and keeps session settings inde
     }
   }
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.click("#close-view");
+  await returnToConversation(page);
   await page.waitForSelector("#global-preferences", { state: "hidden" });
   assert.equal(await page.locator("#new-thinking option").first().textContent(), "Default (high)");
   assert.equal(
     await page.locator("body").evaluate((node) => node.classList.contains("hide-thinking")),
     true,
   );
-  await page.click("#title");
+  await openSessions(page);
   await page.click("#create");
   await page.waitForFunction(() => new URL(location.href).searchParams.has("session"));
   const id = new URL(page.url()).searchParams.get("session")!;
@@ -1161,7 +1164,7 @@ await test("mobile browser edits shared defaults and keeps session settings inde
     ["off", "minimal", "low", "medium", "high"],
   );
   await page.selectOption("#thinking", "off");
-  await page.click("#close-view");
+  await returnToConversation(page);
   await page.waitForSelector("#preferences", { state: "hidden" });
   assert.equal((await runtime.sessionInfo(session)).thinkingLevel, "off");
   assert.equal(store.read().values.defaultThinkingLevel, "low");
@@ -1229,7 +1232,7 @@ await test("mobile browser sessions share header and footer formatting and stay 
     const page = await browser.newPage({ viewport: { width, height: 844 } });
     page.setDefaultTimeout(10_000);
     await page.goto(`${base}/?session=${session.id}`);
-    await page.waitForSelector("#status[data-state=ready]");
+    await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
     // Exercise nonzero safe-area-like insets as well as the usual portrait layout.
     if (width === 650)
       await page.addStyleTag({ content: "body { padding-left: 28px; padding-right: 28px; }" });
@@ -1267,7 +1270,7 @@ await test("mobile browser sessions share header and footer formatting and stay 
       );
       assert.equal(colors.actual, colors.expected);
     }
-    await page.click("#title");
+    await openSessions(page);
     await page.waitForSelector("#picker:not([hidden])");
     const row = page.locator(`#sessions [data-session="${session.id}"]`);
     await row.waitFor();
@@ -1370,7 +1373,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     page.on("pageerror", (error) => errors.push(error));
     page.setDefaultTimeout(10_000);
     await page.goto(`${base}/?session=${session.id}`);
-    await page.waitForSelector("#status[data-state=ready]");
+    await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
     await page.fill("#prompt", "Unsent draft");
     await page.setInputFiles("#images", {
       name: "pixel.png",
@@ -1404,7 +1407,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
       else await route.continue();
     });
     await page.fill("#instructions", `Instructions ${width}`);
-    await page.click("#close-view");
+    await returnToConversation(page);
     await requested.promise;
     assert.equal(await page.locator("body").getAttribute("data-view"), "settings");
     assert.equal(await page.locator("#preferences").getAttribute("aria-busy"), "true");
@@ -1450,7 +1453,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     await page.fill("#search", "Searchable");
     assert.deepEqual(await articleStyles(), before);
     assert(await page.evaluate(() => (CSS.highlights.get("pi-search")?.size ?? 0) > 0));
-    await page.click("#close-view");
+    await returnToConversation(page);
     await page.waitForSelector("#composer:not([hidden])");
     assert.equal(await page.locator("#transcript").evaluate((node) => node.scrollTop), scroll);
     assert.equal(await page.inputValue("#prompt"), "Unsent draft");
@@ -1487,7 +1490,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
         return fauxAssistantMessage(`Background response ${width}`);
       },
     ]);
-    await page.click("#close-view");
+    await returnToConversation(page);
     await page.fill("#prompt", "Run in the background.");
     await page.press("#prompt", "Control+Enter");
     await started.promise;
@@ -1498,7 +1501,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     await page.click("#footer-context");
     assert.equal(await page.locator("body").getAttribute("data-view"), "context");
     assert.equal(await page.locator("#queue").isHidden(), true);
-    await page.click("#close-view");
+    await returnToConversation(page);
     const queue = await page.locator("#queue").evaluate((node) => ({
       height: node.getBoundingClientRect().height,
       scroll: node.scrollHeight,
@@ -1513,16 +1516,16 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     await session.root.waitForIdle(context);
     await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
     assert.equal(await page.locator("body").getAttribute("data-view"), "context");
-    await page.click("#close-view");
+    await returnToConversation(page);
     await page.fill("#prompt", "/fork");
     await page.press("#prompt", "Control+Enter");
     await page.waitForSelector("#branches button");
     assert.equal(await page.locator("#branches button").count(), 1);
     await page.locator("#branches button").click();
-    await page.waitForSelector("#title", { state: "visible" });
+    await page.waitForSelector("#title:not([hidden])", { state: "attached" });
 
     // Global save failures use the same bar and transition guard, not a dialog.
-    await page.click("#menu-toggle");
+    await openGlobalSettings(page);
     fail = true;
     await page.route("**/api/settings", async (route) => {
       if (fail && route.request().method() === "POST")
@@ -1535,7 +1538,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     const failedGlobal = page.waitForResponse(
       (response) => response.url().endsWith("/api/settings") && response.status() === 503,
     );
-    await page.click("#close-view");
+    await returnToConversation(page);
     await failedGlobal;
     await page.waitForSelector("#global-preferences:not([aria-busy])");
     assert.equal(await page.locator("body").getAttribute("data-view"), "global");
@@ -1546,8 +1549,8 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
       });
     }
     fail = false;
-    await page.click("#close-view");
-    await page.waitForSelector("#title", { state: "visible" });
+    await returnToConversation(page);
+    await page.waitForSelector("#title:not([hidden])", { state: "attached" });
     assert.equal(store.read().values.defaultThinkingLevel, width === 390 ? "high" : "low");
     await page.fill("#prompt", "Keep through reconnect");
     await page.click("#footer-context");
@@ -1557,7 +1560,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     await page.waitForSelector('#bottom-line[data-connected="true"]', { state: "attached" });
     assert.equal(await page.locator("body").getAttribute("data-view"), "context");
     assert.equal(await page.inputValue("#prompt"), "Keep through reconnect");
-    await page.click("#close-view");
+    await returnToConversation(page);
 
     // Creation can finish while a new edit is saving. It must not switch the
     // form binding or repaint the new session with the old rename/configure result.
@@ -1597,7 +1600,7 @@ await test("mobile browser stacked views preserve input and scroll, serialize au
     assert.equal(new URL(page.url()).searchParams.get("session"), session.id);
     configureRelease.resolve();
     await page.waitForURL((url) => url.searchParams.get("session") === newSession.id);
-    await page.waitForSelector("#status[data-state=ready]");
+    await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
     assert.equal((await session.root.agent(context)).instructions, `Before creating ${width}`);
     assert.equal((await runtime.sessionInfo(session)).name, `Old session ${width}`);
     assert.equal(
@@ -1620,7 +1623,7 @@ await test("session catalog refresh preserves row focus without stealing focus f
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await page.goto(`${base}/?session=${session.id}`);
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   await page.waitForSelector("#sessions button", { state: "attached" });
 
   for (const focusFilter of [false, true]) {
@@ -1632,7 +1635,7 @@ await test("session catalog refresh preserves row focus without stealing focus f
       await release.promise;
       await route.continue();
     });
-    await page.click("#title");
+    await openSessions(page);
     await requested.promise;
     await page.focus("#session-filter");
     await page.keyboard.press("Control+j");
@@ -1649,7 +1652,7 @@ await test("session catalog refresh preserves row focus without stealing focus f
       true,
     );
     await page.unroute("**/api/catalog");
-    await page.click("#close-view");
+    await returnToConversation(page);
   }
 });
 
@@ -1668,7 +1671,7 @@ await test("mobile browser branch refresh preserves keyboard focus while loading
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await page.goto(`${base}/?session=${session.id}`);
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   await page.waitForSelector("#branches button", { state: "attached" });
   const original = await page.locator("#branches button").first().elementHandle();
   assert(original);
@@ -1735,20 +1738,21 @@ await test("mobile browser navigation never automatically focuses controls", asy
   );
   for (const initiallyFocused of [false, true]) {
     if (initiallyFocused) await page.click("#prompt");
-    await page.click("#menu-toggle");
+    await openGlobalSettings(page);
     await page.waitForSelector("#global-preferences", { state: "visible" });
-    await page.click("#close-view");
+    await returnToConversation(page);
     await page.waitForSelector("#global-preferences", { state: "hidden" });
     assert.equal(
       await page.locator("#prompt").evaluate((node) => node === document.activeElement),
       false,
     );
   }
-  for (const trigger of ["#footer-model", "#title"]) {
-    await page.click(trigger);
-    await page.waitForSelector("#close-view", { state: "visible" });
+  for (const pane of ["#preferences", "#picker"]) {
+    if (pane === "#preferences") await page.click("#footer-model");
+    else await openSessions(page);
+    await page.locator(pane).waitFor();
     await page.keyboard.press("Escape");
-    await page.waitForSelector("#close-view", { state: "hidden" });
+    await page.locator(pane).waitFor({ state: "hidden" });
   }
   assert.deepEqual(await page.evaluate(() => Reflect.get(window, "automaticFocus")), []);
 });
@@ -1967,7 +1971,7 @@ await test("browser coalesces observation refreshes and cancels reads on navigat
     };
   });
   await page.goto(`${base}/?session=${session.id}`);
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   let hold = false;
   let entered = Promise.withResolvers<void>();
   let release = Promise.withResolvers<void>();
@@ -2008,20 +2012,20 @@ await test("browser coalesces observation refreshes and cancels reads on navigat
     );
     await page.click("#footer-model");
     assert.equal(await page.inputValue("#instructions"), "19");
-    await page.click("#close-view");
+    await returnToConversation(page);
 
     entered = Promise.withResolvers<void>();
     release = Promise.withResolvers<void>();
     hold = true;
     await session.root.configure({ thinkingLevel: "low" }, context);
     await entered.promise;
-    await page.click("#title");
+    await openSessions(page);
     await page.click(`#sessions [data-session="${other.id}"]`);
     await page.waitForURL((url) => url.searchParams.get("session") === other.id);
     await page.waitForFunction(() => Reflect.get(window, "observationMetrics").aborted > 0);
     hold = false;
     release.resolve();
-    await page.waitForSelector("#status[data-state=ready]");
+    await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
     assert.equal(await page.locator("#footer-effort").textContent(), "medium");
     assert.equal(await page.locator("#notice").isVisible(), false);
     assert.deepEqual(errors, []);
@@ -2037,13 +2041,13 @@ await test("browser reconnect recovers history hidden by a reset while disconnec
   const watches = t.mock.method(session.root, "watch");
   const { page, base, errors } = await browserFixture(t, f.sessions);
   await page.goto(`${base}/?session=${session.id}`);
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   for (const call of watches.mock.calls) {
     const watch = await call.result;
     assert(watch);
     await watch.stop();
   }
-  await page.waitForSelector("#status[data-state=reconnecting]");
+  await page.waitForSelector("#status[data-state=reconnecting]", { state: "attached" });
   const submission = await session.root.submit(
     {
       type: "write",
@@ -2057,7 +2061,7 @@ await test("browser reconnect recovers history hidden by a reset while disconnec
   const entry = (await submission.status(context)).entry;
   assert(entry !== undefined);
   await session.root.reset(undefined, context);
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   const boundary = page.locator('article[data-context="pi.reset"] > .context-event');
   await boundary.locator(":scope > summary").click();
   await page.getByText("While disconnected", { exact: true }).waitFor();
@@ -2083,10 +2087,10 @@ await test("browser switches execution independently of the model and restores h
   assert(at !== undefined);
   const { page, base, errors } = await browserFixture(t, f.sessions);
   await page.goto(`${base}/?session=${session.id}`);
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   await page.click("#footer-model");
   await page.selectOption("#session-target", { label: "Second environment" });
-  await page.click("#close-view");
+  await returnToConversation(page);
   await waitFor(
     async () =>
       (await session.harness.snapshot(runtime.Environment, session.root.id, context))?.target ===
@@ -2095,16 +2099,16 @@ await test("browser switches execution independently of the model and restores h
   assert.deepEqual((await session.root.agent(context)).model, model);
   assert.equal((await session.root.agent(context)).cwd, other);
   await page.reload();
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   await page.click("#footer-model");
   assert.equal(
     await page.locator("#session-target option:checked").textContent(),
     "Second environment",
   );
-  await page.click("#close-view");
+  await returnToConversation(page);
   const branch = await session.root.fork(at, { ownership: { kind: "ownerless" } }, context);
   await page.goto(`${base}/?session=${session.id}&conversation=${branch.id}`);
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   await page.click("#footer-model");
   assert.equal(
     await page.locator("#session-target option:checked").textContent(),

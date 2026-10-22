@@ -332,6 +332,7 @@ body.stacked-layout {
 #menu-toggle { margin-left: 0; }
 #branches .session[aria-current=true] { background: var(--selected); }
 @media (max-width: 650px) {
+  .stacked-layout #app-header > .bar { display: none; }
   .pane { padding: 8px 16px 16px; }
   #new-options, #queue { padding: 0 16px; }
   #session-filter-bar, #search-bar { padding: 6px 10px 4px; }
@@ -342,6 +343,27 @@ body.stacked-layout {
   #new-options-toggle, #create, #search-prev, #search-next { width: 32px; font-size: 18px; }
 }
 #queue > div > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* Wide screens keep navigation in the margins, not above the main pane. */
+@media (min-width: 1200px) {
+  body.stacked-layout, .stacked-layout #page {
+    grid-template-columns: minmax(0, 1fr) 820px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto auto;
+  }
+  .stacked-layout #app-header { grid-area: 1 / 1; align-self: start; min-height: 0; max-height: 100%; overflow-y: auto; overflow-wrap: anywhere; }
+  .stacked-layout .bar { min-height: 46px; border-bottom: 0; }
+  .stacked-layout .bar > .icon { position: fixed; top: calc(env(safe-area-inset-top) + 8px); right: max(16px, env(safe-area-inset-right)); }
+  .stacked-layout :is(#notice, #recovery, #activity, #request-error:not(:empty)) { padding: 6px 16px; }
+  .stacked-layout #main-area {
+    --conversation-left: 0px;
+    --conversation-right: 64px;
+    grid-area: 1 / 2;
+    width: calc(100% + 64px);
+  }
+  .stacked-layout #main-area > .pane:not(#transcript, #conversation-scroll), .stacked-layout #main-area > #new-options { padding-left: 0; padding-right: 64px; }
+  .stacked-layout #queue { grid-area: 2 / 1 / auto / -1; }
+  .stacked-layout #app-footer { grid-area: 3 / 1 / auto / -1; }
+}
 
 /* Message actions remain transient; every action retains its accessible name. */
 #message-menu { width: auto; max-width: calc(100% - 16px); padding: 2px; border-radius: 4.5px; inset: auto; }

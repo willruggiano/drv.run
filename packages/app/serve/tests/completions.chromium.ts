@@ -1,3 +1,4 @@
+import { openSessions, returnToConversation, openGlobalSettings } from "./browser-testing.ts";
 import * as runtime from "../sessions.ts";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -73,12 +74,12 @@ await test("landing composer creates sessions with the first draft, options and 
     await f.open();
     await page.selectOption("#new-thinking", "high");
     const target = await page.inputValue("#targets");
-    await page.click("#title");
+    await openSessions(page);
     await page.locator("#picker:not([hidden])").waitFor();
     assert.equal(await page.locator("#session-actions #create").isVisible(), true);
     assert.equal(await page.inputValue("#new-thinking"), "high");
     assert.equal(await page.inputValue("#targets"), target);
-    await page.click("#close-view");
+    await returnToConversation(page);
     assert.equal(await page.locator("#composer-actions #create").isVisible(), true);
     assert.equal(await page.inputValue("#models"), "0");
     assert.equal(await page.inputValue("#new-thinking"), "high");
@@ -88,9 +89,9 @@ await test("landing composer creates sessions with the first draft, options and 
       const previous = await f.create();
       previousId = previous.id;
       sourceKey = `pi.draft:${previous.id}:main`;
-      await page.click("#title");
+      await openSessions(page);
       await page.locator(`#sessions [data-session="${previous.id}"]`).click();
-      await page.locator("#status[data-state=ready]").waitFor();
+      await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
     }
     const text = `  First message from ${action}\nwith whitespace.  `;
     await page.fill("#prompt", text);
@@ -99,7 +100,7 @@ await test("landing composer creates sessions with the first draft, options and 
     // The initial prompt must not wait for an SSE connection.
     await page.route("**/api/harness/*/watch", (route) => route.abort());
     if (action === "sessions") {
-      await page.click("#title");
+      await openSessions(page);
       await page.fill("#session-filter", "This is only a filter");
       await page.click("#create");
     } else if (action === "keyboard") await page.press("#prompt", "Control+Enter");
@@ -131,7 +132,7 @@ await test("landing composer creates sessions with the first draft, options and 
     if (text === "/new") await page.press("#prompt", "Control+Enter");
     else await page.click("#create");
     const session = await f.currentSession();
-    await page.locator("#status[data-state=ready]").waitFor();
+    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
     assert.deepEqual(await userMessages(session), []);
   }
 });
@@ -176,7 +177,7 @@ await test("landing composer preserves creation failures and retries a lost prom
   assert.equal(await page.locator("#attachments button").count(), 1);
   await waitFor(async () => (await userMessages(session)).length === 1);
   await session.root.waitForIdle(BACKGROUND_CONTEXT);
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   await page.unroute("**/submit");
   await page.route("**/submit", async (route) => {
     requests.push(route.request().postDataJSON());
@@ -245,7 +246,7 @@ await test("landing creation captures options once and preserves edits during cr
   assert.equal(await page.inputValue("#prompt"), "Edited during submission");
   assert.equal(await page.locator("#attachments button").count(), 1);
   await page.reload();
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   assert.equal(await page.inputValue("#prompt"), "Edited during submission");
 });
 
@@ -270,10 +271,10 @@ await test("landing creation cannot replace an explicitly selected session or vi
     await creating.promise;
     if (destination === "session") {
       await page.locator(`#recent-sessions [data-session="${existing.id}"]`).click();
-      await page.locator("#status[data-state=ready]").waitFor();
+      await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
       await page.fill("#prompt", "Other session draft");
     } else {
-      await page.click("#menu-toggle");
+      await openGlobalSettings(page);
       await page.locator("#global-preferences:not([hidden])").waitFor();
     }
     release.resolve();
@@ -307,7 +308,7 @@ await test("landing creation cannot replace an explicitly selected session or vi
   await page.click("#create");
   await submitting.promise;
   const created = await f.currentSession();
-  await page.click("#title");
+  await openSessions(page);
   await page.locator(`#sessions [data-session="${existing.id}"]`).click();
   await page.fill("#prompt", "New unrelated draft");
   release.resolve();
@@ -412,7 +413,7 @@ await test("mobile browser composer runs commands without sending prompts and pr
     if (new URL(request.url()).pathname.endsWith("/submit")) prompts++;
   });
   await page.goto(`${base}/?session=${session.id}`);
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   await page.fill("#prompt", "@a");
   await page.getByRole("option", { name: "@a folder/", exact: true }).waitFor();
   const bounds = await page.locator("#completions").evaluate((node) => {
@@ -437,23 +438,23 @@ await test("mobile browser composer runs commands without sending prompts and pr
   };
   await run("/settings");
   await page.waitForSelector("#preferences:not([hidden])");
-  await page.click("#close-view");
+  await returnToConversation(page);
   await run("/model");
   await page.waitForSelector("#preferences:not([hidden])");
   assert.equal(
     await page.locator("#session-model").evaluate((node) => node === document.activeElement),
     false,
   );
-  await page.click("#close-view");
+  await returnToConversation(page);
   await run("/search");
   await page.waitForSelector("#search-bar", { state: "visible" });
-  await page.click("#close-view");
+  await returnToConversation(page);
   const download = page.waitForEvent("download");
   await run("/export");
   assert.match((await download).suggestedFilename(), /\.json$/);
   await run("/sessions");
   await page.waitForSelector("#picker:not([hidden])");
-  await page.click("#close-view");
+  await returnToConversation(page);
   for (const [command, message] of [
     ["/stop", "no running response"],
     ["/resume", "does not need to be resumed"],
@@ -514,7 +515,7 @@ await test("mobile browser composer runs commands without sending prompts and pr
     await page.evaluate((id) => sessionStorage.getItem(`pi.draft:${id}:main`), session.id),
     "",
   );
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   f.faux.setResponses([fauxAssistantMessage("Mention received.")]);
   const request = page.waitForRequest((request) =>
     new URL(request.url()).pathname.endsWith("/submit"),

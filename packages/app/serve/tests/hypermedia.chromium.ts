@@ -11,7 +11,7 @@ import { LiveDoc } from "@earendil-works/pi-durable";
 import { Review } from "harness";
 import { html, renderHTML, type SafeHtml } from "../html.ts";
 import { conversationURL, htmlPage } from "../hypermedia.ts";
-import { browserFixture, htmlAction } from "./browser-testing.ts";
+import { browserFixture, htmlAction, openSessions } from "./browser-testing.ts";
 import { fixture, readHistory, waitFor } from "./sessions-testing.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -272,6 +272,7 @@ await test("morph preserves existing disclosure but applies server defaults to n
 await test("HTML workflow: create, submit, review, navigate without ending, end, back/forward", async (t) => {
   const f = await fixture(t);
   const b = await browserFixture(t, f.sessions);
+  await b.page.setViewportSize({ width: 820, height: 844 });
   const { page } = b;
   const apiRequests: string[] = [];
   page.on("request", (request) => {
@@ -360,7 +361,7 @@ await test("ordinary forms and direct URLs work without JavaScript; GET actions 
   const [info] = (await f.sessions.catalog()).sessions;
   const session = await f.sessions.get(info.id);
   assert.equal(page.url(), b.base + conversationURL(session));
-  await page.getByRole("link", { name: "Sessions", exact: true }).click();
+  await openSessions(page);
   await page.locator("#session-filter").fill("no matching session");
   await page.getByRole("button", { name: "Filter", exact: true }).click();
   assert.equal(await page.locator("#session-list > .session").count(), 0);
@@ -403,6 +404,7 @@ await test("ending an active review aborts it; a disconnected page does not inte
   const f = await fixture(t);
   const session = await f.create();
   const b = await browserFixture(t, f.sessions);
+  await b.page.setViewportSize({ width: 820, height: 844 });
   await b.page.goto(b.base + conversationURL(session));
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("bash", { command: "sleep 30" }), { stopReason: "toolUse" }),
@@ -543,7 +545,7 @@ await test("committed fragments preserve history, drafts, attachments, focus and
   assert.equal(await page.locator("#live img, #live form, #live script").count(), 0);
   await before.dispose();
   const requestId = await page.locator('#composer [name="requestId"]').inputValue();
-  await page.getByRole("link", { name: "Sessions", exact: true }).click();
+  await openSessions(page);
   await page.locator(`a[href="/sessions/${session.id}"]`).click();
   await page.locator("#previews img").waitFor();
   assert.equal(await text.inputValue(), "Keep this draft");
@@ -696,6 +698,7 @@ await test("pending review response cannot navigate a newer page; review subscri
     };
   };
   const b = await browserFixture(t, f.sessions);
+  await b.page.setViewportSize({ width: 820, height: 844 });
   const { page } = b;
   await page.goto(`${b.base}/sessions`);
   await page.locator(`a[href="/sessions/${session.id}"]`).click();

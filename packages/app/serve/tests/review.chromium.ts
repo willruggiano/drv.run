@@ -7,7 +7,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import { LiveDoc } from "@earendil-works/pi-durable";
 import { Review } from "harness";
 import type { Page } from "playwright";
-import { browserFixture } from "./browser-testing.ts";
+import { openSessions, browserFixture } from "./browser-testing.ts";
 import { exists, fixture, readHistory } from "./sessions-testing.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -34,7 +34,7 @@ await test("review renders a separate conversation, survives reload, and returns
   const before = await readHistory(session.root);
   const { page, base, errors } = await browserFixture(t, f.sessions);
   await page.goto(`${base}/?session=${session.id}`);
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   await endReviewCompletion(page, false);
   await command(page, "endreview");
   await page.locator("#notice:not([hidden])").waitFor();
@@ -60,7 +60,7 @@ await test("review renders a separate conversation, survives reload, and returns
   assert(review);
   await review.waitForIdle(context);
   await page.locator('#transcript .tool-call[data-tool="write"][data-state="completed"]').waitFor();
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   assert.equal(Number(new URL(page.url()).searchParams.get("conversation")), review.id);
   assert.equal(await page.locator('#transcript > article[data-role="user"]').count(), 1);
   assert.equal(await page.locator('#transcript > article[data-role="assistant"]').count(), 2);
@@ -73,25 +73,25 @@ await test("review renders a separate conversation, survives reload, and returns
   );
 
   await page.reload();
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   await page.locator('#transcript .tool-call[data-tool="write"][data-state="completed"]').waitFor();
   assert.equal(Number(new URL(page.url()).searchParams.get("conversation")), review.id);
   await endReviewCompletion(page, true);
   // Ordinary branch navigation must preserve both transcripts and drafts.
   await command(page, "fork");
   await page.locator(`#branches [data-conversation="${session.root.id}"]`).click();
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   assert.equal(await page.locator('#transcript > article[data-role="assistant"]').count(), 1);
   await command(page, "fork");
   await page.locator("#branch-picker:not([hidden])").waitFor();
   await page.fill("#prompt", "Keep this draft.");
   await page.locator(`#branches [data-conversation="${review.id}"]`).click();
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   f.faux.setResponses([fauxAssistantMessage("Addressing review.")]);
   await command(page, "endreview");
   await page.waitForURL((url) => !url.searchParams.has("conversation"));
   await session.root.waitForIdle(context);
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   assert.equal(await page.inputValue("#prompt"), "Keep this draft.");
   await endReviewCompletion(page, false);
   assert.equal(await page.locator('#transcript > article[data-role="user"]').count(), 2);
@@ -121,7 +121,7 @@ await test("endreview cancels an active review and returns to the selected sourc
   );
   const { page, base, errors } = await browserFixture(t, f.sessions);
   await page.goto(`${base}/?session=${session.id}&conversation=${branch.id}`);
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   f.faux.setResponses([
     fauxAssistantMessage(fauxToolCall("bash", { command: "sleep 30" }), { stopReason: "toolUse" }),
     fauxAssistantMessage("Review cancelled."),
@@ -131,12 +131,12 @@ await test("endreview cancels an active review and returns to the selected sourc
   const id = (await session.harness.snapshot(Review, branch.id, context))?.active;
   assert(id !== undefined);
   await page.locator('#transcript .tool-call[data-tool="bash"][data-state="running"]').waitFor();
-  await page.locator("#status[data-state=working]").waitFor();
+  await page.locator("#status[data-state=working]").waitFor({ state: "attached" });
   await endReviewCompletion(page, true);
   await command(page, "endreview");
   await page.waitForURL((url) => Number(url.searchParams.get("conversation")) === branch.id);
   await branch.waitForIdle(context);
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   assert.equal((await session.harness.snapshot(LiveDoc, id, context))?.run, undefined);
   assert.equal(await exists(join(f.workspace, "REVIEW.md")), false);
   assert.equal(
@@ -153,7 +153,7 @@ await test("a delayed review command does not navigate away from a subsequently 
   const other = await f.create();
   const { page, base, errors } = await browserFixture(t, f.sessions);
   await page.goto(`${base}/?session=${session.id}`);
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   const received = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   t.after(() => release.resolve());
@@ -166,9 +166,9 @@ await test("a delayed review command does not navigate away from a subsequently 
   f.faux.setResponses([fauxAssistantMessage("No findings.")]);
   await command(page, "review");
   await received.promise;
-  await page.click("#title");
+  await openSessions(page);
   await page.locator(`#sessions [data-session="${other.id}"]`).click();
-  await page.locator("#status[data-state=ready]").waitFor();
+  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
   await page.fill("#prompt", "Unrelated draft.");
   release.resolve();
   await page.locator("#send:not([disabled])").waitFor();

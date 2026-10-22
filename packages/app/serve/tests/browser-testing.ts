@@ -361,6 +361,29 @@ export async function browserFlow(
   return { ...b, session, reconnected, id, url };
 }
 
+export async function openSessions(page: Page): Promise<void> {
+  const title = page.locator("#title, #conversation-title");
+  if (await title.isVisible()) await title.click();
+  else await page.keyboard.press("Control+k");
+}
+
+export async function returnToConversation(page: Page): Promise<void> {
+  const close = page.locator("#close-view");
+  if (await close.isVisible()) await close.click();
+  else await page.keyboard.press("Escape");
+}
+
+// Global settings have no mobile entry point. Open them at a desktop width
+// before testing their responsive form; do not activate a hidden control.
+export async function openGlobalSettings(page: Page): Promise<void> {
+  const viewport = page.viewportSize();
+  assert(viewport);
+  if (viewport.width <= 650) await page.setViewportSize({ ...viewport, width: 820 });
+  await page.locator("#menu-toggle").click();
+  await page.locator("#global-preferences").waitFor();
+  if (viewport.width <= 650) await page.setViewportSize(viewport);
+}
+
 // HTML pages advertise additional native actions through the header popovers.
 export async function htmlAction(
   page: Page,

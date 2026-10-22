@@ -1,3 +1,4 @@
+import { returnToConversation } from "./browser-testing.ts";
 import { Sessions } from "../sessions.ts";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
@@ -274,7 +275,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
     node.scrollTop = node.scrollHeight;
   });
   await shot("context-mobile-long-path");
-  await page.click("#close-view");
+  await returnToConversation(page);
   await page.fill("#prompt", "/fork");
   await page.press("#prompt", "Control+Enter");
   await page.locator(`#branches button[data-conversation="${empty.id}"]`).click();

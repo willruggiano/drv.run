@@ -1,4 +1,4 @@
-import { browserFixture } from "./browser-testing.ts";
+import { browserFixture, openSessions, returnToConversation } from "./browser-testing.ts";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -29,7 +29,7 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
   await page.goto(base);
-  await page.click("#title");
+  await openSessions(page);
   await page.waitForSelector("#picker:not([hidden])");
   await page.click("#new-options-toggle");
   const remote = JSON.stringify([f.binding.provider, f.binding.target, f.binding.cwd]);
@@ -54,7 +54,7 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   assert(id);
   const session = await f.sessions.get(id);
   assert.equal((await session.root.agent(context)).cwd, join(f.workspace, "one"));
-  await page.waitForSelector("#status[data-state=ready]");
+  await page.waitForSelector("#status[data-state=ready]", { state: "attached" });
   await page.fill("#prompt", "/settings");
   await page.keyboard.press("Control+Enter");
   await page.waitForSelector("#preferences:not([hidden])");
@@ -66,7 +66,7 @@ await test("mobile browser exposes remote directory suggestions for new sessions
       "two/",
   );
   await page.fill("#session-directory", "/two");
-  await page.click("#close-view");
+  await returnToConversation(page);
   await page.waitForSelector("#preferences:not([hidden])", { state: "hidden" });
   assert.equal((await session.root.agent(context)).cwd, join(f.workspace, "two"));
   await page.reload();
@@ -78,7 +78,7 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   await page.waitForSelector("#preferences:not([hidden])");
   assert.equal(await page.inputValue("#session-directory"), "two");
   await page.fill("#session-directory", "");
-  await page.click("#close-view");
+  await returnToConversation(page);
   await page.waitForSelector("#preferences:not([hidden])", { state: "hidden" });
   assert.equal((await session.root.agent(context)).cwd, f.workspace);
   await page.fill("#prompt", "/sessions");

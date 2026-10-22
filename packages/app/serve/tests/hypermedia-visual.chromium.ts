@@ -6,7 +6,14 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fixture } from "./sessions-testing.ts";
-import { browserFixture, htmlMessageActions, openMessageActions } from "./browser-testing.ts";
+import {
+  openSessions,
+  returnToConversation,
+  openGlobalSettings,
+  browserFixture,
+  htmlMessageActions,
+  openMessageActions,
+} from "./browser-testing.ts";
 import { serve } from "./testing.ts";
 import { rename } from "../sessions.ts";
 import { GlobalSettingsStore } from "../server.ts";
@@ -47,6 +54,90 @@ function equalLayout(
     );
   });
 }
+
+await test("main panes reach the top on mobile and wide screens without mobile header controls", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  await rename(session, "A long session title ".repeat(5));
+  await session.root.commit(async (tx) => {
+    await tx.appendEntry(session.root.id, {
+      kind: "pi.user",
+      model: [{ role: "user", content: "Scrollable conversation.\n".repeat(100), timestamp: 0 }],
+    });
+  }, context);
+  const b = await browserFixture(t, f.sessions);
+  const page = await b.browser.newPage();
+  for (const path of [`/?session=${session.id}`, conversationURL(session)]) {
+    await page.goto(b.base + path);
+    await page.locator("#transcript article").first().waitFor();
+    for (const width of [320, 390, 650, 651, 1199, 1200, 1440, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      const layout = await page.evaluate(() => {
+        const box = (selector: string) => {
+          const node = document.querySelector(selector);
+          if (!node) throw new Error(`Missing ${selector}`);
+          const rect = node.getBoundingClientRect();
+          return { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left };
+        };
+        const scroll = document.querySelector("#conversation-scroll, #main-area > #transcript");
+        if (!scroll) throw new Error("Missing scrollport");
+        scroll.scrollTop = scroll.scrollHeight;
+        return {
+          main: box("#main-area"),
+          title: box(".bar h1"),
+          menu: box("#menu-toggle"),
+          footer: box("#app-footer"),
+          composer: box(".compose-box:has(#prompt)"),
+          message: box("#transcript article"),
+          boundary: getComputedStyle(document.querySelector(".bar")!).borderBottomWidth,
+          scrollTop: scroll.scrollTop,
+          overflow:
+            document.documentElement.scrollWidth > innerWidth ||
+            document.documentElement.scrollHeight > innerHeight,
+        };
+      });
+      assert.equal(layout.overflow, false);
+      assert(layout.scrollTop > 0);
+      assert.equal(layout.footer.left, 0);
+      assert.equal(layout.footer.right, width);
+      assert.equal(layout.footer.bottom, 900);
+      assert.equal(layout.main.bottom, layout.footer.top);
+      if (width >= 1200) {
+        assert(Math.abs(layout.message.left - layout.composer.left) < 1);
+        assert(Math.abs(layout.message.right - layout.composer.right) < 1);
+        assert.equal(layout.main.top, 0);
+        assert(layout.title.right <= layout.main.left);
+        assert(layout.menu.left >= layout.main.right);
+        assert.equal(layout.boundary, "0px");
+      } else if (width <= 650) {
+        assert.equal(layout.main.top, 0);
+        assert.equal(await page.locator(".bar").isVisible(), false);
+        assert.equal(await page.locator("#menu-toggle").isVisible(), false);
+        assert.equal(await page.locator(".header-title").first().isVisible(), false);
+        assert.equal(await page.locator("#close-view").isVisible(), false);
+      } else {
+        assert(layout.main.top >= layout.title.bottom);
+        assert(layout.main.top >= layout.menu.bottom);
+      }
+    }
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.locator("#footer-model").click();
+    await page.locator("#preferences").waitFor();
+    assert.equal(await page.locator(".bar").isVisible(), false);
+    assert.equal(await page.locator("#close-view").isVisible(), false);
+    await returnToConversation(page);
+    await page.locator("#preferences").waitFor({ state: "hidden" });
+    await page.locator("#prompt").fill("/unknown-command");
+    await page.locator("#send").click();
+    const error = page.locator("#notice:not([hidden]), #request-error:not(:empty)");
+    await error.waitFor();
+    const errorBox = await error.boundingBox();
+    const mainBox = await page.locator("#main-area").boundingBox();
+    assert(errorBox && mainBox);
+    assert(mainBox.y >= errorBox.y + errorBox.height);
+    assert.equal(await page.locator(".bar").isVisible(), false);
+  }
+});
 
 for (const [name, width, height, mobile] of [
   ["mobile", 390, 844, true],
@@ -238,8 +329,8 @@ for (const [name, width, height, mobile] of [
       ]),
     );
     await capture("settings");
-    await original.locator("#close-view").click();
-    await html.locator("#close-view").click();
+    await returnToConversation(original);
+    await returnToConversation(html);
     await original.locator("#footer-context").click();
     await html.locator("#footer-context").click();
     await html.locator("#context-view").waitFor();
@@ -248,10 +339,10 @@ for (const [name, width, height, mobile] of [
       await geometry(html, [".bar", ".ctx-big", ".ctx-track", ".ctx-legend", ".ctx-inventory"]),
     );
     await capture("context");
-    await original.locator("#close-view").click();
-    await html.locator("#close-view").click();
-    await original.locator("#menu-toggle").click();
-    await html.locator("#menu-toggle").click();
+    await returnToConversation(original);
+    await returnToConversation(html);
+    await openGlobalSettings(original);
+    await openGlobalSettings(html);
     await html.locator("#global-settings").waitFor();
     await capture("global");
     equalLayout(
@@ -272,10 +363,10 @@ for (const [name, width, height, mobile] of [
         "#prompt",
       ]),
     );
-    await original.locator("#close-view").click();
-    await html.locator("#close-view").click();
-    await original.locator("#title").click();
-    await html.locator("#conversation-title").click();
+    await returnToConversation(original);
+    await returnToConversation(html);
+    await openSessions(original);
+    await openSessions(html);
     await html.locator("#session-filter").waitFor();
     await capture("sessions");
     equalLayout(
