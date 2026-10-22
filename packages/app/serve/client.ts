@@ -175,7 +175,7 @@ function requestId(): string {
 
 function report(error: unknown): void {
   const message = !navigator.onLine
-    ? "Offline — reconnect to load conversations."
+    ? "Offline: reconnect to load conversations."
     : error instanceof Error
       ? error.message
       : String(error);
@@ -305,7 +305,7 @@ async function refresh(): Promise<void> {
   chooseOption(
     models,
     "",
-    catalog.models.length ? "Select a model" : "No models — configure pi /login on the host",
+    catalog.models.length ? "Select a model" : "No models: you may need to /login on the host",
   );
   catalog.models.forEach((model, index) =>
     chooseOption(models, String(index), `${model.provider} / ${model.name}`),
@@ -413,7 +413,10 @@ function codeBlock(text: string, language = "", disclosure?: HTMLDetailsElement)
   if (language && hljs.getLanguage(language)) {
     const highlight = () => {
       // highlight.js escapes all input before adding its own span markup.
-      code.innerHTML = hljs.highlight(text, { language, ignoreIllegals: true }).value;
+      code.innerHTML = hljs.highlight(text, {
+        language,
+        ignoreIllegals: true,
+      }).value;
     };
     if (disclosure && !disclosure.open) {
       // Keep raw text searchable without parsing thousands of hidden spans.
@@ -879,7 +882,10 @@ transcript.addEventListener(
   true,
 );
 
-const messageTime = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
+const messageTime = new Intl.DateTimeFormat([], {
+  hour: "2-digit",
+  minute: "2-digit",
+});
 const messageDateTime = new Intl.DateTimeFormat([], {
   year: "numeric",
   month: "numeric",
@@ -1193,7 +1199,11 @@ export function render(snapshot: RenderState): void {
           if (message.role === "toolResult") {
             node.dataset.role = "toolResult";
             node.append(
-              buildTool({ id: message.toolCallId, name: message.toolName, arguments: {} }),
+              buildTool({
+                id: message.toolCallId,
+                name: message.toolName,
+                arguments: {},
+              }),
             );
           } else content(node, message, undefined, buildTool);
           const resultText =
@@ -1567,7 +1577,10 @@ async function newSession(commandText?: string): Promise<boolean> {
     throw new Error("Choose an available target and model in New session options first.");
   const current = generation;
   const request = navigation;
-  const sourceDraft = { key: draftKey(active, conversation), text: prompt.value };
+  const sourceDraft = {
+    key: draftKey(active, conversation),
+    text: prompt.value,
+  };
   const attached = images;
   const text =
     commandText === undefined && !sourceDraft.text.startsWith("/") ? sourceDraft.text : "";
@@ -1893,7 +1906,12 @@ function settingsTarget() {
 }
 let sessionBaseline: ReturnType<typeof sessionSettings> | undefined;
 let settingsBinding:
-  | { configure: string; environment: string; rename: string; generation: number }
+  | {
+      configure: string;
+      environment: string;
+      rename: string;
+      generation: number;
+    }
   | undefined;
 let savingSettings: Promise<boolean> | undefined;
 function sessionSettings() {
@@ -2088,7 +2106,10 @@ function flushSettings(): Promise<boolean> {
             if (generation !== binding.generation || settingsBinding !== binding) return false;
           }
           await api(binding.configure, {
-            model: { provider: configure.model.provider, modelId: configure.model.modelId },
+            model: {
+              provider: configure.model.provider,
+              modelId: configure.model.modelId,
+            },
             thinkingLevel: configure.thinkingLevel,
             instructions: configure.instructions,
             ...(cwd === undefined ? {} : { cwd }),
@@ -2749,7 +2770,7 @@ function renderContext(): void {
   const capacity = document.createElement("div");
   capacity.className = "ctx-capacity";
   capacity.append(
-    span("ctx-percent", data.fraction === null ? "—" : `${(data.fraction * 100).toFixed(1)}%`),
+    span("ctx-percent", data.fraction === null ? "-" : `${(data.fraction * 100).toFixed(1)}%`),
     span("ctx-remaining", data.remaining === null ? "" : `${count(data.remaining)} remaining`),
   );
   summary.append(total, capacity);
@@ -2902,7 +2923,7 @@ function renderContextUsage(node: HTMLElement, context: ContextStatus): void {
   const { window: limit, lastResponse, autoCompact } = context;
   const tokens = lastResponse?.tokens;
   const percent = tokens !== undefined && limit ? (tokens / limit) * 100 : undefined;
-  node.textContent = `${percent === undefined ? "—" : percent.toFixed(1) + "%"}/${limit ? compactTokens(limit) : "?"}${autoCompact ? " (auto)" : ""}`;
+  node.textContent = `${percent === undefined ? "-" : percent.toFixed(1) + "%"}/${limit ? compactTokens(limit) : "?"}${autoCompact ? " (auto)" : ""}`;
   node.dataset.level =
     percent !== undefined && percent > 90
       ? "critical"
@@ -2943,7 +2964,7 @@ function renderFooter(): void {
   renderContextUsage(element("footer-context", HTMLButtonElement), latest.context);
   const hit = latest.context.lastResponse?.cacheHit;
   const hitNode = element("footer-hit", HTMLSpanElement);
-  hitNode.textContent = hit == null ? "CH—" : `CH${hit.toFixed(1)}%`;
+  hitNode.textContent = hit == null ? "CH-" : `CH${hit.toFixed(1)}%`;
   hitNode.title = "Cache hit rate at the last completed response";
   const costNode = element("footer-cost", HTMLSpanElement);
   costNode.textContent = `$${cost.toFixed(3)}`;

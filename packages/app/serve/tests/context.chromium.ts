@@ -316,7 +316,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
 
   await empty.configure({ model: { provider: "missing", modelId: "missing" } }, context);
   await page.waitForSelector(".ctx-window", { state: "detached" });
-  assert.equal(await pane.locator(".ctx-percent").textContent(), "—");
+  assert.equal(await pane.locator(".ctx-percent").textContent(), "-");
   await shot("context-mobile-unknown");
 
   // A failed inspection clears the preceding inventory; recovery does not
