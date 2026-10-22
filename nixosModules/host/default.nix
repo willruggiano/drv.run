@@ -64,8 +64,21 @@
     ];
     text =
       lib.replaceStrings
-      ["@proxy@" "@runner@" "@create-volumes@"]
-      ["${config.systemd.package}/lib/systemd/systemd-ssh-proxy" (toString guest.config.microvm.declaredRunner) createVolumes]
+      ["@proxy@" "@runner@" "@create-volumes@" "@mitm-proxy-seed@"]
+      [
+        "${config.systemd.package}/lib/systemd/systemd-ssh-proxy"
+        (toString guest.config.microvm.declaredRunner)
+        createVolumes
+        (lib.optionalString (config.services.drv-run.mitm-proxy.owners != {}) ''
+          case $(id -un) in
+            ${lib.concatStringsSep "|" (builtins.attrNames config.services.drv-run.mitm-proxy.owners)})
+              install -d -m 0700 "$staging/mitm-proxy"
+              install -m 0600 "/run/mitm-proxy/$(id -un)/placeholder" "$staging/mitm-proxy/placeholder"
+              install -m 0600 "/run/mitm-proxy/$(id -un)/ca.pem" "$staging/mitm-proxy/ca.pem"
+              ;;
+          esac
+        '')
+      ]
       (builtins.readFile ./pre.sh);
   };
   provision = pkgs.writeShellApplication {
@@ -87,7 +100,7 @@
       builtins.readFile ./command.sh;
   };
 in {
-  imports = [../nix.nix ./network.nix];
+  imports = [../nix.nix ./network.nix ./mitm-proxy.nix];
 
   options.services.drv-run.guest.extraModules = lib.mkOption {
     type = lib.types.listOf lib.types.deferredModule;

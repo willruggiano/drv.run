@@ -22,6 +22,10 @@ if [[ ! -L $profile ]]; then
   exit 1
 fi
 cd /workspace
+if [[ -f /run/drv-run-seed/mitm-proxy/placeholder ]]; then
+  GH_TOKEN=$(</run/drv-run-seed/mitm-proxy/placeholder)
+  export GH_TOKEN
+fi
 if [[ -z ${SSH_ORIGINAL_COMMAND:-} ]]; then
   exec nix develop -- "$profile"
 fi

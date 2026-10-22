@@ -69,6 +69,7 @@ trap 'rm -rf "$staging"' EXIT
 cp "$RUNTIME_DIRECTORY/authorized-keys" "$staging/authorized-keys"
 cp "$STATE_DIRECTORY/host-key" "$staging/host-key"
 chmod 0600 "$staging/"*
+@mitm-proxy-seed@
 truncate -s 8M "$RUNTIME_DIRECTORY/seed.img"
 mke2fs -q -t ext4 -L drv-run-seed -E root_owner=0:0,root_perms=0700 \
   -d "$staging" "$RUNTIME_DIRECTORY/seed.img"

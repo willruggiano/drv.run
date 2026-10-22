@@ -62,6 +62,11 @@
     # per-system outputs
     checks = eachSystem (pkgs: {
       inherit (pkgs) app;
+      mitm-proxy-unit = pkgs.mitm-proxy.tests.unit;
+      nixos-mitm-proxy = pkgs.testers.runNixOSTest (import ./tests/nixos/mitm-proxy.nix {
+        inherit (self) nixosModules;
+        inherit pkgs;
+      });
       # FIXME: this should live with the bench package, not here.
       bench-test =
         pkgs.runCommand "bench-tests" {
@@ -137,7 +142,7 @@
           patch
           pkg-config
           procps
-          python3
+          (python3.withPackages (ps: [ps.mitmproxy]))
           ripgrep
           ruff
           scc

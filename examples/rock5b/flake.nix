@@ -210,6 +210,13 @@
           mode = "0400";
         };
 
+        sops.secrets.github-token = {
+          sopsFile = ./secrets/github-token;
+          format = "binary";
+          mode = "0400";
+          restartUnits = ["mitm-proxy.service"];
+        };
+
         networking.firewall.interfaces.${config.services.tailscale.interfaceName}.allowedTCPPorts = [config.services.pi.port];
 
         services = {
@@ -222,6 +229,10 @@
           };
 
           drv-run = {
+            mitm-proxy.owners.me = {
+              tokenFile = config.sops.secrets.github-token.path;
+            };
+
             guest.extraModules = [
               {
                 microvm.vcpu = 4;

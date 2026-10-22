@@ -5,6 +5,7 @@
   ...
 }: {
   bench = pkgs.callPackage ./bench {};
+  mitm-proxy = pkgs.callPackage ./mitm-proxy {};
   # TODO: Remove once https://github.com/NixOS/nixpkgs/pull/574147 is merged.
   cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {};
   subtrace = pkgs.callPackage ./subtrace.nix {};
