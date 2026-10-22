@@ -1,4 +1,6 @@
 {
+  # WARNING: this nixos test is a proof of concept!
+  # It is in no way authoritative or a required check for *anything*.
   nixosModules,
   pkgs,
 }: let

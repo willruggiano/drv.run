@@ -27,7 +27,7 @@
             --add-flags "--append-system-prompt '${prompt}'"
         '';
       };
-    pi = appendSystemPrompt pkgs.pi-unwrapped (
+    pi = appendSystemPrompt inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.pi-unwrapped (
       pkgs.writeText "store-paths" ''
         Nix store paths:
         deploy-rs -> ${inputs.deploy-rs.outPath}

@@ -9,6 +9,16 @@
   - [ ] Executable specs / RLM
   - [ ] `/cd` and `/rename` commands
   - [ ] Project management features, or integrate Linear (via mcp?)
+  - [ ] Nicer way to build to system and user llms.txt files (eg. to incorporate
+        more specific toolchain guidance: "use fd over find, rg over grep, eza
+        over ls")
+- SDLC improvements:
+  - [ ] See above "Nicer way to..."
+  - [ ] Move everything in the justfile to nix, delete justfile
+  - [ ] Formalize project package definition (run unit tests in checkPhase,
+        export benchmarks, integration tests, and nixos vm tests via
+        passthru.{bench,tests}) -> generate the flake `checks` as function of
+        its `packages`.
 - [ ] [[security.md]]
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
 - [ ] Automate/declarative guest port exposure / service publishing (proof of

@@ -1,4 +1,8 @@
 {
+  # WARNING: this nixos test is a resource hog! Be frugal about building it in
+  # constrained systems (eg. the ROCK 5B aarch64 guest). You probably don't need
+  # this test anyways; generally speaking you should compose the smaller, more
+  # targetted, and (preferably) # nixos/vm free tests instead.
   nixosModules,
   pkgs,
 }: let

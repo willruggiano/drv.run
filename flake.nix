@@ -57,12 +57,31 @@
       );
   in {
     nixosModules = import ./nixosModules inputs;
-    overlays.default = final: prev: self.packages.${prev.stdenv.hostPlatform.system};
+    overlays = {
+      default = final: prev: {
+        inherit
+          (self.packages.${prev.stdenv.hostPlatform.system})
+          app
+          bench
+          cloud-hypervisor
+          mitm-proxy
+          subtrace
+          ;
+      };
+      # n.b. this is for packages only necessary for development and should not
+      # be a dependency of the host, guest, nor rock5b components.
+      dev = final: prev: {
+        inherit
+          (self.packages.${prev.stdenv.hostPlatform.system})
+          pi-jailed
+          pi-unwrapped
+          treefmt-wrapped
+          ;
+      };
+    };
 
-    # per-system outputs
     checks = eachSystem (pkgs: {
       inherit (pkgs) app;
-      mitm-proxy-unit = pkgs.mitm-proxy.tests.unit;
       nixos-mitm-proxy = pkgs.testers.runNixOSTest (import ./tests/nixos/mitm-proxy.nix {
         inherit (self) nixosModules;
         inherit pkgs;
@@ -77,37 +96,28 @@
           python3 -B -m unittest discover -s packages.bench.tests -p '*_test.py'
           touch $out
         '';
-      # This one is just a proof of concept. It does not need to be part of the
-      # canonical checks!
-      # nixos-port-forwarding = pkgs.testers.runNixOSTest (import ./tests/nixos/port-forwarding.nix {
-      #   inherit (self) nixosModules;
-      #   inherit pkgs;
-      # });
-      nixos-host-basic = pkgs.testers.runNixOSTest (import ./tests/nixos/host-basic.nix {
-        inherit (self) nixosModules;
-        inherit pkgs;
-      });
     });
 
     devShells = eachSystem (pkgs: let
       inherit (self.devShells.${pkgs.stdenv.hostPlatform.system}) toolchain;
+      pkgs' = pkgs.extend self.overlays.dev;
     in {
       default = pkgs.mkShell {
         inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
       };
-      jail = pkgs.mkShell {
+      jail = pkgs'.mkShell {
         inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
-        # Local workspace links await https://github.com/NixOS/nixpkgs/pull/522939.
         nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook];
-        packages = [pkgs.pi-jailed];
+        packages = [pkgs'.pi-jailed pkgs'.treefmt-wrapped];
       };
       toolchain = pkgs.mkShell {
         nativeBuildInputs = [pkgs.systemd.dev];
+        # workspace support: https://github.com/NixOS/nixpkgs/pull/522939
         npmDeps = pkgs.app.dev;
         npmRoot = "packages/app";
-        packages = with pkgs; (map pkgs.lib.getBin [
+        packages = with pkgs; (map lib.getBin [
           ast-grep
           bash
           basedpyright
@@ -117,6 +127,7 @@
           curl
           diffutils
           esbuild
+          eza
           fd
           file
           findutils
@@ -152,7 +163,6 @@
           sd
           stdenv.cc
           tree
-          treefmt-wrapped
           tsgolint
           typescript # tsgo
           unzip
@@ -164,7 +174,25 @@
       };
     });
 
-    formatter = eachSystem (pkgs: pkgs.treefmt-wrapped);
-    packages = eachSystem (pkgs: import ./packages {inherit inputs lib pkgs;});
+    formatter = eachSystem (pkgs: self.packages.${pkgs.stdenv.hostPlatform.system}.treefmt-wrapped);
+    packages = eachSystem (pkgs: let
+      runTest = path:
+        pkgs.testers.runNixOSTest (import path {
+          inherit (self) nixosModules;
+          inherit pkgs;
+        });
+    in
+      lib.attrsets.unionOfDisjoint
+      (import ./packages {inherit inputs lib pkgs;})
+      {
+        # FIXME: these tests require a sizable chunk of compute and memory. They
+        # are not included in `nix flake check` for that reason. On the aarch64
+        # ROCK 5B, these tests are INCREDIBLY slow. My personal desktop is an
+        # x86 system and is capable of running these checks. They are listed
+        # here for all systems just in case we want to run them on the
+        # (relatively constrained) ROCK 5B aarch64 system.
+        nixos-host-basic = runTest ./tests/nixos/host-basic.nix;
+        nixos-experimental-port-forwarding = runTest ./tests/nixos/port-forwarding.nix;
+      });
   };
 }
