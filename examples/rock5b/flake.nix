@@ -52,6 +52,17 @@
             deploy-rs.packages.${pkgs.stdenv.hostPlatform.system}.default
           ];
           text = ''
+            nix-fast-build \
+              --flake ./examples/rock5b \
+              --select 'flake: {
+                host  = flake.nixosConfigurations.rock5b.config.system.build.toplevel;
+                guest = flake.deploy.nodes.rock5b.profiles.system.path;
+                shell = flake.inputs.drv-run.devShells.aarch64-linux.default;
+              }' \
+              --systems aarch64-linux \
+              --cachix-cache drv-run \
+              --push-build-closure
+
             exec deploy --fast-connection=true --hostname=192.168.4.38 --skip-checks ./examples/rock5b "$@"
           '';
         });
