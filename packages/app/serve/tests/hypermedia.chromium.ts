@@ -79,6 +79,36 @@ declare global {
   }
 }
 
+await test("htmx waits for delayed extensions before initializing the first SSE connection", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const requested = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  await b.page.route("**/hx-sse.js", async (route) => {
+    const response = await route.fetch();
+    requested.resolve();
+    await release.promise;
+    await route.fulfill({ response });
+  });
+  const loaded = b.page.goto(b.base + conversationURL(session));
+  await requested.promise;
+  await b.page.waitForFunction(
+    "typeof htmx !== 'undefined' && document.readyState === 'interactive'",
+  );
+  // Let any prematurely queued initialization timer run before releasing hx-sse.
+  await b.page.evaluate(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+  const initialized = await b.page.locator("[data-htmx-powered]").count();
+  release.resolve();
+  await loaded;
+  assert.equal(initialized, 0);
+  await b.page.waitForFunction(
+    () => document.querySelector("#connection")?.textContent === "Connected",
+  );
+  assert.deepEqual(b.errors, []);
+});
+
 await test("SSE heads avoid initial history, append keyed entries, and morph reset layouts without replacing nodes", async (t) => {
   const f = await fixture(t);
   const session = await f.create();

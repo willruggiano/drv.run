@@ -199,6 +199,97 @@ await test("HTML shared defaults persist and do not change existing conversation
   assert.deepEqual(b.errors, []);
 });
 
+await test("HTML scoped review command uses the shared review input without submitting slash text", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const before = await readHistory(session.root);
+  const b = await browserFixture(t, f.sessions);
+  await b.page.goto(b.base + conversationURL(session));
+  f.faux.setResponses([fauxAssistantMessage("No findings.")]);
+  await b.page.getByRole("textbox", { name: "Message" }).fill("/review packages/app");
+  await b.page.getByRole("button", { name: "Send", exact: true }).click();
+  await (await htmlAction(b.page, "button", "End review and return")).waitFor();
+  const state = await session.harness.snapshot(Review, session.root.id, context);
+  assert(state?.active !== undefined);
+  const review = await session.harness.conversation(state.active, context);
+  assert(review);
+  await review.waitForIdle(context);
+  assert.deepEqual(
+    (await readHistory(review))
+      .flatMap((entry) => entry.model ?? [])
+      .filter((message) => message.role === "user")
+      .map((message) => message.content),
+    ["Review the packages/app and provide prioritized findings."],
+  );
+  assert.deepEqual(await readHistory(session.root), before);
+  assert.deepEqual(b.errors, []);
+});
+
+await test("HTML declarative completions reject stale and dismissed requests and preserve IME and keyboard behavior", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const { page } = b;
+  await page.goto(b.base + conversationURL(session));
+  const requested = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const returned = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  await page.route("**/completions?**", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("query") !== "re") return route.continue();
+    const response = await route.fetch();
+    requested.resolve();
+    await release.promise;
+    await route.fulfill({ response });
+    returned.resolve();
+  });
+  const text = page.getByRole("textbox", { name: "Message" });
+  await text.fill("/re");
+  await requested.promise;
+  await text.fill("/se");
+  await page.locator('[data-completion="/settings "]').waitFor();
+  release.resolve();
+  await returned.promise;
+  assert.deepEqual(
+    await page
+      .locator("#completions [data-completion]")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-completion"))),
+    ["/sessions ", "/settings ", "/search "],
+  );
+  await text.press("ArrowDown");
+  await text.press("Tab");
+  assert.equal(await text.inputValue(), "/settings ");
+  await page.unroute("**/completions?**");
+  const cancelled = (mode: "dismiss" | "compose") =>
+    page.evaluate(async (mode) => {
+      const text = document.querySelector<HTMLTextAreaElement>("#prompt")!;
+      const configured = new Promise<boolean>((resolve) => {
+        const listener = (event: DocumentEventMap["htmx:config:request"]) => {
+          if (event.detail.ctx.sourceElement !== text) return;
+          document.removeEventListener("htmx:config:request", listener);
+          resolve(event.defaultPrevented);
+        };
+        document.addEventListener("htmx:config:request", listener);
+      });
+      text.value = mode === "dismiss" ? "/re" : "/co";
+      text.dispatchEvent(
+        new InputEvent("input", { bubbles: true, isComposing: mode === "compose" }),
+      );
+      if (mode === "dismiss")
+        text.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return configured;
+    }, mode);
+  assert.equal(await cancelled("dismiss"), true);
+  assert.equal(await page.locator("#completions").isVisible(), false);
+  assert.equal(await cancelled("compose"), true);
+  await text.dispatchEvent("compositionend");
+  await page.locator('[data-completion="/compact "]').waitFor();
+  await text.press("Enter");
+  assert.equal(await text.inputValue(), "/compact ");
+  assert.deepEqual(await readHistory(session.root), []);
+  assert.deepEqual(b.errors, []);
+});
+
 await test("HTML target directory selection, path completions and slash activation use advertised controls", async (t) => {
   const f = await directoryFixture(t);
   await mkdir(join(f.workspace, "project"));
@@ -210,6 +301,11 @@ await test("HTML target directory selection, path completions and slash activati
   await page.locator("#new-options > summary").click();
   await page.selectOption('[name="target"]', targetKey(f.binding));
   await page.locator('[name="baseDirectory"]').fill("project");
+  await page.waitForFunction(() =>
+    Array.from(document.querySelectorAll<HTMLOptionElement>("#directories option")).some(
+      (option) => option.value === "project/",
+    ),
+  );
   await page.getByRole("button", { name: "Create session", exact: true }).click();
   await page.locator("[data-events] #composer").waitFor();
   const [info] = (await f.sessions.catalog()).sessions;

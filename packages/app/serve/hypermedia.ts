@@ -101,7 +101,9 @@ export function htmlPage(
   const heading = conversation
     ? h`<a id="conversation-title" class="header-title" href="${sessionsPath}" aria-label="Sessions" title="Sessions" data-command="sessions">${title}</a>${!back ? h`<span id="status" class="session-status" data-state="none" role="status" aria-label="No session"></span>` : h`<button class="status-menu" type="button" popovertarget="conversation-menu" aria-label="Conversation actions"><span id="status" class="session-status" data-state="ready" role="status"><span class="sr-only">Ready</span></span></button>`}`
     : h`<span class="header-title">${title}</span>`;
-  const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/hypermedia.css"><script src="/htmx.js" defer></script><script src="/hx-sse.js" defer></script><script src="/hypermedia-morph.js" defer></script><script type="module" src="/hypermedia-client.js"></script></head>`;
+  // htmx must see readyState=loading so initialization waits for DOMContentLoaded,
+  // after the deferred extensions and module have registered their handlers.
+  const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/hypermedia.css"><script src="/htmx.js"></script><script src="/hx-sse.js" defer></script><script src="/hypermedia-morph.js" defer></script><script type="module" src="/hypermedia-client.js"></script></head>`;
   const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="Return to conversation">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div><p id="request-error" role="alert"></p></header>`;
   return renderHTML(
     h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${header}${content}</main></body></html>`,
@@ -175,7 +177,12 @@ function controls(url: string, view: ConversationView, review: ReviewState): Saf
         ? link(url.replace(/\d+$/, String(review.active)), "Open review", h`data-command="review"`)
         : busy
           ? ""
-          : action(`${url}/review`, "Start review", "review")
+          : action(
+              `${url}/review`,
+              "Start review",
+              "review",
+              h`<input type="hidden" name="scope" data-command-argument>`,
+            )
   }</div><span class="spacer"></span>${busy ? h`<button class="submission-mode" form="composer" name="whenBusy" value="steer">Steer</button>${action(`${url}/abort`, "×", "stop", h``, h` id="stop" class="icon" aria-label="Stop" title="Stop"`)}` : ""}<button id="send" class="icon" form="composer" name="whenBusy" value="${busy ? "followUp" : "reject"}" aria-label="${busy ? "Queue" : "Send"}" title="${busy ? "Queue" : "Send"} (Ctrl/⌘ Enter)"><span aria-hidden="true">↑</span></button></div>`;
 }
 function composerHTML(
@@ -184,7 +191,7 @@ function composerHTML(
   review: ReviewState,
   metadata: SafeHtml,
 ): SafeHtml {
-  return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div class="composer-shell"><div class="compose-box"><form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop" data-completions="${path}/completions">${hidden("requestId", randomUUID())}<textarea id="prompt" name="content" aria-label="Message" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>${controls(path, view, review)}</div></div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
+  return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div class="composer-shell"><div class="compose-box"><form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop">${hidden("requestId", randomUUID())}<textarea id="prompt" name="content" aria-label="Message" data-completions hx-get="${path}/completions" hx-trigger="input changed delay:120ms, compositionend delay:120ms" hx-target="#completions" hx-select="#completions" hx-swap="outerHTML" hx-sync="this:replace" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>${controls(path, view, review)}</div></div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
 }
 async function panelFrame(
   session: Session,
@@ -666,7 +673,7 @@ export async function hypermedia(
     if (!target) throw new FormError(409, "Execution target is unavailable.");
     const paths = await sessions.completeDirectories(
       target,
-      url.searchParams.get("query") ?? "",
+      url.searchParams.get("baseDirectory") ?? "",
       context,
     );
     html(
@@ -1017,11 +1024,15 @@ export async function hypermedia(
     return;
   }
   if (operation === "review" || operation === "end-review") {
-    const result = await (operation === "review" ? startReview : endReview)(
-      session,
-      conversation,
-      context,
-    );
+    const result =
+      operation === "review"
+        ? await startReview(
+            session,
+            conversation,
+            context,
+            data.has("scope") ? field(data, "scope") : undefined,
+          )
+        : await endReview(session, conversation, context);
     redirect(request, response, conversationURL(session, result.id));
     return;
   }
