@@ -4,17 +4,24 @@ import json
 import os
 import ssl
 import sys
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from mitmproxy.certs import CertStore
+from tornado.httpclient import HTTPRequest
+from tornado.httputil import HTTPHeaders
+
+from .oauth import OAuth
 
 
 def certificate(directory: Path) -> ssl.SSLContext:
     store = CertStore.from_store(directory, "upstream", 2048)
-    entry = store.get_cert("github.com", [x509.DNSName("github.com")])
+    entry = store.get_cert(
+        "github.com", [x509.DNSName("github.com"), x509.DNSName("api.github.com")]
+    )
     cert = directory / "server.pem"
     key = directory / "server.key"
     _ = cert.write_bytes(entry.cert.to_pem())
@@ -31,8 +38,9 @@ def certificate(directory: Path) -> ssl.SSLContext:
 
 
 class Fixture:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, oauth: OAuth) -> None:
         self.root: Path = root
+        self.oauth: OAuth = oauth
         self.received: asyncio.Event = asyncio.Event()
         self.requests: list[tuple[str, str, str]] = []
         self.errors: list[Exception] = []
@@ -50,7 +58,9 @@ class Fixture:
             raise
         finally:
             writer.close()
-            await writer.wait_closed()
+            # Some HTTP clients reset TLS after reading Connection: close.
+            with suppress(ConnectionResetError):
+                await writer.wait_closed()
 
     async def request(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -63,27 +73,40 @@ class Fixture:
             key.lower(): value.strip()
             for key, value in (line.split(":", 1) for line in lines if line)
         }
-        credentials = {
-            "Basic "
-            + base64.b64encode(b"x-access-token:alice_token").decode(): "alice",
-            "Basic " + base64.b64encode(b"x-access-token:bob_token").decode(): "bob",
-            "Basic "
-            + base64.b64encode(b"x-access-token:rotated_token").decode(): "alice",
-        }
-        # Header names are case insensitive; values (notably base64) are not.
-        authorization = next(
-            (
-                line.split(":", 1)[1].strip()
-                for line in lines
-                if line.lower().startswith("authorization:")
-            ),
-            "",
-        )
-        owner = credentials.get(authorization)
         url = urlsplit(target)
-        if owner is None or not url.path.startswith(f"/{owner}/"):
+        if url.path in ("/login/device/code", "/login/oauth/access_token", "/user"):
+            body = await reader.readexactly(int(headers.get("content-length", "0")))
+            code, data = self.oauth.respond(
+                HTTPRequest(
+                    "https://" + headers["host"] + target,
+                    method=method,
+                    headers=HTTPHeaders(headers),
+                    body=body if method == "POST" else None,
+                )
+            )
+            response = json.dumps(data).encode()
             writer.write(
-                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                f"HTTP/1.1 {code} OK\r\nContent-Type: application/json\r\nContent-Length: {len(response)}\r\nConnection: close\r\n\r\n".encode()
+                + response
+            )
+            await writer.drain()
+            return
+        authorization = headers.get("authorization", "")
+        token = ""
+        if authorization.startswith("Basic "):
+            user, token = (
+                base64.b64decode(authorization.removeprefix("Basic "))
+                .decode()
+                .split(":", 1)
+            )
+            if user != "x-access-token":
+                token = ""
+        owner = url.path.split("/")[1]
+        write = "git-receive-pack" in target
+        if not self.oauth.permitted(token, owner, write):
+            code = 401 if token not in self.oauth.access else 403
+            writer.write(
+                f"HTTP/1.1 {code} Denied\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode()
             )
             await writer.drain()
             return
@@ -167,7 +190,7 @@ async def main() -> None:
     context = certificate(
         root / ("invalid" if (root / "invalid-certificate").exists() else "tls")
     )
-    fixture = Fixture(root)
+    fixture = Fixture(root, OAuth())
     server = await asyncio.start_server(fixture.handle, "0.0.0.0", 443, ssl=context)
     async with server:
         await server.serve_forever()

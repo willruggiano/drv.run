@@ -221,13 +221,6 @@
           mode = "0400";
         };
 
-        sops.secrets.github-token = {
-          sopsFile = ./secrets/github-token;
-          format = "binary";
-          mode = "0400";
-          restartUnits = ["mitm-proxy.service"];
-        };
-
         # Foreground Serve owns its configuration for the lifetime of this unit.
         # HTTPS must first be enabled in the tailnet; never use Funnel for Pi.
         systemd.services.pi-https = {
@@ -253,8 +246,9 @@
           };
 
           drv-run = {
-            mitm-proxy.owners.me = {
-              tokenFile = config.sops.secrets.github-token.path;
+            mitm-proxy = {
+              clientId = "Iv23liZlNYpFfQGoQv57";
+              owners.me.githubUserId = 11872440;
             };
 
             guest.extraModules = [

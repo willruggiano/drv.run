@@ -34,8 +34,26 @@ export function installPwa() {
   });
   if ("serviceWorker" in navigator) {
     void navigator.serviceWorker
-      .register("/hypermedia-sw.js", { scope: "/sessions" })
-      .then(async (worker) => {
+      .getRegistrations()
+      .then(async (workers) => {
+        // Retire obsolete registrations before creating the root-scoped worker.
+        // Unregistering afterward could also remove its pending replacement.
+        await Promise.all(
+          workers
+            .filter((item) =>
+              [item.active, item.waiting, item.installing].some(
+                (worker) =>
+                  worker &&
+                  (new URL(worker.scriptURL).pathname === "/sw.js" ||
+                    (new URL(worker.scriptURL).pathname === "/hypermedia-sw.js" &&
+                      new URL(item.scope).pathname !== "/")),
+              ),
+            )
+            .map((item) => item.unregister()),
+        );
+        return navigator.serviceWorker.register("/hypermedia-sw.js", { scope: "/" });
+      })
+      .then((worker) => {
         registration = worker;
         worker.addEventListener("updatefound", () =>
           worker.installing?.addEventListener("statechange", installStatus),
@@ -43,17 +61,6 @@ export function installPwa() {
         installStatus();
         // Activation may race a navigation; claim the now-loaded document.
         void navigator.serviceWorker.ready.then((ready) => ready.active?.postMessage("claim"));
-        // Retire the removed frontend's root-scoped worker, not unrelated registrations.
-        const workers = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(
-          workers
-            .filter((item) =>
-              [item.active, item.waiting, item.installing].some(
-                (worker) => worker && new URL(worker.scriptURL).pathname === "/sw.js",
-              ),
-            )
-            .map((item) => item.unregister()),
-        );
       })
       .catch(() => {
         /* Offline first visits still render the supplied document. */

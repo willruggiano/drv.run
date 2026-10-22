@@ -1,0 +1,38 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { browserFixture } from "./browser-testing.ts";
+import { authorizationFixture } from "./testing.ts";
+import { fixture } from "./sessions-testing.ts";
+
+await test(
+  "phone /auth authorizes, resumes polling, and removes credentials without a terminal",
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const control = await authorizationFixture(t);
+    const { page, base, errors } = await browserFixture(t, f.sessions, control.authorization);
+    await page.goto(base + "/sessions");
+    await page.getByRole("link", { name: "Auth", exact: true }).click();
+    await page.locator('#github-authorization [data-state="not-enrolled"]').waitFor();
+    assert.equal(new URL(page.url()).pathname, "/auth");
+    await page.getByRole("button", { name: "Authorize", exact: true }).click();
+    await page.locator('#github-authorization [data-state="authorizing"]').waitFor();
+    assert.equal((await control.authorization.status()).state, "authorizing");
+    const approval = page.getByRole("link", { name: "GitHub device authorization", exact: true });
+    assert.equal(await approval.getAttribute("href"), "https://github.com/login/device");
+    assert.equal(await approval.getAttribute("target"), "_blank");
+    // Leaving the page does not cancel the host's enrollment.
+    await page.getByRole("link", { name: "Sessions", exact: true }).click();
+    await page.getByRole("link", { name: "Auth", exact: true }).click();
+    await page.locator('#github-authorization [data-state="authorizing"]').waitFor();
+    control.approve();
+    // Completion must arrive via polling, not a manual navigation.
+    await page.locator('#github-authorization [data-state="usable"]').waitFor();
+    assert.equal(await page.locator("#github-authorization").getAttribute("hx-get"), null);
+    await page.getByRole("button", { name: "Remove authorization", exact: true }).click();
+    await page.locator('#github-authorization [data-state="not-enrolled"]').waitFor();
+    assert.equal((await control.authorization.status()).state, "not-enrolled");
+    assert.equal(new URL(page.url()).pathname, "/auth");
+    assert.deepEqual(errors, []);
+  },
+);

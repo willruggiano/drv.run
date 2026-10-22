@@ -3,6 +3,7 @@ import asyncio
 import base64
 import binascii
 import ipaddress
+import json
 import logging
 import os
 import pwd
@@ -10,15 +11,43 @@ import re
 import secrets
 import shutil
 import signal
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+import socket
+import sys
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    ExitStack,
+    contextmanager,
+    suppress,
+)
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
+from typing import cast, override
 
+from auth import (
+    Account,
+    AuthError,
+    Authorization,
+    Device,
+    GitHub,
+    Status,
+    http_client,
+    integer,
+    object_value,
+    text,
+)
 from mitmproxy import connection, http, options
+from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.certs import CertStore
+from mitmproxy.net.http.http1 import expected_http_body_size
+from mitmproxy.proxy.mode_servers import ProxyConnectionHandler
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
 from mitmproxy.tools.dump import DumpMaster
+from tornado.httpclient import HTTPRequest, HTTPResponse
+from tornado.httpserver import HTTPServer
+from tornado.httputil import HTTPServerRequest
+from tornado.web import Application, HTTPError, RequestHandler
 
 # Initial policy: HTTPS Git smart HTTP, not GitHub's web/API endpoints.
 HOST = "github.com"
@@ -42,13 +71,90 @@ def public_address(address: str) -> bool:
     return ip.is_global and not ip.is_multicast and not ip.is_reserved
 
 
+class ReadGate(asyncio.StreamReader):
+    """Gate the read() interface used by mitmproxy's TCP connection handler."""
+
+    def __init__(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        super().__init__()
+        self.reader: asyncio.StreamReader = reader
+        self.writer: asyncio.StreamWriter = writer
+        self.ready: asyncio.Event = asyncio.Event()
+        self.ready.set()
+
+    @override
+    async def read(self, n: int = -1) -> bytes:
+        # 12.2.3 ConnectionHandler.handle_connection calls only read(65535).
+        assert 0 < n <= 65535
+        _ = await self.ready.wait()
+        data = await self.reader.read(n)
+        # Also stop a read that was already pending when the hook paused us.
+        _ = await self.ready.wait()
+        return data
+
+
+class Backpressure:
+    def __init__(self, proxyserver: Proxyserver) -> None:
+        self.proxyserver: Proxyserver = proxyserver
+        self.readers: dict[str, ReadGate] = {}
+
+    def client_connected(self, client: connection.Client) -> None:
+        client.error = "mitm-proxy: cannot bound client reads"
+        # 12.2.3 registers the connection before this hook and captures its reader
+        # afterward. Stop consuming that reader, letting asyncio's bounded buffer
+        # pause the TCP transport; pausing an HTTP hook alone queues body events.
+        # Upstream also supports unparameterized UDP tuple keys; TCP IDs are str.
+        connections = cast(
+            Mapping[str, ProxyConnectionHandler], self.proxyserver.connections
+        )
+        transport = connections[client.id].transports[client]
+        assert isinstance(transport.reader, asyncio.StreamReader)
+        assert isinstance(transport.writer, asyncio.StreamWriter)
+        gate = ReadGate(transport.reader, transport.writer)
+        transport.reader = gate
+        self.readers[client.id] = gate
+        client.error = None
+
+    def client_disconnected(self, client: connection.Client) -> None:
+        _ = self.readers.pop(client.id, None)
+
+    @contextmanager
+    def pause(self, flow: http.HTTPFlow) -> Generator[None]:
+        gate = self.readers[flow.client_conn.id]
+        # This proxy permits HTTP/1 only, without concurrent/pipelined streams.
+        assert gate.ready.is_set()
+        gate.ready.clear()
+        try:
+            yield
+        except BaseException:
+            # Cancelled hooks do not deliver HookCompleted. Never resume reads
+            # into a permanently paused HTTP layer.
+            gate.writer.transport.abort()
+            raise
+        finally:
+            if flow.error is not None:
+                # Abort explicitly: killing a flow can cancel 12.2.3's reader
+                # inside server_event(), before its writer-close cleanup runs.
+                gate.writer.transport.abort()
+            gate.ready.set()
+
+
 class Policy:
     def __init__(
         self,
-        credentials: Mapping[str, str],
+        credentials: Mapping[str, Account],
+        authorization: Authorization,
         resolve: Callable[[], Awaitable[str]] = resolve_upstream,
+        *,
+        pause: Callable[[http.HTTPFlow], AbstractContextManager[None]],
     ) -> None:
-        self.credentials: dict[str, str] = dict(credentials)
+        self.credentials: dict[str, Account] = dict(credentials)
+        self.authorization: Authorization = authorization
+        self.leases: dict[
+            str, tuple[Account, str, AbstractAsyncContextManager[str]]
+        ] = {}
+        self.pause: Callable[[http.HTTPFlow], AbstractContextManager[None]] = pause
         self.resolve: Callable[[], Awaitable[str]] = resolve
         self.tunnels: set[str] = set()
 
@@ -68,17 +174,27 @@ class Policy:
     def client_disconnected(self, client: connection.Client) -> None:
         self.tunnels.discard(client.id)
 
-    def requestheaders(self, flow: http.HTTPFlow) -> None:
+    async def requestheaders(self, flow: http.HTTPFlow) -> None:
         completed = False
         try:
-            self.authorize(flow)
-            completed = True
+            with self.pause(flow):
+                await self.authorize(flow)
+                if (
+                    flow.response is not None
+                    and expected_http_body_size(flow.request) != 0
+                ):
+                    # 12.2.3 buffers a denied request's body before sending its
+                    # response. Close instead of reading an arbitrary upload.
+                    flow.kill()
+                    await self.release(flow)
+                completed = True
         finally:
             # Even an exception after partial mutation must fail closed.
             if not completed:
                 flow.kill()
+                await self.release(flow)
 
-    def authorize(self, flow: http.HTTPFlow) -> None:
+    async def authorize(self, flow: http.HTTPFlow) -> None:
         try:
             flow.response = http.Response.make(403)
             flow.request.stream = False
@@ -118,9 +234,12 @@ class Policy:
             )
             if username != "x-access-token":
                 return
-            token = self.credentials.get(placeholder)
-            if token is None:
+            account = self.credentials.get(placeholder)
+            if account is None:
                 return
+            lease = self.authorization.lease(account)
+            token = await lease.__aenter__()
+            self.leases[flow.id] = (account, token, lease)
             replacement = base64.b64encode(f"{username}:{token}".encode()).decode()
             # Do not allow the client to nominate credentials as a hop-by-hop
             # header, or to pass proxy credentials on to the upstream server.
@@ -131,6 +250,12 @@ class Policy:
             flow.response = None
         except (ValueError, UnicodeError, binascii.Error):
             return
+        except AuthError as error:
+            flow.response = http.Response.make(
+                503 if error.state == "temporarily-unavailable" else 403
+            )
+        except OSError:
+            flow.response = http.Response.make(503)
 
     async def server_connect(self, data: ServerConnectionHookData) -> None:
         data.server.error = "mitm-proxy: upstream denied"
@@ -153,18 +278,31 @@ class Policy:
         assert flow.response is not None
         flow.response.stream = True
 
+    async def release(self, flow: http.HTTPFlow) -> None:
+        entry = self.leases.pop(flow.id, None)
+        if entry is not None:
+            _ = await entry[2].__aexit__(None, None, None)
+
+    async def response(self, flow: http.HTTPFlow) -> None:
+        entry = self.leases.get(flow.id)
+        await self.release(flow)
+        if (
+            entry is not None
+            and flow.response is not None
+            and flow.response.status_code == 401
+        ):
+            with self.pause(flow):
+                await self.authorization.reject(entry[0], entry[1])
+
+    async def error(self, flow: http.HTTPFlow) -> None:
+        await self.release(flow)
+
 
 @dataclass(frozen=True)
 class Owner:
     name: str
     gid: int
-
-    @staticmethod
-    def parse(value: str) -> "Owner":
-        name, gid = value.split(":")
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", name) or int(gid) <= 0:
-            raise ValueError("invalid mitm-proxy owner")
-        return Owner(name, int(gid))
+    user_id: int
 
 
 def prepare(state: Path, public: Path, owners: Sequence[Owner], gid: int) -> None:
@@ -205,25 +343,22 @@ def prepare(state: Path, public: Path, owners: Sequence[Owner], gid: int) -> Non
     state.chmod(0o750)
 
 
-def read_credentials(
-    state: Path, directory: Path, owners: Sequence[Owner]
-) -> dict[str, str]:
-    credentials: dict[str, str] = {}
+def read_credentials(state: Path, owners: Sequence[Owner]) -> dict[str, Account]:
+    credentials: dict[str, Account] = {}
     for owner in owners:
         placeholder = (state / ("placeholder-" + owner.name)).read_text()
-        token = (directory / ("token-" + owner.name)).read_text().strip()
-        if (
-            not PLACEHOLDER.fullmatch(placeholder)
-            or placeholder in credentials
-            or not re.fullmatch(r"[A-Za-z0-9_]+", token)
-            or token == placeholder
-        ):
-            raise ValueError("invalid mitm-proxy credentials")
-        credentials[placeholder] = token
+        if not PLACEHOLDER.fullmatch(placeholder) or placeholder in credentials:
+            raise ValueError("invalid mitm-proxy placeholder")
+        credentials[placeholder] = Account(owner.name, owner.user_id)
     return credentials
 
 
-def create_master(state: Path, port: int, credentials: Mapping[str, str]) -> DumpMaster:
+def create_master(
+    state: Path,
+    port: int,
+    credentials: Mapping[str, Account],
+    authorization: Authorization,
+) -> DumpMaster:
     opts = options.Options(
         confdir=str(state),
         listen_host="0.0.0.0",
@@ -242,47 +377,300 @@ def create_master(state: Path, port: int, credentials: Mapping[str, str]) -> Dum
     logging.getLogger().addHandler(logging.NullHandler())
     master = DumpMaster(opts, with_termlog=False, with_dumper=False)
     opts.set("connection_strategy=lazy")
+    get_addon = cast(Callable[[str], object], master.addons.get)
+    proxyserver = get_addon("proxyserver")
+    assert isinstance(proxyserver, Proxyserver)
+    backpressure = Backpressure(proxyserver)
     # mitmproxy 12.2.3 leaves AddonManager.add's variadic argument untyped.
-    cast(Callable[[Policy], None], master.addons.add)(Policy(credentials))
+    cast(Callable[[Backpressure, Policy], None], master.addons.add)(
+        backpressure, Policy(credentials, authorization, pause=backpressure.pause)
+    )
     return master
 
 
-async def serve(state: Path, port: int, credentials: Mapping[str, str]) -> None:
-    master = create_master(state, port, credentials)
+class Control:
+    """One owner's authorization, exposed only on that owner's Unix socket."""
+
+    def __init__(self, authorization: Authorization, account: Account) -> None:
+        self.authorization: Authorization = authorization
+        self.account: Account = account
+        self.task: asyncio.Task[None] | None = None
+        self.device: Device | None = None
+        self.failure: Status | None = None
+        self.lock: asyncio.Lock = asyncio.Lock()
+
+    async def status(self) -> dict[str, object]:
+        async with self.lock:
+            state: dict[str, object] = (
+                {"state": "authorizing", "user_id": self.account.user_id}
+                if self.task is not None and not self.task.done()
+                else asdict(await self.authorization.status(self.account))
+            )
+            # Never serialize Device: its device_code is a credential, not UI data.
+            state["device"] = (
+                {
+                    "user_code": self.device.user_code,
+                    "verification_uri": self.device.verification_uri,
+                    "expires_at": self.device.expires_at,
+                }
+                if self.device is not None
+                else None
+            )
+            state["error"] = self.failure
+            return state
+
+    async def login(self) -> None:
+        async with self.lock:
+            if self.task is not None and not self.task.done():
+                return
+            self.failure = None
+            self.device = None
+            self.task = asyncio.create_task(self.enroll())
+
+    async def enroll(self) -> None:
+        def show(device: Device) -> None:
+            self.device = device
+
+        try:
+            await self.authorization.login(self.account, show)
+        except AuthError as error:
+            self.failure = error.state
+        except OSError:
+            self.failure = "temporarily-unavailable"
+        finally:
+            self.device = None
+
+    async def cancel(self) -> None:
+        if self.task is not None:
+            _ = self.task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.task
+            self.task = None
+
+    async def logout(self) -> None:
+        async with self.lock:
+            await self.cancel()
+            await self.authorization.logout(self.account)
+            self.failure = None
+
+    async def close(self) -> None:
+        async with self.lock:
+            await self.cancel()
+
+
+class ControlHandler(RequestHandler):
+    def __init__(
+        self, application: Application, request: HTTPServerRequest, *, control: Control
+    ) -> None:
+        self.control: Control = control
+        super().__init__(application, request)
+
+    @override
+    def prepare(self) -> None:
+        self.set_header("Cache-Control", "no-store")
+        if self.request.query or self.request.body:
+            raise HTTPError(400)
+        if self.request.headers.get("Origin"):
+            raise HTTPError(403)
+
+    @override
+    async def get(self, operation: str) -> None:
+        if operation != "status":
+            raise HTTPError(405)
+        self.set_header("Content-Type", "application/json")
+        # Tornado's dict overloads are unparameterized in 6.5.7; use JSON text.
+        cast(Callable[[str], None], self.write)(json.dumps(await self.control.status()))
+
+    @override
+    async def post(self, operation: str) -> None:
+        try:
+            if operation == "login":
+                await self.control.login()
+            elif operation == "logout":
+                await self.control.logout()
+            else:
+                raise HTTPError(405)
+            self.set_status(204)
+        except (AuthError, OSError):
+            raise HTTPError(503) from None
+
+    @override
+    def write_error(self, status_code: int, **kwargs: object) -> None:
+        cast(Callable[[str], None], self.write)("authorization operation failed")
+
+
+def control_server(control: Control, listener: socket.socket) -> HTTPServer:
+    if listener.family != socket.AF_UNIX:
+        raise ValueError("authorization control requires a Unix socket")
+    listener.setblocking(False)
+    listener.set_inheritable(False)
+    # HTTPServer inherits Configurable.__new__, whose return type is Any.
+    server = cast(
+        HTTPServer,
+        HTTPServer(
+            Application(
+                [(r"/(status|login|logout)", ControlHandler, {"control": control})]
+            ),
+            max_body_size=1024,
+            max_header_size=4096,
+            body_timeout=5,
+            idle_connection_timeout=10,
+        ),
+    )
+    server.add_sockets([listener])
+    return server
+
+
+def control_listeners(owners: Sequence[Owner]) -> dict[str, socket.socket]:
+    # systemd creates owner-only sockets before dropping service privileges.
+    # Descriptor names bind each listener to configuration, never to client input.
+    names = os.environ.pop("LISTEN_FDNAMES", "").split(":")
+    count = int(os.environ.pop("LISTEN_FDS", "0"))
+    pid = int(os.environ.pop("LISTEN_PID", "0"))
+    if (
+        pid != os.getpid()
+        or count != len(owners)
+        or len(names) != count
+        or set(names) != {owner.name for owner in owners}
+    ):
+        raise ValueError("invalid authorization socket activation")
+    return {name: socket.socket(fileno=fd) for fd, name in enumerate(names, 3)}
+
+
+async def serve(
+    state: Path,
+    port: int,
+    credentials: Mapping[str, Account],
+    authorization: Authorization,
+    owners: Sequence[Owner],
+) -> None:
+    master = create_master(state, port, credentials, authorization)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, master.shutdown)
-    await master.run()
+    controls: list[Control] = []
+    servers: list[HTTPServer] = []
+    listeners = control_listeners(owners)
+    try:
+        for owner in owners:
+            control = Control(authorization, Account(owner.name, owner.user_id))
+            controls.append(control)
+            servers.append(control_server(control, listeners[owner.name]))
+        await master.run()
+    finally:
+        for server in servers:
+            server.stop()
+        for control in controls:
+            await control.close()
+        for server in servers:
+            await server.close_all_connections()
+        for listener in listeners.values():
+            listener.close()
 
 
 class Arguments(argparse.Namespace):
     operation: str = ""
-    port: int = 0
+    config: str = "/etc/mitm-proxy.json"
+    user: str | None = None
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.owner: list[Owner] = []
+
+def configuration(path: Path) -> tuple[str, int, list[Owner]]:
+    data = object_value(cast(object, json.loads(path.read_text())))
+    client_id = text(data, "clientId")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", client_id):
+        raise ValueError("invalid client ID")
+    port = integer(data, "port")
+    if port > 65535:
+        raise ValueError("invalid port")
+    owners: list[Owner] = []
+    for name, value in object_value(data["owners"]).items():
+        owner = object_value(value)
+        account = Account(name, integer(owner, "githubUserId"))
+        owners.append(Owner(account.name, integer(owner, "gid"), account.user_id))
+    return client_id, port, owners
+
+
+async def run(
+    args: Arguments, state: Path, tokens: Path, show: Callable[[Device], None]
+) -> None:
+    client_id, port, owners = configuration(Path(args.config))
+    if args.operation == "prepare":
+        prepare(
+            state, Path("/run/mitm-proxy"), owners, pwd.getpwnam("mitm-proxy").pw_gid
+        )
+        return
+    client = http_client()
+
+    async def fetch(request: HTTPRequest) -> HTTPResponse:
+        return await client.fetch(request, raise_error=False)
+
+    authorization = Authorization(tokens, GitHub(client_id, fetch))
+    try:
+        if args.operation == "serve":
+            await serve(
+                state, port, read_credentials(state, owners), authorization, owners
+            )
+            return
+        owner = next((owner for owner in owners if owner.name == args.user), None)
+        if owner is None:
+            raise ValueError("select a configured host user with --user")
+        account = Account(owner.name, owner.user_id)
+        if args.operation == "login":
+            await authorization.login(account, show)
+        elif args.operation == "logout":
+            await authorization.logout(account)
+        else:
+            print(json.dumps(asdict(await authorization.status(account))))
+    finally:
+        client.close()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    _ = parser.add_argument("operation", choices=["prepare", "serve"])
-    _ = parser.add_argument("--owner", action="append", type=Owner.parse, default=[])
-    _ = parser.add_argument("--port", type=int, required=True)
+    _ = parser.add_argument(
+        "operation", choices=["prepare", "serve", "login", "status", "logout"]
+    )
+    _ = parser.add_argument("--config", default="/etc/mitm-proxy.json")
+    _ = parser.add_argument("--user")
     args = parser.parse_args(namespace=Arguments())
-    state = Path(os.environ["STATE_DIRECTORY"])
-    if args.operation == "prepare":
-        prepare(
-            state,
-            Path("/run/mitm-proxy"),
-            args.owner,
-            pwd.getpwnam("mitm-proxy").pw_gid,
+    state = Path("/var/lib/mitm-proxy")
+    tokens = Path("/var/lib/mitm-proxy-auth")
+    try:
+        with ExitStack() as stack:
+            if os.geteuid() not in (0, pwd.getpwnam("mitm-proxy").pw_uid):
+                raise PermissionError("operator commands require root")
+            # Open the initiating terminal before dropping root privileges.
+            terminal = (
+                stack.enter_context(open("/dev/tty", "w"))
+                if args.operation == "login"
+                else None
+            )
+
+            def show(device: Device) -> None:
+                assert terminal is not None
+                print(
+                    device.verification_uri, device.user_code, file=terminal, flush=True
+                )
+
+            if args.operation == "prepare":
+                if os.geteuid() != 0:
+                    raise PermissionError("prepare requires root")
+            else:
+                service = pwd.getpwnam("mitm-proxy")
+                if os.geteuid() == 0:
+                    os.setgroups([])
+                    os.setgid(service.pw_gid)
+                    os.setuid(service.pw_uid)
+            asyncio.run(run(args, state, tokens, show))
+    except (AuthError, OSError, ValueError, TypeError, KeyError):
+        # Exceptions may contain credential-bearing HTTP or state data.
+        print(
+            "mitm-proxy: operation failed; check authorization with status",
+            file=sys.stderr,
         )
-    else:
-        credentials = read_credentials(
-            state, Path(os.environ["CREDENTIALS_DIRECTORY"]), args.owner
-        )
-        asyncio.run(serve(state, args.port, credentials))
+        raise SystemExit(1) from None
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

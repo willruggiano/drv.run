@@ -1056,7 +1056,7 @@ await test("image submission reaches Durable; generation completes after the HTM
   assert.equal((await session.harness.snapshot(LiveDoc, session.root.id, context))?.run, undefined);
 });
 
-await test("HTML retires the removed root worker and its cached shell", async (t) => {
+await test("HTML expands worker scope to auth and retires obsolete registrations and cached shell", async (t) => {
   const f = await fixture(t);
   const b = await browserFixture(t, f.sessions);
   const server = httpServer(f.sessions, "127.0.0.1", b.assets);
@@ -1065,7 +1065,7 @@ await test("HTML retires the removed root worker and its cached shell", async (t
   let legacy = true;
   server.on("request", (request, response) => {
     if (!legacy) return handler(request, response);
-    if (request.url === "/sw.js") {
+    if (request.url === "/sw.js" || request.url === "/hypermedia-sw.js") {
       response.setHeader("Content-Type", "text/javascript");
       response.end(
         'self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));',
@@ -1086,6 +1086,7 @@ await test("HTML retires the removed root worker and its cached shell", async (t
   await b.page.goto(base);
   await b.page.evaluate(async () => {
     await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    await navigator.serviceWorker.register("/hypermedia-sw.js", { scope: "/sessions" });
     await navigator.serviceWorker.ready;
     await (await caches.open("pi-shell-v26")).put("/", new Response("Retired shell"));
     await caches.open("unrelated-cache");
@@ -1109,7 +1110,7 @@ await test("HTML retires the removed root worker and its cached shell", async (t
     ),
     caches: await caches.keys(),
   }));
-  assert.deepEqual(state.scopes, ["/sessions"]);
+  assert.deepEqual(state.scopes, ["/"]);
   assert.equal(state.caches.includes("unrelated-cache"), true);
   assert.equal(state.caches.includes("pi-shell-v26"), false);
   assert.equal(await b.page.locator("#composer").count(), 1);

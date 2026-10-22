@@ -81,7 +81,7 @@
     };
 
     checks = eachSystem (pkgs: {
-      inherit (pkgs) app;
+      inherit (pkgs) app mitm-proxy;
       pi-config = let
         evaluate = settings:
           (lib.nixosSystem {
@@ -134,10 +134,7 @@
           "https://pi.example#fragment"
         ];
           pkgs.runCommand "pi-config" {} "touch $out";
-      nixos-mitm-proxy = pkgs.testers.runNixOSTest (import ./tests/nixos/mitm-proxy.nix {
-        inherit (self) nixosModules;
-        inherit pkgs;
-      });
+      nixos-mitm-proxy = pkgs.mitm-proxy.tests.service;
       # FIXME: this should live with the bench package, not here.
       bench-test =
         pkgs.runCommand "bench-tests" {
@@ -208,7 +205,7 @@
           patch
           pkg-config
           procps
-          (python3.withPackages (ps: [ps.mitmproxy]))
+          (python3.withPackages (ps: [ps.mitmproxy ps.tornado]))
           ripgrep
           ruff
           scc

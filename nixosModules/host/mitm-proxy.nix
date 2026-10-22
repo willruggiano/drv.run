@@ -8,8 +8,16 @@
   cfg = config.services.drv-run.mitm-proxy;
   enabled = cfg.owners != {};
   package = pkgs.callPackage ../../packages/mitm-proxy {};
-  ownerArgs = lib.concatMap (name: ["--owner" "${name}:${toString config.users.groups.${config.users.users.${name}.group}.gid}"]) (builtins.attrNames cfg.owners);
-  commandArgs = operation: ["${package}/bin/mitm-proxy" operation "--port" (toString cfg.port)] ++ ownerArgs;
+  settings = pkgs.writeText "mitm-proxy.json" (builtins.toJSON {
+    inherit (cfg) port clientId;
+    owners =
+      lib.mapAttrs (name: owner: {
+        inherit (owner) githubUserId;
+        gid = config.users.groups.${config.users.users.${name}.group}.gid;
+      })
+      cfg.owners;
+  });
+  commandArgs = operation: ["${package}/bin/mitm-proxy" operation "--config" (toString settings)];
   command = operation: utils.escapeSystemdExecArgs (commandArgs operation);
 in {
   options.services.drv-run.mitm-proxy = {
@@ -18,13 +26,18 @@ in {
       default = 3128;
       description = "Host listener for the guest credential proxy.";
     };
+    clientId = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = "GitHub App client ID, with device flow and expiring user tokens enabled.";
+    };
     owners = lib.mkOption {
       default = {};
       description = "Host owners granted proxy access. Instances of an owner share a credential capability.";
       type = lib.types.attrsOf (lib.types.submodule {
-        options.tokenFile = lib.mkOption {
-          type = lib.types.str;
-          description = "Absolute runtime path to a GitHub token. Never a Nix store path. Read at proxy startup.";
+        options.githubUserId = lib.mkOption {
+          type = lib.types.ints.positive;
+          description = "Expected numeric GitHub user ID, verified during device authorization.";
         };
       });
     };
@@ -32,9 +45,10 @@ in {
 
   config = lib.mkIf enabled {
     assertions =
-      lib.mapAttrsToList (name: owner: {
+      lib.mapAttrsToList (name: _: {
         assertion = let
           user = config.users.users.${name} or null;
+          group = config.users.groups.${user.group or ""} or null;
         in
           user
           != null
@@ -42,14 +56,22 @@ in {
           && user.isNormalUser
           && user.uid != null
           && user.uid > 0
-          && builtins.match "[A-Za-z_][A-Za-z0-9_.-]*" name != null
-          && lib.hasPrefix "/" owner.tokenFile
-          && !(lib.hasPrefix "/nix/store/" owner.tokenFile)
-          && !(lib.hasInfix ":" owner.tokenFile)
-          && !(lib.hasInfix "\n" owner.tokenFile);
-        message = "mitm-proxy owners must be enabled normal Host users with runtime token files outside the Nix store.";
+          && group != null
+          && group.gid != null
+          && group.gid > 0
+          && builtins.match "[A-Za-z_][A-Za-z0-9_.-]*" name != null;
+        message = "mitm-proxy owners must be enabled normal Host users.";
       })
-      cfg.owners;
+      cfg.owners
+      ++ [
+        {
+          assertion = builtins.match "[A-Za-z0-9_.-]+" cfg.clientId != null;
+          message = "mitm-proxy requires a GitHub App clientId.";
+        }
+      ];
+
+    environment.systemPackages = [package];
+    environment.etc."mitm-proxy.json".source = settings;
 
     users.users.mitm-proxy = {
       isSystemUser = true;
@@ -63,10 +85,24 @@ in {
       text = ''
         (
           umask 0077
-          STATE_DIRECTORY=/var/lib/mitm-proxy ${lib.escapeShellArgs (commandArgs "prepare")}
+          ${lib.escapeShellArgs (commandArgs "prepare")}
         )
       '';
     };
+    systemd.sockets = lib.mapAttrs' (name: _:
+      lib.nameValuePair "mitm-proxy-auth-${name}" {
+        wantedBy = ["sockets.target"];
+        socketConfig = {
+          ListenStream = "/run/mitm-proxy-auth/${name}.sock";
+          SocketUser = name;
+          SocketMode = "0600";
+          DirectoryMode = "0755";
+          FileDescriptorName = name;
+          Service = "mitm-proxy.service";
+          RemoveOnStop = true;
+        };
+      })
+    cfg.owners;
     systemd.services.mitm-proxy = {
       description = "drv.run credential proxy";
       wantedBy = ["multi-user.target"];
@@ -75,17 +111,19 @@ in {
       requires = ["nftables.service"];
       environment = {
         NIX_SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
-        STATE_DIRECTORY = "/var/lib/mitm-proxy";
+        SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
       };
       serviceConfig = {
         Type = "exec";
+        Sockets = map (name: "mitm-proxy-auth-${name}.socket") (builtins.attrNames cfg.owners);
         User = "mitm-proxy";
         Group = "mitm-proxy";
         # Root publishes each capability to its owner's private group. The
         # long-running proxy has neither root privileges nor group membership.
         ExecStartPre = "+${command "prepare"}";
         ExecStart = command "serve";
-        LoadCredential = lib.mapAttrsToList (name: owner: "token-${name}:${owner.tokenFile}") cfg.owners;
+        StateDirectory = "mitm-proxy-auth";
+        StateDirectoryMode = "0700";
         Restart = "on-failure";
         RestartSec = 2;
         UMask = "0077";
@@ -106,6 +144,7 @@ in {
     systemd.tmpfiles.rules = [
       "d /var/lib/mitm-proxy 0750 root mitm-proxy -"
       "d /run/mitm-proxy 0755 root root -"
+      "d /var/lib/mitm-proxy-auth 0700 mitm-proxy mitm-proxy -"
     ];
     services.drv-run.guest.extraModules = [(import ../guest/mitm-proxy.nix {inherit (cfg) port;})];
   };

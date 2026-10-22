@@ -1,4 +1,5 @@
 import { html as h } from "./html.ts";
+import { authPage, ProxyAuthorization } from "./auth.ts";
 import { hypermedia, html, FormError } from "./hypermedia.ts";
 import { openApplication } from "./application.ts";
 import { ownerOptions } from "./instances.ts";
@@ -214,6 +215,7 @@ export function httpServer(
   assets = dirname(fileURLToPath(import.meta.url)),
   settings?: GlobalSettingsStore,
   externalOrigin?: string,
+  authorization = new ProxyAuthorization(),
 ) {
   const configuredOrigin = externalOrigin === undefined ? undefined : new URL(externalOrigin);
   if (configuredOrigin) {
@@ -262,6 +264,8 @@ export function httpServer(
       const controller = new AbortController();
       response.once("close", () => controller.abort());
       const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
+      if (url.pathname === "/auth" || url.pathname.startsWith("/auth/"))
+        return await authPage(request, response, url, authorization, controller.signal);
       if (url.pathname === "/sessions" || url.pathname.startsWith("/sessions/"))
         return await hypermedia(request, response, url, sessions, context, settings);
       if (url.pathname === "/") {
@@ -383,7 +387,7 @@ export async function main(): Promise<void> {
     throw error;
   }
   console.error(
-    `WARN serve: ${origin ?? `http://${host.includes(":") ? `[${host}]` : host}:${port}`} is unauthenticated. Anyone who can reach it can control its agents and execution targets.`,
+    `WARN serve: ${origin ?? `http://${host.includes(":") ? `[${host}]` : host}:${port}`} is unauthenticated. Anyone who can reach it can control its agents, execution targets, and proxied credentials.`,
   );
   let stopping = false;
   const shutdown = () => {

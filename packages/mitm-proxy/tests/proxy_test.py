@@ -1,17 +1,41 @@
+import asyncio
 import base64
 import os
 import stat
 import tempfile
 import unittest
+from collections.abc import Awaitable, Callable, Mapping
+from contextlib import nullcontext
 from pathlib import Path
+from typing import override
 from unittest.mock import patch
 
-from main import HOST, Owner, Policy, prepare, public_address, read_credentials
+from auth import Account, Authorization
+from main import (
+    HOST,
+    Owner,
+    Policy,
+    prepare,
+    public_address,
+    read_credentials,
+    resolve_upstream,
+)
 from mitmproxy import connection, http
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
 
+from .oauth import Clock, OAuth, enroll, github
+
 ALICE = "drv_run_" + "a" * 64
 BOB = "drv_run_" + "b" * 64
+
+
+def policy_fixture(
+    credentials: Mapping[str, Account],
+    authorization: Authorization,
+    resolve: Callable[[], Awaitable[str]] = resolve_upstream,
+) -> Policy:
+    # Policy-only tests have no TCP reader. Transport tests exercise real gates.
+    return Policy(credentials, authorization, resolve, pause=lambda _: nullcontext())
 
 
 def basic(password: str, username: str = "x-access-token") -> str:
@@ -39,11 +63,32 @@ def connect(policy: Policy, request: http.HTTPFlow) -> None:
     assert tunnel.response is None
 
 
-class PolicyTest(unittest.TestCase):
-    def test_credentials_are_owner_scoped_and_only_password_is_replaced(self) -> None:
-        for placeholder, token in [(ALICE, "alice_token"), (BOB, "bob_token")]:
+class PolicyTest(unittest.IsolatedAsyncioTestCase):
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        clock = Clock()
+        oauth = OAuth(clock)
+        self.authorization: Authorization = Authorization(
+            Path(temporary.name) / "auth", github(oauth, clock)
+        )
+        self.oauth: OAuth = oauth
+
+    @override
+    async def asyncSetUp(self) -> None:
+        for name, user in [("alice", 1), ("bob", 2)]:
+            await enroll(self.authorization, self.oauth, Account(name, user))
+
+    async def test_credentials_are_owner_scoped_and_only_password_is_replaced(
+        self,
+    ) -> None:
+        for placeholder, token in [(ALICE, "ghu_token1"), (BOB, "ghu_token2")]:
             with self.subTest(placeholder=placeholder):
-                policy = Policy({ALICE: "alice_token", BOB: "bob_token"})
+                policy = policy_fixture(
+                    {ALICE: Account("alice", 1), BOB: Account("bob", 2)},
+                    self.authorization,
+                )
                 request = flow("/alice/project.git/git-receive-pack")
                 request.request.method = "POST"
                 request.request.content = placeholder.encode()
@@ -52,7 +97,8 @@ class PolicyTest(unittest.TestCase):
                 request.request.headers["Connection"] = "Authorization"
                 request.request.headers["Proxy-Authorization"] = basic(placeholder)
                 connect(policy, request)
-                policy.requestheaders(request)
+                await policy.requestheaders(request)
+                await policy.response(request)
                 self.assertIsNone(request.response)
                 self.assertEqual(request.request.headers["Authorization"], basic(token))
                 self.assertEqual(request.request.headers["X-Example"], placeholder)
@@ -61,7 +107,7 @@ class PolicyTest(unittest.TestCase):
                 self.assertNotIn("proxy-authorization", request.request.headers)
                 self.assertTrue(request.request.stream)
 
-    def test_challenge_and_unknown_credentials(self) -> None:
+    async def test_challenge_and_unknown_credentials(self) -> None:
         for headers, status in [
             ([], 401),
             ([("Authorization", basic("unknown"))], 403),
@@ -73,14 +119,17 @@ class PolicyTest(unittest.TestCase):
             ([("Authorization", basic(ALICE)), ("Authorization", basic(BOB))], 403),
         ]:
             with self.subTest(headers=headers):
-                policy = Policy({ALICE: "alice_token"})
+                policy = policy_fixture(
+                    {ALICE: Account("alice", 1)}, self.authorization
+                )
                 request = flow()
                 connect(policy, request)
                 for key, value in headers:
                     request.request.headers.set_all(
                         key, [*request.request.headers.get_all(key), value]
                     )
-                policy.requestheaders(request)
+                await policy.requestheaders(request)
+                await policy.response(request)
                 assert request.response is not None
                 self.assertEqual(request.response.status_code, status)
                 self.assertFalse(request.request.stream)
@@ -92,7 +141,7 @@ class PolicyTest(unittest.TestCase):
             ("127.0.0.1", 443, "127.0.0.1:443"),
             ("github.com", 443, "other.test:443"),
         ]:
-            policy = Policy({})
+            policy = policy_fixture({}, self.authorization)
             request = flow()
             request.request.host = host
             request.request.port = port
@@ -100,17 +149,15 @@ class PolicyTest(unittest.TestCase):
             policy.http_connect(request)
             assert request.response is not None
             self.assertEqual(request.response.status_code, 403)
-            self.assertEqual(policy.tunnels, set())
-        policy = Policy({})
+        policy = policy_fixture({}, self.authorization)
         request = flow()
         connect(policy, request)
         request.request.authority = "github.com:443"
         policy.http_connect(request)
         self.assertIsNotNone(request.response)
         policy.client_disconnected(request.client_conn)
-        self.assertEqual(policy.tunnels, set())
 
-    def test_only_git_endpoints(self) -> None:
+    async def test_only_git_endpoints(self) -> None:
         for method, path, allowed in [
             ("GET", "/alice/repo/info/refs?service=git-upload-pack", True),
             ("GET", "/alice/repo.git/info/refs?service=git-receive-pack", True),
@@ -123,16 +170,19 @@ class PolicyTest(unittest.TestCase):
             ("GET", "/login", False),
         ]:
             with self.subTest(method=method, path=path):
-                policy = Policy({ALICE: "token"})
+                policy = policy_fixture(
+                    {ALICE: Account("alice", 1)}, self.authorization
+                )
                 request = flow(path)
                 request.request.method = method
                 request.request.headers["Authorization"] = basic(ALICE)
                 connect(policy, request)
-                policy.requestheaders(request)
+                await policy.requestheaders(request)
+                await policy.response(request)
                 self.assertEqual(request.response is None, allowed)
                 self.assertEqual(request.request.path, path)
 
-    def test_authorities_and_tls_must_agree(self) -> None:
+    async def test_authorities_and_tls_must_agree(self) -> None:
         for change in [
             "no-connect",
             "plaintext",
@@ -144,7 +194,9 @@ class PolicyTest(unittest.TestCase):
             "trailer",
         ]:
             with self.subTest(change=change):
-                policy = Policy({ALICE: "token"})
+                policy = policy_fixture(
+                    {ALICE: Account("alice", 1)}, self.authorization
+                )
                 request = flow()
                 if change != "no-connect":
                     connect(policy, request)
@@ -163,12 +215,35 @@ class PolicyTest(unittest.TestCase):
                     request.request.authority = "other.test"
                 elif change in ("upgrade", "trailer"):
                     request.request.headers[change] = "example"
-                policy.requestheaders(request)
+                await policy.requestheaders(request)
+                await policy.response(request)
                 assert request.response is not None
                 self.assertEqual(request.response.status_code, 403)
 
-    def test_exception_after_mutation_kills_flow(self) -> None:
-        policy = Policy({ALICE: "token"})
+    async def test_concurrent_401_responses_release_leases_before_rejection(
+        self,
+    ) -> None:
+        account = Account("alice", 1)
+        policy = policy_fixture({ALICE: account}, self.authorization)
+        requests = [flow(), flow()]
+        async with asyncio.timeout(2):
+            for request in requests:
+                connect(policy, request)
+                request.request.headers["Authorization"] = basic(ALICE)
+                await policy.requestheaders(request)
+                self.assertIsNone(request.response)
+                request.response = http.Response.make(401)
+            _ = await asyncio.gather(
+                *(policy.response(request) for request in requests)
+            )
+            self.assertEqual(
+                (await self.authorization.status(account)).state,
+                "reauthorization-required",
+            )
+            await self.authorization.logout(account)
+
+    async def test_exception_after_mutation_kills_flow(self) -> None:
+        policy = policy_fixture({ALICE: Account("alice", 1)}, self.authorization)
         request = flow()
         connect(policy, request)
         request.request.headers["Authorization"] = basic(ALICE)
@@ -183,13 +258,23 @@ class PolicyTest(unittest.TestCase):
             patch.object(http.Headers, "__setitem__", fail),
             self.assertRaises(RuntimeError),
         ):
-            policy.requestheaders(request)
+            await policy.requestheaders(request)
+            await policy.response(request)
         self.assertIsNotNone(request.error)
         self.assertFalse(request.live)
         self.assertIsNotNone(request.response)
 
 
 class ConnectionTest(unittest.IsolatedAsyncioTestCase):
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        clock = Clock()
+        self.authorization: Authorization = Authorization(
+            Path(temporary.name) / "auth", github(OAuth(clock), clock)
+        )
+
     async def test_resolved_address_is_pinned_before_connect(self) -> None:
         for address, allowed in [
             ("93.184.216.34", True),
@@ -205,7 +290,7 @@ class ConnectionTest(unittest.IsolatedAsyncioTestCase):
             async def resolve(address: str = address) -> str:
                 return address
 
-            policy = Policy({}, resolve)
+            policy = policy_fixture({}, self.authorization, resolve)
             request = flow()
             connect(policy, request)
             request.server_conn.sni = HOST
@@ -224,7 +309,7 @@ class ConnectionTest(unittest.IsolatedAsyncioTestCase):
         async def resolve() -> str:
             raise OSError("DNS failed")
 
-        policy = Policy({}, resolve)
+        policy = policy_fixture({}, self.authorization, resolve)
         request = flow()
         connect(policy, request)
         request.server_conn.sni = HOST
@@ -244,11 +329,11 @@ class CredentialTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             state, public = root / "state", root / "public"
-            owners = [Owner("alice", 1000), Owner("bob", 1001)]
+            owners = [Owner("alice", 1000, 1), Owner("bob", 1001, 2)]
             previous_umask = os.umask(0o077)
             try:
                 # Only ownership changes need privilege; exercise real file modes.
-                with patch("main.os.chown") as chown:
+                with patch("main.os.chown"):
                     for _ in range(2):
                         prepare(state, public, owners, 999)
                         for owner in owners:
@@ -256,7 +341,6 @@ class CredentialTest(unittest.TestCase):
                             self.assertEqual(
                                 stat.S_IMODE(publication.stat().st_mode), 0o750
                             )
-                            chown.assert_any_call(publication, 0, owner.gid)
                             for name in ["placeholder", "ca.pem"]:
                                 self.assertEqual(
                                     stat.S_IMODE((publication / name).stat().st_mode),
@@ -271,29 +355,15 @@ class CredentialTest(unittest.TestCase):
             finally:
                 _ = os.umask(previous_umask)
 
-    def test_loading_and_rotation(self) -> None:
+    def test_only_configured_placeholders_are_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _ = (root / "placeholder-alice").write_text(ALICE)
             _ = (root / "placeholder-bob").write_text(BOB)
-            _ = (root / "token-alice").write_text("first_token\n")
-            _ = (root / "token-bob").write_text("other_token")
-            owners = [Owner("alice", 1000), Owner("bob", 1001)]
             self.assertEqual(
-                read_credentials(root, root, owners),
-                {ALICE: "first_token", BOB: "other_token"},
+                read_credentials(root, [Owner("alice", 1000, 1)]),
+                {ALICE: Account("alice", 1)},
             )
-            _ = (root / "token-alice").write_text("second_token")
-            self.assertEqual(
-                read_credentials(root, root, owners)[ALICE], "second_token"
-            )
-            for invalid in ["", "token\nheader", ALICE]:
-                _ = (root / "token-alice").write_text(invalid)
-                with self.assertRaises(ValueError):
-                    _ = read_credentials(root, root, owners)
-            (root / "token-alice").unlink()
-            with self.assertRaises(FileNotFoundError):
-                _ = read_credentials(root, root, owners)
 
 
 if __name__ == "__main__":

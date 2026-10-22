@@ -1,3 +1,8 @@
+import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ProxyAuthorization } from "../auth.ts";
 import type { ChildProcess } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
@@ -37,8 +42,9 @@ export async function serve(
   host = "127.0.0.1",
   settings?: GlobalSettingsStore,
   origin?: string,
+  authorization?: ProxyAuthorization,
 ) {
-  const server = httpServer(sessions, host, assets, settings, origin);
+  const server = httpServer(sessions, host, assets, settings, origin, authorization);
   await new Promise<void>((resolve) => server.listen(0, host, resolve));
   t.after(async () => {
     server.closeAllConnections();
@@ -177,6 +183,50 @@ export async function directoryFixture(t: TestContext, root?: string) {
     },
     get connections() {
       return connections;
+    },
+  };
+}
+
+export async function authorizationFixture(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), "serve-auth-"));
+  const path = join(directory, "alice.sock");
+  const empty = { state: "not-enrolled", user_id: 1, device: null, error: null };
+  let snapshot: unknown = empty;
+  const server = createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    if (request.method === "GET" && request.url === "/status") {
+      response.end(JSON.stringify(snapshot));
+    } else if (request.method === "POST" && request.url === "/login") {
+      snapshot = {
+        ...empty,
+        state: "authorizing",
+        device: {
+          user_code: "ABCD-EFGH",
+          verification_uri: "https://github.com/login/device",
+          expires_at: 1900000900,
+        },
+      };
+      response.writeHead(204).end();
+    } else if (request.method === "POST" && request.url === "/logout") {
+      snapshot = empty;
+      response.writeHead(204).end();
+    } else response.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    await rm(directory, { recursive: true, force: true });
+  });
+  return {
+    authorization: new ProxyAuthorization(path),
+    reply(value: unknown) {
+      snapshot = value;
+    },
+    approve() {
+      snapshot = { ...empty, state: "usable", expires_at: 1900028800 };
     },
   };
 }

@@ -570,7 +570,7 @@ export async function hypermedia(
       const rows = h`${(picker ? list : list.slice(0, 5)).map((item) => sessionRow(item, back))}`;
       html(
         response,
-        h`<main id="main-area"><section id="${picker ? "picker" : "landing"}" class="pane"><div>${!picker && rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main><form id="session-filter-form" method="get" action="/sessions" hidden>${back ? hidden("return", back) : hidden("view", "sessions")}</form>${createForm(catalog, randomUUID(), picker, query, metadata)}`,
+        h`<main id="main-area"><section id="${picker ? "picker" : "landing"}" class="pane"><nav aria-label="Account"><a href="/auth">Auth</a></nav><div>${!picker && rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main><form id="session-filter-form" method="get" action="/sessions" hidden>${back ? hidden("return", back) : hidden("view", "sessions")}</form>${createForm(catalog, randomUUID(), picker, query, metadata)}`,
         200,
         picker ? (back ?? "/sessions") : undefined,
         picker ? "Sessions" : "No session",
@@ -643,7 +643,7 @@ export async function hypermedia(
     response.end(
       JSON.stringify({
         id: "/sessions",
-        scope: "/sessions",
+        scope: "/",
         name: "Pi · Hypermedia",
         short_name: "Pi",
         start_url: "/sessions",
