@@ -11,6 +11,9 @@ import type { AssistantMessage, Models, ModelThinkingLevel } from "@earendil-wor
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import {
   DEFAULT_COMPACTION_POLICY,
+  AgentDoc,
+  ConversationBusy,
+  LiveDoc,
   type AgentState,
   defineDoc,
   type Harness,
@@ -176,7 +179,7 @@ async function listPaths(
   const slash = query.lastIndexOf("/");
   const directory = query.slice(0, slash + 1);
   const prefix = query.slice(slash + 1).toLowerCase();
-  const opened = await env.openDirReader(posix.join(env.cwd, directory), context);
+  const opened = await env.openDirReader(directory || ".", context);
   if (!opened.ok) {
     context.abortSignal?.throwIfAborted();
     if (["not_found", "not_directory"].includes(opened.error.code)) return [];
@@ -190,7 +193,6 @@ async function listPaths(
       context.abortSignal?.throwIfAborted();
       if (!page.ok) throw new SessionError("unavailable", "Cannot list paths in this workspace.");
       for (const file of page.value.entries) {
-        if (directoriesOnly && file.kind !== "directory") continue;
         const name = posix.basename(file.path);
         if (
           !name.toLowerCase().startsWith(prefix) ||
@@ -198,7 +200,17 @@ async function listPaths(
           hasControlCharacters(name)
         )
           continue;
-        paths.push(directory + name + (file.kind === "directory" ? "/" : ""));
+        let isDirectory = file.kind === "directory";
+        if (directoriesOnly && file.kind === "symlink") {
+          const canonical = await env.canonicalPath(directory + name, context);
+          if (canonical.ok) {
+            const info = await env.fileInfo(canonical.value, context);
+            isDirectory = info.ok && info.value.kind === "directory";
+          }
+          context.abortSignal?.throwIfAborted();
+        }
+        if (directoriesOnly && !isDirectory) continue;
+        paths.push(directory + name + (isDirectory ? "/" : ""));
       }
       if (page.value.done) break;
     }
@@ -285,7 +297,7 @@ export class Sessions {
     context.abortSignal?.throwIfAborted();
     const env = await this.options.directoryEnv?.({ ...binding, cwd: root }, context);
     if (!env) throw new SessionError("unavailable", "Directory browsing is unavailable.");
-    return listPaths(env, query, true, context);
+    return (await listPaths(env, `./${query}`, true, context)).map((path) => path.slice(2));
   }
 
   resolveThinking(ref: ModelRef, requested?: ModelThinkingLevel): ModelThinkingLevel {
@@ -465,7 +477,53 @@ export async function completePaths(
   )
     throw new SessionError("invalid", "Expected a workspace-relative path.");
   const env = await environment(session, conversation, context);
-  return listPaths(env, query, false, context);
+  return (await listPaths(env, `./${query}`, false, context)).map((path) => path.slice(2));
+}
+
+/** Change only this conversation; paths are literal, not shell expressions. */
+export async function changeDirectory(
+  session: Session,
+  argument: string,
+  conversation = session.root,
+  context = BACKGROUND_CONTEXT,
+): Promise<void> {
+  if (argument.length > 4096 || hasControlCharacters(argument))
+    throw new SessionError("invalid", "Invalid directory.");
+  const before = await conversation.agent(context);
+  const binding = await session.harness.snapshot(Environment, conversation.id, context);
+  const env = await environment(session, conversation, context);
+  const canonical = await env.canonicalPath(argument.trim() || "~", context);
+  context.abortSignal?.throwIfAborted();
+  if (!canonical.ok) throw new SessionError("invalid", "Directory is unavailable.");
+  const info = await env.fileInfo(canonical.value, context);
+  context.abortSignal?.throwIfAborted();
+  if (!info.ok || info.value.kind !== "directory")
+    throw new SessionError("invalid", "Expected an existing directory.");
+  await conversation.commit(async (tx) => {
+    if ((await tx.doc(LiveDoc, conversation.id)).run !== undefined)
+      throw new ConversationBusy(conversation.id);
+    const current = await tx.doc(AgentDoc, conversation.id);
+    const selected = await tx.doc(Environment, conversation.id);
+    if (
+      current.cwd !== before.cwd ||
+      selected.provider !== binding?.provider ||
+      selected.target !== binding?.target
+    )
+      throw new SessionError("conflict", "Execution environment changed; retry /cd.");
+    await configure(tx, conversation.id, { cwd: canonical.value });
+  }, context);
+}
+
+export async function completeWorkingDirectories(
+  session: Session,
+  query: string,
+  conversation = session.root,
+  context = BACKGROUND_CONTEXT,
+): Promise<string[]> {
+  if (query.length > 4096 || hasControlCharacters(query))
+    throw new SessionError("invalid", "Invalid directory.");
+  const env = await environment(session, conversation, context);
+  return listPaths(env, query, true, context);
 }
 
 export async function repository(

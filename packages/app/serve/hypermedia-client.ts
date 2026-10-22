@@ -604,7 +604,7 @@ document.addEventListener("input", (event) => {
           if (revision === completionRevision) closeCompletions();
         });
     },
-    token.kind === "path" ? 120 : 0,
+    token.kind === "command" ? 0 : 120,
   );
 });
 document.addEventListener("pointerdown", (event) => {

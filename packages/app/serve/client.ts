@@ -1634,10 +1634,10 @@ const completions = installCompletions(
   prompt,
   element("completions", HTMLDivElement),
   () => `${generation}:${active ?? "none"}:${conversation ?? "main"}`,
-  (query) => {
+  (query, kind) => {
     if (!active || !connected) return Promise.reject(new Error("No connected session."));
     return api<string[]>(
-      `${endpoint("completions")}${conversation === undefined ? "?" : "&"}query=${encodeURIComponent(query)}`,
+      `${endpoint("completions")}${conversation === undefined ? "?" : "&"}kind=${kind}&query=${encodeURIComponent(query)}`,
     );
   },
   () => latest?.session.reviewOf !== undefined,
@@ -1651,7 +1651,7 @@ async function runCommand(text: string): Promise<boolean> {
   if (name === "endreview" && latest?.session.reviewOf === undefined)
     throw new Error("/endreview is available only in a review conversation.");
   if (images.length) throw new Error("Remove attached images before running a command.");
-  if (argument && name !== "compact" && name !== "reset" && name !== "review")
+  if (argument && name !== "compact" && name !== "reset" && name !== "review" && name !== "cd")
     throw new Error(`/${name} does not accept arguments.`);
   if (name === "sessions") {
     return navigate("sessions");
@@ -1660,7 +1660,11 @@ async function runCommand(text: string): Promise<boolean> {
     return newSession(text);
   }
   if (!active || !connected) throw new Error("Connect to a session first.");
-  if (name === "review" || name === "endreview") {
+  if (name === "cd") {
+    const current = generation;
+    if (!(await flushSettings()) || current !== generation) return false;
+    await api(endpoint("submit"), { type: "input", content: text });
+  } else if (name === "review" || name === "endreview") {
     const id = active;
     const branch = conversation;
     const current = generation;

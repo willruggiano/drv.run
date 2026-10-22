@@ -1,3 +1,4 @@
+import { browserFixture } from "./browser-testing.ts";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,6 +7,8 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { chromium } from "playwright";
 import { buildAssets } from "../build.ts";
+import { fixture, readHistory, waitFor } from "./sessions-testing.ts";
+import { conversationURL } from "../hypermedia.ts";
 import { chromiumExecutable, directoryFixture, serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -86,4 +89,55 @@ await test("mobile browser exposes remote directory suggestions for new sessions
   assert.equal(await page.locator("#new-directory-field").isVisible(), false);
   assert.deepEqual(errors, []);
   assert.equal(f.faux.state.callCount, 0);
+});
+
+await test("cd completes directories and changes cwd in both web interfaces without model input", async (t) => {
+  for (const html of [false, true])
+    await t.test(html ? "HTML" : "original", async (t) => {
+      const f = await fixture(t);
+      const session = await f.create();
+      const nested = join(f.workspace, "space name");
+      await mkdir(nested);
+      await writeFile(join(f.workspace, "spurious-file"), "file");
+      const { page, base, errors } = await browserFixture(t, f.sessions);
+      await page.goto(base + (html ? conversationURL(session) : `/?session=${session.id}`));
+      await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+      await page.fill("#prompt", "/cd");
+      await page.locator("#completions [role=option]").waitFor();
+      await page.press("#prompt", "Tab");
+      assert.equal(await page.inputValue("#prompt"), "/cd ");
+      await page.fill("#prompt", "/cd sp");
+      const option = page.getByRole("option", { name: "space name/", exact: true });
+      await option.waitFor();
+      assert.equal(await page.locator("#completions [role=option]").count(), 1);
+      await option.tap();
+      assert.equal(await page.inputValue("#prompt"), "/cd space name/");
+      await page.press("#prompt", "Control+Enter");
+      await waitFor(async () => (await session.root.agent(context)).cwd === nested);
+      await page.waitForFunction(
+        () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+      );
+      assert.deepEqual(await readHistory(session.root), []);
+      await page.reload();
+      await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+      await page.waitForFunction(
+        (path) => document.querySelector("#footer-instance")?.textContent === `local · ${path}`,
+        nested,
+      );
+      await page.fill("#prompt", "/cd ../missing");
+      await page.press("#prompt", "Control+Enter");
+      if (html)
+        await page.waitForFunction(() => !!document.querySelector("#request-error")?.textContent);
+      else await page.locator("#notice:not([hidden])").waitFor();
+      assert.equal(await page.inputValue("#prompt"), "/cd ../missing");
+      assert.equal((await session.root.agent(context)).cwd, nested);
+      await page.fill("#prompt", "/cd ..");
+      await page.press("#prompt", "Control+Enter");
+      await waitFor(async () => (await session.root.agent(context)).cwd === f.workspace);
+      await page.waitForFunction(
+        () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+      );
+      assert.equal(f.faux.state.callCount, 0);
+      assert.deepEqual(errors, []);
+    });
 });

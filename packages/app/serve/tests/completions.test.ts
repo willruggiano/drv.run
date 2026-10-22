@@ -3,7 +3,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fixture } from "./sessions-testing.ts";
-import { commandCompletions, completionToken, pathCompletion } from "../completions.ts";
+import {
+  commandCompletions,
+  completionToken,
+  directoryCompletion,
+  pathCompletion,
+} from "../completions.ts";
 import { serve } from "./testing.ts";
 
 await test("completion tokens respect boundaries, quoting and cursor position", () => {
@@ -88,4 +93,28 @@ await test("HTTP path completion uses the session workspace and validates paths"
     (await fetch(`${unavailableBase}/api/sessions/${session.id}/completions`)).status,
     409,
   );
+});
+
+await test("cd completion covers the directory argument, including spaces and mid-path cursors", () => {
+  assert.deepEqual(
+    commandCompletions("cd").map((item) => item.value),
+    ["/cd "],
+  );
+  for (const path of ["", "../", "/workspace/drv.run", "~/", "space name/", 'a"b/']) {
+    const text = `/cd ${path}`;
+    assert.deepEqual(completionToken(text, text.length), {
+      kind: "directory",
+      query: path,
+      start: 4,
+      end: text.length,
+    });
+    assert.deepEqual(directoryCompletion(path), { label: path, value: path });
+  }
+  assert.deepEqual(completionToken("/cd directory/nested", 8), {
+    kind: "directory",
+    query: "dire",
+    start: 4,
+    end: 20,
+  });
+  assert.equal(completionToken("explain /cd ../", 15), undefined);
 });

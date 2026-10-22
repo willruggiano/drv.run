@@ -454,7 +454,10 @@ await test("path completion uses remote leases, bounds scanning and closes faile
   let closes = 0;
   const env = new NodeExecutionEnv({ cwd: binding.cwd });
   env.openDirReader = async (path) => {
-    assert.equal(path, "/remote/work/src/");
+    assert.deepEqual(await env.absolutePath(path, context), {
+      ok: true,
+      value: "/remote/work/src",
+    });
     return {
       ok: true,
       value: {

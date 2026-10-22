@@ -6,7 +6,7 @@ import type { EntryId, SubmissionId, Conversation } from "@earendil-works/pi-dur
 import type { ContextInspection } from "./inspection.ts";
 import type { GlobalSettingsStore } from "./server.ts";
 import { settingFields } from "./settings.ts";
-import { commands, pathCompletion } from "./completions.ts";
+import { commands, directoryCompletion, pathCompletion } from "./completions.ts";
 import {
   hidden,
   icon,
@@ -52,6 +52,8 @@ import {
   rename,
   selectEnvironment,
   completePaths,
+  completeWorkingDirectories,
+  changeDirectory,
   inspectContext,
   contextStatus,
   Environment,
@@ -716,7 +718,7 @@ export async function hypermedia(
     return;
   }
   const match =
-    /^\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|fork|compact|reset|cancel|context|export|completions))?)?$/.exec(
+    /^\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|fork|cd|compact|reset|cancel|context|export|completions))?)?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -809,7 +811,11 @@ export async function hypermedia(
               label: `/${item.name} · ${item.description}`,
               value: `/${item.name} `,
             }))
-        : (await completePaths(session, query, conversation, context)).map(pathCompletion);
+        : url.searchParams.get("kind") === "directory"
+          ? (await completeWorkingDirectories(session, query, conversation, context)).map(
+              directoryCompletion,
+            )
+          : (await completePaths(session, query, conversation, context)).map(pathCompletion);
     page(
       h`<div id="completions" role="listbox">${h`${completions.map((item) => h`<button type="button" role="option" data-completion="${item.value}">${item.label}</button>`)}`}</div>`,
     );
@@ -953,6 +959,12 @@ export async function hypermedia(
     redirect(request, response, conversationURL(session, fork.id));
     return;
   }
+  if (operation === "cd") {
+    await changeDirectory(session, field(data, "argument", 4096), conversation, context);
+    response.setHeader("HX-Push-Url", "false");
+    saved(request, response, path);
+    return;
+  }
   if (operation === "compact" || operation === "reset") {
     const argument = optional(data, "argument");
     const requestId = data.has("requestId") ? field(data, "requestId", 200) : "";
@@ -1063,7 +1075,7 @@ async function history(conversation: Conversation, context: Context) {
 }
 function navigation(path: string): SafeHtml {
   const menu = h`<nav id="conversation-menu" class="conversation-nav" popover aria-label="Conversation actions">${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/context`, "Context")}${link(`${path}/history`, "History")}${link(`${path}/compact`, "Compact")}${link(`${path}/reset`, "Reset")}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button><button type="button" popovertarget="review-menu">Review actions</button><button type="button" popovertarget="usage-menu">Usage</button><a href="/" hx-boost="false">Original UI</a></nav>`;
-  const commands = h`<div hidden>${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
+  const commands = h`<div hidden>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
   const search = h`<div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
   return h`${menu}${commands}${search}`;
 }

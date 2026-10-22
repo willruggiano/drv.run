@@ -524,6 +524,15 @@ export function httpServer(
               if (data.type === "input" && typeof data.content === "string") {
                 const command = data.content.trim();
                 const name = command.split(/\s/, 1)[0];
+                if (name === "/cd") {
+                  await runtime.changeDirectory(
+                    session,
+                    command.slice(name.length).trim(),
+                    conversation,
+                    context,
+                  );
+                  return {};
+                }
                 if (name === "/review" || command === "/endreview") {
                   const { id } =
                     name === "/review"
@@ -645,12 +654,11 @@ export function httpServer(
             return json(
               response,
               200,
-              await runtime.completePaths(
-                session,
-                url.searchParams.get("query") ?? "",
-                conversation,
-                context,
-              ),
+              await (
+                url.searchParams.get("kind") === "directory"
+                  ? runtime.completeWorkingDirectories
+                  : runtime.completePaths
+              )(session, url.searchParams.get("query") ?? "", conversation, context),
             );
           if (match[2] === "repository")
             return json(response, 200, await runtime.repository(session, conversation, context));

@@ -3,6 +3,7 @@ export const commands = [
   { name: "new", description: "Create a session with the selected target/model" },
   { name: "settings", description: "Session settings" },
   { name: "model", description: "Choose a model" },
+  { name: "cd", description: "Change working directory · defaults to home" },
   { name: "fork", description: "Open branches" },
   { name: "review", description: "Review in a fresh conversation · optional scope" },
   { name: "endreview", description: "End the review and return to the original conversation" },
@@ -15,7 +16,7 @@ export const commands = [
 ] as const;
 
 export type CompletionToken = {
-  kind: "path" | "command";
+  kind: "path" | "directory" | "command";
   query: string;
   start: number;
   end: number;
@@ -28,6 +29,14 @@ export function completionToken(text: string, caret: number): CompletionToken | 
     const rest = text.slice(caret).match(/^[a-z-]*/i)![0];
     return { kind: "command", query: before.slice(1), start: 0, end: caret + rest.length };
   }
+  const directory = /^\/cd[ \t]+(.*)$/.exec(before);
+  if (directory)
+    return {
+      kind: "directory",
+      query: directory[1],
+      start: caret - directory[1].length,
+      end: text.length,
+    };
   const match = /(?:^|\s)@("(?:\\.|[^"\\])*|[^\s"@]*)$/.exec(before);
   if (!match) return;
   const raw = match[1];
@@ -54,6 +63,10 @@ export function pathCompletion(path: string): Completion {
   };
 }
 
+export function directoryCompletion(path: string): Completion {
+  return { label: path, value: path };
+}
+
 export function commandCompletions(query: string, isReview = false): Completion[] {
   return commands
     .filter((command) => command.name !== "endreview" || isReview)
@@ -70,7 +83,7 @@ export function installCompletions(
   input: HTMLTextAreaElement,
   popup: HTMLElement,
   scope: () => string | undefined,
-  loadPaths: (query: string) => Promise<string[]>,
+  loadPaths: (query: string, kind: "path" | "directory") => Promise<string[]>,
   isReview: () => boolean = () => false,
 ): { close(): void } {
   let revision = 0;
@@ -169,7 +182,7 @@ export function installCompletions(
       render();
       return;
     }
-    const query = token.query;
+    const { query, kind } = token;
     const current = revision;
     const value = input.value;
     const caret = input.selectionStart;
@@ -181,10 +194,10 @@ export function installCompletions(
       input.selectionEnd === caret &&
       document.activeElement === input;
     timer = setTimeout(() => {
-      void loadPaths(query)
+      void loadPaths(query, kind)
         .then((paths) => {
           if (!valid()) return;
-          items = paths.map(pathCompletion);
+          items = paths.map(kind === "directory" ? directoryCompletion : pathCompletion);
           render();
         })
         .catch(() => {
