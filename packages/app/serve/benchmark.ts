@@ -31,6 +31,10 @@ const usage = `Usage: node packages/app/serve/benchmark.ts [options]
                  Measure real page/SSE delivery (default: original renderer only)
   --runs N       Fresh browser launches (default 3, maximum 100)
   --turns N      History turns, each with a user, assistant and tool result (default 200)
+  --entries N    Exact history size (page mode only; mutually exclusive with --turns)
+                 Remainder entries form a final text-only turn
+  --memory       Separate fresh-browser runs with forced-GC heap and DOM measurements
+                 Page mode only; memory-run timings are excluded from timing samples
   --cpu-rate N   Chromium CPU slowdown factor, >= 1 (default 1)
   --profile      Extra fresh-browser run with CPU profiles and browser traces
   --profile-dir DIR
@@ -54,7 +58,9 @@ export function benchmarkOptions(args: string[]) {
     options: {
       frontend: { type: "string" },
       runs: { type: "string", default: "3" },
-      turns: { type: "string", default: "200" },
+      turns: { type: "string" },
+      entries: { type: "string" },
+      memory: { type: "boolean", default: false },
       "cpu-rate": { type: "string", default: "1" },
       profile: { type: "boolean", default: false },
       "profile-dir": { type: "string" },
@@ -80,10 +86,24 @@ export function benchmarkOptions(args: string[]) {
     );
     return result;
   };
+  assert(
+    values.entries === undefined || values.turns === undefined,
+    "Use --entries or --turns, not both",
+  );
+  assert(
+    frontend !== undefined || (values.entries === undefined && !values.memory),
+    "--entries and --memory require --frontend",
+  );
+  const entries =
+    values.entries === undefined
+      ? number(values.turns ?? "200", "--turns", 10_000) * 3
+      : number(values.entries, "--entries", 30_000);
   return {
     frontend,
+    entries,
+    memory: values.memory,
     runs: number(values.runs, "--runs", 100),
-    turns: number(values.turns, "--turns", 10_000),
+    turns: Math.ceil(entries / 3),
     cpuRate: number(values["cpu-rate"], "--cpu-rate", 100, false),
     profile: values.profile,
     profileDir: resolve(values["profile-dir"] ?? "."),
@@ -102,7 +122,11 @@ const timestamp = 1_700_000_000_000;
 const streamUpdates = 40;
 const transitions = 10;
 
-export function benchmarkFixture(turns: number): RenderState {
+export function benchmarkFixture(turns: number, entryCount = turns * 3): RenderState {
+  assert(Number.isSafeInteger(turns) && turns > 0);
+  assert(
+    Number.isSafeInteger(entryCount) && entryCount > (turns - 1) * 3 && entryCount <= turns * 3,
+  );
   const entries: EntryRecord[] = [];
   for (let i = 0; i < turns; i++) {
     entries.push(
@@ -146,6 +170,19 @@ export function benchmarkFixture(turns: number): RenderState {
         ],
       },
     );
+  }
+  entries.length = entryCount;
+  // Preserve all complete tool pairs. A final partial turn contains only text.
+  if (entryCount % 3 === 2) {
+    const last = entries.length - 1;
+    entries[last] = {
+      ...entries[last],
+      model: [
+        fauxAssistantMessage("Checking the module and its test results.", {
+          timestamp: timestamp + 1,
+        }),
+      ],
+    };
   }
   return {
     session: {
@@ -254,6 +291,20 @@ async function profilePhase<T>(
   }
 }
 
+// These diagnostics run in separate browsers, never during timing samples.
+// CDP reports isolate-wide heaps, not renderer/browser RSS or server memory.
+async function measureMemory(cdp: CDPSession, page: Page) {
+  await cdp.send("HeapProfiler.collectGarbage");
+  return {
+    ...(await cdp.send("Runtime.getHeapUsage")),
+    ...(await cdp.send("Memory.getDOMCounters")),
+    transcriptElements: await page.locator("#transcript *").count(),
+  };
+}
+type MemorySample = Awaited<ReturnType<typeof measureMemory>> & {
+  phase: "empty" | "initial" | "settled";
+};
+
 // Use the actual HTTP handlers and browser event stream. Durable commits supply
 // deterministic observations without starting a provider or changing its semantics.
 async function pageWorkload(
@@ -262,14 +313,14 @@ async function pageWorkload(
   sessions: Sessions,
   base: string,
   frontend: "original" | "hypermedia",
-  turns: number,
+  entries: number,
   bytesWritten: () => number,
   stage: <T>(phase: ProfilePhase, action: () => Promise<T>) => Promise<T>,
 ) {
   const session = await sessions.create(randomUUID());
   const context = BACKGROUND_CONTEXT;
   await session.root.commit(async (tx) => {
-    for (const { kind, model } of benchmarkFixture(turns).view.entries)
+    for (const { kind, model } of benchmarkFixture(Math.ceil(entries / 3), entries).view.entries)
       await tx.appendEntry(session.root.id, { kind, model });
   }, context);
   await page.exposeFunction("__piBenchmarkCommit", (value: LiveState) =>
@@ -281,7 +332,7 @@ async function pageWorkload(
     }, context),
   );
   await page.addInitScript(
-    ({ frontend, turns }) => {
+    ({ frontend, entries }) => {
       window.__piBenchmarkObserve = (expected) =>
         new Promise<number>((resolve, reject) => {
           const start = expected.busy === undefined ? 0 : performance.now();
@@ -291,8 +342,8 @@ async function pageWorkload(
             if (expected.busy === undefined) {
               if (
                 transcript.querySelectorAll("article").length !==
-                  turns * (frontend === "original" ? 2 : 3) ||
-                transcript.querySelectorAll(".tool-call").length !== turns
+                  (frontend === "original" ? entries - Math.floor(entries / 3) : entries) ||
+                transcript.querySelectorAll(".tool-call").length !== Math.floor(entries / 3)
               )
                 return;
             } else {
@@ -352,7 +403,7 @@ async function pageWorkload(
         { once: true },
       );
     },
-    { frontend, turns },
+    { frontend, entries },
   );
   const firstFrame = Promise.withResolvers<void>();
   let streamRequest: string | undefined;
@@ -544,9 +595,25 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       await mkdir(options.profileDir, { recursive: true });
       profile.directory = await mkdtemp(join(options.profileDir, "serve-profile-"));
     }
+    const memory = options.memory
+      ? {
+          separateRuns: true,
+          timingsIncludedInRuns: false,
+          forcedGC: true,
+          byteFields: ["usedSize", "totalSize", "embedderHeapUsedSize", "backingStorageSize"],
+          scope:
+            "CDP target isolate heaps and DOM counters; excludes process RSS and server memory",
+          runs: [] as { run: number; samples: MemorySample[] }[],
+        }
+      : null;
+    const memoryStart = options.runs + (profile ? 1 : 0);
     let browserVersion = "";
-    for (let run = 1; run <= options.runs + (profile ? 1 : 0); run++) {
-      const profiling = run > options.runs;
+    for (let run = 1; run <= memoryStart + (memory ? options.runs : 0); run++) {
+      const profiling = !!profile && run === options.runs + 1;
+      const memoryRun =
+        memory && run > memoryStart
+          ? { run: run - memoryStart, samples: [] as MemorySample[] }
+          : undefined;
       const browser = await chromium.launch({ executablePath: options.executablePath });
       try {
         browserVersion = browser.version();
@@ -567,8 +634,15 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
           await cdp.send("Profiler.enable");
           await cdp.send("Profiler.setSamplingInterval", { interval: samplingIntervalUs });
         }
+        if (memoryRun)
+          memoryRun.samples.push({ phase: "empty", ...(await measureMemory(cdp, page)) });
         const stage = async <T>(phase: ProfilePhase, action: () => Promise<T>): Promise<T> => {
-          if (!profiling || !profile) return action();
+          if (!profiling || !profile) {
+            const result = await action();
+            if (memoryRun && phase === "initial")
+              memoryRun.samples.push({ phase: "initial", ...(await measureMemory(cdp, page)) });
+            return result;
+          }
           const result = await profilePhase(cdp, page, profile.directory, phase, action);
           profile.artifacts.push(result.artifact);
           return result.value;
@@ -580,12 +654,15 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
             sessions,
             base,
             options.frontend,
-            options.turns,
+            options.entries,
             bytesWritten,
             stage,
           );
           assert.deepEqual(errors, []);
-          if (!profiling) runs.push({ run, ...sample });
+          if (memoryRun && memory) {
+            memoryRun.samples.push({ phase: "settled", ...(await measureMemory(cdp, page)) });
+            memory.runs.push(memoryRun);
+          } else if (!profiling) runs.push({ run, ...sample });
           continue;
         }
         await page.goto(base);
@@ -727,7 +804,9 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       workload: {
         version: 1,
         turns: options.turns,
-        entries: options.turns * 3,
+        entries: options.entries,
+        completeToolTurns: Math.floor(options.entries / 3),
+        trailingEntries: options.entries % 3,
         toolOutputLines: 100,
         metadataTests: 20,
         streamUpdates,
@@ -735,6 +814,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       },
       runs,
       profile,
+      memory,
     };
   } finally {
     try {

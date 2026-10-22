@@ -471,6 +471,12 @@ await test("renderer benchmark validates options and builds deterministic paired
   assert.equal(options.runs, 3);
   assert.equal(options.turns, 200);
   assert.equal(options.cpuRate, 1);
+  assert.equal(options.entries, 600);
+  assert.equal(options.memory, false);
+  const exact = benchmarkOptions(["--frontend", "hypermedia", "--entries", "2000", "--memory"]);
+  assert.equal(exact.entries, 2000);
+  assert.equal(exact.turns, 667);
+  assert.equal(exact.memory, true);
   assert.equal(options.profile, false);
   assert.equal(benchmarkOptions(["--profile"]).profile, true);
   assert.equal(
@@ -487,6 +493,13 @@ await test("renderer benchmark validates options and builds deterministic paired
     ["--turns", "-1"],
     ["--turns", "10001"],
     ["--turns", "NaN"],
+    ["--memory"],
+    ["--entries", "2000"],
+    ["--frontend", "hypermedia", "--entries", "0"],
+    ["--frontend", "hypermedia", "--entries", "30001"],
+    ["--frontend", "hypermedia", "--entries", "1.5"],
+    ["--frontend", "hypermedia", "--entries", "NaN"],
+    ["--frontend", "hypermedia", "--entries", "2000", "--turns", "200"],
     ["--cpu-rate", "0.5"],
     ["--cpu-rate", "Infinity"],
     ["--profile-dir", "profiles"],
@@ -511,6 +524,34 @@ await test("renderer benchmark validates options and builds deterministic paired
     assert(call);
     assert.equal(result.toolCallId, call.id);
   }
+});
+
+await test("exact-size benchmark history retains complete tool pairs and text-only remainder entries", () => {
+  for (const count of [1, 2, 3, 4, 5, 6, 2000]) {
+    const { view } = benchmarkFixture(Math.ceil(count / 3), count);
+    assert.equal(view.entries.length, count);
+    const messages = view.entries.flatMap((entry) => entry.model ?? []);
+    const calls = messages.flatMap((message) =>
+      message.role === "assistant"
+        ? message.content.filter((part) => part.type === "toolCall")
+        : [],
+    );
+    const results = messages.filter((message) => message.role === "toolResult");
+    assert.equal(calls.length, Math.floor(count / 3));
+    assert.deepEqual(
+      results.map((result) => result.toolCallId),
+      calls.map((call) => call.id),
+    );
+    if (count % 3 === 2) {
+      const last = messages.at(-1);
+      assert(last?.role === "assistant");
+      assert.equal(last.stopReason, "stop");
+      assert(last.content.every((part) => part.type === "text"));
+    }
+  }
+  assert.throws(() => benchmarkFixture(2, 3));
+  assert.throws(() => benchmarkFixture(2, 7));
+  assert.throws(() => benchmarkFixture(2, 5.5));
 });
 
 await test("conversation controls validate input and keep forks scoped to their session", async (t) => {

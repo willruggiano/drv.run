@@ -146,6 +146,7 @@ await test("mobile browser renderer benchmark returns complete JSON-compatible s
   assert.equal(report.source.clientSha256.length, 64);
   assert.equal(report.runs.length, 2);
   assert.equal(report.profile, null);
+  assert.equal(report.memory, null);
   for (const run of report.runs) {
     assert(run.initialDomElements > 0);
     assert.equal(run.streamingMs.length, report.workload.streamUpdates);
@@ -180,6 +181,47 @@ await test("page benchmarks drive both production streams and count HTTP respons
       ...run.transitionsBytes!,
     ])
       assert(bytes !== undefined && Number.isSafeInteger(bytes) && bytes > 0);
+    assert.deepEqual(JSON.parse(JSON.stringify(report)), report);
+  }
+});
+
+await test("page benchmark samples exact history sizes and memory in separate fresh browsers", async () => {
+  for (const frontend of ["original", "hypermedia"]) {
+    const report = await benchmark(
+      benchmarkOptions(["--frontend", frontend, "--entries", "5", "--runs", "2", "--memory"]),
+    );
+    assert.equal(report.workload.entries, 5);
+    assert.equal(report.workload.completeToolTurns, 1);
+    assert.equal(report.workload.trailingEntries, 2);
+    assert.equal(report.runs.length, 2);
+    assert(report.memory);
+    assert.equal(report.memory.separateRuns, true);
+    assert.equal(report.memory.timingsIncludedInRuns, false);
+    assert.equal(report.memory.forcedGC, true);
+    assert.equal(report.memory.runs.length, 2);
+    for (const run of report.memory.runs) {
+      assert.deepEqual(
+        run.samples.map((sample) => sample.phase),
+        ["empty", "initial", "settled"],
+      );
+      assert.equal(run.samples[0].transcriptElements, 0);
+      for (const sample of run.samples) {
+        assert(sample.usedSize > 0 && sample.totalSize >= sample.usedSize);
+        for (const value of [
+          sample.embedderHeapUsedSize,
+          sample.backingStorageSize,
+          sample.documents,
+          sample.nodes,
+          sample.jsEventListeners,
+          sample.transcriptElements,
+        ])
+          assert(Number.isFinite(value) && value >= 0);
+      }
+      for (const sample of run.samples.slice(1)) {
+        assert.equal(sample.transcriptElements, report.runs[0].initialDomElements);
+        assert(sample.nodes >= sample.transcriptElements);
+      }
+    }
     assert.deepEqual(JSON.parse(JSON.stringify(report)), report);
   }
 });
