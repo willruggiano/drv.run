@@ -64,7 +64,7 @@
         path = deploy-rs.lib.aarch64-linux.activate.nixos self.nixosConfigurations.rock5b;
         user = "root";
       };
-      remoteBuild = true;
+      # remoteBuild = true;
       sshOpts = [
         "-F"
         "/dev/null"
