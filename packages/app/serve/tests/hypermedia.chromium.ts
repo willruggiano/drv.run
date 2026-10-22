@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { Htmx } from "htmx.org";
 import type { ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { httpServer } from "../server.ts";
@@ -66,6 +67,206 @@ await test("HTML templates escape text and attributes, and compose only branded 
   );
   assert.equal(await page.locator("output").textContent(), "0falsetrue");
   assert(Object.isFrozen(text));
+});
+
+declare global {
+  interface Window {
+    __projections: {
+      head: string;
+      onlyPartials: boolean;
+      parts: { id: string; swap: string | null; entries: number }[];
+    }[];
+  }
+}
+
+await test("SSE heads avoid initial history, append keyed entries, and morph reset layouts without replacing nodes", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const first = await session.root.commit(
+    (tx) =>
+      tx.appendEntry(session.root.id, {
+        kind: "message",
+        model: [fauxAssistantMessage("Immutable history")],
+      }),
+    context,
+  );
+  const records = await readHistory(session.root);
+  const b = await browserFixture(t, f.sessions);
+  const { page } = b;
+  await page.addInitScript(() => {
+    window.__projections = [];
+    document.addEventListener("htmx:sse:after:message", (event) => {
+      if (!(event instanceof CustomEvent)) throw new Error("Expected SSE event");
+      const { message } = event.detail as { message: { data: string; id: string } };
+      const body = new DOMParser().parseFromString(message.data, "text/html").body;
+      window.__projections.push({
+        head: message.id,
+        onlyPartials: Array.from(body.children).every((node) => node.tagName === "HX-PARTIAL"),
+        parts: Array.from(body.children, (node) => ({
+          id: node.id,
+          swap: node.getAttribute("hx-swap"),
+          entries: node.querySelectorAll("article[data-entry]").length,
+        })),
+      });
+    });
+  });
+  await page.goto(b.base + conversationURL(session));
+  await page.waitForFunction(() => window.__projections.length > 0);
+  const initial = await page.evaluate(() => window.__projections[0]);
+  assert.equal(initial.head, `${first.id}.0`);
+  assert(initial.onlyPartials);
+  assert(
+    initial.parts.every(
+      (part) => part.id !== "transcript" && part.entries === 0 && part.swap === "outerMorph",
+    ),
+  );
+  const node = await page.locator(`#entry-${first.id}`).elementHandle();
+  assert(node);
+  const setLive = (text: string) =>
+    session.root.commit(async (tx) => {
+      const live = await tx.doc(LiveDoc, session.root.id);
+      live.generation = { attempt: 1, message: partial(text) };
+    }, context);
+  await setLive("Selection survives");
+  await page.locator("#live p").waitFor();
+  const selected = await page.evaluateHandle(() => {
+    const text = document.querySelector("#live p")!.firstChild!;
+    getSelection()!.setBaseAndExtent(text, 0, text, 9);
+    return text;
+  });
+  await setLive("Selection survives an appended token");
+  await page.waitForFunction(
+    () => document.querySelector("#live p")?.textContent === "Selection survives an appended token",
+  );
+  assert.deepEqual(
+    await page.evaluate(
+      (text) => ({
+        node: text === document.querySelector("#live p")!.firstChild,
+        anchor: getSelection()!.anchorNode === text,
+        focus: getSelection()!.focusNode === text,
+        start: getSelection()!.anchorOffset,
+        end: getSelection()!.focusOffset,
+        text: getSelection()!.toString(),
+      }),
+      selected,
+    ),
+    { node: true, anchor: true, focus: true, start: 0, end: 9, text: "Selection" },
+  );
+  assert.deepEqual(await readHistory(session.root), records);
+  assert(
+    (await page.evaluate(() => window.__projections)).every(
+      (frame) =>
+        frame.onlyPartials &&
+        frame.parts.every((part) => part.id !== "transcript" && part.entries === 0),
+    ),
+  );
+  await selected.dispose();
+  const appended = await session.root.commit(
+    (tx) =>
+      tx.appendEntry(session.root.id, {
+        kind: "message",
+        model: [fauxAssistantMessage("Appended")],
+      }),
+    context,
+  );
+  await page.waitForFunction(
+    (head) => window.__projections.at(-1)?.head === head,
+    `${appended.id}.0`,
+  );
+  const append = await page.evaluate(() =>
+    window.__projections.at(-1)!.parts.find((part) => part.id === "transcript"),
+  );
+  assert.deepEqual(append, { id: "transcript", swap: "beforeend", entries: 1 });
+  const reset = await session.root.commit(
+    (tx) =>
+      tx.appendEntry(session.root.id, {
+        kind: "pi.reset",
+        head: "self",
+      }),
+    context,
+  );
+  await page.waitForFunction(
+    (head) => window.__projections.at(-1)?.head === head,
+    `${reset.id}.${reset.id}`,
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__projections.at(-1)!.parts.find((part) => part.id === "transcript"),
+    ),
+    { id: "transcript", swap: "innerMorph", entries: 3 },
+  );
+  assert.equal(await node.evaluate((node) => node === document.getElementById(node.id)), true);
+  assert.equal(await node.evaluate((node) => !!node.closest(".context-history")), true);
+  assert.deepEqual((await readHistory(session.root)).slice(0, records.length), records);
+  assert.deepEqual(b.errors, []);
+  await node.dispose();
+});
+
+await test("morph preserves existing disclosure but applies server defaults to new failed details", async (t) => {
+  const f = await fixture(t);
+  const b = await browserFixture(t, f.sessions);
+  await b.page.goto(`${b.base}/sessions`);
+  await b.page.evaluate(() => {
+    const host = document.createElement("section");
+    host.id = "disclosure-test";
+    document.body.append(host);
+  });
+  const frontend = await b.page.evaluateHandle<Htmx>("htmx");
+  const swap = (content: SafeHtml) =>
+    b.page.evaluate(
+      async ({ frontend, text }) => {
+        await frontend.swap({
+          target: document.getElementById("disclosure-test")!,
+          swap: "innerMorph",
+          text,
+        });
+      },
+      { frontend, text: renderHTML(content) },
+    );
+  await swap(
+    html`<details id="existing">
+      <summary>Tool</summary>
+      <span id="payload">Output</span>
+    </details>`,
+  );
+  await b.page.locator("#existing > summary").click();
+  await swap(
+    html`<details id="existing">
+      <summary>Tool updated</summary>
+      <span id="payload">Output</span>
+    </details>`,
+  );
+  assert.equal(
+    await b.page.locator("#existing").evaluate((node: HTMLDetailsElement) => node.open),
+    true,
+  );
+  await b.page.locator("#existing > summary").click();
+  await swap(
+    html`<details id="existing" open>
+      <summary>Failed</summary>
+      <span id="payload">Output</span>
+    </details>`,
+  );
+  assert.equal(
+    await b.page.locator("#existing").evaluate((node: HTMLDetailsElement) => node.open),
+    false,
+  );
+  const payload = await b.page.locator("#payload").elementHandle();
+  assert(payload);
+  await swap(
+    html`<details id="failed" open>
+      <summary>New failure</summary>
+      <span id="payload">Output</span>
+    </details>`,
+  );
+  assert.equal(
+    await b.page.locator("#failed").evaluate((node: HTMLDetailsElement) => node.open),
+    true,
+  );
+  assert.equal(await payload.evaluate((node) => node === document.getElementById("payload")), true);
+  assert.deepEqual(b.errors, []);
+  await payload.dispose();
+  await frontend.dispose();
 });
 
 await test("HTML workflow: create, submit, review, navigate without ending, end, back/forward", async (t) => {
@@ -408,12 +609,17 @@ await test("reconnect reconciles generation, reset and compaction-style heads wi
   );
   const b = await browserFixture(t, f.sessions);
   const { page } = b;
-  // Real TCP disconnects exercise native EventSource retry. Chromium offline
+  // Real TCP disconnects exercise hx-sse retry. Chromium offline
   // emulation does not reliably close an already established SSE connection.
   const connections = new Set<ServerResponse>();
+  const heads: { url: string | null; last: string | string[] | undefined }[] = [];
   const server = httpServer(f.sessions, "127.0.0.1", b.assets);
   server.on("request", (request, response) => {
-    if (request.url?.endsWith("/events")) {
+    if (request.url && new URL(request.url, "http://localhost").pathname.endsWith("/events")) {
+      heads.push({
+        url: new URL(request.url, "http://localhost").searchParams.get("head"),
+        last: request.headers["last-event-id"],
+      });
       connections.add(response);
       response.once("close", () => connections.delete(response));
     }
@@ -431,7 +637,9 @@ await test("reconnect reconciles generation, reset and compaction-style heads wi
   const firstNode = await page.locator(`#entry-${first.id}`).elementHandle();
   assert(firstNode);
   await page.getByRole("textbox", { name: "Message" }).fill("Still unsent");
+  assert.deepEqual(heads[0], { url: `${first.id}.0`, last: undefined });
   for (const mode of ["append", "reset", "compact"] as const) {
+    const previousTail = (await readHistory(session.root)).at(-1)!.id;
     for (const response of connections) response.destroy();
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent !== "Connected",
@@ -459,12 +667,12 @@ await test("reconnect reconciles generation, reset and compaction-style heads wi
         actual.length === expected.length && actual.every((id, index) => id === expected[index])
       );
     }, expected);
+    assert.deepEqual(heads.at(-1), { url: `${first.id}.0`, last: `${previousTail}.0` });
     assert.equal(await page.getByRole("textbox", { name: "Message" }).inputValue(), "Still unsent");
-    if (head === undefined)
-      assert.equal(
-        await firstNode.evaluate((node) => node === document.querySelector(`#${node.id}`)),
-        true,
-      );
+    assert.equal(
+      await firstNode.evaluate((node) => node === document.querySelector(`#${node.id}`)),
+      true,
+    );
   }
   await firstNode.dispose();
   assert.deepEqual(b.errors, []);
@@ -541,13 +749,11 @@ await test("HTML projection measurements: same 150-entry, 40-update workload as 
   const f = await fixture(t);
   const session = await f.create();
   const b = await browserFixture(t, f.sessions);
-  await b.page.route("**/events", (route) =>
+  await b.page.route(/\/events(?:\?.*)?$/, (route) =>
     route.fulfill({ contentType: "text/event-stream", body: "retry: 3600000\n\n" }),
   );
   await b.page.goto(b.base + conversationURL(session));
-  const frontend = await b.page.evaluateHandle<{
-    reconcileFragments(root: HTMLElement, html: string): void;
-  }>("import('/hypermedia-client.js')");
+  const frontend = await b.page.evaluateHandle<Htmx>("htmx");
   const view = benchmarkFixture(50).view;
   const renderer = new ConversationFragments(conversationURL(session));
   const frames: string[] = [renderer.render(view, {})];
@@ -576,10 +782,10 @@ await test("HTML projection measurements: same 150-entry, 40-update workload as 
   for (const html of frames)
     browserMs.push(
       await b.page.evaluate(
-        ({ frontend, html }) => {
+        async ({ frontend, html }) => {
           const root = document.querySelector<HTMLElement>("[data-events]")!;
           const start = performance.now();
-          frontend.reconcileFragments(root, html);
+          await frontend.swap({ sourceElement: root, target: root, swap: "none", text: html });
           root.getBoundingClientRect();
           return performance.now() - start;
         },
@@ -611,8 +817,7 @@ await test("HTML projection measurements: same 150-entry, 40-update workload as 
       // and the original client's supplementary HTTP reads. No network in timers.
       htmlWireBytes: frames.reduce(
         (sum, html) =>
-          sum +
-          Buffer.byteLength(`event: fragments\ndata: ${html.replace(/\r\n?|\n/g, "\ndata: ")}\n\n`),
+          sum + Buffer.byteLength(`data: ${html.replace(/\r\n?|\n/g, "\ndata: ")}\n\n`),
         0,
       ),
       jsonWireBytesLowerBound: jsonBytes,

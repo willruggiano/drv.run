@@ -5,88 +5,11 @@ import { installSelectKeyMappings, navigationDirection, moveFocus } from "./key-
 // The pinned standalone htmx distribution is loaded before this module.
 declare const htmx: Htmx;
 
-// This adapter owns only transport, keyed DOM reconciliation and local drafts.
-// Links and forms (including review) get their operations from the server.
-const representations = new WeakMap<Element, string>();
-export function reconcileFragments(root: HTMLElement, source: string): void {
-  const fragment = document.createElement("template");
-  fragment.innerHTML = source;
-  const scroll = root.querySelector<HTMLElement>(".scrollport");
-  const pinned = scroll
-    ? scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 32
-    : innerHeight + scrollY >= document.documentElement.scrollHeight - 32;
-  for (const template of fragment.content.querySelectorAll<HTMLTemplateElement>("template")) {
-    if (template.dataset.entries !== undefined) {
-      const transcript = root.querySelector("#transcript");
-      if (!transcript) continue;
-      const ids = template.dataset.entries.split(" ").filter(Boolean);
-      const keep = new Set(ids);
-      for (const child of transcript.querySelectorAll<HTMLElement>("[data-entry]"))
-        if (!keep.has(child.dataset.entry!)) child.remove();
-      const nodes = new Map(
-        ids.map((id) => [
-          id,
-          transcript.querySelector(`#entry-${CSS.escape(id)}`) ??
-            template.content.querySelector(`#entry-${CSS.escape(id)}`),
-        ]),
-      );
-      const layout = template.dataset.layout
-        ? (JSON.parse(template.dataset.layout) as Record<string, number[]>)
-        : { transcript: ids.map(Number) };
-      // Create all containers before placing children; archives can nest.
-      for (const node of nodes.values()) if (node && !node.isConnected) transcript.append(node);
-      for (const [container, children] of Object.entries(layout)) {
-        const parent = root.querySelector(`#${CSS.escape(container)}`);
-        if (!parent) continue;
-        let previous: Element | null = null;
-        for (const id of children) {
-          const element = nodes.get(String(id));
-          if (!element) continue;
-          const next: Element | null = previous
-            ? previous.nextElementSibling
-            : parent.firstElementChild;
-          if (next !== element) {
-            if (typeof parent.moveBefore === "function") parent.moveBefore(element, next);
-            else parent.insertBefore(element, next);
-          }
-          previous = element;
-        }
-      }
-      htmx.process(transcript);
-      enhance(transcript);
-    } else if (template.dataset.region) {
-      const old = root.querySelector(`#${CSS.escape(template.dataset.region)}`);
-      const replacement = template.content.firstElementChild;
-      if (!old || !replacement) continue;
-      const representation = replacement.outerHTML;
-      if ((representations.get(old) ?? old.outerHTML) === representation) continue;
-      representations.set(replacement, representation);
-      // Disclosure is local even while the live text changes.
-      if (old instanceof HTMLDetailsElement && replacement instanceof HTMLDetailsElement)
-        replacement.open = old.open;
-      const opened = Array.from(old.querySelectorAll("details"), (node) => node.open);
-      replacement.querySelectorAll("details").forEach((node, index) => {
-        node.open = opened[index] ?? node.open;
-      });
-      old.replaceWith(replacement);
-      htmx.process(replacement);
-      enhance(replacement);
-    }
-  }
-  if (pinned && !getSelection()?.toString()) {
-    if (scroll) scroll.scrollTop = scroll.scrollHeight;
-    else scrollTo(0, document.documentElement.scrollHeight);
-  }
-  localStatus();
-  updateSend();
-}
-
 type Draft = { text: string; files: File[]; requestId: string; creationId?: string };
 const drafts = new Map<string, Draft>();
 const requestPages = new WeakMap<HtmxRequestCtx, number>();
 let pageRevision = 0;
 let selected: HTMLElement | undefined;
-let events: EventSource | undefined;
 let previewRevision = 0;
 function composer(): HTMLFormElement | null {
   return document.querySelector("#composer");
@@ -205,40 +128,98 @@ function disconnect() {
         ]),
       ),
     );
-  events?.close();
-  events = undefined;
   selected = undefined;
 }
 function connect() {
+  const root = document.querySelector<HTMLElement>("[data-events]") ?? undefined;
+  if (root === selected && composer() === initialized) return;
   enhance(document);
   initializeComposer();
-  const root = document.querySelector<HTMLElement>("[data-events]");
   if (root === selected) return;
   disconnect();
-  if (!root) return;
   selected = root;
-  const source = new EventSource(root.dataset.events!);
-  events = source;
-  const status = root.querySelector("#connection")!;
-  source.onopen = () => {
-    if (root.isConnected) {
-      status.textContent = "Connected";
-      document.body.classList.remove("offline");
-      localStatus();
-    }
-  };
-  source.onerror = () => {
-    if (root.isConnected) {
-      status.textContent = "Disconnected; reconnecting…";
-      document.body.classList.add("offline");
-      localStatus();
-    }
-  };
-  source.addEventListener("fragments", (event: MessageEvent<string>) => {
-    if (selected !== root || !root.isConnected) return;
-    reconcileFragments(root, event.data);
-  });
 }
+function connection(event: Event, online: boolean) {
+  const root = event.target;
+  if (!(root instanceof HTMLElement) || !root.isConnected || !root.matches("[data-events]")) return;
+  const status = root.querySelector("#connection");
+  if (status) status.textContent = online ? "Connected" : "Disconnected; reconnecting…";
+  document.body.classList.toggle("offline", !online);
+  localStatus();
+}
+document.addEventListener("htmx:sse:after:connection", (event) => connection(event, true));
+for (const name of ["htmx:sse:before:connection", "htmx:sse:error", "htmx:sse:close"])
+  document.addEventListener(name, (event) => connection(event, false));
+
+const swaps = new WeakMap<
+  HtmxRequestCtx,
+  {
+    targets: Element[];
+    scroll: HTMLElement | null;
+    pinned: boolean;
+    selection?: { anchor: Node; anchorOffset: number; focus: Node; focusOffset: number };
+  }
+>();
+document.addEventListener("htmx:before:swap", (event) => {
+  const { ctx, tasks } = event.detail;
+  // Public htmx.swap() permits an omitted sourceElement (HtmxSwapContext).
+  const root = ctx.sourceElement ?? ctx.target ?? document.body;
+  const streaming = root.hasAttribute("hx-sse:connect");
+  if (streaming && !root.isConnected) {
+    event.preventDefault();
+    return;
+  }
+  const scroll = streaming ? root.querySelector<HTMLElement>(".scrollport") : null;
+  const selection = getSelection();
+  swaps.set(ctx, {
+    targets: tasks.flatMap((task: { target?: Element }) => (task.target ? [task.target] : [])),
+    scroll,
+    pinned: !!scroll && scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 32,
+    selection:
+      streaming &&
+      selection?.anchorNode &&
+      selection.focusNode &&
+      root.querySelector("#live")?.contains(selection.anchorNode) &&
+      root.querySelector("#live")?.contains(selection.focusNode)
+        ? {
+            anchor: selection.anchorNode,
+            anchorOffset: selection.anchorOffset,
+            focus: selection.focusNode,
+            focusOffset: selection.focusOffset,
+          }
+        : undefined,
+  });
+});
+document.addEventListener("htmx:after:swap", (event) => {
+  const state = swaps.get(event.detail.ctx);
+  if (state) {
+    const selection = state.selection;
+    if (selection?.anchor.isConnected && selection.focus.isConnected) {
+      const length = (node: Node) =>
+        node.nodeType === Node.TEXT_NODE ? node.textContent!.length : node.childNodes.length;
+      getSelection()?.setBaseAndExtent(
+        selection.anchor,
+        Math.min(selection.anchorOffset, length(selection.anchor)),
+        selection.focus,
+        Math.min(selection.focusOffset, length(selection.focus)),
+      );
+    }
+    for (const target of state.targets) {
+      const current = target.isConnected
+        ? target
+        : target.id
+          ? document.getElementById(target.id)
+          : null;
+      if (current) enhance(current);
+    }
+    if (state.pinned && state.scroll && !getSelection()?.toString())
+      state.scroll.scrollTop = state.scroll.scrollHeight;
+    swaps.delete(event.detail.ctx);
+  }
+  connect();
+  localStatus();
+  updateSend();
+});
 
 document.addEventListener("input", (event) => {
   const form = composer();
@@ -330,7 +311,6 @@ document.addEventListener("htmx:before:swap", (event) => {
     pageRevision++;
   }
 });
-document.addEventListener("htmx:after:settle", connect);
 window.addEventListener("pagehide", () => {
   saveDraft();
   disconnect();

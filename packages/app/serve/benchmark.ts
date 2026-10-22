@@ -170,6 +170,7 @@ declare global {
     __piBenchmarkCommit(live: LiveState): Promise<void>;
     __piBenchmarkObserve(expected: { text?: string; busy?: boolean }): Promise<number>;
     __piBenchmarkComplete: Promise<number>;
+    __piBenchmarkStreamReady: boolean;
   }
 }
 
@@ -342,6 +343,14 @@ async function pageWorkload(
           check();
         });
       window.__piBenchmarkComplete = window.__piBenchmarkObserve({});
+      window.__piBenchmarkStreamReady = false;
+      document.addEventListener(
+        "htmx:sse:after:message",
+        () => {
+          window.__piBenchmarkStreamReady = true;
+        },
+        { once: true },
+      );
     },
     { frontend, turns },
   );
@@ -361,22 +370,23 @@ async function pageWorkload(
     if (event.requestId === streamRequest) firstFrame.resolve();
   };
   // Observe initial delivery only. Disable network telemetry before token timing.
-  await cdp.send("Network.enable");
+  if (frontend === "original") await cdp.send("Network.enable");
   cdp.on("Network.requestWillBeSent", requested);
   cdp.on("Network.eventSourceMessageReceived", received);
   const initialBefore = bytesWritten();
   const initialMs = await stage("initial", async () => {
-    const timeout = setTimeout(
-      () => firstFrame.reject(new Error("Initial SSE frame timed out")),
-      30_000,
-    );
+    const timeout = setTimeout(() => {
+      if (frontend === "original") firstFrame.reject(new Error("Initial SSE frame timed out"));
+    }, 30_000);
     try {
       await Promise.all([
         page.goto(
           base + (frontend === "original" ? `/?session=${session.id}` : conversationURL(session)),
         ),
-        firstFrame.promise,
+        frontend === "original" ? firstFrame.promise : Promise.resolve(),
       ]);
+      if (frontend === "hypermedia")
+        await page.waitForFunction(() => window.__piBenchmarkStreamReady);
       const elapsed = await page.evaluate(() => window.__piBenchmarkComplete);
       // Drain the initial event handler and resulting layout before token timing.
       await page.evaluate(
@@ -390,7 +400,7 @@ async function pageWorkload(
       clearTimeout(timeout);
       cdp.off("Network.requestWillBeSent", requested);
       cdp.off("Network.eventSourceMessageReceived", received);
-      await cdp.send("Network.disable");
+      if (frontend === "original") await cdp.send("Network.disable");
     }
   });
   const initialBytes = bytesWritten() - initialBefore;
@@ -479,6 +489,8 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         "hypermedia-client.js",
         "hypermedia.css",
         "htmx.js",
+        "hx-sse.js",
+        "hypermedia-morph.js",
       ])
         await copyFile(join(options.assets, file), join(directory, file));
     const client = await readFile(

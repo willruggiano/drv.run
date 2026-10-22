@@ -252,7 +252,7 @@ export function entry(
   const html = boundary
     ? h`<details class="tool-call context-event" data-state="completed" data-disclosure="context-${record.id}"><summary><span class="tool-status" data-state="completed" aria-label="Completed">✓</span><span class="tool-command">${record.kind === "pi.reset" ? "Context reset" : "Context compacted"}</span>${timing(record.id, duration)}</summary>${record.kind === "pi.compaction" ? h`<div class="compaction-summary">${rendered}</div>` : ""}<div id="archive-${record.id}" class="context-history">${archive}</div></details>${record.kind === "pi.reset" ? rendered : ""}`
     : rendered;
-  return h`<article id="entry-${record.id}" data-entry="${record.id}"${!boundary && messages[0] ? h` data-role="${messages[0].role}"` : ""}${boundary ? h` data-context="${record.kind}"` : ""}${!html.length && !actions.length ? h` hidden` : ""}>${html}${actions}</article>`;
+  return h`<article id="entry-${record.id}" data-entry="${record.id}"${boundary ? "" : h` hx-morph-skip`}${!boundary && messages[0] ? h` data-role="${messages[0].role}"` : ""}${boundary ? h` data-context="${record.kind}"` : ""}${!html.length && !actions.length ? h` hidden` : ""}>${html}${actions}</article>`;
 }
 export function compactTokens(value: number): string {
   if (value < 1000) return String(value);

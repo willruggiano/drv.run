@@ -99,7 +99,7 @@ export function htmlPage(
   const heading = conversation
     ? h`<a id="conversation-title" class="header-title" href="${sessionsPath}" aria-label="Sessions" title="Sessions" data-command="sessions">${title}</a>${!back ? h`<span id="status" class="session-status" data-state="none" role="status" aria-label="No session"></span>` : h`<button class="status-menu" type="button" popovertarget="conversation-menu" aria-label="Conversation actions"><span id="status" class="session-status" data-state="ready" role="status"><span class="sr-only">Ready</span></span></button>`}`
     : h`<span class="header-title">${title}</span>`;
-  const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/hypermedia.css"><script src="/htmx.js" defer></script><script type="module" src="/hypermedia-client.js"></script></head>`;
+  const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/hypermedia.css"><script src="/htmx.js" defer></script><script src="/hx-sse.js" defer></script><script src="/hypermedia-morph.js" defer></script><script type="module" src="/hypermedia-client.js"></script></head>`;
   const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="Return to conversation">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div><p id="request-error" role="alert"></p></header>`;
   return renderHTML(
     h`<!doctype html><html lang="en">${head}<body class="stacked-layout"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${header}${content}</main></body></html>`,
@@ -195,7 +195,7 @@ async function panelFrame(
   const watch = await conversation.watch(context);
   try {
     const review = (await session.harness.snapshot(Review, conversation.id, context)) ?? {};
-    return h`${navigation(path)}<section class="conversation-layout" data-events="${path}/events"><main id="main-area">${content}</main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`;
+    return h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events`)}><main id="main-area">${content}</main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`;
   } finally {
     await watch.stop();
   }
@@ -215,6 +215,13 @@ function usageHTML(view: ConversationView): SafeHtml {
   return h`<details id="usage"><summary>${totals.reduce((sum, item) => sum + item.totalTokens, 0).toLocaleString()} tokens · $${totals.reduce((sum, item) => sum + item.cost.total, 0).toFixed(4)}</summary><div class="usage-table"><table><thead><tr><th>Model / tool</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Cost</th></tr></thead><tbody>${h`${rows.map(([name, item]) => h`<tr><th hx-ignore>${name}</th><td>${item.input}</td><td>${item.output}</td><td>${item.cacheRead}</td><td>${item.cacheWrite}</td><td>$${item.cost.total.toFixed(4)}</td></tr>`)}`}</tbody></table></div></details>`;
 }
 
+function streamAttributes(url: string): SafeHtml {
+  return h`data-events="${url.split("?head=")[0]}" hx-sse:connect="${url}" hx-target="this" hx-select="" hx-swap="none" hx-sync="this:drop"`;
+}
+function partial(id: string, content: SafeHtml, swap = "outerMorph"): SafeHtml {
+  return h`<hx-partial id="${id}" hx-swap="${swap}">${content}</hx-partial>`;
+}
+
 /** One projection per subscriber. Completed entries are immutable; document-only
  * revisions neither render nor transmit them. A new subscription sends a keyed
  * reconciliation, not append commands that require an uninterrupted connection. */
@@ -227,9 +234,13 @@ export class ConversationFragments {
   private readonly results = new Map<string, Result>();
   private readonly retain: boolean;
   private liveState: LiveState | undefined;
+  private sent: number[] | undefined;
+  private clientHead: string | undefined;
+  head = "0.0";
   readonly metrics = { frames: 0, bytes: 0, entries: 0, renderMs: 0 };
   readonly url: string;
-  constructor(url: string, history?: EntryRecord[]) {
+  constructor(url: string, history?: EntryRecord[], head?: string) {
+    this.clientHead = head;
     this.url = url;
     this.retain = history !== undefined;
     for (const record of history ?? []) this.records.set(record.id, record);
@@ -256,9 +267,13 @@ export class ConversationFragments {
     return content;
   }
   render(view: ConversationView, review: ReviewState): string {
-    return renderHTML(this.fragments(view, review));
+    return renderHTML(this.project(view, review));
   }
-  fragments(view: ConversationView, review: ReviewState): SafeHtml {
+  project(
+    view: ConversationView,
+    review: ReviewState,
+    times = new Map<number, number>(),
+  ): SafeHtml {
     const start = performance.now();
     const parts: SafeHtml[] = [];
     const live = view.docs[LiveDoc.definition.kind] as LiveState | undefined;
@@ -278,27 +293,61 @@ export class ConversationFragments {
             this.results.set(message.toolCallId, { entry: record.id, message });
         }
       }
-      const layout: Record<string, number[]> = {};
-      let top: number[] = [];
-      for (const record of records) {
-        if (record.kind === "pi.reset" || record.kind === "pi.compaction") {
-          layout[`archive-${record.id}`] = top;
-          top = [];
-        }
-        top.push(record.id);
+      const ids = records.map((record) => record.id);
+      const layout =
+        records.findLast((record) => record.kind === "pi.reset" || record.kind === "pi.compaction")
+          ?.id ?? 0;
+      this.head = `${ids.at(-1) ?? 0}.${layout}`;
+      if (this.clientHead !== undefined) {
+        const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(this.clientHead);
+        const tail = match ? Number(match[1]) : NaN;
+        const version = match ? Number(match[2]) : NaN;
+        const index = tail === 0 ? -1 : ids.findIndex((id) => id === tail);
+        if (
+          Number.isSafeInteger(tail) &&
+          Number.isSafeInteger(version) &&
+          (tail === 0 || index >= 0) &&
+          version === layout &&
+          layout <= tail
+        )
+          this.sent = ids.slice(0, index + 1);
+        this.clientHead = undefined;
       }
-      layout.transcript = top;
-      const added = h`${records
-        .filter((record) => !this.rendered.has(record.id))
-        .map((record) => {
-          this.metrics.entries++;
-          const html = entry(record, this.url, this.calls, this.results, live);
-          this.rendered.set(record.id, html);
-          return html;
-        })}`;
-      parts.push(
-        h`<template data-entries="${records.map((record) => record.id).join(" ")}" data-layout="${JSON.stringify(layout)}">${added}</template>`,
-      );
+      const initial = this.entries === undefined;
+      const appended =
+        this.sent !== undefined &&
+        this.sent.every((id, index) => ids[index] === id) &&
+        records
+          .slice(this.sent.length)
+          .every((record) => record.kind !== "pi.reset" && record.kind !== "pi.compaction");
+      for (const record of records) {
+        if (this.rendered.has(record.id)) continue;
+        this.metrics.entries++;
+        this.rendered.set(
+          record.id,
+          entry(record, this.url, this.calls, this.results, live, h``, times.get(record.id)),
+        );
+      }
+      if (!appended) parts.push(partial("transcript", this.transcript(times), "innerMorph"));
+      else if (ids.length !== this.sent!.length)
+        parts.push(
+          partial(
+            "transcript",
+            h`${records.slice(this.sent!.length).map((record) => this.rendered.get(record.id))}`,
+            "beforeend",
+          ),
+        );
+      // Initial markup already contains completed tool results. Hydrate only
+      // results newer than the client's head; active slots remain live regions.
+      if (initial) {
+        const tail = appended ? (this.sent!.at(-1) ?? 0) : Infinity;
+        for (const call of this.calls.values()) {
+          const result = this.results.get(call.id);
+          if (result && result.entry <= tail)
+            this.regions.set(toolID(call.id), JSON.stringify(result.entry));
+        }
+      }
+      this.sent = ids;
       this.entries = view.entries;
     }
     const regions: [string, unknown, () => SafeHtml][] = [
@@ -319,7 +368,7 @@ export class ConversationFragments {
     for (const [id, value, render] of regions) {
       if (this.regions.has(id) && this.regions.get(id) === value) continue;
       this.regions.set(id, value);
-      parts.push(h`<template data-region="${id}">${render()}</template>`);
+      parts.push(partial(id, render()));
     }
     const output = h`${parts}`;
     if (output.length) {
@@ -338,6 +387,7 @@ async function events(
   context: Context,
   settings?: GlobalSettingsStore,
   inspection = false,
+  head?: string,
 ): Promise<void> {
   const conversation = await getConversation(session, id, context);
   const watch = await conversation.watch(context);
@@ -348,6 +398,7 @@ async function events(
     sending = false,
     metadata = true;
   let timingsDirty = true;
+  let durations = new Map<number, number>();
   const stopCommits = session.harness.subscribeCommits((publication) => {
     for (const change of publication.changes) {
       if (
@@ -395,7 +446,8 @@ async function events(
     throw error;
   }
   const path = conversationURL(session, conversation.id);
-  const renderer = new ConversationFragments(path, records);
+  const renderer = new ConversationFragments(path, records, head);
+  let sentHead: string | undefined;
   response.writeHead(200, { "Content-Type": "text/event-stream", "X-Accel-Buffering": "no" });
   ready = true;
   let previousRun: unknown;
@@ -420,26 +472,31 @@ async function events(
           metadata = true;
           previousRun = run;
         }
+        const timingsChanged = !inspection && timingsDirty;
+        if (timingsChanged) {
+          timingsDirty = false;
+          durations = await compactionTimes(session, context);
+        }
         let fragment = h``;
         if (inspection) {
           const inspected = await inspectContext(session, current, context);
           if (inspected !== previousInspection)
-            fragment = h`<template data-region="context-view">${contextHTML(inspected)}</template>`;
+            fragment = partial("context-view", contextHTML(inspected));
           previousInspection = inspected;
-        } else fragment = renderer.fragments(current, review ?? {});
-        if (!inspection && timingsDirty) {
-          timingsDirty = false;
-          for (const [entry, ms] of await compactionTimes(session, context))
-            fragment = h`${fragment}<template data-region="duration-${entry}">${timing(entry, ms)}</template>`;
+        } else fragment = renderer.project(current, review ?? {}, durations);
+        if (timingsChanged) {
+          for (const [entry, ms] of durations)
+            fragment = h`${fragment}${partial(`duration-${entry}`, timing(entry, ms))}`;
         }
         if (!inspection && metadata) {
           metadata = false;
-          fragment = h`${fragment}<template data-region="session-meta">${await metadataHTML(session, conversation, current, settings, context)}</template>`;
+          fragment = h`${fragment}${partial("session-meta", await metadataHTML(session, conversation, current, settings, context))}`;
         }
-        if (fragment.length && !response.destroyed)
-          response.write(
-            `event: fragments\ndata: ${renderHTML(fragment).replace(/\r\n?|\n/g, "\ndata: ")}\n\n`,
-          );
+        if (fragment.length && !response.destroyed) {
+          const id = inspection || sentHead === renderer.head ? "" : `id: ${renderer.head}\n`;
+          response.write(`${id}data: ${renderHTML(fragment).replace(/\r\n?|\n/g, "\ndata: ")}\n\n`);
+          sentHead = renderer.head;
+        }
       }
     } finally {
       sending = false;
@@ -768,7 +825,7 @@ export async function hypermedia(
     const watch = await conversation.watch(context);
     try {
       page(
-        h`${navigation(path)}<main id="main-area" data-events="${path}/events?pane=context">${contextHTML(await inspectContext(session, watch.value, context))}<p id="connection" class="sr-only" role="status"></p></main>`,
+        h`${navigation(path)}<main id="main-area" ${streamAttributes(`${path}/events?pane=context`)}>${contextHTML(await inspectContext(session, watch.value, context))}<p id="connection" class="sr-only" role="status"></p></main>`,
       );
     } finally {
       await watch.stop();
@@ -788,6 +845,9 @@ export async function hypermedia(
         context,
         settings,
         url.searchParams.get("pane") === "context",
+        typeof request.headers["last-event-id"] === "string"
+          ? request.headers["last-event-id"]
+          : (url.searchParams.get("head") ?? undefined),
       );
       return;
     }
@@ -819,7 +879,7 @@ export async function hypermedia(
       const renderer = new ConversationFragments(path, records);
       renderer.render(watch.value, review);
       page(
-        h`${navigation(path)}<section class="conversation-layout" data-events="${path}/events"><main id="main-area"><div class="scrollport pane" id="conversation-scroll" tabindex="0" aria-label="Conversation"><div id="transcript">${renderer.transcript(records.some((record) => record.kind === "pi.compaction") ? await compactionTimes(session, context) : undefined)}</div>${renderer.live(watch.value)}</div></main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`,
+        h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events?head=${renderer.head}`)}><main id="main-area"><div class="scrollport pane" id="conversation-scroll" tabindex="0" aria-label="Conversation"><div id="transcript">${renderer.transcript(records.some((record) => record.kind === "pi.compaction") ? await compactionTimes(session, context) : undefined)}</div>${renderer.live(watch.value)}</div></main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`,
         info.name || "Untitled session",
         true,
       );
