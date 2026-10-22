@@ -11,7 +11,15 @@ import { promisify } from "node:util";
 export async function buildAssets(source: string, destination: string): Promise<void> {
   await mkdir(destination, { recursive: true });
   const { stderr } = await promisify(execFile)("esbuild", [
-    ...["client.ts", "highlight.ts", "styles.css", "sw.js"].map((file) => join(source, file)),
+    ...[
+      "client.ts",
+      "hypermedia-client.ts",
+      "hypermedia.css",
+      "highlight.ts",
+      "styles.css",
+      "sw.js",
+      "hypermedia-sw.js",
+    ].map((file) => join(source, file)),
     "--bundle",
     "--minify",
     "--format=esm",
@@ -23,6 +31,9 @@ export async function buildAssets(source: string, destination: string): Promise<
   if (stderr) process.stderr.write(stderr);
   // Upstream's CommonJS files omit the package-level BSD notice.
   const require = createRequire(resolve(source, "highlight.ts"));
+  await copyFile(require.resolve("htmx.org/dist/htmx.min.js"), join(destination, "htmx.js"));
+  const htmxLicense = await readFile(require.resolve("htmx.org/LICENSE"), "utf8");
+  await appendFile(join(destination, "htmx.js"), `\n/*! htmx\n${htmxLicense}*/\n`);
   const license = await readFile(require.resolve("highlight.js/LICENSE"), "utf8");
   await appendFile(join(destination, "highlight.js"), `\n/*! highlight.js\n${license}*/\n`);
   for (const file of ["index.html", "design-system.html", "icon-192.png", "icon-512.png"])

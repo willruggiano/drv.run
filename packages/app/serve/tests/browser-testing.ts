@@ -360,3 +360,56 @@ export async function browserFlow(
   assert.equal(errors.length, 0);
   return { ...b, session, reconnected, id, url };
 }
+
+// HTML pages advertise additional native actions through the header popovers.
+export async function htmlAction(
+  page: Page,
+  role: "link" | "button",
+  name: string,
+): Promise<Locator> {
+  const action = page.getByRole(role, { name, exact: true });
+  await page
+    .getByRole(role, { name, exact: true, includeHidden: true })
+    .first()
+    .waitFor({ state: "attached" });
+  if (!(await action.isVisible())) {
+    if (
+      !(await page.locator("#conversation-menu").evaluate((node) => node.matches(":popover-open")))
+    )
+      await page.getByRole("button", { name: "Conversation actions", exact: true }).click();
+    if (!(await action.isVisible()))
+      await page.getByRole("button", { name: "Review actions", exact: true }).click();
+  }
+  await action.waitFor();
+  return action;
+}
+
+export async function htmlMessageActions(page: Page, owner: Locator): Promise<Locator> {
+  await owner.scrollIntoViewIfNeeded();
+  if (await page.evaluate(() => matchMedia("(hover: hover) and (pointer: fine)").matches)) {
+    await owner.hover();
+    await owner.locator(":scope > .entry-actions > summary").click();
+  } else {
+    // Use a real touch sequence, after any programmatic scroll has settled.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    const rect = await owner.locator(":scope > summary, :scope > .text").first().boundingBox();
+    assert(rect);
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x: rect.x + 2, y: rect.y + 2, id: 1 }],
+      });
+      await page.locator(".action-menu:popover-open").waitFor();
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    } finally {
+      await cdp.detach();
+    }
+  }
+  return page.locator(".action-menu:popover-open");
+}

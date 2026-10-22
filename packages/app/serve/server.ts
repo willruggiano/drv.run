@@ -1,4 +1,5 @@
 import * as runtime from "./sessions.ts";
+import { hypermedia, html, escapeHTML, FormError } from "./hypermedia.ts";
 import { Review } from "harness";
 import { startReview, endReview } from "./review.ts";
 import { openApplication } from "./application.ts";
@@ -340,6 +341,8 @@ export function httpServer(
       const controller = new AbortController();
       response.once("close", () => controller.abort());
       const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
+      if (url.pathname === "/sessions" || url.pathname.startsWith("/sessions/"))
+        return await hypermedia(request, response, url, sessions, context, settings);
       if (request.method === "GET" && url.pathname === "/api/settings/watch") {
         if (!settings) return json(response, 200, null);
         response.writeHead(200, { "Content-Type": "text/event-stream", Connection: "keep-alive" });
@@ -693,6 +696,9 @@ export function httpServer(
         [
           "/",
           "/client.js",
+          "/hypermedia-client.js",
+          "/htmx.js",
+          "/hypermedia.css",
           "/highlight.js",
           "/styles.css",
           "/design-system.html",
@@ -701,12 +707,16 @@ export function httpServer(
           "/icon-192.png",
           "/icon-512.png",
           "/sw.js",
+          "/hypermedia-sw.js",
         ].includes(url.pathname)
       ) {
         const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
         const types: Record<string, string> = {
           "index.html": "text/html; charset=utf-8",
           "client.js": "text/javascript; charset=utf-8",
+          "hypermedia-client.js": "text/javascript; charset=utf-8",
+          "htmx.js": "text/javascript; charset=utf-8",
+          "hypermedia.css": "text/css; charset=utf-8",
           "highlight.js": "text/javascript; charset=utf-8",
           "styles.css": "text/css; charset=utf-8",
           "design-system.html": "text/html; charset=utf-8",
@@ -715,6 +725,7 @@ export function httpServer(
           "icon-192.png": "image/png",
           "icon-512.png": "image/png",
           "sw.js": "text/javascript; charset=utf-8",
+          "hypermedia-sw.js": "text/javascript; charset=utf-8",
         };
         if (file === "manifest.webmanifest") {
           response.setHeader("Content-Type", types[file]);
@@ -753,6 +764,31 @@ export function httpServer(
       if (response.headersSent) {
         response.destroy();
         return;
+      }
+      if (/^\/sessions(?:[/?]|$)/.test(request.url ?? "")) {
+        const status =
+          error instanceof FormError || error instanceof RequestError
+            ? error.status
+            : error instanceof ConversationBusy
+              ? 409
+              : error instanceof TypeError || error instanceof StorageRequestError
+                ? 400
+                : error instanceof SessionError
+                  ? { invalid: 400, not_found: 404, unavailable: 409, conflict: 409, closing: 503 }[
+                      error.code
+                    ]
+                  : 500;
+        if (status === 500) console.error(error);
+        if (request.headers["hx-request"] === "true") {
+          response.setHeader("HX-Retarget", "#request-error");
+          response.setHeader("HX-Reselect", "#form-error");
+          response.setHeader("HX-Reswap", "innerHTML");
+        }
+        return html(
+          response,
+          `<h1>Request failed</h1><p id="form-error">${escapeHTML(error instanceof Error ? error.message : "Internal server error.")}</p><p><a href="/sessions">Sessions</a></p>`,
+          status,
+        );
       }
       if (error instanceof ConversationBusy)
         json(response, 409, {
