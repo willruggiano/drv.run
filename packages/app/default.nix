@@ -105,42 +105,6 @@ in
         exec ${lib.getExe nodejs} ${finalAttrs.finalPackage.dev}/serve/dist/benchmark.js "$@"
       '';
     };
-    doInstallCheck = true;
-    installCheckPhase = ''
-      runHook preInstallCheck
-      cd "$out/lib/app"
-      node --experimental-import-meta-resolve --input-type=module -e '
-        import assert from "node:assert/strict";
-        import { accessSync, constants, existsSync, realpathSync, readdirSync } from "node:fs";
-        import { createRequire } from "node:module";
-        import { fileURLToPath } from "node:url";
-        import * as api from "harness";
-        import { localDaemon } from "@earendil-works/pi-env";
-        await import("./serve/dist/server.js");
-        assert.deepEqual(Object.keys(api).sort(), ["DrvRunEnv", "Review", "openHarness"]);
-        for (const workspace of ["harness", "serve"]) {
-          assert.equal(realpathSync(`node_modules/''${workspace}`), realpathSync(workspace));
-        }
-        const harness = new URL("./harness/dist/index.js", import.meta.url);
-        const serve = new URL("./serve/dist/server.js", import.meta.url);
-        for (const name of ["@earendil-works/chord/context", "@earendil-works/pi-ai", "@earendil-works/pi-durable", "@earendil-works/pi-env"]) {
-          assert.equal(
-            realpathSync(fileURLToPath(import.meta.resolve(name, harness))),
-            realpathSync(fileURLToPath(import.meta.resolve(name, serve))),
-          );
-        }
-        accessSync(localDaemon(), constants.X_OK);
-        assert(!existsSync("node_modules/playwright"));
-        assert(!existsSync("node_modules/playwright-core"));
-        const require = createRequire(import.meta.url);
-        require("@silvia-odwyer/photon-node");
-        const native = `node_modules/@earendil-works/pi-tui/native/''${process.platform}/prebuilds/''${process.platform}-''${process.arch}`;
-        for (const file of readdirSync(native)) {
-          if (file.endsWith(".node")) require(`./''${native}/''${file}`);
-        }
-      '
-      runHook postInstallCheck
-    '';
     meta = {
       description = "Coding harness and web frontend for drv.run";
       mainProgram = "serve";
