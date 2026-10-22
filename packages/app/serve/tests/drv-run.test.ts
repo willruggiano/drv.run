@@ -179,7 +179,7 @@ await writeFile(${JSON.stringify(marker)}, String(process.pid));
     );
     let pid: number | undefined;
     function alive() {
-      if (pid === undefined) return false;
+      if (pid === undefined || pid <= 0) return false;
       try {
         process.kill(pid, 0);
         return true;
@@ -195,9 +195,13 @@ await writeFile(${JSON.stringify(marker)}, String(process.pid));
     });
     const pending = listInstances({ ...f.options, systemctl }, controller.signal);
     const rejected = assert.rejects(pending, { name: "AbortError" });
-    await waitFor(() => exists(marker));
-    pid = Number(await readFile(marker, "utf8"));
-    assert(Number.isSafeInteger(pid) && pid > 0);
+    await waitFor(async () => {
+      if (!(await exists(marker))) return false;
+      const candidate = Number(await readFile(marker, "utf8"));
+      if (!Number.isSafeInteger(candidate) || candidate <= 0) return false;
+      pid = candidate;
+      return true;
+    });
     assert(alive());
     controller.abort();
     await rejected;
