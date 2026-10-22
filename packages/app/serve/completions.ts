@@ -4,6 +4,8 @@ export const commands = [
   { name: "settings", description: "Session settings" },
   { name: "model", description: "Choose a model" },
   { name: "fork", description: "Open branches" },
+  { name: "review", description: "Review uncommitted changes in a fresh conversation" },
+  { name: "endreview", description: "End the review and return to the original conversation" },
   { name: "compact", description: "Compact context · optional instructions" },
   { name: "reset", description: "Reset context · optional handoff (asks for confirmation)" },
   { name: "stop", description: "Stop the current run" },
@@ -52,8 +54,9 @@ export function pathCompletion(path: string): Completion {
   };
 }
 
-export function commandCompletions(query: string): Completion[] {
+export function commandCompletions(query: string, isReview = false): Completion[] {
   return commands
+    .filter((command) => command.name !== "endreview" || isReview)
     .filter((command) => command.name.startsWith(query.toLowerCase()))
     .map((command) => ({
       label: `/${command.name}`,
@@ -68,6 +71,7 @@ export function installCompletions(
   popup: HTMLElement,
   scope: () => string | undefined,
   loadPaths: (query: string) => Promise<string[]>,
+  isReview: () => boolean = () => false,
 ): { close(): void } {
   let revision = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -161,7 +165,7 @@ export function installCompletions(
     token = completionToken(input.value, input.selectionStart);
     if (!token) return;
     if (token.kind === "command") {
-      items = commandCompletions(token.query);
+      items = commandCompletions(token.query, isReview());
       render();
       return;
     }

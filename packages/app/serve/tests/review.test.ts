@@ -15,10 +15,73 @@ import { createBashTool, createReadTool, createWriteTool } from "@earendil-works
 import { endReview, startReview } from "../review.ts";
 import { Environment } from "../sessions.ts";
 import { code, exists, fixture, readHistory, waitFor } from "./sessions-testing.ts";
+import { post, serve, snapshot } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 const call = (name: string, args: JsonObject) =>
   fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
+
+await test("HTTP review commands select conversations without submitting slash text to the model", async (t) => {
+  for (const fork of [false, true])
+    await t.test(fork ? "branch" : "root", async (t) => {
+      const f = await fixture(t);
+      const session = await f.create();
+      f.faux.setResponses([fauxAssistantMessage("Implemented.")]);
+      await (
+        await session.root.submit({ type: "input", content: "Implement." }, context)
+      ).wait(context);
+      const at = (await readHistory(session.root)).at(-1)!;
+      const original = fork
+        ? await session.root.fork(at.id, { ownership: { kind: "ownerless" } }, context)
+        : session.root;
+      const before = await readHistory(original);
+      const base = await serve(t, f.sessions);
+      const resource = `${base}/api/harness/${session.id}`;
+      const submit = (id: number, content: string) =>
+        post(`${resource}/submit?conversation=${id}`, { type: "input", content });
+      assert.equal((await submit(original.id, "/endreview")).status, 409);
+      f.faux.setResponses([fauxAssistantMessage("No findings.")]);
+      const response = await submit(original.id, "/review");
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      assert(Number.isSafeInteger(result.conversationId));
+      assert.notEqual(result.conversationId, original.id);
+      assert.deepEqual(await (await submit(original.id, "/review")).json(), result);
+      const review = await session.harness.conversation(result.conversationId, context);
+      assert(review);
+      await review.waitForIdle(context);
+      assert.equal((await submit(review.id, "/review")).status, 409);
+      assert.deepEqual(await readHistory(original), before);
+      const view = await snapshot(`${resource}/watch?conversation=${review.id}`);
+      assert.equal(view.view.conversation.id, review.id);
+      assert.equal(view.session.reviewOf, original.id);
+      assert.deepEqual(
+        view.history?.toSorted((a, b) => a.id - b.id),
+        await readHistory(review),
+      );
+      assert.equal(
+        view.history?.some((entry) => before.some((old) => old.id === entry.id)),
+        false,
+      );
+      assert.deepEqual(
+        await (
+          await fetch(`${resource}/snapshot?conversation=${review.id}&kind=app.review`)
+        ).json(),
+        { original: original.id },
+      );
+      f.faux.setResponses([fauxAssistantMessage("Received review.")]);
+      const ended = await submit(review.id, "/endreview");
+      assert.equal(ended.status, 200);
+      const destination = { conversationId: fork ? original.id : null };
+      assert.deepEqual(await ended.json(), destination);
+      assert.deepEqual(await (await submit(review.id, "/endreview")).json(), destination);
+      await original.waitForIdle(context);
+      const reports = (await readHistory(original)).filter((entry) => entry.kind === "app.review");
+      assert.equal(reports.length, 1);
+      assert.deepEqual(reports[0].data, { conversationId: review.id });
+      assert.equal(f.faux.state.callCount, 3);
+    });
+});
 
 await test("review commands start fresh from the selected branch and return its latest review as input", async (t) => {
   const f = await fixture(t);

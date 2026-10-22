@@ -23,7 +23,7 @@ import {
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
-import { openHarness } from "harness";
+import { openHarness, Review } from "harness";
 import { describeContext, type ContextInspection } from "./inspection.ts";
 export type { ContextInspection } from "./inspection.ts";
 // pi-coding-agent/core/defaults is not exported by Pi's public API.
@@ -60,6 +60,7 @@ export function stateDirectory(env: NodeJS.ProcessEnv = process.env, home = home
 
 export type SessionInfo = {
   id: string;
+  reviewOf?: number;
   name: string;
   binding?: ExecutionBinding;
   cwd: string;
@@ -601,6 +602,7 @@ export async function sessionInfo(
   const agent = await conversation.agent(context);
   const metadata = await session.harness.snapshot(Metadata, session.root.id, context);
   const selected = await session.harness.snapshot(Environment, conversation.id, context);
+  const review = await session.harness.snapshot(Review, conversation.id, context);
   context.abortSignal?.throwIfAborted();
   targets ??= (await session.owner.options.targets?.(context)) ?? [];
   const target = targets.find(
@@ -610,6 +612,7 @@ export async function sessionInfo(
   return {
     id: session.id,
     name: metadata?.name ?? "",
+    reviewOf: review?.original,
     binding:
       selected?.provider && selected.target
         ? {

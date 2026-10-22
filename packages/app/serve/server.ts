@@ -1,4 +1,6 @@
 import * as runtime from "./sessions.ts";
+import { Review } from "harness";
+import { startReview, endReview } from "./review.ts";
 import { openApplication } from "./application.ts";
 import { ownerOptions } from "./instances.ts";
 import { readFile } from "node:fs/promises";
@@ -427,6 +429,7 @@ export function httpServer(
               UsageDoc,
               runtime.Environment,
               runtime.Metadata,
+              Review,
             ].find((token) => token.definition.kind === kind);
             if (!token) throw new RequestError(404, "Document capability is not exposed.");
             // Each token has the same conversation scope; widening its JSON value does not change its definition.
@@ -514,6 +517,18 @@ export function httpServer(
               }
               if (data.type !== "input" && data.type !== "write")
                 throw new RequestError(400, "Invalid submission type.");
+              if (data.type === "input" && typeof data.content === "string") {
+                const command = data.content.trim();
+                if (command === "/review" || command === "/endreview") {
+                  const { id } = await (command === "/review" ? startReview : endReview)(
+                    session,
+                    conversation,
+                    context,
+                  );
+                  // null selects the session root, matching the client's unqualified URL/draft.
+                  return { conversationId: id === session.root.id ? null : id };
+                }
+              }
               // Admission, content validation, deduplication and defaults belong to Durable.
               const submission = await conversation.submit(data as SubmissionDraft, context);
               return { id: submission.id };

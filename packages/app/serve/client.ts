@@ -495,6 +495,13 @@ async function refreshBranches(): Promise<void> {
   const id = active;
   if (!id) return;
   const records = await pages<ConversationRecord>(endpoint("scanConversations"));
+  const reviews = await Promise.all(
+    records.map((record) =>
+      api<{ original?: number } | null>(
+        `/api/harness/${id}/snapshot?conversation=${record.id}&kind=app.review`,
+      ),
+    ),
+  );
   if (current !== generation) return;
   // Keep existing buttons connected so a pending refresh cannot drop keyboard focus.
   const existing = new Map(
@@ -515,11 +522,14 @@ async function refreshBranches(): Promise<void> {
       String(conversation === undefined ? index === 0 : conversation === record.id),
     );
     const name = document.createElement("strong");
-    name.textContent = index === 0 ? "Main" : `Branch ${record.id}`;
+    const original = reviews[index]?.original;
+    name.textContent =
+      original !== undefined ? `Review ${record.id}` : index === 0 ? "Main" : `Branch ${record.id}`;
     button.replaceChildren(name);
-    if (record.parent) {
+    const parent = original ?? record.parent?.conversationId;
+    if (parent !== undefined) {
       const detail = document.createElement("small");
-      detail.textContent = `From ${record.parent.conversationId}`;
+      detail.textContent = `From ${parent}`;
       button.append(detail);
     }
     button.onclick = () => {
@@ -1016,14 +1026,15 @@ export function render(snapshot: RenderState): void {
   const live = snapshot.view.docs["pi.live"] as LiveState | undefined;
   busy = !!live?.run;
   recovering = snapshot.session.needsResume;
-  title.textContent = sessionTitle(snapshot.session);
+  const heading = `${snapshot.session.reviewOf === undefined ? "" : "Review · "}${sessionTitle(snapshot.session)}`;
+  title.textContent = heading;
   if (view === "search") updateViewTitle();
   title.title = `${snapshot.session.binding?.provider} / ${snapshot.session.binding?.target} · ${agent?.model?.modelId ?? snapshot.session.model?.modelId}`;
   const activity = element("activity", HTMLDivElement);
   activity.textContent =
     live?.generation?.retry?.error ?? (live?.generation?.deferred ? "Waiting for provider…" : "");
   activity.hidden = !activity.textContent;
-  document.title = `${busy ? "Working · " : ""}${sessionTitle(snapshot.session)}`;
+  document.title = `${busy ? "Working · " : ""}${heading}`;
   const wanted = new Set<string>();
   const ordered: HTMLElement[] = [];
   // A streamed assistant entry can be replaced by its committed entry. Keep
@@ -1616,6 +1627,7 @@ const completions = installCompletions(
       `${endpoint("completions")}${conversation === undefined ? "?" : "&"}query=${encodeURIComponent(query)}`,
     );
   },
+  () => latest?.session.reviewOf !== undefined,
 );
 
 async function runCommand(text: string): Promise<boolean> {
@@ -1623,6 +1635,8 @@ async function runCommand(text: string): Promise<boolean> {
   const argument = text.slice(name.length + 1).trim();
   if (!commands.some((command) => command.name === name))
     throw new Error(`Unknown command /${name}.`);
+  if (name === "endreview" && latest?.session.reviewOf === undefined)
+    throw new Error("/endreview is available only in a review conversation.");
   if (images.length) throw new Error("Remove attached images before running a command.");
   if (argument && name !== "compact" && name !== "reset")
     throw new Error(`/${name} does not accept arguments.`);
@@ -1633,7 +1647,20 @@ async function runCommand(text: string): Promise<boolean> {
     return newSession(text);
   }
   if (!active || !connected) throw new Error("Connect to a session first.");
-  if (name === "resume") {
+  if (name === "review" || name === "endreview") {
+    const id = active;
+    const branch = conversation;
+    const current = generation;
+    const request = ++navigation;
+    if (!(await flushSettings()) || current !== generation || request !== navigation) return false;
+    const result = await api<{ conversationId: number | null }>(endpoint("submit"), {
+      type: "input",
+      content: `/${name}`,
+    });
+    clearDraft(draftKey(id, branch), text);
+    if (current === generation && request === navigation)
+      await selectSession(id, result.conversationId ?? undefined);
+  } else if (name === "resume") {
     if (!recovering) throw new Error("This session does not need to be resumed.");
     await resumeSession();
   } else if (name === "compact" || name === "reset") {

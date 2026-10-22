@@ -50,6 +50,15 @@ await test("completion tokens respect boundaries, quoting and cursor position", 
     commandCompletions("MO").map((item) => item.value),
     ["/model "],
   );
+  assert.deepEqual(
+    commandCompletions("review").map((item) => item.value),
+    ["/review "],
+  );
+  assert.deepEqual(commandCompletions("endreview"), []);
+  assert.deepEqual(
+    commandCompletions("endreview", true).map((item) => item.value),
+    ["/endreview "],
+  );
   assert.deepEqual(commandCompletions("unknown"), []);
   assert.deepEqual(commandCompletions("help"), []);
 });
