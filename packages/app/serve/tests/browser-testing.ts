@@ -80,7 +80,7 @@ export async function assertTouchMenuPosition(
   assert(layout.right <= layout.rightLimit + 1);
   assert(layout.bottom <= layout.bottomLimit + 1);
   assert(layout.width <= 260);
-  for (const height of layout.targets) assert.equal(height, 40);
+  for (const height of layout.targets) assert.equal(height, 20);
   // Prefer above the finger; flip below when there's insufficient space above.
   if (point.y - 12 - layout.height >= layout.topLimit)
     assert(Math.abs(layout.bottom - (point.y - 12)) <= 1);

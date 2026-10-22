@@ -584,6 +584,137 @@ await test("renderer pairs parallel calls, displays metadata and preserves highl
   assert.deepEqual(errors, []);
 });
 
+await test("transcript aligns with the composer and keeps desktop actions in its right gutter", async (t) => {
+  const f = await rendererFixture(t);
+  f.append({ role: "user", content: "Read the files.", timestamp });
+  for (let index = 0; index < 3; index++) {
+    f.append(
+      fauxAssistantMessage(
+        fauxToolCall("read", { path: "browser.json" }, { id: `gutter-${index}` }),
+      ),
+      {
+        role: "toolResult",
+        toolCallId: `gutter-${index}`,
+        toolName: "read",
+        content: [{ type: "text", text: '{"value":32}' }],
+        durationMs: index + 10,
+        isError: false,
+        timestamp,
+      },
+    );
+  }
+  f.append(fauxAssistantMessage("The files are ready."));
+  const desktop = await f.browser.newContext();
+  t.after(() => desktop.close());
+  const desktopPage = await desktop.newPage();
+  desktopPage.on("pageerror", (error) => f.errors.push(error));
+  for (const page of [desktopPage, f.page]) {
+    await f.load(page);
+    for (const viewport of [320, 390, 650, 651, 900, 1440].flatMap((width) =>
+      [300, 900].map((height) => ({ width, height })),
+    )) {
+      await page.setViewportSize(viewport);
+      for (const expanded of [false, true]) {
+        await page.locator("#transcript .tool-call").evaluateAll((nodes, open) => {
+          for (const node of nodes) (node as HTMLDetailsElement).open = open;
+        }, expanded);
+        const layout = await page.evaluate(() => {
+          const transcript = document.querySelector<HTMLElement>("#transcript")!;
+          const composer = document
+            .querySelector("#composer > .compose-box")!
+            .getBoundingClientRect();
+          return {
+            composer: { left: composer.left, right: composer.right },
+            scrollRight: transcript.getBoundingClientRect().left + transcript.clientWidth,
+            overflow: transcript.scrollWidth > transcript.clientWidth,
+            scrolling: transcript.scrollHeight > transcript.clientHeight,
+            edges: Array.from(transcript.querySelectorAll("article, .message-time, .tool-duration"))
+              .filter((node) => node.checkVisibility())
+              .map((node) => node.getBoundingClientRect().right),
+            lefts: Array.from(transcript.querySelectorAll("article")).map(
+              (node) => node.getBoundingClientRect().left,
+            ),
+            actions: Array.from(transcript.querySelectorAll(".message-actions"))
+              .filter((node) => node.checkVisibility())
+              .map((node) => {
+                const rect = node.getBoundingClientRect();
+                return { left: rect.left, right: rect.right };
+              }),
+          };
+        });
+        for (const right of layout.edges) assert(Math.abs(right - layout.composer.right) < 1);
+        for (const left of layout.lefts) assert(Math.abs(left - layout.composer.left) < 1);
+        assert.equal(layout.overflow, false);
+        if (viewport.height === 300) assert.equal(layout.scrolling, true);
+        if (page === desktopPage) {
+          assert(layout.actions.length > 0);
+          for (const action of layout.actions) {
+            assert(action.left >= layout.composer.right + 4);
+            assert(action.right <= layout.scrollRight);
+          }
+        }
+        await assertLayout(
+          page,
+          `message-gutter-${page === desktopPage ? "desktop" : "touch"}-${viewport.width}-${viewport.height}-${expanded}`,
+        );
+      }
+    }
+  }
+  // Exercise mouse and keyboard access outside the message content, including
+  // grouped messages whose header has no visible speaker or timestamp.
+  for (const action of [
+    desktopPage.locator("#transcript article > header > .message-actions").first(),
+    desktopPage.locator("#transcript article.same-speaker > header > .message-actions").first(),
+    desktopPage.locator("#transcript .tool-call > .message-actions").first(),
+  ]) {
+    await openMessageActions(desktopPage, action);
+    const menu = desktopPage.locator("#message-menu");
+    assert.equal(await menu.isVisible(), true);
+    const dimensions = await menu.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const buttons = Array.from(node.querySelectorAll("button")).filter((button) =>
+        button.checkVisibility(),
+      );
+      return {
+        width: box.width,
+        height: box.height,
+        border: parseFloat(getComputedStyle(node).borderTopWidth),
+        buttons: buttons.map((button) => {
+          const target = button.getBoundingClientRect();
+          const icon = button.querySelector("svg")!.getBoundingClientRect();
+          return [target.width, target.height, icon.width, icon.height];
+        }),
+      };
+    });
+    assert.equal(
+      dimensions.width,
+      dimensions.buttons.length * 20 + dimensions.buttons.length - 1 + 6,
+    );
+    assert.equal(dimensions.height, 26);
+    assert.equal(dimensions.border, 1);
+    for (const button of dimensions.buttons) assert.deepEqual(button, [20, 20, 9, 9]);
+    await desktopPage.keyboard.press("Escape");
+    await action.focus();
+    assert.equal(await action.evaluate((node) => getComputedStyle(node).opacity), "1");
+    await action.press("Enter");
+    assert.equal(await desktopPage.locator("#message-menu").isVisible(), true);
+    await desktopPage.keyboard.press("Escape");
+  }
+  if (f.screenshots) {
+    await desktopPage.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    const action = desktopPage
+      .locator("#transcript article.same-speaker > header > .message-actions")
+      .first();
+    await action.hover();
+    await desktopPage.screenshot({ path: join(f.screenshots, "message-actions-hover.png") });
+    await action.click();
+    await desktopPage.screenshot({ path: join(f.screenshots, "message-actions-open.png") });
+  }
+  assert.deepEqual(f.errors, []);
+});
+
 await test("renderer keeps thinking/tool adjacency and speaker spacing across updates and reloads", async (t) => {
   const f = await rendererFixture(t);
   const { page: reconnected, errors } = f;

@@ -65,12 +65,10 @@ h1 { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; margin: 0; overfl
 .session-status[data-state=offline], .session-status[data-state=interrupted] { background: var(--danger); }
 #transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; padding: 12px max(20px, calc((100% - 820px)/2)); scrollbar-gutter: stable; }
 article { padding: 14px 0; scroll-margin: 16px; } article + article { border-top: 1px solid var(--surface-subtle); }
-article > header { color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; min-height: 24px; }
+article > header { position: relative; color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; min-height: 24px; }
 article[data-role=user] > header { color: var(--muted); }
 .message-time { margin-left: auto; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.message-actions + .message-time { margin-left: 0; }
 article.same-speaker { border-top: 0; padding-top: 4px; position: relative; }
-article.same-speaker:has(> header > .message-actions) { padding-right: 32px; }
 article.same-speaker > header { position: absolute; right: 0; top: 4px; margin: 0; min-height: 0; }
 article.same-speaker > header > :is(.speaker, .message-time) { display: none; }
 article[data-role=toolResult] { padding: 4px 0; border-top: 0; }
@@ -83,7 +81,7 @@ article.trace-continues {
   & + article.same-speaker > :is(.tool-call, .thinking):is(:first-child, header + *) { margin-top: 0; }
 }
 .thinking { border-left: 2px solid var(--line); padding-left: 10px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; padding-top: 3px; padding-bottom: 3px; }
-.tool-call { display: flow-root; }
+.tool-call { display: flow-root; position: relative; }
 .tool-call summary { list-style: none; }
 .tool-call summary::marker { content: ""; }
 .tool-call summary::-webkit-details-marker { display: none; }
@@ -103,7 +101,12 @@ article.trace-continues {
 .tool-result { min-width: 0; }
 .tool-call > .message-actions { display: block; }
 .message-actions { margin-left: auto; min-height: 24px; font-weight: normal; opacity: 0; } .message-actions:focus-visible { opacity: 1; }
-@media (hover: hover) and (pointer: fine) { article:hover > header > .message-actions, .tool-call:hover > .message-actions { opacity: 1; } }
+@media (hover: hover) and (pointer: fine) {
+  article > header > .message-actions, .tool-call > .message-actions { position: absolute; left: calc(100% + 4px); margin: 0; }
+  article > header > .message-actions { top: 0; }
+  .tool-call > .message-actions { bottom: 0; }
+  article:hover > header > .message-actions, .tool-call:hover > .message-actions { opacity: 1; }
+}
 .text { white-space: pre-wrap; } .text p { margin: 0 0 10px; } .text p:last-child { margin-bottom: 0; }
 pre { white-space: pre; overflow: auto; background: var(--code-bg); padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; tab-size: 2; }
 body.wrap-code pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -235,8 +238,6 @@ a { color: var(--link); } [hidden] { display: none !important; }
 @media (hover: none), (pointer: coarse) {
   #transcript article, #transcript .tool-call { position: relative; }
   #transcript .message-actions { position: absolute; width: 1px; min-width: 0; height: 1px; min-height: 0; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); border: 0; opacity: 0; }
-  article.same-speaker:has(> header > .message-actions) { padding-right: 0; }
-  .message-actions + .message-time { margin-left: auto; }
   #transcript article { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   #transcript :is(pre, code, a, img, input, textarea, select, [contenteditable]) { -webkit-touch-callout: default; -webkit-user-select: text; user-select: text; }
   #message-menu { inset: 8px auto auto 8px; width: 260px; max-width: calc(100% - 16px); max-height: calc(100dvh - 16px); padding: 8px; border-radius: 12px; }
@@ -271,7 +272,21 @@ body.hide-images { --image-display: none; }
 #transcript img { display: var(--image-display, inline); }
 
 /* Stacked main views. */
-body.stacked-layout { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; overflow: hidden; }
+body.stacked-layout {
+  --conversation-padding: 20px;
+  --actions-gutter: 0px;
+  --conversation-left: max(var(--conversation-padding), calc((100cqw - 820px)/2));
+  --conversation-right: max(var(--conversation-padding), var(--actions-gutter), calc((100cqw - 820px)/2));
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; overflow: hidden;
+}
+/* Size messages against the same outer width as the composer, not the
+   transcript's narrower scrollport. The remaining right space holds actions. */
+#main-area, #app-footer { container-type: inline-size; }
+.stacked-layout #transcript { padding-left: var(--conversation-left); padding-right: 0; }
+.stacked-layout #transcript > * { width: calc(100cqw - var(--conversation-left) - var(--conversation-right)); }
+.stacked-layout #composer { padding-left: var(--conversation-left); padding-right: var(--conversation-right); }
+@media (max-width: 650px) { body.stacked-layout { --conversation-padding: 10px; } }
+@media (hover: hover) and (pointer: fine) { body.stacked-layout { --actions-gutter: 64px; } }
 #app-header, #main-area, #queue, #app-footer { min-width: 0; }
 #app-header { grid-row: 1; }
 #main-area { grid-row: 2; }
@@ -329,6 +344,7 @@ body.stacked-layout { display: grid; grid-template-rows: auto minmax(0, 1fr) aut
 #queue > div > span { min-width: 0; overflow-wrap: anywhere; }
 
 /* Message actions remain transient; every action retains its accessible name. */
-#message-menu { width: auto; max-width: calc(100% - 16px); padding: 4px; border-radius: 9px; inset: auto; }
-#message-menu:popover-open { display: flex; flex-wrap: wrap; gap: 2px; }
-#message-menu > button { width: 40px; min-width: 40px; height: 40px; min-height: 40px; padding: 0; justify-content: center; }
+#message-menu { width: auto; max-width: calc(100% - 16px); padding: 2px; border-radius: 4.5px; inset: auto; }
+#message-menu:popover-open { display: flex; flex-wrap: wrap; gap: 1px; }
+#message-menu > button { width: 20px; min-width: 20px; height: 20px; min-height: 20px; padding: 0; border-radius: 3px; justify-content: center; }
+#message-menu .glyph { width: 9px; height: 9px; }
