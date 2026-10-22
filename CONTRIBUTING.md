@@ -14,19 +14,17 @@ requirement. If you haven't already, read [[README.md]].
 
 ## Documentation
 
-- (agents) Do not create/edit Markdown files without explicit approval.
-- (agents) You may delete Markdown files iff they are obsolete.
+<!-- If you are NOT a human, you may not write/update documentation without the
+user's explicit approval. -->
 
-### Writing documentation
-
-Writing/editing Markdown requires explicit instruction!
-
+- Source code is the source of truth. Do not restate in Markdown what can be
+  learned by reading source code. Prefer citing the source code directly.
 - Use repository-relative wiki links, including `.md`: `[[docs/extensions.md]]`.
 - One topic per file. Link to the source of truth instead of duplicating it.
 - Keep only concise, verifiable information. Remove stale content and update its
   callers; do not leave migration notes or tombstones.
 - All Markdown changes must pass `markdownlint-cli2`, no exceptions.
-- (agents) If a doc has a header that says "do not edit", don't edit that file.
+- Aggressively delete documentation that is obselete.
 
 ## Testing
 

@@ -3,10 +3,10 @@
 
   nixConfig = {
     extra-substituters = [
-      "https://willruggiano.cachix.org"
+      "https://drv-run.cachix.org"
     ];
     extra-trusted-public-keys = [
-      "willruggiano.cachix.org-1:rz00ME8/uQfWe+tN3njwK5vc7P8GLWu9qbAjjJbLoSw="
+      "drv-run.cachix.org-1:WPTiRxMwsLWdwH7RqpbLzjXy/282xH6G4Qq/+igHVx0="
     ];
   };
 
@@ -111,6 +111,7 @@
           ast-grep
           bash
           basedpyright
+          cachix
           coreutils
           chromium
           curl
@@ -134,6 +135,8 @@
           libnotify
           man
           markdownlint-cli2
+          nix-eval-jobs
+          nix-fast-build
           nix-update
           nodejs
           nq
