@@ -7,6 +7,7 @@ import {
   defineExtension,
   GenerationTask,
   hook,
+  section,
   wrapTool,
   type ConversationId,
   type HarnessOptions,
@@ -16,7 +17,10 @@ import {
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 
-export const Review = defineDoc<{ original?: ConversationId; active?: ConversationId }>({
+export const Review = defineDoc<{
+  original?: ConversationId;
+  active?: ConversationId;
+}>({
   kind: "app.review",
   version: 1,
   scope: "conversation",
@@ -51,6 +55,25 @@ export function createReviewExtension(environment: HarnessOptions["env"]) {
   };
   return defineExtension<ToolRegistration>({
     name: "review",
+    sections: [
+      section("review", async (input, context) => {
+        if (
+          (await input.read.snapshot(Review, input.conversationId, context))?.original === undefined
+        )
+          return;
+        return 'Write actionable findings with file and line references to REVIEW.md in the current working directory, then tell the user where the review is. If there are no findings, include the exact text "No findings." in your response. Do not modify other files.';
+      }),
+      section("review-guidelines", async (input, context) => {
+        if (
+          (await input.read.snapshot(Review, input.conversationId, context))?.original === undefined
+        )
+          return;
+        assert(input.env, "Review requires an execution environment.");
+        const file = await input.env.readTextFile("REVIEW_GUIDELINES.md", context);
+        if (!file.ok && file.error.code === "not_found") return;
+        return getOrThrow(file);
+      }),
+    ],
     wraps: [
       wrapTool(createEditTool(), (tool) => ({
         ...tool,
@@ -79,7 +102,11 @@ export function createReviewExtension(environment: HarnessOptions["env"]) {
           try {
             const agent = await api.snapshot(AgentDoc, api.conversationId, context);
             const env = await environment?.(
-              { conversationId: api.conversationId, cwd: agent?.cwd, read: api },
+              {
+                conversationId: api.conversationId,
+                cwd: agent?.cwd,
+                read: api,
+              },
               context,
             );
             if (env) {

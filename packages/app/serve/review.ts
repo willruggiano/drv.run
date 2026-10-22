@@ -4,7 +4,12 @@ import { AgentDoc, ConversationBusy, LiveDoc, type Conversation } from "@earendi
 import { Review } from "harness";
 import { Environment, SessionError, type Session } from "./sessions.ts";
 
-export async function startReview(session: Session, original: Conversation, context: Context) {
+export async function startReview(
+  session: Session,
+  original: Conversation,
+  context: Context,
+  scope?: string,
+) {
   const id = await original.commit(async (tx) => {
     const state = await tx.doc(Review, original.id);
     if (state.original !== undefined) throw new SessionError("conflict", "Already in a review.");
@@ -37,8 +42,7 @@ export async function startReview(session: Session, original: Conversation, cont
   await review.submit(
     {
       type: "input",
-      content:
-        'Review the current uncommitted changes. Write actionable findings with file and line references to REVIEW.md in the current working directory, then tell the user where the review is. If there are no findings, include the exact text "No findings." in your response. Do not modify other files.',
+      content: `Review the ${scope?.trim() || "current code changes (staged, unstaged, and untracked files)"} and provide prioritized findings.`,
       requestId: `review:${id}`,
     },
     context,

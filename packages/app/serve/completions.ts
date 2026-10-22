@@ -4,7 +4,7 @@ export const commands = [
   { name: "settings", description: "Session settings" },
   { name: "model", description: "Choose a model" },
   { name: "fork", description: "Open branches" },
-  { name: "review", description: "Review uncommitted changes in a fresh conversation" },
+  { name: "review", description: "Review in a fresh conversation · optional scope" },
   { name: "endreview", description: "End the review and return to the original conversation" },
   { name: "compact", description: "Compact context · optional instructions" },
   { name: "reset", description: "Reset context · optional handoff (asks for confirmation)" },

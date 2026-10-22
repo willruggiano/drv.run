@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -81,6 +81,99 @@ await test("HTTP review commands select conversations without submitting slash t
       assert.deepEqual(reports[0].data, { conversationId: review.id });
       assert.equal(f.faux.state.callCount, 3);
     });
+});
+
+await test("HTTP review scopes compose the review input and retries preserve the original input", async (t) => {
+  for (const [command, scope] of [
+    ["/review", "current code changes (staged, unstaged, and untracked files)"],
+    ["  /review \t\n", "current code changes (staged, unstaged, and untracked files)"],
+    ["/review packages/app", "packages/app"],
+    [
+      "/review\tchanges against main\nwith emphasis on cancellation  ",
+      "changes against main\nwith emphasis on cancellation",
+    ],
+  ]) {
+    await t.test(command, async (t) => {
+      const f = await fixture(t);
+      const session = await f.create();
+      f.faux.setResponses([
+        ({ messages }) => {
+          assert.deepEqual(
+            messages.filter((message) => message.role === "user").map(({ content }) => content),
+            [`Review the ${scope} and provide prioritized findings.`],
+          );
+          const sections = messages.find((message) => message.role === "system")?.sections;
+          assert(sections?.review);
+          assert.equal(sections["review-guidelines"], undefined);
+          return fauxAssistantMessage("No findings.");
+        },
+      ]);
+      const base = await serve(t, f.sessions);
+      const url = `${base}/api/harness/${session.id}/submit`;
+      const response = await post(url, { type: "input", content: command });
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      const review = await session.harness.conversation(result.conversationId, context);
+      assert(review);
+      await review.waitForIdle(context);
+      const before = await readHistory(review);
+      const retry = await post(url, { type: "input", content: "/review a different scope" });
+      assert.equal(retry.status, 200);
+      assert.deepEqual(await retry.json(), result);
+      assert.deepEqual(await readHistory(review), before);
+      assert.deepEqual(await readHistory(session.root), []);
+      assert.equal(f.faux.state.callCount, 1);
+    });
+  }
+});
+
+await test("review guidelines use the selected cwd and appear only in review conversations", async (t) => {
+  const f = await fixture(t);
+  const cwd = join(f.workspace, "nested");
+  await mkdir(cwd);
+  await mkdir(join(f.workspace, ".git"));
+  await writeFile(join(f.workspace, "REVIEW_GUIDELINES.md"), "Wrong directory.");
+  const path = join(cwd, "REVIEW_GUIDELINES.md");
+  await writeFile(path, "Check cancellation.\n");
+  const session = await f.create();
+  await session.root.configure({ cwd }, context);
+  f.faux.setResponses([
+    ({ messages }) => {
+      const sections = messages.find((message) => message.role === "system")?.sections;
+      assert.equal(sections?.review, undefined);
+      assert.equal(sections?.["review-guidelines"], undefined);
+      return fauxAssistantMessage("Done.");
+    },
+  ]);
+  await (await session.root.submit({ type: "input", content: "Work." }, context)).wait(context);
+  f.faux.setResponses([
+    ({ messages }) => {
+      const sections = messages.find((message) => message.role === "system")?.sections;
+      assert(sections?.review);
+      assert.deepEqual(
+        sections["review-guidelines"],
+        "<review-guidelines>\nCheck cancellation.\n\n</review-guidelines>",
+      );
+      return fauxAssistantMessage("No findings.");
+    },
+  ]);
+  const { id } = await startReview(session, session.root, context);
+  const review = await session.harness.conversation(id, context);
+  assert(review);
+  await review.waitForIdle(context);
+
+  // Rendering uses the execution environment on every request, not a cached server-side read.
+  const agent = await review.agent(context);
+  const section = agent.sections.find((section) => section.key === "review-guidelines");
+  assert(section);
+  const env = await f.options.env({ conversationId: id, cwd, read: session.harness }, context);
+  const input = { conversationId: id, agent, env, read: session.harness, shown: {} };
+  await writeFile(path, "Check cleanup.");
+  assert.deepEqual(await section.render(input, context), "Check cleanup.");
+  await rm(path);
+  assert.equal(await section.render(input, context), undefined);
+  await mkdir(path);
+  await assert.rejects(async () => section.render(input, context));
 });
 
 await test("review commands start fresh from the selected branch and return its latest review as input", async (t) => {

@@ -12,8 +12,8 @@ import { exists, fixture, readHistory } from "./sessions-testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-async function command(page: Page, name: "review" | "endreview" | "fork") {
-  await page.fill("#prompt", `/${name}`);
+async function command(page: Page, name: "review" | "endreview" | "fork", scope = "") {
+  await page.fill("#prompt", `/${name}${scope ? ` ${scope}` : ""}`);
   await page.click("#send");
 }
 
@@ -41,12 +41,18 @@ await test("review renders a separate conversation, survives reload, and returns
   assert.deepEqual(await readHistory(session.root), before);
   assert.equal(await page.inputValue("#prompt"), "/endreview");
   f.faux.setResponses([
-    fauxAssistantMessage(fauxToolCall("write", { path: "REVIEW.md", content: "1" }), {
-      stopReason: "toolUse",
-    }),
+    ({ messages }) => {
+      assert.deepEqual(
+        messages.filter((message) => message.role === "user").map(({ content }) => content),
+        ["Review the packages/app lifecycle boundaries and provide prioritized findings."],
+      );
+      return fauxAssistantMessage(fauxToolCall("write", { path: "REVIEW.md", content: "1" }), {
+        stopReason: "toolUse",
+      });
+    },
     fauxAssistantMessage("Review saved to REVIEW.md."),
   ]);
-  await command(page, "review");
+  await command(page, "review", "packages/app lifecycle boundaries");
   await page.waitForURL((url) => url.searchParams.has("conversation"));
   const id = (await session.harness.snapshot(Review, session.root.id, context))?.active;
   assert(id !== undefined);

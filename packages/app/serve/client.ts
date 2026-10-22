@@ -1638,7 +1638,7 @@ async function runCommand(text: string): Promise<boolean> {
   if (name === "endreview" && latest?.session.reviewOf === undefined)
     throw new Error("/endreview is available only in a review conversation.");
   if (images.length) throw new Error("Remove attached images before running a command.");
-  if (argument && name !== "compact" && name !== "reset")
+  if (argument && name !== "compact" && name !== "reset" && name !== "review")
     throw new Error(`/${name} does not accept arguments.`);
   if (name === "sessions") {
     return navigate("sessions");
@@ -1655,7 +1655,7 @@ async function runCommand(text: string): Promise<boolean> {
     if (!(await flushSettings()) || current !== generation || request !== navigation) return false;
     const result = await api<{ conversationId: number | null }>(endpoint("submit"), {
       type: "input",
-      content: `/${name}`,
+      content: text,
     });
     clearDraft(draftKey(id, branch), text);
     if (current === generation && request === navigation)

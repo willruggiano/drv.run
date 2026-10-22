@@ -519,12 +519,17 @@ export function httpServer(
                 throw new RequestError(400, "Invalid submission type.");
               if (data.type === "input" && typeof data.content === "string") {
                 const command = data.content.trim();
-                if (command === "/review" || command === "/endreview") {
-                  const { id } = await (command === "/review" ? startReview : endReview)(
-                    session,
-                    conversation,
-                    context,
-                  );
+                const name = command.split(/\s/, 1)[0];
+                if (name === "/review" || command === "/endreview") {
+                  const { id } =
+                    name === "/review"
+                      ? await startReview(
+                          session,
+                          conversation,
+                          context,
+                          command.slice(name.length),
+                        )
+                      : await endReview(session, conversation, context);
                   // null selects the session root, matching the client's unqualified URL/draft.
                   return { conversationId: id === session.root.id ? null : id };
                 }
