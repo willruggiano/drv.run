@@ -57,6 +57,7 @@ article:hover > .entry-actions > summary, .tool-call:hover > .entry-actions > su
 #bottom-line a { font: inherit; color: inherit; min-height: 24px; padding: 0; border: 0; background: transparent; text-align: left; min-width: 0; }
 #bottom-line a:hover { color: var(--fg); }
 #footer-stats { align-items: center; }
+#footer-context { display: flex; align-items: center; }
 #usage-menu { width: min(700px, calc(100% - 20px)); }
 .usage-table { overflow: auto; }
 .usage-table th, .usage-table td { padding: 4px 8px; text-align: right; white-space: nowrap; }

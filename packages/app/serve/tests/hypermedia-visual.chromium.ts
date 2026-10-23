@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { InboxDoc } from "@earendil-works/pi-durable";
 import { fixture } from "./sessions-testing.ts";
 import { browserFixture, returnToConversation, openGlobalSettings } from "./browser-testing.ts";
 import { conversationURL } from "../hypermedia.ts";
@@ -361,5 +362,94 @@ await test("session settings center above the composer without a header or save 
     await returnToConversation(page);
     await page.waitForURL(b.base + path);
   }
+  assert.deepEqual(b.errors, []);
+});
+
+await test("queued messages share transcript rendering and footer metadata stays aligned", async (t) => {
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const page = b.page;
+  const entered = Promise.withResolvers<void>();
+  f.faux.setResponses([
+    async () => {
+      entered.resolve();
+      await gate.promise;
+      return fauxAssistantMessage("Done.");
+    },
+  ]);
+  await session.root.submit({ type: "input", content: "Wait." }, context);
+  await entered.promise;
+  await page.goto(b.base + conversationURL(session));
+  assert.equal(await page.locator("#queue").isVisible(), false);
+  const image = {
+    type: "image" as const,
+    mimeType: "image/png",
+    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6Z9kAAAAASUVORK5CYII=",
+  };
+  for (const whenBusy of ["followUp", "steer"] as const)
+    await session.root.submit(
+      {
+        type: "input",
+        whenBusy,
+        content: [{ type: "text", text: "**Queued** `code`\n" + "long".repeat(100) }, image],
+      },
+      context,
+    );
+  await page.locator('#queue article[data-mode="steer"] img').waitFor();
+  assert.equal(await page.locator("#queue article .text strong").count(), 2);
+  assert.equal(await page.locator("#queue article .text code").count(), 2);
+  for (const width of [320, 390, 650, 651, 1199, 1200, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const geometry = await page.evaluate(() => {
+      const node = (selector: string) => document.querySelector(selector)!;
+      const box = (selector: string) => node(selector).getBoundingClientRect().toJSON();
+      const textBox = (selector: string) => {
+        const range = document.createRange();
+        range.selectNodeContents(node(selector));
+        return range.getBoundingClientRect().toJSON();
+      };
+      return {
+        model: textBox("#footer-model .model-name"),
+        context: textBox("#footer-context"),
+        queue: box("#queue"),
+        content: box(".queued-messages"),
+        composer: box(".compose-box:has(#prompt)"),
+        cancel: box("#queue button"),
+        background: getComputedStyle(node("#queue")).backgroundColor,
+        border: parseFloat(getComputedStyle(node(".queued-messages")).borderTopWidth),
+        overflow: document.documentElement.scrollWidth > innerWidth,
+        scrolls: node("#queue").scrollHeight > node("#queue").clientHeight,
+      };
+    });
+    assert(Math.abs(geometry.model.y - geometry.context.y) < 1);
+    assert(
+      Math.abs(geometry.content.x - geometry.composer.x) < 1,
+      JSON.stringify({ width, geometry }),
+    );
+    assert(Math.abs(geometry.content.right - geometry.composer.right) < 1);
+    assert(geometry.cancel.width <= 32 && geometry.cancel.height <= 32);
+    assert(geometry.queue.height <= 225);
+    assert.equal(geometry.border, 1);
+    assert.equal(geometry.background, "rgba(0, 0, 0, 0)");
+    assert.equal(geometry.overflow, false);
+    assert.equal(geometry.scrolls, true);
+  }
+  for (const remaining of [1, 0]) {
+    await page.getByRole("button", { name: "Cancel queued message", exact: true }).first().click();
+    await page.waitForFunction(
+      (count) => document.querySelectorAll("#queue article").length === count,
+      remaining,
+    );
+    assert.equal(
+      (await session.harness.snapshot(InboxDoc, session.root.id, context))?.items.length,
+      remaining,
+    );
+  }
+  assert.equal(await page.locator("#queue").isVisible(), false);
+  gate.resolve();
+  await session.root.waitForIdle(context);
   assert.deepEqual(b.errors, []);
 });

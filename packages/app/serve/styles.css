@@ -113,18 +113,17 @@ body.wrap-code pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
 code { font-family: var(--font-mono); } :not(pre) > code { color: var(--code-inline); background: var(--surface-subtle); padding: 1px 4px; border-radius: 3px; }
 .hljs-keyword, .hljs-selector-tag, .hljs-literal { color: var(--syntax-keyword); } .hljs-string, .hljs-attr { color: var(--accent); } .hljs-number, .hljs-built_in { color: var(--warning); } .hljs-title, .hljs-function { color: var(--link); } .hljs-comment { color: var(--syntax-comment); } .hljs-addition { display: inline-block; min-width: 100%; background: var(--diff-add-bg); color: var(--diff-add); } .hljs-deletion { display: inline-block; min-width: 100%; background: var(--diff-remove-bg); color: var(--diff-remove); } .hljs-meta { color: var(--syntax-meta); }
 img { max-width: 100%; height: auto; } summary { cursor: pointer; padding: 3px 0; color: var(--muted); } article details pre { max-height: 360px; }
-#notice, #recovery, #queue, #activity { padding: 6px max(20px, calc((100% - 820px)/2)); font-size: 12px; background: var(--activity-bg); }
+#notice, #recovery, #activity { padding: 6px max(20px, calc((100% - 820px)/2)); font-size: 12px; background: var(--activity-bg); }
 #notice { cursor: pointer; background: var(--notice-bg); } #recovery { background: var(--warning-bg); } .error { color: var(--danger); }
-#queue > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; } #queue { background: var(--surface-subtle); max-height: 20vh; overflow: auto; }
 #composer { padding: 8px max(20px, calc((100% - 820px)/2)) 14px; }
 .compose-box { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 4px; } .compose-box:focus-within { border-color: var(--border-focus); }
 textarea { display: block; width: 100%; resize: vertical; padding: 8px 10px; max-height: 30dvh; min-height: 64px; }
 #prompt { resize: none; min-height: 42px; max-height: 25dvh; background: transparent; border: none; outline: none; }
 .actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; } .compose-box > .actions { margin: 0; } .spacer { flex: 1; }
 #send { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
-#send, #stop, #queue button { font-size: 20px; flex-shrink: 0; }
-.compose-box > .actions > button, #queue button { display: inline-flex; align-items: center; justify-content: center; height: 40px; min-height: 40px; line-height: 1; }
-#send, #stop, #input-toggle, #queue button { width: 40px; padding: 0; }
+#send, #stop { font-size: 20px; flex-shrink: 0; }
+.compose-box > .actions > button { display: inline-flex; align-items: center; justify-content: center; height: 40px; min-height: 40px; line-height: 1; }
+#send, #stop, #input-toggle { width: 40px; padding: 0; }
 #input-toggle { font-size: 20px; } #input-mode { font-size: 11px; color: var(--muted); background: transparent; border-color: transparent; padding: 3px 6px; }
 #attachments { display: flex; flex-wrap: wrap; gap: 4px; } #attachments button { font-size: 11px; margin: 4px; }
 #latest { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 6px; border-radius: 20px; box-shadow: 0 3px 12px var(--shadow); font-size: 12px; } .composer-area { position: relative; flex-shrink: 0; }
@@ -311,7 +310,13 @@ body.stacked-layout {
 #new-options > div { border-top: 1px solid var(--line); padding: 4px 0; }
 #new-options-toggle .options-close, #new-options-toggle[aria-expanded=true] .options-cog { display: none; }
 #new-options-toggle[aria-expanded=true] .options-close { display: inline; }
-#queue { min-height: 0; max-height: min(20dvh, 180px); overflow-y: auto; padding: 0 max(20px, calc((100% - 820px)/2)); }
+#queue { min-height: 0; max-height: min(25dvh, 220px); overflow-y: auto; container-type: inline-size; }
+.queued-messages { margin: 0 var(--conversation-right) 0 var(--conversation-left); border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.queued-messages > h2 { padding-top: 6px; color: var(--muted); font-size: 10px; font-weight: 400; }
+.queued-messages > article { padding: 4px 0; }
+.queued-messages > article > header { margin-bottom: 0; }
+.queued-messages header > form { margin-left: auto; }
+.queued-messages .icon { display: flex; align-items: center; justify-content: center; width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 0; font-size: 16px; }
 #queue:empty { display: none; }
 .pane .actions { margin: 16px 0; }
 #sessions, #branches, #recent-sessions { max-height: none; overflow: visible; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
@@ -326,9 +331,10 @@ body.stacked-layout {
 .stacked-layout #bottom-line { padding-bottom: 8px; }
 .stacked-layout #bottom-line .footer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 16px; }
 #footer-instance { grid-area: 1 / 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.stacked-layout #footer-model { grid-area: 1 / 2; display: flex; justify-self: end; }
+.stacked-layout #footer-model { display: flex; }
+.footer-model-context { grid-area: 1 / 2 / 3; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.footer-model-context > .footer-dot { display: block; }
 .stacked-layout #footer-stats { grid-area: 2 / 1; }
-.stacked-layout #footer-context { grid-area: 2 / 2; justify-self: end; }
 #session-filter-bar, #search-bar { display: block; padding: 8px max(20px, calc((100% - 820px)/2)) 5px; border: 0; }
 #session-filter, #search { margin: 0; resize: none; min-height: 42px; max-height: 25dvh; background: transparent; border: none; outline: none; }
 #new-options-toggle, #create, #search-prev, #search-next { width: 40px; padding: 0; font-size: 20px; flex-shrink: 0; }
@@ -342,7 +348,7 @@ body.stacked-layout {
 @media (max-width: 650px) {
   .stacked-layout #app-header > .bar { display: none; }
   .pane { padding: 8px 16px 16px; }
-  #new-options, #queue { padding: 0 16px; }
+  #new-options { padding: 0 16px; }
   #session-filter-bar, #search-bar { padding: 6px 10px 4px; }
   .stacked-layout #bottom-line .footer-row { display: flex; gap: 6px; }
   #footer-instance, .stacked-layout #footer-stats { display: none; }
@@ -350,7 +356,6 @@ body.stacked-layout {
 @media (min-width: 651px) and (hover: hover) and (pointer: fine) {
   #new-options-toggle, #create, #search-prev, #search-next { width: 32px; font-size: 18px; }
 }
-#queue > div > span { min-width: 0; overflow-wrap: anywhere; }
 
 /* Wide screens keep navigation in the margins, not above the main pane. */
 @media (min-width: 1200px) {
