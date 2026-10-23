@@ -386,6 +386,47 @@ await test("session settings center above the composer without a header or save 
   assert.deepEqual(b.errors, []);
 });
 
+await test("recent sessions and session settings share horizontal alignment", async (t) => {
+  const f = await fixture(t);
+  const sessions = [];
+  for (let i = 0; i < 5; i++) sessions.push(await f.create());
+  const b = await browserFixture(t, f.sessions);
+  for (const page of [b.page, await b.browser.newPage()]) {
+    for (const width of [320, 390, 650, 651, 1199, 1200, 1440, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(b.base + "/sessions");
+      assert.equal(await page.locator("#session-list a").count(), 5);
+      const landing = await page.locator("#landing > div").boundingBox();
+      const title = await page
+        .locator("#session-list .session-heading strong")
+        .first()
+        .boundingBox();
+      const heading = await page.locator("#recent-title").boundingBox();
+      assert(landing && title && heading);
+      assert(Math.abs(heading.x - title.x) <= 1);
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+        false,
+      );
+      await page.goto(b.base + conversationURL(sessions[0]) + "/settings");
+      const settings = await page.locator("#preferences > div").boundingBox();
+      const valueLeft = await page.locator('#session-settings [name="name"]').evaluate((input) => {
+        const style = getComputedStyle(input);
+        return (
+          input.getBoundingClientRect().left +
+          parseFloat(style.borderLeftWidth) +
+          parseFloat(style.paddingLeft)
+        );
+      });
+      assert(settings);
+      assert.equal(landing.x, settings.x);
+      assert.equal(landing.width, settings.width);
+      assert.equal(title.x, valueLeft);
+    }
+  }
+  assert.deepEqual(b.errors, []);
+});
+
 await test("queued messages share transcript rendering and footer metadata stays aligned", async (t) => {
   const gate = Promise.withResolvers<void>();
   t.after(() => gate.resolve());

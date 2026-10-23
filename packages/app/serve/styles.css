@@ -329,7 +329,8 @@ body.stacked-layout {
 #preferences #close-view { display: flex; align-items: center; justify-content: center; margin: 0 0 12px auto; color: var(--muted); width: 44px; height: 44px; }
 #preferences #close-view:hover { color: var(--fg); }
 #preferences #close-view .glyph { width: 14px; height: 14px; }
-#recent-title { margin: 0 10px 12px; font-size: 16px; font-weight: 500; }
+#landing .session { padding-inline: 0; }
+#recent-title { margin: 0 0 12px; font-size: 16px; font-weight: 500; }
 #recent-empty { margin: 10px; color: var(--muted); font-size: 13px; }
 #app-footer { position: relative; background: var(--bg); }
 .stacked-layout #bottom-line { padding-bottom: 8px; }
