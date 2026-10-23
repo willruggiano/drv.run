@@ -44,7 +44,9 @@
   --font-brand: Georgia, serif;
 }
 :root { color-scheme: dark; font: 14px/1.6 var(--font-ui); color: var(--fg); background: var(--bg); }
-* { box-sizing: border-box; }
+/* Hide scrollbar chrome site-wide without changing native overflow or scrolling. */
+* { box-sizing: border-box; scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; width: 0; height: 0; }
 body { margin: 0; height: 100dvh; display: flex; flex-direction: column; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 button, select, textarea, input { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 button, select { min-height: 30px; padding: 3px 9px; }

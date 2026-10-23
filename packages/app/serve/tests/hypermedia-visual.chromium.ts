@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { InboxDoc } from "@earendil-works/pi-durable";
-import { fixture } from "./sessions-testing.ts";
+import { fixture, waitFor } from "./sessions-testing.ts";
 import { browserFixture, returnToConversation, openGlobalSettings } from "./browser-testing.ts";
 import { conversationURL } from "../hypermedia.ts";
 import { rename } from "../sessions.ts";
@@ -738,6 +738,111 @@ await test("transcripts have no action controls, session indicator, or reserved 
       }
       await browserContext.close();
     }
+  }
+  assert.deepEqual(b.errors, []);
+});
+
+await test("scrollbars stay hidden site-wide while both axes retain native scrolling", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  await session.root.commit(async (tx) => {
+    await tx.appendEntry(session.root.id, {
+      kind: "pi.assistant",
+      model: [
+        fauxAssistantMessage(
+          "```text\n" + "Long output ".repeat(200) + "\n```\n\n" + "More history.\n".repeat(100),
+        ),
+      ],
+    });
+  }, context);
+  const b = await browserFixture(t, f.sessions);
+  const path = conversationURL(session);
+  for (const javaScriptEnabled of [true, false]) {
+    const browserContext = await b.browser.newContext({ javaScriptEnabled });
+    const page = await browserContext.newPage();
+    page.setDefaultTimeout(10000);
+    page.on("pageerror", (error) => b.errors.push(error));
+    for (const route of [
+      path,
+      "/sessions?view=sessions",
+      `${path}/settings`,
+      `${path}/context`,
+      "/sessions/settings",
+      "/auth",
+      "/sessions/offline",
+      "/design-system.html",
+    ]) {
+      await page.goto(b.base + route);
+      assert.equal(
+        await page
+          .locator("*")
+          .evaluateAll((nodes) =>
+            nodes.every((node) => getComputedStyle(node).scrollbarWidth === "none"),
+          ),
+        true,
+      );
+      // An unclassified, dynamically inserted scroller must get the same default.
+      await page.evaluate(() => {
+        const scroller = document.createElement("div");
+        scroller.id = "scroll-probe";
+        scroller.tabIndex = 0;
+        scroller.style.cssText =
+          "position:fixed;z-index:100;top:60px;left:20px;width:200px;height:120px;overflow:scroll;border:2px solid";
+        const content = document.createElement("div");
+        content.style.cssText = "width:800px;height:900px";
+        scroller.append(content);
+        document.body.append(scroller);
+      });
+      const probe = page.locator("#scroll-probe");
+      const geometry = await probe.evaluate((node: HTMLElement) => {
+        node.scrollTo(80, 80);
+        return {
+          horizontal: node.offsetHeight - node.clientHeight - 4,
+          vertical: node.offsetWidth - node.clientWidth - 4,
+          left: node.scrollLeft,
+          top: node.scrollTop,
+          overflow: getComputedStyle(node).overflow,
+          fallback: getComputedStyle(node, "::-webkit-scrollbar").display,
+        };
+      });
+      assert.deepEqual(geometry, {
+        horizontal: 0,
+        vertical: 0,
+        left: 80,
+        top: 80,
+        overflow: "scroll",
+        fallback: "none",
+      });
+      await probe.hover();
+      await probe.focus();
+      assert.equal(await probe.evaluate((node) => getComputedStyle(node).scrollbarWidth), "none");
+    }
+    await page.goto(b.base + path);
+    const transcript = page.locator("#conversation-scroll");
+    if (javaScriptEnabled)
+      await page.waitForFunction(
+        () => document.querySelector("#connection")?.textContent === "Connected",
+      );
+    assert(await transcript.evaluate((node) => node.scrollHeight > node.clientHeight));
+    await transcript.evaluate((node) => (node.scrollTop = 0));
+    await transcript.focus();
+    await page.keyboard.press("PageDown");
+    await waitFor(() => transcript.evaluate((node) => node.scrollTop > 0));
+    await transcript.evaluate((node) => (node.scrollTop = 0));
+    await transcript.hover();
+    await page.mouse.wheel(0, 240);
+    await waitFor(() => transcript.evaluate((node) => node.scrollTop > 0));
+    const code = page.locator("#transcript pre");
+    await code.scrollIntoViewIfNeeded();
+    await code.hover();
+    await page.mouse.wheel(200, 0);
+    await waitFor(() => code.evaluate((node) => node.scrollLeft > 0));
+    await page.goto(b.base + "/design-system.html");
+    await page.mouse.move(100, 100);
+    await page.mouse.wheel(0, 240);
+    await waitFor(() => page.evaluate(() => document.scrollingElement!.scrollTop > 0));
+    assert.equal(await page.evaluate(() => innerWidth - document.documentElement.clientWidth), 0);
+    await browserContext.close();
   }
   assert.deepEqual(b.errors, []);
 });

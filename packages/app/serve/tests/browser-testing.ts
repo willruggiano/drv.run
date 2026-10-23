@@ -22,7 +22,11 @@ export async function browserFixture(
   if (screenshots) await mkdir(screenshots, { recursive: true });
   await buildAssets(source, assets);
   const base = await serve(t, sessions, assets, "127.0.0.1", undefined, undefined, authorization);
-  const browser = await chromium.launch({ executablePath: chromiumExecutable() });
+  const browser = await chromium.launch({
+    executablePath: chromiumExecutable(),
+    // Exercise the site's scrollbar styles, not Playwright's blanket suppression.
+    ignoreDefaultArgs: ["--hide-scrollbars"],
+  });
   t.after(() => browser.close());
   const browserContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
