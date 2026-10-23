@@ -445,7 +445,7 @@ await test("HTML target directory selection, path completions and slash activati
   );
   const before = await readHistory(session.root);
   assert.notEqual(before.at(-1)?.kind, "pi.reset");
-  await returnToConversation(page);
+  await page.getByRole("link", { name: "Cancel reset" }).click();
   await page.waitForFunction(
     () =>
       document.querySelector<HTMLTextAreaElement>('#composer [name="content"]')?.value ===

@@ -39,7 +39,7 @@ export async function browserFixture(
 export async function openSessions(page: Page): Promise<void> {
   const title = page.locator("#conversation-title");
   if (await title.isVisible()) await title.click();
-  else await page.keyboard.press("Control+k");
+  else await page.keyboard.press("Meta+k");
 }
 
 export async function returnToConversation(page: Page): Promise<void> {

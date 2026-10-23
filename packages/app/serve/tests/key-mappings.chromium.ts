@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test";
 import type { Page } from "playwright";
 import { fixture } from "./sessions-testing.ts";
 import { browserFixture } from "./browser-testing.ts";
+import { conversationURL } from "../hypermedia.ts";
 
 async function focused(page: Page, id: string) {
   assert.equal(
@@ -142,6 +143,124 @@ await test("browser key mappings: Ctrl+J/K navigate visible sessions and Enter a
   await page.keyboard.press("Control+k");
   await focused(page, "session-filter");
   assert.equal(await page.inputValue("#session-filter"), "");
+});
+
+await test("browser key mappings: Ctrl+J/K navigate landing recent sessions", async (t) => {
+  const f = await fixture(t);
+  await f.create();
+  await f.create();
+  const { page, base, errors } = await browserFixture(t, f.sessions);
+  page.setDefaultTimeout(10000);
+  await page.goto(base + "/sessions");
+  const recent = page.locator("#landing #session-list a");
+  assert.equal(await recent.count(), 2);
+  const selected = async (index: number) =>
+    assert.equal(await recent.nth(index).evaluate((node) => node === document.activeElement), true);
+  await page.focus("#prompt");
+  await page.keyboard.press("Control+j");
+  await selected(0);
+  await page.keyboard.press("Control+j");
+  await selected(1);
+  await page.keyboard.press("Control+j");
+  await selected(0);
+  await page.keyboard.press("Control+k");
+  await selected(1);
+  await page.focus("#prompt");
+  await page.keyboard.press("Control+k");
+  await selected(1);
+  assert.equal(page.url(), base + "/sessions");
+  const href = await recent.nth(1).getAttribute("href");
+  assert(href);
+  const session = await f.sessions.get(href.split("/").at(-1)!);
+  await page.keyboard.press("Enter");
+  await page.waitForURL(base + conversationURL(session));
+  await page.keyboard.press("Tab");
+  await focused(page, "prompt");
+  await page.goto(base + "/sessions");
+  await page.focus("#prompt");
+  await page.keyboard.press("Meta+k");
+  await page.locator("#picker").waitFor();
+  assert.deepEqual(errors, []);
+});
+
+await test("browser key mappings: composer is first in native tab order without autofocus", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const path = conversationURL(session);
+  for (const javaScriptEnabled of [true, false]) {
+    const browserContext = await b.browser.newContext({ javaScriptEnabled });
+    t.after(() => browserContext.close());
+    const page = await browserContext.newPage();
+    page.on("pageerror", (error) => b.errors.push(error));
+    for (const width of [390, 820]) {
+      await page.setViewportSize({ width, height: 844 });
+      for (const [route, id] of [
+        ["/sessions", "prompt"],
+        ["/sessions?view=sessions", "session-filter"],
+        [path, "prompt"],
+        [path + "/reset", "prompt"],
+        [path + "/settings", "prompt"],
+      ]) {
+        await page.goto(b.base + route);
+        assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+        await page.keyboard.press("Tab");
+        await focused(page, id);
+        await page.keyboard.press("Tab");
+        assert.equal(
+          await page.locator(`#${id}`).evaluate((node) => node === document.activeElement),
+          false,
+        );
+        await page.keyboard.press("Shift+Tab");
+        await focused(page, id);
+      }
+    }
+  }
+  assert.deepEqual(b.errors, []);
+});
+
+await test("browser key mappings: Escape blurs the composer without navigation or replacement", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const { page, base, errors } = await browserFixture(t, f.sessions);
+  page.setDefaultTimeout(10000);
+  const path = conversationURL(session);
+  for (const [route, id] of [
+    ["/sessions", "prompt"],
+    ["/sessions?view=sessions", "session-filter"],
+    [path, "prompt"],
+    [path + "/reset", "prompt"],
+    [path + "/settings", "prompt"],
+  ]) {
+    await page.goto(base + route);
+    await page.locator(`#${id}`).fill("Keep this draft.");
+    const root = await page.locator("#page").elementHandle();
+    assert(root);
+    await page.evaluate(() => {
+      document.addEventListener("htmx:config:request", (event) => {
+        if (event.detail.ctx.target?.id === "page")
+          document.querySelector<HTMLElement>("#page")!.dataset.navigationRequested = "true";
+      });
+    });
+    await page.keyboard.press("Escape");
+    assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+    assert.equal(await root.evaluate((node) => node.isConnected), true);
+    assert.equal(await root.getAttribute("data-navigation-requested"), null);
+    assert.equal(page.url(), base + route);
+    assert.equal(await page.inputValue(`#${id}`), "Keep this draft.");
+    await root.dispose();
+  }
+  // Dismiss completions before leaving the input.
+  await page.goto(base + path);
+  await page.locator("#prompt").fill("/re");
+  await page.locator("#completions [data-completion]").first().waitFor();
+  await page.keyboard.press("Escape");
+  await focused(page, "prompt");
+  assert.equal(await page.locator("#completions").isVisible(), false);
+  await page.keyboard.press("Escape");
+  assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+  assert.equal(page.url(), base + path);
+  assert.deepEqual(errors, []);
 });
 
 await test("browser key mappings: Ctrl+J/K select options and emit changes", async (t) => {

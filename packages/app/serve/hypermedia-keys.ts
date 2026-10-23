@@ -44,6 +44,11 @@ export function installKeys() {
         event.preventDefault();
         return;
       }
+      if (event.target instanceof HTMLElement && event.target.closest("#app-footer .compose-box")) {
+        event.preventDefault();
+        event.target.blur();
+        return;
+      }
       const bar = document.querySelector<HTMLElement>("#search-bar");
       if (bar && !bar.hidden) {
         bar.hidden = true;
@@ -73,7 +78,7 @@ export function installKeys() {
       return;
     }
     const list = Array.from(
-      document.querySelectorAll<HTMLElement>("#picker #session-list a, #branches a"),
+      document.querySelectorAll<HTMLElement>("#session-list a, #branches a"),
     ).filter((node) => node.checkVisibility() && node.getAttribute("aria-disabled") !== "true");
     if (direction && list.length && !(event.target instanceof HTMLSelectElement)) {
       event.preventDefault();
