@@ -29,6 +29,11 @@ export const Review = defineDoc<{
   initial: () => ({}),
 });
 
+const INSTRUCTION =
+  "Write your review to REVIEW.md in the current working directory before finishing. " +
+  `If there are no findings, include the exact text "No findings." in your response and do *not* write REVIEW.md. ` +
+  "Do not modify other files.";
+
 export function createReviewExtension(environment: HarnessOptions["env"]) {
   async function mutationPath(path: string, api: ToolExecutionApi, context: Context) {
     if ((await api.snapshot(Review, api.conversationId, context))?.original === undefined)
@@ -61,7 +66,7 @@ export function createReviewExtension(environment: HarnessOptions["env"]) {
           (await input.read.snapshot(Review, input.conversationId, context))?.original === undefined
         )
           return;
-        return 'Write actionable findings with file and line references to REVIEW.md in the current working directory, then tell the user where the review is. If there are no findings, include the exact text "No findings." in your response. Do not modify other files.';
+        return INSTRUCTION;
       }),
       section("review-guidelines", async (input, context) => {
         if (
@@ -98,7 +103,6 @@ export function createReviewExtension(environment: HarnessOptions["env"]) {
           const text = answer.content
             .flatMap((part) => (part.type === "text" ? [part.text] : []))
             .join("");
-          if (text.includes("No findings.")) return;
           try {
             const agent = await api.snapshot(AgentDoc, api.conversationId, context);
             const env = await environment?.(
@@ -111,15 +115,20 @@ export function createReviewExtension(environment: HarnessOptions["env"]) {
             );
             if (env) {
               const file = await env.fileInfo(posix.join(env.cwd, "REVIEW.md"), context);
-              if (file.ok && file.value.kind === "file") return;
+              if (file.ok && file.value.kind === "file") {
+                if (text.includes("No findings.")) {
+                  await env.remove(file.value.path, { force: true }, context);
+                }
+                return;
+              }
             }
+            if (text.includes("No findings.")) return;
           } catch (error) {
             if (context.abortSignal?.aborted) throw error;
             // A failed check is not permission to finish. Hook exceptions otherwise get skipped.
           }
           return {
-            continue:
-              'Write your review to REVIEW.md in the current working directory before finishing. If there are no findings, include the exact text "No findings." in your response.',
+            continue: INSTRUCTION,
           };
         },
       }),
