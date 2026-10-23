@@ -82,6 +82,7 @@
 
     checks = eachSystem (pkgs: {
       inherit (pkgs) app mitm-proxy;
+      app-tape = pkgs.app.tape;
       pi-config = let
         evaluate = settings:
           (lib.nixosSystem {

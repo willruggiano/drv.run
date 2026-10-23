@@ -11,7 +11,7 @@
     "build": "npm run build --workspace=harness && npm run build --workspace=serve",
     "check": "npm run check --workspaces",
     "test": "NODE_OPTIONS=--conditions=development node --test 'harness/tests/*.test.ts' 'serve/tests/*.test.ts'",
-    "test:browser": "NODE_OPTIONS=--conditions=development node --test 'serve/tests/*.chromium.ts'"
+    "test:browser": "NODE_OPTIONS=--conditions=development node --test 'serve/tests/*.chromium.ts' 'tape/tests/*.chromium.ts'"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

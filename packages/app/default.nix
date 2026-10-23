@@ -98,6 +98,10 @@ in
         --add-flags "$out/lib/app/serve/dist/server.js"
       runHook postInstall
     '';
+    passthru.tape = callPackage ./tape {
+      app = finalAttrs.finalPackage;
+      piRevision = pi-src.rev or "unknown";
+    };
     passthru.bench.render = writeShellApplication {
       name = "serve-bench-render";
       runtimeInputs = [chromium esbuild];
