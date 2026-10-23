@@ -1,0 +1,342 @@
+type App = {
+  ports: {
+    stream: { subscribe(callback: (value: { path: string; epoch: number }) => void): void };
+    persist: { subscribe(callback: (value: unknown) => void): void };
+    browser: { subscribe(callback: (value: BrowserRequest) => void): void };
+    incoming: { send(value: { kind: string; epoch: number; payload: unknown }): void };
+  };
+};
+type BrowserRequest =
+  | { kind: "rendered"; epoch: number }
+  | { kind: "selection"; caret: number }
+  | { kind: "highlight"; query: string; entries: number[]; current: number | null }
+  | { kind: "focus" | "reveal"; id: string }
+  | { kind: "resize" | "latest" | "cancel-completions" };
+declare const Elm: { Main: { init(options: { flags: unknown }): App } };
+
+// These elements own only their contents. Elm owns their attributes and placement.
+const highlighterURL = "/highlight.js";
+let highlighter: Promise<typeof import("./highlight.ts")> | undefined;
+class ElmCode extends HTMLElement {
+  static observedAttributes = ["language", "source"];
+  connectedCallback() {
+    this.render();
+  }
+  attributeChangedCallback() {
+    if (this.isConnected) this.render();
+  }
+  private render() {
+    const source = this.getAttribute("source") ?? "";
+    const language = this.getAttribute("language") ?? "";
+    const code = document.createElement("code");
+    code.textContent = source;
+    const pre = document.createElement("pre");
+    pre.append(code);
+    this.replaceChildren(pre);
+    if (language) {
+      highlighter ??= import(highlighterURL);
+      void highlighter.then(({ default: hljs }) => {
+        if (code.isConnected && hljs.getLanguage(language))
+          code.innerHTML = hljs.highlight(source, { language, ignoreIllegals: true }).value;
+      });
+    }
+  }
+}
+class ElmTime extends HTMLElement {
+  static observedAttributes = ["timestamp"];
+  private static time: Intl.DateTimeFormat | undefined;
+  private static dateTime: Intl.DateTimeFormat | undefined;
+  connectedCallback() {
+    this.render();
+  }
+  attributeChangedCallback() {
+    if (this.isConnected) this.render();
+  }
+  private render() {
+    const date = new Date(Number(this.getAttribute("timestamp")));
+    if (!Number.isFinite(date.getTime())) {
+      this.textContent = "";
+      this.title = "";
+      return;
+    }
+    ElmTime.time ??= new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
+    ElmTime.dateTime ??= new Intl.DateTimeFormat([], {
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+    this.textContent = ElmTime.time.format(date);
+    this.title = ElmTime.dateTime.format(date);
+  }
+}
+customElements.define("elm-code", ElmCode);
+customElements.define("elm-time", ElmTime);
+let drafts: unknown = {};
+try {
+  drafts = JSON.parse(sessionStorage.getItem("pi.elm.drafts") ?? "{}");
+} catch {
+  /* Optional storage. */
+}
+const app = Elm.Main.init({ flags: { nonce: crypto.randomUUID(), drafts } });
+document.body.classList.add("stacked-layout", "bottom-align");
+let stopStream: (() => void) | undefined;
+let epoch = 0;
+let path = location.pathname;
+let pinned = true;
+let restore: number | undefined;
+const positions = new Map<string, number>();
+const scroll = () => document.querySelector<HTMLElement>("#conversation-scroll");
+const prompt = () => document.querySelector<HTMLTextAreaElement>("#prompt");
+const send = (kind: string, payload: unknown) => app.ports.incoming.send({ kind, epoch, payload });
+const afterRender = (callback: () => void) =>
+  requestAnimationFrame(() => requestAnimationFrame(callback));
+let resizedPrompt: HTMLTextAreaElement | null = null;
+let resizedValue = "";
+let promptWidth: number | undefined;
+const promptObserver = new ResizeObserver((entries) => {
+  for (const entry of entries) {
+    if (entry.target !== resizedPrompt) continue;
+    const width = entry.borderBoxSize[0].inlineSize;
+    if (!entry.target.isConnected || width !== promptWidth) {
+      // Height changes also notify this observer. Only width changes invalidate sizing,
+      // and writes run outside observer delivery to avoid a resize notification loop.
+      const node = entry.target;
+      requestAnimationFrame(() => {
+        if (node === resizedPrompt) resize(true);
+      });
+    }
+    promptWidth = width;
+  }
+});
+function resize(force = false) {
+  const node = prompt();
+  if (node !== resizedPrompt) {
+    promptObserver.disconnect();
+    resizedPrompt = node;
+    promptWidth = undefined;
+    if (node) promptObserver.observe(node, { box: "border-box" });
+    force = true;
+  }
+  if (!node || (!force && node.value === resizedValue)) return;
+  resizedValue = node.value;
+  promptWidth = node.getBoundingClientRect().width;
+  node.style.height = "auto";
+  node.style.height = `${node.scrollHeight}px`;
+}
+function latest() {
+  const node = scroll();
+  if (node) {
+    pinned = true;
+    node.scrollTop = node.scrollHeight;
+    send("latest", false);
+  }
+}
+app.ports.stream.subscribe((request) => {
+  stopStream?.();
+  stopStream = undefined;
+  epoch = request.epoch;
+  if (!request.path) return;
+  if (path !== request.path) {
+    // The old scrollport may already be gone. Positions are captured by scroll events.
+    path = request.path;
+    restore = positions.get(path);
+    pinned = restore === undefined;
+  }
+  // Restore draft sizing even offline; leave a fresh empty composer to the first frame.
+  afterRender(() => {
+    const node = prompt();
+    if (request.epoch === epoch && (node?.value || node?.style.height)) resize();
+  });
+  let current: EventSource | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryWindow = 250;
+  let stopped = false;
+  stopStream = () => {
+    stopped = true;
+    clearTimeout(retryTimer);
+    const closing = current;
+    current = undefined;
+    closing?.close();
+  };
+  function connect() {
+    if (stopped) return;
+    const connection = new EventSource(`${request.path}/events`);
+    current = connection;
+    let receivedAt: number | undefined;
+    connection.onmessage = (event) => {
+      if (connection !== current) return;
+      receivedAt ??= performance.now();
+      const node = scroll();
+      if (node && restore === undefined)
+        pinned = node.scrollHeight - node.clientHeight - node.scrollTop < 32;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        payload = null;
+      }
+      send("frame", payload);
+    };
+    connection.onerror = () => {
+      if (connection !== current) return;
+      const terminal = connection.readyState === EventSource.CLOSED;
+      current = undefined;
+      // Cancel the browser's retry timer; only this subscription may schedule retries.
+      connection.close();
+      if (terminal) {
+        send("stream-failed", null);
+        return;
+      }
+      send("disconnected", null);
+      // Opening, or receiving one snapshot then immediately closing, is not recovery.
+      if (receivedAt !== undefined && performance.now() - receivedAt >= 30_000) retryWindow = 250;
+      // Equal jitter: [125, 250) ms initially, doubling up to [15, 30) seconds.
+      const delay = retryWindow * (0.5 + Math.random() * 0.5);
+      retryWindow = Math.min(retryWindow * 2, 30_000);
+      retryTimer = setTimeout(connect, delay);
+    };
+  }
+  connect();
+});
+app.ports.persist.subscribe((value) => {
+  try {
+    sessionStorage.setItem("pi.elm.drafts", JSON.stringify(value));
+  } catch {
+    /* In-memory drafts remain authoritative. */
+  }
+});
+app.ports.browser.subscribe((request) => {
+  if (request.kind === "cancel-completions") {
+    clearTimeout(completionTimer);
+    return;
+  }
+  const requestedEpoch = epoch;
+  afterRender(() => {
+    if (requestedEpoch !== epoch) return;
+    switch (request.kind) {
+      case "rendered": {
+        if (request.epoch !== epoch) return;
+        const node = scroll();
+        if (node) {
+          if (restore !== undefined) {
+            node.scrollTop = restore;
+            restore = undefined;
+          } else if (pinned && getSelection()?.isCollapsed !== false)
+            node.scrollTop = node.scrollHeight;
+          send("latest", node.scrollHeight - node.clientHeight - node.scrollTop >= 32);
+        }
+        resize();
+        document.dispatchEvent(new Event("elm:rendered"));
+        break;
+      }
+      case "highlight": {
+        const highlight = new Highlight();
+        if (request.query)
+          for (const id of request.entries) {
+            const article = document.getElementById(`entry-${id}`);
+            if (!article) continue;
+            const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
+            for (
+              let node = walker.nextNode();
+              node && highlight.size < 2000;
+              node = walker.nextNode()
+            ) {
+              if (node.parentElement?.closest("header")) continue;
+              const text = (node.textContent ?? "").toLowerCase();
+              for (
+                let offset = text.indexOf(request.query);
+                offset >= 0 && highlight.size < 2000;
+                offset = text.indexOf(request.query, offset + request.query.length)
+              ) {
+                const range = document.createRange();
+                range.setStart(node, offset);
+                range.setEnd(node, offset + request.query.length);
+                highlight.add(range);
+              }
+            }
+          }
+        CSS.highlights.set("pi-search", highlight);
+        if (request.current !== null)
+          document.getElementById(`entry-${request.current}`)?.scrollIntoView({ block: "center" });
+        break;
+      }
+      case "resize":
+        resize();
+        break;
+      case "latest":
+        latest();
+        break;
+      case "selection":
+        prompt()?.focus();
+        prompt()?.setSelectionRange(request.caret, request.caret);
+        break;
+      case "focus":
+        document.getElementById(request.id)?.focus();
+        break;
+      case "reveal":
+        document.getElementById(request.id)?.scrollIntoView({ block: "center" });
+        break;
+    }
+  });
+});
+document.addEventListener(
+  "scroll",
+  (event) => {
+    const node = scroll();
+    if (event.target === node && node) {
+      pinned = node.scrollHeight - node.clientHeight - node.scrollTop < 32;
+      positions.set(path, node.scrollTop);
+      send("latest", !pinned);
+    }
+  },
+  true,
+);
+let completionTimer: ReturnType<typeof setTimeout> | undefined;
+for (const name of ["input", "click", "keyup", "compositionend"])
+  document.addEventListener(
+    name,
+    (event) => {
+      if (event.target !== prompt()) return;
+      if (
+        event instanceof KeyboardEvent &&
+        !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
+      )
+        return;
+      clearTimeout(completionTimer);
+      const requestedEpoch = epoch;
+      completionTimer = setTimeout(() => {
+        if (requestedEpoch === epoch) send("caret", prompt()?.selectionStart ?? 0);
+      }, 120);
+    },
+    true,
+  );
+for (const name of ["paste", "drop"])
+  document.addEventListener(name, (event) => {
+    const files =
+      event instanceof ClipboardEvent
+        ? event.clipboardData?.files
+        : event instanceof DragEvent
+          ? event.dataTransfer?.files
+          : undefined;
+    if (files?.length) {
+      event.preventDefault();
+      send("files", Array.from(files));
+    }
+  });
+document.addEventListener("dragover", (event) => {
+  if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "f" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    send("search", null);
+  }
+});
+window.addEventListener("pagehide", () => stopStream?.());
+
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) send("restored", null);
+});

@@ -1,3 +1,4 @@
+import { elmFrontend } from "./elm-frontend.ts";
 import { html as h } from "./html.ts";
 import { authPage, ProxyAuthorization } from "./auth.ts";
 import { hypermedia, html, FormError } from "./hypermedia.ts";
@@ -266,6 +267,8 @@ export function httpServer(
       const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
       if (url.pathname === "/auth" || url.pathname.startsWith("/auth/"))
         return await authPage(request, response, url, authorization, controller.signal);
+      if (url.pathname === "/elm" || url.pathname.startsWith("/elm/"))
+        return await elmFrontend(request, response, url, sessions, context);
       if (url.pathname === "/sessions" || url.pathname.startsWith("/sessions/"))
         return await hypermedia(request, response, url, sessions, context, settings);
       if (url.pathname === "/") {
@@ -277,6 +280,9 @@ export function httpServer(
       if (
         request.method === "GET" &&
         [
+          "/elm-client.js",
+          "/elm.js",
+          "/elm.css",
           "/hypermedia-client.js",
           "/htmx.js",
           "/hx-sse.js",
@@ -293,6 +299,9 @@ export function httpServer(
       ) {
         const file = url.pathname.slice(1);
         const types: Record<string, string> = {
+          "elm-client.js": "text/javascript; charset=utf-8",
+          "elm.js": "text/javascript; charset=utf-8",
+          "elm.css": "text/css; charset=utf-8",
           "hypermedia-client.js": "text/javascript; charset=utf-8",
           "htmx.js": "text/javascript; charset=utf-8",
           "hx-sse.js": "text/javascript; charset=utf-8",
@@ -336,6 +345,20 @@ export function httpServer(
                   ]
                 : 500;
       if (status === 500) console.error(error);
+      if (request.url?.startsWith("/elm/")) {
+        response.writeHead(status, { "Content-Type": "application/json" });
+        response.end(
+          JSON.stringify({
+            error:
+              status === 500
+                ? "Internal server error."
+                : error instanceof Error
+                  ? error.message
+                  : "Request failed.",
+          }),
+        );
+        return;
+      }
       if (request.headers["hx-request"] === "true") {
         response.setHeader("HX-Retarget", "#request-error");
         response.setHeader("HX-Reselect", "#form-error");

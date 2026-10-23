@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { appendFile, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,8 @@ export async function buildAssets(source: string, destination: string): Promise<
   await mkdir(destination, { recursive: true });
   const { stderr } = await promisify(execFile)("esbuild", [
     ...[
+      "elm-client.ts",
+      "elm.css",
       "hypermedia-client.ts",
       "hypermedia-morph.ts",
       "hypermedia.css",
@@ -28,6 +31,42 @@ export async function buildAssets(source: string, destination: string): Promise<
     `--outdir=${destination}`,
   ]);
   if (stderr) process.stderr.write(stderr);
+  await promisify(execFile)(
+    "elm",
+    ["make", "src/Main.elm", "--optimize", `--output=${resolve(destination, "elm.js")}`],
+    { cwd: join(source, "elm") },
+  );
+  // Elm exports through top-level `this`. An enclosing type=module package makes
+  // esbuild replace it with undefined, so give the minifier explicit CommonJS input.
+  const elmSource = join(destination, "elm.cjs");
+  await rename(join(destination, "elm.js"), elmSource);
+  try {
+    await promisify(execFile)("esbuild", [
+      elmSource,
+      "--minify",
+      "--target=es2024",
+      "--legal-comments=eof",
+      `--outfile=${join(destination, "elm.js")}`,
+      "--log-level=warning",
+    ]);
+  } finally {
+    await rm(elmSource);
+  }
+  const manifest = JSON.parse(await readFile(join(source, "elm/elm.json"), "utf8")) as {
+    "elm-version": string;
+    dependencies: { direct: Record<string, string>; indirect: Record<string, string> };
+  };
+  const elmHome = process.env.ELM_HOME ?? join(homedir(), ".elm");
+  for (const [name, version] of Object.entries({
+    ...manifest.dependencies.direct,
+    ...manifest.dependencies.indirect,
+  })) {
+    const notice = await readFile(
+      join(elmHome, manifest["elm-version"], "packages", name, version, "LICENSE"),
+      "utf8",
+    );
+    await appendFile(join(destination, "elm.js"), `\n/*! ${name} ${version}\n${notice}*/\n`);
+  }
   // Upstream's CommonJS files omit the package-level BSD notice.
   const require = createRequire(resolve(source, "highlight.ts"));
   const htmx = await readFile(require.resolve("htmx.org/dist/htmx.min.js"), "utf8");

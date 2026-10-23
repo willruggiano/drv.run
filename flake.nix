@@ -163,6 +163,14 @@
         packages = [pkgs'.pi-jailed pkgs'.treefmt-wrapped];
       };
       toolchain = pkgs.mkShell {
+        shellHook = ''
+          export ELM_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/drv-run-${builtins.baseNameOf pkgs.app.elmHome}"
+          if [ ! -d "$ELM_HOME" ]; then
+            mkdir -p "$ELM_HOME"
+            cp -R ${pkgs.app.elmHome}/. "$ELM_HOME/"
+            chmod -R u+w "$ELM_HOME"
+          fi
+        '';
         nativeBuildInputs = [pkgs.systemd.dev];
         # workspace support: https://github.com/NixOS/nixpkgs/pull/522939
         npmDeps = pkgs.app.dev;
@@ -177,6 +185,9 @@
           curl
           diffutils
           esbuild
+          elmPackages.elm
+          elmPackages.elm-format
+          elmPackages.elm-test
           eza
           fd
           file

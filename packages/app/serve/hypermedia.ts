@@ -138,7 +138,7 @@ function redirect(request: IncomingMessage, response: ServerResponse, path: stri
   response.end();
 }
 
-async function form(request: IncomingMessage, maximum = 128 * 1024): Promise<FormData> {
+export async function form(request: IncomingMessage, maximum = 128 * 1024): Promise<FormData> {
   // Unlike JSON, ordinary forms are cross-site writable without a preflight.
   if (!request.headers.origin) throw new FormError(403, "Origin header required for forms.");
   const type = request.headers["content-type"] ?? "";
@@ -164,7 +164,7 @@ async function form(request: IncomingMessage, maximum = 128 * 1024): Promise<For
     throw new FormError(400, "Invalid form.");
   }
 }
-function field(data: FormData, key: string, max = 100_000): string {
+export function field(data: FormData, key: string, max = 100_000): string {
   const values = data.getAll(key);
   const value = values[0];
   if (values.length !== 1 || typeof value !== "string" || value.length > max)
@@ -1079,7 +1079,7 @@ function saved(request: IncomingMessage, response: ServerResponse, path: string)
     response.end();
   } else redirect(request, response, path);
 }
-async function inputContent(data: FormData): Promise<UserInput | undefined> {
+export async function inputContent(data: FormData): Promise<UserInput | undefined> {
   const text = optional(data, "content");
   const images: Exclude<UserInput, string> = [];
   let size = 0;
@@ -1099,7 +1099,7 @@ async function inputContent(data: FormData): Promise<UserInput | undefined> {
     throw new FormError(400, "Attach up to four images, totaling at most 5 MiB.");
   return images.length ? [{ type: "text", text }, ...images] : text.trim() ? text : undefined;
 }
-async function history(conversation: Conversation, context: Context) {
+export async function history(conversation: Conversation, context: Context) {
   const records: EntryRecord[] = [];
   let cursor: Cursor | undefined;
   do {
@@ -1162,7 +1162,10 @@ async function metadataHTML(
   return h`<section id="session-meta" data-name="${info.name || "Untitled session"}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}"><div id="bottom-line" aria-label="Conversation statistics"><div class="footer-row">${sessionsLink}${instance}${statistics}<div class="footer-model-context">${model}${dot}${contextUsage}</div>${collapse}</div></div>${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${newSession}</section>`;
 }
 
-async function compactionTimes(session: Session, context: Context): Promise<Map<number, number>> {
+export async function compactionTimes(
+  session: Session,
+  context: Context,
+): Promise<Map<number, number>> {
   const times = new Map<number, number>();
   let cursor: Cursor | undefined;
   do {

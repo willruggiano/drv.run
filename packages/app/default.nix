@@ -5,6 +5,8 @@
   callPackage,
   chromium,
   esbuild,
+  elmPackages,
+  runCommand,
   git,
   importNpmLock,
   lib,
@@ -17,6 +19,14 @@
   typescript,
   writeShellApplication,
 }: let
+  elmHome = runCommand "app-elm-home" {} ((elmPackages.fetchElmDeps {
+      elmVersion = elmPackages.elm.version;
+      elmPackages = lib.importJSON ./serve/elm/deps.json;
+      registryDat = ./serve/elm/registry.dat;
+    })
+    + ''
+      cp -R .elm $out
+    '');
   manifest = lib.importJSON ./package.json;
   lock = lib.importJSON ./package-lock.json;
   pi = callPackage ./pi.nix {src = pi-src;};
@@ -45,6 +55,7 @@ in
           (lib.fileset.maybeMissing ./serve/dist)
           (lib.fileset.maybeMissing ./harness/node_modules)
           (lib.fileset.maybeMissing ./serve/node_modules)
+          (lib.fileset.maybeMissing ./serve/elm/elm-stuff)
         ]);
     };
     outputs = ["out" "dev"];
@@ -65,7 +76,12 @@ in
     };
     inherit (importNpmLock) npmConfigHook;
     npmRebuildFlags = ["--ignore-scripts"];
-    nativeBuildInputs = [autoPatchelfHook esbuild git makeWrapper typescript];
+    nativeBuildInputs = [autoPatchelfHook esbuild git makeWrapper typescript elmPackages.elm elmPackages.elm-format elmPackages.elm-test];
+    preBuild = ''
+      export ELM_HOME="$TMPDIR/elm-home"
+      cp -R ${elmHome} "$ELM_HOME"
+      chmod -R u+w "$ELM_HOME"
+    '';
     buildInputs = [stdenv.cc.cc.lib libxcb];
 
     doCheck = true;
@@ -98,6 +114,7 @@ in
         --add-flags "$out/lib/app/serve/dist/server.js"
       runHook postInstall
     '';
+    passthru.elmHome = elmHome;
     passthru.tape = callPackage ./tape {
       app = finalAttrs.finalPackage;
       piRevision = pi-src.rev or "unknown";

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { BACKGROUND_CONTEXT, awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
@@ -363,10 +364,15 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
   assert.equal((await fetch(`http://localhost:${port}/sessions`)).status, 200);
 });
 
-await test("built highlighter preserves selected languages and is served as a static module", async (t) => {
+await test("built browser assets preserve module formats and selected highlight languages", async (t) => {
   const assets = await mkdtemp(join(tmpdir(), "serve-build-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
+  // Production builds inside a package with type=module; Elm still loads as a classic script.
+  await writeFile(join(assets, "package.json"), JSON.stringify({ type: "module" }));
   await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
+  const scope: { Elm?: { Main?: { init?: unknown } } } = {};
+  runInNewContext(await readFile(join(assets, "elm.js"), "utf8"), scope);
+  assert.equal(typeof scope.Elm?.Main?.init, "function");
   const { default: highlighter }: { default: typeof import("highlight.js") } = await import(
     pathToFileURL(join(assets, "highlight.js")).href
   );

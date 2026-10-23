@@ -1,6 +1,7 @@
 // Measures the production page and SSE delivery.
 // Run with --help for CLI usage. Stdout is one versioned JSON object.
 import assert from "node:assert/strict";
+import type { ServerResponse } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
@@ -27,8 +28,8 @@ import { httpServer } from "./server.ts";
 import { buildAssets } from "./build.ts";
 
 const usage = `Usage: node packages/app/serve/benchmark.ts [options]
-  --frontend hypermedia
-                 Measure real page/SSE delivery (the only frontend; also the default)
+  --frontend hypermedia|elm
+                 Measure real page/SSE delivery (default hypermedia)
   --runs N       Fresh browser launches (default 3, maximum 100)
   --turns N      History turns, each with a user, assistant and tool result (default 200)
   --entries N    Exact history size (mutually exclusive with --turns)
@@ -70,7 +71,7 @@ export function benchmarkOptions(args: string[]) {
     },
   });
   const frontend = values.frontend ?? "hypermedia";
-  assert(frontend === "hypermedia", "--frontend must be hypermedia");
+  assert(frontend === "hypermedia" || frontend === "elm", "--frontend must be hypermedia or elm");
   assert(values.profile || values["profile-dir"] === undefined, "--profile-dir requires --profile");
   const number = (value: string, name: string, max: number, integer = true) => {
     const result = Number(value);
@@ -188,6 +189,7 @@ export function benchmarkFixture(
 declare global {
   interface Window {
     __piBenchmarkCommit(live: LiveState): Promise<void>;
+    __piBenchmarkDisconnect(): Promise<void>;
     __piBenchmarkObserve(expected: { text?: string; busy?: boolean }): Promise<number>;
     __piBenchmarkComplete: Promise<number>;
     __piBenchmarkStreamReady: number | undefined;
@@ -295,6 +297,8 @@ async function pageWorkload(
   sessions: Sessions,
   base: string,
   entries: number,
+  frontend: string,
+  disconnect: () => void,
   bytesWritten: () => number,
   stage: <T>(phase: ProfilePhase, action: () => Promise<T>) => Promise<T>,
 ) {
@@ -304,6 +308,7 @@ async function pageWorkload(
     for (const { kind, model } of benchmarkFixture(Math.ceil(entries / 3), entries).view.entries)
       await tx.appendEntry(session.root.id, { kind, model });
   }, context);
+  await page.exposeFunction("__piBenchmarkDisconnect", disconnect);
   await page.exposeFunction("__piBenchmarkCommit", (value: LiveState) =>
     session.root.commit(async (tx) => {
       const live = await tx.doc(LiveDoc, session.root.id);
@@ -313,7 +318,7 @@ async function pageWorkload(
     }, context),
   );
   await page.addInitScript(
-    ({ entries }) => {
+    ({ entries, frontend }) => {
       window.__piBenchmarkObserve = (expected) =>
         new Promise<number>((resolve, reject) => {
           const start = expected.busy === undefined ? 0 : performance.now();
@@ -369,18 +374,18 @@ async function pageWorkload(
       window.__piBenchmarkComplete = window.__piBenchmarkObserve({});
       window.__piBenchmarkStreamReady = undefined;
       document.addEventListener(
-        "htmx:sse:after:message",
+        frontend === "elm" ? "elm:rendered" : "htmx:sse:after:message",
         () => {
           window.__piBenchmarkStreamReady = performance.now();
         },
         { once: true },
       );
     },
-    { entries },
+    { entries, frontend },
   );
   const initialBefore = bytesWritten();
   const initialMs = await stage("initial", async () => {
-    await page.goto(base + conversationURL(session));
+    await page.goto(base + (frontend === "elm" ? "/elm" : "") + conversationURL(session));
     await page.waitForFunction(() => window.__piBenchmarkStreamReady !== undefined);
     const elapsed = await page.evaluate(() => window.__piBenchmarkComplete);
     // Drain the initial event handler and resulting layout before token timing.
@@ -447,7 +452,53 @@ async function pageWorkload(
     }
     return { transitionsMs, transitionsBytes };
   });
+  // Drain adapter notifications from the final transition before measuring a new subscription.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  const reconnectBefore = bytesWritten();
+  const reconnectMs = await page.evaluate(async (frontend) => {
+    const start = performance.now();
+    const completed = new Promise<number>((resolve) => {
+      document.addEventListener(
+        frontend === "elm" ? "elm:rendered" : "htmx:sse:after:message",
+        () => {
+          document.getElementById("transcript")!.getBoundingClientRect();
+          resolve(performance.now() - start);
+        },
+        { once: true },
+      );
+    });
+    await window.__piBenchmarkDisconnect();
+    return completed;
+  }, frontend);
+  const reconnectBytes = bytesWritten() - reconnectBefore;
+  const archives = [];
+  for (const kind of ["pi.reset", "pi.compaction"]) {
+    const before = bytesWritten();
+    const start = performance.now();
+    const record = await session.root.commit(
+      (tx) =>
+        tx.appendEntry(session.root.id, {
+          kind,
+          head: "self",
+          ...(kind === "pi.compaction"
+            ? { model: [fauxAssistantMessage("Synthetic compaction summary.", { timestamp })] }
+            : {}),
+        }),
+      context,
+    );
+    await page.locator(`#entry-${record.id}`).waitFor();
+    await page.locator(`#entry-${record.id}`).evaluate((node) => node.getBoundingClientRect());
+    archives.push({ kind, ms: performance.now() - start, bytes: bytesWritten() - before });
+  }
   return {
+    reconnectMs,
+    reconnectBytes,
+    archives,
     initialMs,
     firstUpdateMs,
     initialBytes,
@@ -475,6 +526,9 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       await buildAssets(options.assets, directory);
     else
       for (const file of [
+        "elm.js",
+        "elm-client.js",
+        "elm.css",
         "highlight.js",
         "styles.css",
         "hypermedia-client.js",
@@ -487,7 +541,10 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         "hypermedia-morph.js",
       ])
         await copyFile(join(options.assets, file), join(directory, file));
-    const client = await readFile(join(directory, "hypermedia-client.js"), "utf8");
+    const client = await readFile(
+      join(directory, options.frontend === "elm" ? "elm.js" : "hypermedia-client.js"),
+      "utf8",
+    );
     const css = await readFile(join(directory, "styles.css"), "utf8");
     const highlighter = await readFile(join(directory, "highlight.js"), "utf8");
     const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -497,6 +554,13 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       models: createModels(),
     });
     server = httpServer(sessions, "127.0.0.1", directory);
+    const streams = new Set<ServerResponse>();
+    server.on("request", (request, response) => {
+      if (new URL(request.url!, "http://localhost").pathname.endsWith("/events")) {
+        streams.add(response);
+        response.once("close", () => streams.delete(response));
+      }
+    });
     const sockets: Socket[] = [];
     server.on("connection", (socket) => sockets.push(socket));
     const bytesWritten = () => sockets.reduce((sum, socket) => sum + socket.bytesWritten, 0);
@@ -566,8 +630,11 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         const stage = async <T>(phase: ProfilePhase, action: () => Promise<T>): Promise<T> => {
           if (!profiling || !profile) {
             const result = await action();
-            if (memoryRun && phase === "initial")
-              memoryRun.samples.push({ phase: "initial", ...(await measureMemory(cdp, page)) });
+            if (memoryRun && (phase === "initial" || phase === "transitions"))
+              memoryRun.samples.push({
+                phase: phase === "initial" ? "initial" : "settled",
+                ...(await measureMemory(cdp, page)),
+              });
             return result;
           }
           const result = await profilePhase(cdp, page, profile.directory, phase, action);
@@ -579,12 +646,15 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
           sessions,
           base,
           options.entries,
+          options.frontend,
+          () => {
+            for (const stream of streams) stream.destroy();
+          },
           bytesWritten,
           stage,
         );
         assert.deepEqual(errors, []);
         if (memoryRun && memory) {
-          memoryRun.samples.push({ phase: "settled", ...(await measureMemory(cdp, page)) });
           memory.runs.push(memoryRun);
         } else if (!profiling) runs.push({ run, ...sample });
       } finally {
@@ -599,7 +669,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       measurement: {
         initial:
           "Navigation start to first transcript layout; excludes later client initialization",
-        firstUpdate: "Navigation start to the first SSE update applied by htmx",
+        firstUpdate: "Navigation start to the first SSE update applied by the selected frontend",
         includes: [
           "page-loading",
           "commit",
@@ -611,6 +681,8 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         ],
         excludes: ["completed-paint"],
         bytes: "HTTP response headers, bodies and chunk framing; excludes TCP/IP overhead",
+        reconnect: "Disconnect to first resynchronized layout; includes transport retry delay",
+        archives: "Commit to boundary layout; synthetic reset and compaction, excludes inference",
         profiling: false,
         freshBrowserPerRun: true,
       },
@@ -628,6 +700,21 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         locale: "en-US",
         timezone: "UTC",
       },
+      assets: Object.fromEntries(
+        await Promise.all(
+          [
+            ...(options.frontend === "elm"
+              ? ["elm.js", "elm-client.js", "elm.css"]
+              : ["htmx.js", "hx-sse.js", "hypermedia-client.js", "hypermedia-morph.js"]),
+            "styles.css",
+            "hypermedia.css",
+            "highlight.js",
+          ].map(async (file) => [
+            file,
+            { bytes: (await readFile(join(directory, file))).byteLength },
+          ]),
+        ),
+      ),
       source: {
         clientSha256: hash(client),
         cssSha256: hash(css),

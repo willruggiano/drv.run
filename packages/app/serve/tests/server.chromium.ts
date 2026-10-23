@@ -35,8 +35,7 @@ await test("mobile browser page benchmark returns complete JSON-compatible sampl
 });
 
 await test("page benchmarks drive the production stream and count HTTP response bytes", async () => {
-  {
-    const frontend = "hypermedia";
+  for (const frontend of ["hypermedia", "elm"]) {
     const report = await benchmark(
       benchmarkOptions(["--frontend", frontend, "--runs", "1", "--turns", "2"]),
     );
@@ -51,6 +50,12 @@ await test("page benchmarks drive the production stream and count HTTP response 
     assert.equal(run.streamingBytes.length, 40);
     assert.equal(run.transitionsMs.length, 10);
     assert.equal(run.transitionsBytes.length, 10);
+    assert(run.reconnectMs > 0 && run.reconnectBytes > 0);
+    assert.deepEqual(
+      run.archives.map((sample) => sample.kind),
+      ["pi.reset", "pi.compaction"],
+    );
+    for (const sample of run.archives) assert(sample.ms > 0 && sample.bytes > 0);
     for (const ms of [run.initialMs, run.startMs, ...run.streamingMs, ...run.transitionsMs])
       assert(Number.isFinite(ms) && ms > 0);
     for (const bytes of [

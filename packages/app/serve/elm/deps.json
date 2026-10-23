@@ -1,0 +1,58 @@
+{
+  "elm-explorations/test": {
+    "version": "2.2.1",
+    "sha256": "sha256-cWAKzSPZB7dg/K0aII6tBvV9kjgdrGrbko9Z1anPXpU="
+  },
+  "elm/browser": {
+    "version": "1.0.2",
+    "sha256": "sha256-I/QUkdMlr8cmSdUSdB+4FzclAUyT5ILSW6szJVVaT1k="
+  },
+  "elm/bytes": {
+    "version": "1.0.8",
+    "sha256": "sha256-ki81JuO0MOlH0dLqxZZeTKrmJQE2Sd4vZX1PJYpb3As="
+  },
+  "elm/core": {
+    "version": "1.0.5",
+    "sha256": "sha256-bjexHIjImmjRnQx2JfHvOe1wxZ5EPe+V5N6Y1nSMgKc="
+  },
+  "elm/file": {
+    "version": "1.0.5",
+    "sha256": "sha256-yFtAJeEsG/Le6eTYU0WerX0fqRcwSt+iryfRFshikuY="
+  },
+  "elm/html": {
+    "version": "1.0.0",
+    "sha256": "sha256-c7iF4KPS+XgbHJu8we6awDL1A/XvRqJ9o7phfOu/b9g="
+  },
+  "elm/http": {
+    "version": "2.0.0",
+    "sha256": "sha256-YZvCPXdTvBcgFup2QjPdff3tHZGSY8QbWYhcW83RCwE="
+  },
+  "elm/json": {
+    "version": "1.1.3",
+    "sha256": "sha256-0GNfMxN+StP8Mj+WuigORdxBr6UQdsU9nwT9ksLPXE4="
+  },
+  "elm/random": {
+    "version": "1.0.0",
+    "sha256": "sha256-tLncmdWgZLxgdoTdFYGZIIvOUcBSG36KUVw2XgoRFo0="
+  },
+  "elm/regex": {
+    "version": "1.0.0",
+    "sha256": "sha256-QumNZXBAM5wFxAAeoPdGnsKb7KXMPFlPscEeDsrVMlI="
+  },
+  "elm/svg": {
+    "version": "1.0.1",
+    "sha256": "sha256-E9jJoSlCG+lb912Mw93wXl6vxt9548cxLwQHc8eRjLM="
+  },
+  "elm/time": {
+    "version": "1.0.0",
+    "sha256": "sha256-4YvKSHrexnv+QEOjO5ddgVJ6dzI3cFDQQh3YbVA8kG0="
+  },
+  "elm/url": {
+    "version": "1.0.0",
+    "sha256": "sha256-hA6dRdipvWSn92Qhod4lGOAsfL6n7ULv04C06HXpaCs="
+  },
+  "elm/virtual-dom": {
+    "version": "1.0.3",
+    "sha256": "sha256-m2AuTws+xlJGAX26dnz6c4cGSwZYPIVOaV2YL/pFa/s="
+  }
+}

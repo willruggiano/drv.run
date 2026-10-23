@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TestContext } from "node:test";
@@ -20,6 +20,8 @@ export async function browserFixture(
   const source = dirname(dirname(fileURLToPath(import.meta.url)));
   const screenshots = process.env.PI_SCREENSHOT_DIR;
   if (screenshots) await mkdir(screenshots, { recursive: true });
+  // Match the production package context; Elm must remain a working classic script.
+  await writeFile(join(assets, "package.json"), JSON.stringify({ type: "module" }));
   await buildAssets(source, assets);
   const base = await serve(t, sessions, assets, "127.0.0.1", undefined, undefined, authorization);
   const browser = await chromium.launch({

@@ -921,7 +921,7 @@ await test("HTML malformed commands never fall through to ordinary prompt submis
   assert.deepEqual(b.errors, []);
 });
 
-await test("HTML is the only served frontend and removed routes cannot mutate sessions", async (t) => {
+await test("HTML remains the default frontend and retired routes cannot mutate sessions", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   const before = await sessionInfo(session);
