@@ -943,35 +943,36 @@ await test("HTML landing lists the newest five sessions even when execution is u
   assert.deepEqual(errors, []);
 });
 
-await test("HTML repository inspection is explicit, works natively and does not navigate on hover", async (t) => {
+await test("HTML footer environment is plain text; repository inspection requires a direct URL", async (t) => {
   const f = await fixture(t);
   const env = t.mock.fn(f.options.env.bind(f.options));
   await f.reopen({ env });
   const session = await f.create();
   const b = await browserFixture(t, f.sessions);
   const path = conversationURL(session);
-  await b.page.setViewportSize({ width: 1440, height: 900 });
-  await b.page.goto(b.base + path);
-  assert.equal(env.mock.callCount(), 0);
-  const instance = b.page.locator("#footer-instance");
-  await instance.hover();
-  await b.page.waitForFunction(
-    () => document.querySelector("#footer-instance")?.getAttribute("title") === "no repository",
-  );
-  assert.equal(env.mock.callCount(), 1);
-  assert.equal(new URL(b.page.url()).pathname, path);
-  const native = await b.browser.newContext({
-    javaScriptEnabled: false,
-    viewport: { width: 1440, height: 900 },
-  });
-  t.after(() => native.close());
-  const page = await native.newPage();
-  await page.goto(b.base + path);
-  assert.equal(env.mock.callCount(), 1);
-  await page.locator("#footer-instance").click();
-  assert.equal(new URL(page.url()).pathname, path + "/repository");
-  assert.equal(await page.locator("#footer-instance").getAttribute("title"), "no repository");
-  assert.equal(env.mock.callCount(), 2);
+  for (const javaScriptEnabled of [true, false]) {
+    const browserContext = await b.browser.newContext({
+      javaScriptEnabled,
+      viewport: { width: 1440, height: 900 },
+    });
+    t.after(() => browserContext.close());
+    const page = await browserContext.newPage();
+    page.on("pageerror", (error) => b.errors.push(error));
+    const before = env.mock.callCount();
+    await page.goto(b.base + path);
+    const instance = page.locator("#footer-instance");
+    assert.equal(await instance.evaluate((node: HTMLElement) => node.tabIndex), -1);
+    assert.equal(await instance.getAttribute("href"), null);
+    assert.equal(await instance.getAttribute("hx-get"), null);
+    assert.equal(await instance.evaluate((node) => node.tagName), "SPAN");
+    await instance.hover();
+    await instance.click();
+    assert.equal(new URL(page.url()).pathname, path);
+    assert.equal(env.mock.callCount(), before);
+    await page.goto(b.base + path + "/repository");
+    await page.getByRole("heading", { name: "Repository", exact: true }).waitFor();
+    assert.equal(env.mock.callCount(), before + 1);
+  }
   assert.equal(f.faux.state.callCount, 0);
   assert.deepEqual(b.errors, []);
 });

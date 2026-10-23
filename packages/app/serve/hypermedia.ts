@@ -816,7 +816,7 @@ export async function hypermedia(
         : repository.state === "none"
           ? "no repository"
           : "repository unavailable";
-    page(h`<h1>Repository</h1>${instanceHTML(info, path, title)}<p>${title}</p>`);
+    page(h`<h1>Repository</h1>${instanceHTML(info)}<p>${title}</p>`);
     return;
   }
   if (request.method === "GET" && operation === "export") {
@@ -1103,12 +1103,8 @@ function navigation(path: string): SafeHtml {
   return h`${commands}${search}`;
 }
 
-function instanceHTML(info: SessionInfo, path: string, title?: string): SafeHtml {
-  return h`<a id="footer-instance" href="${path}/repository"${
-    title === undefined
-      ? h` hx-get="${path}/repository" hx-trigger="pointerenter once, focus once" hx-target="this" hx-select="#footer-instance" hx-swap="outerMorph" hx-sync="this:drop" hx-push-url="false"`
-      : h` title="${title}"`
-  }>${info.binding ? `${info.binding.provider === "local" ? "local" : info.binding.target} · ${info.cwd}` : "No execution environment"}</a>`;
+function instanceHTML(info: SessionInfo): SafeHtml {
+  return h`<span id="footer-instance">${info.binding ? `${info.binding.provider === "local" ? "local" : info.binding.target} · ${info.cwd}` : "No execution environment"}</span>`;
 }
 
 async function metadataHTML(
@@ -1138,7 +1134,7 @@ async function metadataHTML(
   const dot = h`<span class="footer-dot" aria-hidden="true"></span>`;
   const display = settings?.read().values;
   const id = randomUUID();
-  const instance = instanceHTML(info, path);
+  const instance = instanceHTML(info);
   const statistics = h`<a id="footer-stats" href="${path}/context" aria-label="Context"><span id="footer-input">↑${count(sum("input"))}</span><span id="footer-output">↓${count(sum("output"))}</span><span id="footer-read">R${count(sum("cacheRead"))}</span><span id="footer-hit">${status.lastResponse?.cacheHit == null ? "CH—" : `CH${status.lastResponse.cacheHit.toFixed(1)}%`}</span><span id="footer-cost">$${cost.toFixed(3)}</span></a>`;
   const model = h`<a id="footer-model" class="model-summary" href="${path}/settings" aria-label="Model and thinking settings"><span class="model-name">${info.model?.modelId ?? "No model"}</span>${dot}<span class="model-effort">${info.thinkingLevel}</span></a>`;
   const contextUsage = h`<a id="footer-context" class="context-usage" href="${path}/context" aria-label="Context usage details" data-level="${percent !== undefined && percent > 90 ? "critical" : percent !== undefined && percent > 70 ? "warning" : "normal"}">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${count(status.window)}${status.autoCompact ? " (auto)" : ""}</a>`;

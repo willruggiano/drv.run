@@ -484,7 +484,15 @@ await test("queued messages share transcript rendering and footer metadata stays
       };
       return {
         model: textBox("#footer-model .model-name"),
+        effort: textBox("#footer-model .model-effort"),
         context: textBox("#footer-context"),
+        modelLink: box("#footer-model"),
+        contextLink: box("#footer-context"),
+        instance: textBox("#footer-instance"),
+        stats: textBox("#footer-input"),
+        instanceVisible: node("#footer-instance").checkVisibility(),
+        statsVisible: node("#footer-stats").checkVisibility(),
+        separatorVisible: node(".footer-model-context > .footer-dot").checkVisibility(),
         queue: box("#queue"),
         content: box(".queued-messages"),
         composer: box(".compose-box:has(#prompt)"),
@@ -495,7 +503,19 @@ await test("queued messages share transcript rendering and footer metadata stays
         scrolls: node("#queue").scrollHeight > node("#queue").clientHeight,
       };
     });
-    assert(Math.abs(geometry.model.y - geometry.context.y) < 1);
+    assert(Math.abs(geometry.model.y - geometry.effort.y) < 1);
+    assert.equal(geometry.instanceVisible, width > 650);
+    assert.equal(geometry.statsVisible, width > 650);
+    assert.equal(geometry.separatorVisible, width <= 650);
+    if (width <= 650) {
+      assert(Math.abs(geometry.model.y - geometry.context.y) < 1);
+      assert(geometry.modelLink.right < geometry.contextLink.left);
+    } else {
+      assert(geometry.modelLink.bottom <= geometry.contextLink.top);
+      assert(Math.abs(geometry.modelLink.right - geometry.contextLink.right) < 1);
+      assert(Math.abs(geometry.instance.y - geometry.model.y) < 1);
+      assert(Math.abs(geometry.stats.y - geometry.context.y) < 1);
+    }
     assert(
       Math.abs(geometry.content.x - geometry.composer.x) < 1,
       JSON.stringify({ width, geometry }),
