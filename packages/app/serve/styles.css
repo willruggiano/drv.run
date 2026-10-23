@@ -300,7 +300,7 @@ body.stacked-layout {
 #session-settings label > span { grid-row: 2; padding: 0; font-size: 11px; color: var(--muted); }
 #session-settings label > :is(input, select) { grid-row: 1; padding: 0; min-height: 32px; font-size: 16px; text-align: left; }
 #session-settings select { text-align-last: left; }
-#preferences #close-view { display: flex; align-items: center; justify-content: center; margin: 0 0 12px auto; color: var(--muted); width: 44px; height: 44px; }
+#preferences #close-view { display: flex; flex-shrink: 0; align-items: center; justify-content: center; margin: 0 0 12px auto; color: var(--muted); width: 44px; height: 44px; }
 #preferences #close-view:hover { color: var(--fg); }
 #preferences #close-view .glyph { width: 14px; height: 14px; }
 #landing .session { padding-inline: 0; }

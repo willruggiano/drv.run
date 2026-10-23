@@ -368,14 +368,27 @@ await test("session settings center above the composer without a header or save 
     const form = await page.locator("#session-settings").boundingBox();
     assert(close && form);
     assert(close.y + close.height < form.y);
-    assert.equal(close.x + close.width, form.x + form.width);
     const pane = await page.locator("#preferences").boundingBox();
     const settings = await page.locator("#preferences > div").boundingBox();
     const footer = await page.locator("#app-footer").boundingBox();
     assert(pane && settings && footer);
     assert(settings.y > pane.y);
     assert(settings.y + settings.height < footer.y);
-    assert(Math.abs(settings.y + settings.height / 2 - (pane.y + pane.height / 2)) < 12);
+    const padding = await page.locator("#preferences").evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { top: parseFloat(style.paddingTop), right: parseFloat(style.paddingRight) };
+    });
+    assert.equal(close.y, pane.y + padding.top);
+    assert.equal(close.x + close.width, pane.x + pane.width - padding.right);
+    assert.equal(close.width, 44);
+    assert.equal(close.height, 44);
+    assert(
+      Math.abs(
+        settings.y -
+          (close.y + close.height) -
+          (pane.y + pane.height - (settings.y + settings.height)),
+      ) < 12,
+    );
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
       false,

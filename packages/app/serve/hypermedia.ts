@@ -771,7 +771,7 @@ export async function hypermedia(
         conversation,
         settings,
         context,
-        h`<section id="preferences" class="pane" aria-label="Session settings"><div><a id="close-view" class="icon" href="${path}" data-return aria-label="Conversation" title="Return to conversation">${icon("close")}</a>${sessionForm(path, catalog, info)}</div></section>`,
+        h`<section id="preferences" class="pane" aria-label="Session settings"><a id="close-view" class="icon" href="${path}" data-return aria-label="Conversation" title="Return to conversation">${icon("close")}</a><div>${sessionForm(path, catalog, info)}</div></section>`,
       ),
     );
     return;
