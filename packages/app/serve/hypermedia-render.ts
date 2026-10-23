@@ -15,26 +15,14 @@ export const action = (
   buttonAttributes = h``,
 ) =>
   h`<form method="post" action="${url}"${command ? h` data-command="${command}"` : ""}>${fields}<button${buttonAttributes}>${text}</button></form>`;
-export function icon(name: "settings" | "close" | "copy" | "quote" | "fork" | "send"): SafeHtml {
+export function icon(name: "settings" | "close" | "send"): SafeHtml {
   const paths = {
     settings:
       '<path d="m9 3-.6 2.4-1.5.9-2.4-.7-3 5.2L3.3 12l.1 1.8-1.7 1.8 3 5.2 2.3-.7 1.6.9.5 2.4h6l.6-2.4 1.5-.9 2.4.7 3-5.2-1.8-1.2-.1-1.8 1.7-1.8-3-5.2-2.3.7-1.6-.9L15 3Z" transform="translate(1 -1) scale(.92)"/><circle cx="12" cy="12" r="3.2"/>',
     send: '<path d="M12 20V4m-7 7 7-7 7 7"/>',
     close: '<path d="m6 6 12 12M18 6 6 18"/>',
-    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/>',
-    quote: '<path d="M5 6h5v6H5zM14 6h5v6h-5zM10 12c0 4-2 6-5 6m14-6c0 4-2 6-5 6"/>',
-    fork: '<circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10m12-10v2c0 4-12 2-12 6"/>',
   } as const;
   return h`<svg class="glyph" aria-hidden="true" viewBox="0 0 24 24">${raw(paths[name])}</svg>`;
-}
-function copyButton(key: string, label: string): SafeHtml {
-  return h`<button type="button" class="enhanced-only" data-copy="${key}" aria-label="${label}" title="${label}">${icon("copy")}</button>`;
-}
-function quoteButton(key = "", label = "Quote"): SafeHtml {
-  return h`<button type="button" class="enhanced-only" data-quote="${key}" aria-label="${label}" title="${label}">${icon("quote")}</button>`;
-}
-function forkAction(path: string, at: number): SafeHtml {
-  return h`<form method="post" action="${path}/fork">${hidden("at", String(at))}<button aria-label="Fork here" title="Fork here">${icon("fork")}</button></form>`;
 }
 export const code = (text: string, language = "") =>
   h`<pre><code data-language="${language}">${text}</code></pre>`;
@@ -106,7 +94,6 @@ export function tool(
   result?: Result,
   slot?: ToolSlot | NestedToolSlot,
   busy = false,
-  path = "",
 ): SafeHtml {
   const name = call.name.split(".").at(-1)!;
   const args = call.arguments;
@@ -116,34 +103,6 @@ export function tool(
       : name === "write" && typeof args.content === "string"
         ? args.content
         : JSON.stringify(args, null, 2);
-  let inputText = input;
-  if (name === "edit") {
-    const edits: unknown[] = Array.isArray(args.edits) ? args.edits : [args];
-    const replacements: string[] = [];
-    for (const edit of edits) {
-      if (
-        !edit ||
-        typeof edit !== "object" ||
-        !("oldText" in edit) ||
-        typeof edit.oldText !== "string" ||
-        !("newText" in edit) ||
-        typeof edit.newText !== "string"
-      )
-        break;
-      replacements.push(
-        `@@ Requested replacement @@\n${edit.oldText
-          .split("\n")
-          .map((line) => `-${line}`)
-          .join("\n")}\n${edit.newText
-          .split("\n")
-          .map((line) => `+${line}`)
-          .join("\n")}`,
-      );
-    }
-    if (replacements.length === edits.length) {
-      inputText = replacements.join("\n");
-    }
-  }
   const label =
     name === "bash"
       ? `$ ${typeof args.command === "string" ? args.command.trim() : "Shell command"}`
@@ -171,19 +130,9 @@ export function tool(
   const output = result ? messageText(result.message) : (slot?.output ?? "");
   const duration = result?.message.durationMs ?? nested?.durationMs;
   const metadata = result?.message.details ?? slot?.details;
-  const patch =
-    metadata && typeof metadata === "object" && !Array.isArray(metadata)
-      ? "patch" in metadata && typeof metadata.patch === "string"
-        ? metadata.patch
-        : "diff" in metadata && typeof metadata.diff === "string"
-          ? metadata.diff
-          : undefined
-      : undefined;
   const summary = h`<summary><span class="tool-status" data-state="${state}" role="img" aria-label="${state}">${state === "running" ? h`${[0, 1, 2, 3].map((index) => h`<span aria-hidden="true" style="animation-delay:-${index * 225}ms"></span>`)}` : (({ completed: "✓", failed: "✕", pending: "◷", cancelled: "⊘" } as Record<string, string>)[state] ?? "?")}</span><span class="tool-command" hx-ignore>${command}</span>${duration === undefined ? "" : h`<span class="tool-duration" title="${duration}ms">${duration < 1000 ? `${Math.round(duration)}ms` : `${(duration / 1000).toFixed(1)}s`}</span>`}</summary>`;
   const outputMarkup = h`<div class="tool-result">${result ? h`${result.message.content.map((part) => (part.type === "text" ? code(part.text) : part.type === "image" ? image(part.mimeType, part.data) : ""))}` : output ? code(output) : ""}${slot?.droppedBytes || slot?.droppedLines ? h`<p class="notice">Output truncated: ${slot.droppedBytes ?? 0} bytes / ${slot.droppedLines ?? 0} lines omitted.</p>` : ""}${slot?.diagnostics?.length ? h`<details><summary>Diagnostics</summary>${code(JSON.stringify(slot.diagnostics, null, 2), "json")}</details>` : ""}${nested?.error ? h`<p class="error" hx-ignore>${nested.error}</p>` : ""}${details(metadata)}${result && !result.message.isError && name === "write" ? h`<details><summary>Written content</summary>${code(input)}</details>` : ""}</div>`;
-  const actions = h`<details class="entry-actions tool-actions"><summary class="icon message-actions" aria-label="Tool actions">···</summary><div class="action-menu">${copyButton("input", "Copy input")}${copyButton("output", "Copy output")}${result ? quoteButton("output", "Quote output") : ""}${patch === undefined ? "" : copyButton("changes", "Copy changes")}${metadata ? copyButton("details", "Copy details") : ""}${result && path ? forkAction(path, result.entry) : ""}</div></details>`;
-  const copySources = h`<textarea hidden data-copy-source="input">${inputText}</textarea><textarea hidden data-copy-source="output">${output}</textarea><textarea hidden data-copy-source="changes">${patch}</textarea><textarea hidden data-copy-source="details">${JSON.stringify(metadata, null, 2)}</textarea>`;
-  return h`<details id="${toolID(call.id)}" class="tool-call" data-call-id="${call.id}" data-tool="${call.name}" data-disclosure="${toolID(call.id)}" data-state="${state}"${state === "failed" ? h` open` : ""}>${summary}${outputMarkup}${actions}${copySources}</details>`;
+  return h`<details id="${toolID(call.id)}" class="tool-call" data-call-id="${call.id}" data-tool="${call.name}" data-disclosure="${toolID(call.id)}" data-state="${state}"${state === "failed" ? h` open` : ""}>${summary}${outputMarkup}</details>`;
 }
 function image(mime: string, data: string): SafeHtml {
   return /^image\/(png|jpeg|gif|webp)$/.test(mime) && /^[A-Za-z0-9+/=\s]*$/.test(data)
@@ -216,7 +165,6 @@ export function message(
 }
 export function entry(
   record: EntryRecord,
-  path = "",
   calls = new Map<string, Call>(),
   results = new Map<string, Result>(),
   live?: LiveState,
@@ -239,21 +187,15 @@ export function entry(
           results.get(call.id),
           live?.tools?.find((slot) => slot.callId === call.id),
           !!live?.run,
-          path,
         ),
       false,
       record.kind !== "pi.compaction",
     ),
   )}`;
-  const text = messages.map(messageText).join("\n\n");
-  const actions =
-    path && !boundary && messages.length
-      ? h`<details class="entry-actions"><summary class="icon message-actions" aria-label="Message actions">···</summary><div class="action-menu">${copyButton("message", "Copy message")}${quoteButton()}${forkAction(path, record.id)}</div></details><textarea hidden data-copy-source="message">${text}</textarea>`
-      : "";
   const html = boundary
     ? h`<details class="tool-call context-event" data-state="completed" data-disclosure="context-${record.id}"><summary><span class="tool-status" data-state="completed" aria-label="Completed">✓</span><span class="tool-command">${record.kind === "pi.reset" ? "Context reset" : "Context compacted"}</span>${timing(record.id, duration)}</summary>${record.kind === "pi.compaction" ? h`<div class="compaction-summary">${rendered}</div>` : ""}<div id="archive-${record.id}" class="context-history">${archive}</div></details>${record.kind === "pi.reset" ? rendered : ""}`
     : rendered;
-  return h`<article id="entry-${record.id}" data-entry="${record.id}"${boundary ? "" : h` hx-morph-skip`}${!boundary && messages[0] ? h` data-role="${messages[0].role}"` : ""}${boundary ? h` data-context="${record.kind}"` : ""}${!html.length && !actions.length ? h` hidden` : ""}>${html}${actions}</article>`;
+  return h`<article id="entry-${record.id}" data-entry="${record.id}"${boundary ? "" : h` hx-morph-skip`}${!boundary && messages[0] ? h` data-role="${messages[0].role}"` : ""}${boundary ? h` data-context="${record.kind}"` : ""}${!html.length ? h` hidden` : ""}>${html}</article>`;
 }
 export function compactTokens(value: number): string {
   if (value < 1000) return String(value);

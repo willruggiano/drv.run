@@ -18,7 +18,7 @@ import { LiveDoc } from "@earendil-works/pi-durable";
 import { Review } from "harness";
 import { html, renderHTML, type SafeHtml } from "../html.ts";
 import { conversationURL, htmlPage } from "../hypermedia.ts";
-import { browserFixture, htmlAction, openSessions } from "./browser-testing.ts";
+import { browserFixture, submitCommand, visitOriginal, openSessions } from "./browser-testing.ts";
 import { fixture, readHistory, waitFor } from "./sessions-testing.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -481,8 +481,8 @@ await test("HTML workflow: create, submit, review, navigate without ending, end,
   const originalHistory = await readHistory(session.root);
   assert.equal(originalHistory.length, 3);
   f.faux.setResponses([fauxAssistantMessage("No findings.")]);
-  await (await htmlAction(page, "button", "Start review")).click();
-  await (await htmlAction(page, "link", "Visit original")).waitFor();
+  await submitCommand(page, "/review");
+  await page.locator("[data-command=endreview]").waitFor({ state: "attached" });
   const state = await session.harness.snapshot(Review, session.root.id, context);
   assert(state?.active !== undefined);
   const review = await session.harness.conversation(state.active, context);
@@ -491,29 +491,29 @@ await test("HTML workflow: create, submit, review, navigate without ending, end,
   const reviewURL = page.url();
   assert.equal(reviewURL, b.base + conversationURL(session, review.id));
   assert.deepEqual(await readHistory(session.root), originalHistory);
-  await (await htmlAction(page, "link", "Visit original")).click();
-  await (await htmlAction(page, "link", "Open review")).waitFor();
+  await visitOriginal(page);
+  await page.locator("a[data-command=review]").waitFor({ state: "attached" });
   assert.equal(page.url(), originalURL);
   assert.equal(
     (await session.harness.snapshot(Review, session.root.id, context))?.active,
     review.id,
   );
-  await (await htmlAction(page, "link", "Open review")).click();
-  await (await htmlAction(page, "button", "End review and return")).waitFor();
+  await submitCommand(page, "/review");
+  await page.locator("[data-command=endreview]").waitFor({ state: "attached" });
   f.faux.setResponses([fauxAssistantMessage("Received review.")]);
-  await (await htmlAction(page, "button", "End review and return")).click();
+  await submitCommand(page, "/endreview");
   await page.waitForURL(originalURL);
   await session.root.waitForIdle(context);
-  await (await htmlAction(page, "button", "Start review")).waitFor();
+  await page.locator("form[data-command=review]").waitFor({ state: "attached" });
   assert.equal(
     (await readHistory(session.root)).filter((entry) => entry.kind === "app.review").length,
     1,
   );
   await page.goBack();
-  await (await htmlAction(page, "link", "Visit original")).waitFor();
+  await page.locator("[data-command=endreview]").waitFor({ state: "attached" });
   assert.equal(page.url(), reviewURL);
   await page.goForward();
-  await (await htmlAction(page, "button", "Start review")).waitFor();
+  await page.locator("form[data-command=review]").waitFor({ state: "attached" });
   assert.equal(page.url(), originalURL);
   assert.equal(await page.locator("html").getAttribute("data-enhanced"), "yes");
   assert.deepEqual(
@@ -561,21 +561,6 @@ await test("ordinary forms and direct URLs work without JavaScript; GET actions 
   await session.root.waitForIdle(context);
   await page.reload();
   assert.equal(await page.locator("#transcript article").count(), 3);
-  f.faux.setResponses([fauxAssistantMessage("No findings.")]);
-  await (await htmlAction(page, "button", "Start review")).click();
-  await (await htmlAction(page, "link", "Visit original")).waitFor();
-  const reviewURL = page.url();
-  await (await htmlAction(page, "link", "Visit original")).click();
-  await (await htmlAction(page, "link", "Open review")).click();
-  assert.equal(page.url(), reviewURL);
-  const id = (await session.harness.snapshot(Review, session.root.id, context))?.active;
-  assert(id !== undefined);
-  await (await session.harness.conversation(id, context))!.waitForIdle(context);
-  f.faux.setResponses([fauxAssistantMessage("Received.")]);
-  await (await htmlAction(page, "button", "End review and return")).click();
-  await page.locator("[data-events] #composer").waitFor();
-  assert.equal(page.url(), b.base + conversationURL(session));
-  await session.root.waitForIdle(context);
 });
 
 await test("ending an active review aborts it; a disconnected page does not interrupt work", async (t) => {
@@ -588,18 +573,18 @@ await test("ending an active review aborts it; a disconnected page does not inte
     fauxAssistantMessage(fauxToolCall("bash", { command: "sleep 30" }), { stopReason: "toolUse" }),
     fauxAssistantMessage("Review cancelled."),
   ]);
-  await (await htmlAction(b.page, "button", "Start review")).click();
-  await (await htmlAction(b.page, "button", "End review and return")).waitFor();
+  await submitCommand(b.page, "/review");
+  await b.page.locator("[data-command=endreview]").waitFor({ state: "attached" });
   const id = (await session.harness.snapshot(Review, session.root.id, context))?.active;
   assert(id !== undefined);
   await waitFor(
     async () => !!(await session.harness.snapshot(LiveDoc, id, context))?.tools?.length,
   );
-  await (await htmlAction(b.page, "link", "Visit original")).click();
-  await (await htmlAction(b.page, "link", "Open review")).waitFor();
+  await visitOriginal(b.page);
+  await b.page.locator("a[data-command=review]").waitFor({ state: "attached" });
   assert((await session.harness.snapshot(LiveDoc, id, context))?.run);
-  await (await htmlAction(b.page, "link", "Open review")).click();
-  await (await htmlAction(b.page, "button", "End review and return")).click();
+  await submitCommand(b.page, "/review");
+  await submitCommand(b.page, "/endreview");
   await b.page.waitForURL(b.base + conversationURL(session));
   await session.root.waitForIdle(context);
   assert.equal((await session.harness.snapshot(LiveDoc, id, context))?.run, undefined);
@@ -896,10 +881,10 @@ await test("pending review response cannot navigate a newer page; review subscri
     await route.fulfill({ response });
     delivered.resolve();
   });
-  await (await htmlAction(page, "button", "Start review")).click();
+  await submitCommand(page, "/review");
   await pending.promise;
   // Creation of the formerly absent Review document must update another view.
-  await (await htmlAction(page, "link", "Open review")).waitFor();
+  await page.locator("a[data-command=review]").waitFor({ state: "attached" });
   // htmx history restores with outerSync: #page itself stays connected.
   await page.goBack();
   await page.getByRole("button", { name: "Create session", exact: true }).waitFor();

@@ -53,12 +53,6 @@ await test("design-system showcase works over HTTP and from disk at every breakp
     assert.equal(await showcase.locator(`#${id}`).evaluate((node) => node.matches(":modal")), true);
     await showcase.keyboard.press("Escape");
   }
-  await showcase.getByRole("button", { name: "More actions", exact: true }).click();
-  assert.equal(
-    await showcase.locator("#live-menu").evaluate((node) => node.matches(":popover-open")),
-    true,
-  );
-  await showcase.keyboard.press("Escape");
   await showcase.goto(pathToFileURL(join(assets, "design-system.html")).href);
   assert.equal(
     await showcase.locator("#send").evaluate((node) => getComputedStyle(node).backgroundColor),

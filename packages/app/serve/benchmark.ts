@@ -351,7 +351,7 @@ async function pageWorkload(
                   expected,
                   articles: document.querySelectorAll("#transcript article").length,
                   tools: document.querySelectorAll("#transcript .tool-call").length,
-                  status: document.querySelector("#status")?.getAttribute("data-state"),
+                  status: document.querySelector("#controls")?.getAttribute("data-state"),
                   text: document.querySelector("#transcript > article:last-child .text")
                     ?.textContent,
                 })}`,

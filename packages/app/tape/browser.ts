@@ -235,7 +235,6 @@ class AppPage {
             const block = node.cloneNode(true);
             // Ignore client enhancement, but preserve Markdown structure and
             // every text block when acknowledging the production renderer.
-            block.querySelectorAll('.code-copy').forEach(button => button.remove());
             block.querySelectorAll('pre > code').forEach(code => {
               code.removeAttribute('data-highlighted');
               code.textContent = code.textContent;

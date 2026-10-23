@@ -7,7 +7,6 @@ import {
   applyCompletion,
   completionIndex,
 } from "./hypermedia-completions.ts";
-import { closeActions } from "./hypermedia-actions.ts";
 import { search } from "./hypermedia-search.ts";
 
 export function installKeys() {
@@ -30,10 +29,6 @@ export function installKeys() {
       }
     }
     if (event.key === "Escape") {
-      if (closeActions()) {
-        event.preventDefault();
-        return;
-      }
       if (closeCompletions()) {
         event.preventDefault();
         return;

@@ -59,6 +59,21 @@ function addFiles(files: File[]) {
 }
 
 export function installAttachments() {
+  document.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) return;
+    const image = event.target.closest<HTMLImageElement>("img.transcript-image");
+    if (image) {
+      const dialog = document.createElement("dialog");
+      dialog.id = "image-dialog";
+      const close = document.createElement("button");
+      close.textContent = "Close image";
+      close.addEventListener("click", () => dialog.close());
+      dialog.append(image.cloneNode(true), close);
+      dialog.addEventListener("close", () => dialog.remove());
+      document.body.append(dialog);
+      dialog.showModal();
+    }
+  });
   document.addEventListener("change", (event) => {
     if (event.target instanceof HTMLInputElement && event.target.type === "file") {
       previews();

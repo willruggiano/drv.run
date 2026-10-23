@@ -1,9 +1,8 @@
 import type { HtmxRequestCtx } from "htmx.org";
-import { composer, controls, resizePrompt, updateSend, report } from "./hypermedia-dom.ts";
+import { composer, controls, resizePrompt, updateSend } from "./hypermedia-dom.ts";
 import { restoreDraft } from "./hypermedia-drafts.ts";
 import { previews } from "./hypermedia-attachments.ts";
 import { closeCompletions } from "./hypermedia-completions.ts";
-import { closeActions } from "./hypermedia-actions.ts";
 import { installStatus } from "./hypermedia-pwa.ts";
 import { localPreferences } from "./hypermedia-settings.ts";
 let selected: HTMLElement | undefined;
@@ -21,7 +20,6 @@ function disclosureKey(node: HTMLDetailsElement): string {
   }`;
 }
 function disconnect() {
-  closeActions();
   const scroll = selected?.querySelector<HTMLElement>(".scrollport");
   if (scroll) positions.set(selected!.dataset.events!, scroll.scrollTop);
   if (selected)
@@ -60,7 +58,6 @@ function connection(event: Event, online: boolean) {
   if (!(root instanceof HTMLElement) || !root.isConnected || !root.matches("[data-events]")) return;
   const status = root.querySelector("#connection");
   if (status) status.textContent = online ? "Connected" : "Disconnected; reconnecting…";
-  document.body.classList.toggle("offline", !online);
   localStatus();
 }
 const swaps = new WeakMap<
@@ -80,11 +77,6 @@ function localStatus() {
     const title = document.querySelector("#conversation-title");
     if (title) title.textContent = meta.dataset.name ?? "";
   }
-  const status = document.querySelector<HTMLElement>("#status");
-  if (status && document.querySelector("[data-events]"))
-    status.dataset.state = document.body.classList.contains("offline")
-      ? "reconnecting"
-      : (document.querySelector<HTMLElement>("#controls")?.dataset.state ?? "ready");
   const ordered = Array.from(
     document.querySelectorAll<HTMLElement>(
       "#transcript > article:not([hidden]), #live > article:not([hidden])",
@@ -97,9 +89,7 @@ function localStatus() {
     node.dataset.separator = String(index > 0 && role !== previous);
     previous = role;
     const content = (item: Element) =>
-      Array.from(item.children).filter(
-        (child) => !child.matches("header, .entry-actions, textarea[hidden]"),
-      );
+      Array.from(item.children).filter((child) => !child.matches("header"));
     const next = ordered[index + 1];
     const traces =
       !!role &&
@@ -137,18 +127,6 @@ function enhance(root: ParentNode) {
           }).value;
       });
     }
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = "Copy code";
-    button.className = "code-copy";
-    button.addEventListener(
-      "click",
-      () =>
-        void navigator.clipboard
-          .writeText(code.textContent ?? "")
-          .catch((error) => report(String(error))),
-    );
-    code.parentElement!.append(button);
   }
   for (const name of Object.keys(localPreferences)) {
     const preference = document.querySelector<HTMLSelectElement>(`[data-preference=${name}]`);

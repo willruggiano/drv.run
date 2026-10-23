@@ -14,19 +14,13 @@ import { GlobalSettingsStore } from "../server.ts";
 import { conversationURL } from "../hypermedia.ts";
 import { modelKey, targetKey } from "../hypermedia-forms.ts";
 import { rename, sessionInfo, Sessions } from "../sessions.ts";
-import {
-  browserFixture,
-  htmlAction,
-  htmlMessageActions,
-  returnToConversation,
-  openSessions,
-} from "./browser-testing.ts";
+import { browserFixture, returnToConversation, openSessions } from "./browser-testing.ts";
 import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
 import { directoryFixture, serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-await test("HTML native settings, fork, reset, archive, context and export preserve Durable state", async (t) => {
+await test("HTML native settings, reset, archive, context and export preserve Durable state", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   f.faux.setResponses([fauxAssistantMessage("Original history.")]);
@@ -54,21 +48,12 @@ await test("HTML native settings, fork, reset, archive, context and export prese
   assert.equal((await session.root.agent(context)).thinkingLevel, "high");
 
   await returnToConversation(page);
-  await page.locator(`#entry-${records.at(-1)!.id} .entry-actions > summary`).click();
-  await page
-    .locator(`#entry-${records.at(-1)!.id}`)
-    .getByRole("button", { name: "Fork here" })
-    .click();
-  const branchId = Number(new URL(page.url()).pathname.split("/").at(-1));
-  assert.notEqual(branchId, session.root.id);
-  const branch = await session.harness.conversation(branchId as typeof session.root.id, context);
-  assert(branch);
-  assert.deepEqual(await readHistory(branch), records);
-  await (await htmlAction(page, "link", "Reset")).click();
-  assert.deepEqual(await readHistory(branch), records);
+  assert.deepEqual(await readHistory(session.root), records);
+  await page.goto(b.base + path + "/reset");
+  assert.deepEqual(await readHistory(session.root), records);
   await page.locator('textarea[name="argument"]').fill("Continue with a clean context.");
   await page.getByRole("button", { name: "Confirm reset" }).click();
-  const after = await readHistory(branch);
+  const after = await readHistory(session.root);
   assert.equal(after.at(-1)?.kind, "pi.reset");
   assert.equal(await page.locator(".context-history article").count(), records.length);
   assert.equal(
@@ -78,16 +63,15 @@ await test("HTML native settings, fork, reset, archive, context and export prese
   await page.getByRole("link", { name: "Context usage details", exact: true }).click();
   assert.equal(
     await page.locator("#context-view").getAttribute("data-conversation"),
-    String(branchId),
+    String(session.root.id),
   );
   assert.equal(
     await page.locator("#context-view").getAttribute("data-tail"),
     String(after.at(-1)!.id),
   );
-  const exported = await fetch(b.base + conversationURL(session, branch.id) + "/export");
+  const exported = await fetch(b.base + conversationURL(session) + "/export");
   assert.equal(exported.status, 200);
   assert.deepEqual(await exported.json(), after);
-  assert.deepEqual(await readHistory(session.root), records);
 });
 
 await test("HTML reset keeps the conversation and swaps only the composer with or without JavaScript", async (t) => {
@@ -307,7 +291,7 @@ for (const [command, scope] of [
     f.faux.setResponses([fauxAssistantMessage("No findings.")]);
     await b.page.getByRole("textbox", { name: "Message" }).fill(command);
     await b.page.getByRole("button", { name: "Send", exact: true }).click();
-    await (await htmlAction(b.page, "button", "End review and return")).waitFor();
+    await b.page.locator("[data-command=endreview]").waitFor({ state: "attached" });
     const state = await session.harness.snapshot(Review, session.root.id, context);
     assert(state?.active !== undefined);
     const review = await session.harness.conversation(state.active, context);
@@ -459,7 +443,7 @@ await test("HTML target directory selection, path completions and slash activati
   assert.deepEqual(b.errors, []);
 });
 
-await test("HTML rich transcript has paired tools, local copy/quote/search, images and bounded responsive layout", async (t) => {
+await test("HTML rich transcript has paired tools, local search, images and bounded responsive layout", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   f.faux.setResponses([
@@ -480,38 +464,11 @@ await test("HTML rich transcript has paired tools, local copy/quote/search, imag
   const b = await browserFixture(t, f.sessions);
   const { page } = b;
   page.setDefaultTimeout(10000);
-  await b.browserContext.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto(b.base + conversationURL(session));
   await page.locator('.tool-call[data-state="completed"]').waitFor();
   assert.equal(await page.locator(".tool-call").count(), 1);
   const details = page.locator(".tool-call");
   await details.locator(":scope > summary").click();
-  await (
-    await htmlMessageActions(page, details)
-  )
-    .getByRole("button", { name: "Copy output", exact: true })
-    .click();
-  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "tool result\n");
-  await (
-    await htmlMessageActions(page, details)
-  )
-    .getByRole("button", { name: "Quote output", exact: true })
-    .click();
-  assert.equal(
-    await page.locator('#composer [name="content"]').inputValue(),
-    "> tool result\n> \n\n",
-  );
-  await page.locator('#composer [name="content"]').fill("");
-  const answer = page.locator("article").filter({ has: page.locator("h3") });
-  await (
-    await htmlMessageActions(page, answer)
-  )
-    .getByRole("button", { name: "Quote", exact: true })
-    .click();
-  assert.equal(
-    (await page.locator('#composer [name="content"]').inputValue()).startsWith("> ## Result"),
-    true,
-  );
   await page.keyboard.press("Control+f");
   await page.locator("#search").fill("tool result");
   assert.equal(await page.locator(".search-current").count(), 1);
@@ -525,9 +482,6 @@ await test("HTML rich transcript has paired tools, local copy/quote/search, imag
       ),
     true,
   );
-  const userMessage = page.locator('#transcript article[data-role="user"]').first();
-  await htmlMessageActions(page, userMessage);
-  await page.keyboard.press("Escape");
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     assert.equal(
@@ -540,19 +494,6 @@ await test("HTML rich transcript has paired tools, local copy/quote/search, imag
     );
     assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isVisible(), true);
   }
-  await page.locator('#composer [name="content"]').fill("Keep");
-  await page.locator('#composer [name="content"]').evaluate((node: HTMLTextAreaElement) => {
-    node.maxLength = 5;
-  });
-  await (
-    await htmlMessageActions(page, userMessage)
-  )
-    .getByRole("button", { name: "Quote", exact: true })
-    .click();
-  assert.equal(await page.locator('#composer [name="content"]').inputValue(), "Keep");
-  await page.locator('#composer [name="content"]').evaluate((node: HTMLTextAreaElement) => {
-    node.maxLength = 100000;
-  });
   const composer = page.locator('#composer [name="content"]');
   await composer.fill("One line");
   await composer.press("Enter");
@@ -716,7 +657,7 @@ await test("HTML ordinary messages enable Send and consecutive submissions retai
   const catalog = await f.sessions.catalog();
   const session = await f.sessions.get(catalog.sessions[0].id);
   const url = b.base + conversationURL(session);
-  await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+  await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
   const prompt = page.getByRole("textbox", { name: "Message" });
   for (const [index, text] of ["First ordinary message", "Second ordinary message"].entries()) {
     f.faux.setResponses([fauxAssistantMessage(`Response ${index}`)]);
@@ -729,7 +670,7 @@ await test("HTML ordinary messages enable Send and consecutive submissions retai
       () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
     );
     await session.root.waitForIdle(context);
-    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+    await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
     assert.equal(page.url(), url);
   }
   assert.deepEqual(
@@ -996,7 +937,7 @@ await test("HTML landing lists the newest five sessions even when execution is u
     await page.locator("#session-list a").first().click();
     await page.waitForURL(`${base}/sessions/${ids[0]}/conversations/1`);
     await page.reload();
-    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+    await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
     await page.goto(base);
   }
   assert.deepEqual(errors, []);
@@ -1044,7 +985,7 @@ await test("cd completes directories and changes cwd in HTML without model input
     await writeFile(join(f.workspace, "spurious-file"), "file");
     const { page, base, errors } = await browserFixture(t, f.sessions);
     await page.goto(base + conversationURL(session));
-    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+    await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
     await page.fill("#prompt", "/cd");
     await page.locator("#completions [role=option]").waitFor();
     await page.press("#prompt", "Tab");
@@ -1062,7 +1003,7 @@ await test("cd completes directories and changes cwd in HTML without model input
     );
     assert.deepEqual(await readHistory(session.root), []);
     await page.reload();
-    await page.locator("#status[data-state=ready]").waitFor({ state: "attached" });
+    await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
     await page.waitForFunction(
       (path) => document.querySelector("#footer-instance")?.textContent === `local · ${path}`,
       nested,

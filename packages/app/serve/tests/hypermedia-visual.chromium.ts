@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { InboxDoc } from "@earendil-works/pi-durable";
 import { fixture } from "./sessions-testing.ts";
@@ -651,5 +651,93 @@ await test("attachment thumbnails remove only the selected file by pointer or ke
     assert.equal(new URL(page.url()).pathname, path);
   }
   assert.equal((await f.sessions.catalog(context)).sessions.length, 1);
+  assert.deepEqual(b.errors, []);
+});
+
+await test("transcripts have no action controls, session indicator, or reserved action gutter", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  f.faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("bash", { command: "printf done" }), {
+      stopReason: "toolUse",
+    }),
+    fauxAssistantMessage("```typescript\nconst answer = 42;\n```"),
+  ]);
+  await (
+    await session.root.submit({ type: "input", content: "Run the command." }, context)
+  ).wait(context);
+  const b = await browserFixture(t, f.sessions);
+  for (const javaScriptEnabled of [false, true]) {
+    for (const touch of [false, true]) {
+      const browserContext = await b.browser.newContext({
+        javaScriptEnabled,
+        viewport: { width: touch ? 390 : 1440, height: 900 },
+        isMobile: touch,
+        hasTouch: touch,
+      });
+      const page = await browserContext.newPage();
+      page.setDefaultTimeout(10000);
+      page.on("pageerror", (error) => b.errors.push(error));
+      await page.goto(b.base + conversationURL(session));
+      if (javaScriptEnabled)
+        await page.waitForFunction(
+          () => document.querySelector("#connection")?.textContent === "Connected",
+        );
+      const absent =
+        '#status, .session-status, .status-menu, .entry-actions, .message-actions, .action-menu, #message-menu, #transcript button, #live button, [data-copy-source], a[href="/auth"]';
+      assert.equal(await page.locator(absent).count(), 0);
+      const message = page.locator('#transcript article[data-role="user"]');
+      assert.equal(
+        await message.evaluate((node) => getComputedStyle(node).userSelect === "none"),
+        false,
+      );
+      // Native context menus must not be intercepted by a hidden message menu.
+      assert.equal(
+        await message.evaluate((node) =>
+          node.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })),
+        ),
+        true,
+      );
+      if (javaScriptEnabled && touch) {
+        await message.dispatchEvent("pointerdown", {
+          pointerType: "touch",
+          pointerId: 1,
+          isPrimary: true,
+        });
+        await page.waitForTimeout(600);
+        await message.dispatchEvent("pointerup", {
+          pointerType: "touch",
+          pointerId: 1,
+          isPrimary: true,
+        });
+      }
+      assert.equal(await page.locator(":popover-open").count(), 0);
+      assert.equal(await page.locator(absent).count(), 0);
+      // Tool disclosure remains native, but opening it adds no buttons.
+      await page.locator(".tool-call > summary").click();
+      assert.equal(await page.locator(".tool-result").isVisible(), true);
+      assert.equal(await page.locator(absent).count(), 0);
+      for (const path of [conversationURL(session), "/sessions?view=sessions"]) {
+        await page.goto(b.base + path);
+        const geometry = await page.evaluate(() => {
+          const main = document.querySelector("#main-area")!;
+          const pane = main.querySelector(".pane")!;
+          return {
+            main: main.getBoundingClientRect().width,
+            pane: pane.getBoundingClientRect().width,
+            right: parseFloat(getComputedStyle(pane).paddingRight),
+            overflow: pane.scrollWidth > pane.clientWidth,
+          };
+        });
+        if (!touch) {
+          assert.equal(geometry.main, 820);
+          assert.equal(geometry.pane, geometry.main);
+          assert.equal(geometry.right, 0);
+        }
+        assert.equal(geometry.overflow, false);
+      }
+      await browserContext.close();
+    }
+  }
   assert.deepEqual(b.errors, []);
 });

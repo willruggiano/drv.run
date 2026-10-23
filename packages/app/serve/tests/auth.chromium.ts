@@ -12,7 +12,8 @@ await test(
     const control = await authorizationFixture(t);
     const { page, base, errors } = await browserFixture(t, f.sessions, control.authorization);
     await page.goto(base + "/sessions");
-    await page.getByRole("link", { name: "Auth", exact: true }).click();
+    assert.equal(await page.locator('a[href="/auth"]').count(), 0);
+    await page.goto(base + "/auth");
     await page.locator('#github-authorization [data-state="not-enrolled"]').waitFor();
     assert.equal(new URL(page.url()).pathname, "/auth");
     await page.getByRole("button", { name: "Authorize", exact: true }).click();
@@ -23,7 +24,8 @@ await test(
     assert.equal(await approval.getAttribute("target"), "_blank");
     // Leaving the page does not cancel the host's enrollment.
     await page.getByRole("link", { name: "Sessions", exact: true }).click();
-    await page.getByRole("link", { name: "Auth", exact: true }).click();
+    assert.equal(await page.locator('a[href="/auth"]').count(), 0);
+    await page.goto(base + "/auth");
     await page.locator('#github-authorization [data-state="authorizing"]').waitFor();
     control.approve();
     // Completion must arrive via polling, not a manual navigation.

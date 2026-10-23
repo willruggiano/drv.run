@@ -105,7 +105,7 @@ export function htmlPage(
 ): string {
   const sessionsPath = `/sessions${back ? `?return=${encodeURIComponent(back)}` : "?view=sessions"}`;
   const heading = conversation
-    ? h`<a id="conversation-title" class="header-title" href="${sessionsPath}" aria-label="Sessions" title="Sessions" data-command="sessions">${title}</a>${!back ? h`<span id="status" class="session-status" data-state="none" role="status" aria-label="No session"></span>` : h`<button class="status-menu" type="button" popovertarget="conversation-menu" aria-label="Conversation actions"><span id="status" class="session-status" data-state="ready" role="status"><span class="sr-only">Ready</span></span></button>`}`
+    ? h`<a id="conversation-title" class="header-title" href="${sessionsPath}" aria-label="Sessions" title="Sessions" data-command="sessions">${title}</a>`
     : h`<span class="header-title">${title}</span>`;
   // htmx must see readyState=loading so initialization waits for DOMContentLoaded,
   // after the deferred extensions and module have registered their handlers.
@@ -176,9 +176,9 @@ type ReviewState = { original?: number; active?: number };
 function controls(url: string, view: ConversationView, review: ReviewState): SafeHtml {
   const live = view.docs[LiveDoc.definition.kind] as LiveState | undefined;
   const busy = live?.run !== undefined;
-  return h`<div id="controls" class="actions" data-state="${busy ? "working" : "ready"}"><button id="input-toggle" class="icon enhanced-only" type="button" data-file-picker="images" aria-label="Upload attachments" title="Upload attachments">+</button><div id="review-menu" popover aria-label="Review actions">${
+  return h`<div id="controls" class="actions" data-state="${busy ? "working" : "ready"}"><button id="input-toggle" class="icon enhanced-only" type="button" data-file-picker="images" aria-label="Upload attachments" title="Upload attachments">+</button><div hidden>${
     review.original !== undefined
-      ? h`${link(url.replace(/\d+$/, String(review.original)), "Visit original")}${action(`${url}/end-review`, "End review and return", "endreview")}`
+      ? action(`${url}/end-review`, "End review and return", "endreview")
       : review.active !== undefined
         ? link(url.replace(/\d+$/, String(review.active)), "Open review", h`data-command="review"`)
         : busy
@@ -273,15 +273,7 @@ export class ConversationFragments {
     for (const [id, record] of this.records) {
       content =
         record.kind === "pi.reset" || record.kind === "pi.compaction"
-          ? entry(
-              record,
-              this.url,
-              this.calls,
-              this.results,
-              this.liveState,
-              content,
-              times.get(id),
-            )
+          ? entry(record, this.calls, this.results, this.liveState, content, times.get(id))
           : h`${content}${this.rendered.get(id)}`;
     }
     return content;
@@ -345,7 +337,7 @@ export class ConversationFragments {
         this.metrics.entries++;
         this.rendered.set(
           record.id,
-          entry(record, this.url, this.calls, this.results, live, h``, times.get(record.id)),
+          entry(record, this.calls, this.results, live, h``, times.get(record.id)),
         );
       }
       if (!appended) parts.push(partial("transcript", this.transcript(times), "innerMorph"));
@@ -382,7 +374,7 @@ export class ConversationFragments {
       regions.push([
         toolID(call.id),
         JSON.stringify(result ? result.entry : [slot, !!live?.run]),
-        () => tool(call, result, slot, !!live?.run, this.url),
+        () => tool(call, result, slot, !!live?.run),
       ]);
     }
     for (const [id, value, render] of regions) {
@@ -574,7 +566,7 @@ export async function hypermedia(
       const rows = h`${(picker ? list : list.slice(0, 5)).map((item) => sessionRow(item, back))}`;
       html(
         response,
-        h`<main id="main-area"><section id="${picker ? "picker" : "landing"}" class="pane"><nav aria-label="Account"><a href="/auth">Auth</a></nav><div>${!picker && rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main><form id="session-filter-form" method="get" action="/sessions" hidden>${back ? hidden("return", back) : hidden("view", "sessions")}</form>${createForm(catalog, randomUUID(), picker, query, metadata)}`,
+        h`<main id="main-area"><section id="${picker ? "picker" : "landing"}" class="pane"><div>${!picker && rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main><form id="session-filter-form" method="get" action="/sessions" hidden>${back ? hidden("return", back) : hidden("view", "sessions")}</form>${createForm(catalog, randomUUID(), picker, query, metadata)}`,
         200,
         picker ? (back ?? "/sessions") : undefined,
         picker ? "Sessions" : "No session",
@@ -902,11 +894,7 @@ export async function hypermedia(
       }
       const history = await conversation.entries({ order: "descending" }, 100, cursor, context);
       page(
-        h`<main id="main-area"><section class="pane"><h1>History</h1>${h`${history.items
-          .toReversed()
-          .map((record) =>
-            entry(record, path),
-          )}`}${history.next ? link(`${path}/history?cursor=${encodeURIComponent(JSON.stringify(history.next))}`, "Older history") : ""}</section></main>`,
+        h`<main id="main-area"><section class="pane"><h1>History</h1>${h`${history.items.toReversed().map((record) => entry(record))}`}${history.next ? link(`${path}/history?cursor=${encodeURIComponent(JSON.stringify(history.next))}`, "Older history") : ""}</section></main>`,
       );
       return;
     }
@@ -1110,10 +1098,9 @@ async function history(conversation: Conversation, context: Context) {
   return records;
 }
 function navigation(path: string): SafeHtml {
-  const menu = h`<nav id="conversation-menu" class="conversation-nav" popover aria-label="Conversation actions">${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/context`, "Context")}${link(`${path}/history`, "History")}${link(`${path}/compact`, "Compact")}${link(`${path}/reset`, "Reset")}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button><button type="button" popovertarget="review-menu">Review actions</button><button type="button" popovertarget="usage-menu">Usage</button></nav>`;
-  const commands = h`<div hidden>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
+  const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
   const search = h`<div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
-  return h`${menu}${commands}${search}`;
+  return h`${commands}${search}`;
 }
 
 function instanceHTML(info: SessionInfo, path: string, title?: string): SafeHtml {

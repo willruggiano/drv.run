@@ -7,7 +7,7 @@ export function search(step = 0) {
     : input.value.trim().toLocaleLowerCase();
   const nodes = Array.from(document.querySelectorAll<HTMLElement>("#transcript article"));
   const matches = nodes.filter((node) => {
-    // Exclude nested archives and hidden copy-source controls from this entry's text.
+    // Exclude nested archives from this entry's text.
     const own = Array.from(
       node.querySelectorAll<HTMLElement>(".text, pre, .thinking, .tool-command"),
     )
@@ -40,7 +40,7 @@ export function search(step = 0) {
           node = walker.nextNode()
         ) {
           if (
-            node.parentElement?.closest("header, button, textarea, .entry-actions") ||
+            node.parentElement?.closest("header") ||
             node.parentElement?.closest("article") !== article
           )
             continue;
@@ -77,8 +77,6 @@ export function installSearch() {
       const bar = document.querySelector<HTMLElement>("#search-bar");
       if (bar) {
         bar.hidden = !bar.hidden;
-        for (const popup of document.querySelectorAll<HTMLElement>("nav:popover-open"))
-          popup.hidePopover();
         if (!bar.hidden) bar.querySelector("input")?.focus();
       }
     }

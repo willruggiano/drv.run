@@ -12,9 +12,6 @@ export function installStatus() {
 }
 
 export function installPwa() {
-  window.addEventListener("offline", () => document.body.classList.add("offline"));
-  window.addEventListener("online", () => document.body.classList.remove("offline"));
-
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     installPrompt = event as InstallPromptEvent;
