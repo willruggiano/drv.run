@@ -21,6 +21,7 @@ import {
   message,
   tool,
   toolID,
+  toolStatus,
   timing,
   contextHTML,
   compactTokens,
@@ -221,7 +222,11 @@ async function panelFrame(
 }
 function liveHTML(view: ConversationView, calls: ReadonlyMap<string, Call> = new Map()): SafeHtml {
   const live = view.docs[LiveDoc.definition.kind] as LiveState | undefined;
-  return h`<section id="live" aria-label="Live output">${live?.generation?.message ? message(live.generation.message) : ""}${h`${[...(live?.tools ?? []).filter((slot) => !calls.has(slot.callId)), ...(live?.nestedTools ?? [])].map((slot) => tool({ id: slot.callId, name: slot.name, arguments: "arguments" in slot ? slot.arguments : {} }, undefined, slot, !!live?.run))}`}${live?.generation?.retry ? h`<p class="notice" hx-ignore>Retry ${live.generation.attempt}: ${live.generation.retry.error}</p>` : ""}${live?.generation?.deferred ? h`<p class="notice">Waiting for provider response…</p>` : ""}${h`${(live?.compactions ?? []).map((item) => h`<p class="notice">${item.blocking ? "Compacting context" : "Background compaction"} · ${item.reason} · Attempt ${item.attempt}${item.retry ? ` · ${item.retry.error}` : ""}</p>`)}`}${live?.compactionFailure ? h`<p class="error" hx-ignore>Compaction failed: ${live.compactionFailure.error}</p>` : ""}</section>`;
+  const compactions = (live?.compactions ?? []).map(
+    (item) =>
+      h`<details id="compaction-${item.taskId}" class="tool-call context-event" data-state="running" data-disclosure="compaction-${item.taskId}"><summary>${toolStatus("running")}<span class="tool-command">${item.blocking ? "Compacting context" : "Background compaction"}</span></summary><p class="notice">${item.reason} · Attempt ${item.attempt}${item.retry ? ` · ${item.retry.error}` : ""}</p></details>`,
+  );
+  return h`<section id="live" aria-label="Live output">${live?.generation?.message ? message(live.generation.message) : ""}${h`${[...(live?.tools ?? []).filter((slot) => !calls.has(slot.callId)), ...(live?.nestedTools ?? [])].map((slot) => tool({ id: slot.callId, name: slot.name, arguments: "arguments" in slot ? slot.arguments : {} }, undefined, slot, !!live?.run))}`}${live?.generation?.retry ? h`<p class="notice" hx-ignore>Retry ${live.generation.attempt}: ${live.generation.retry.error}</p>` : ""}${live?.generation?.deferred ? h`<p class="notice">Waiting for provider response…</p>` : ""}${compactions}${live?.compactionFailure ? h`<p class="error" hx-ignore>Compaction failed: ${live.compactionFailure.error}</p>` : ""}</section>`;
 }
 function queueHTML(view: ConversationView, path = ""): SafeHtml {
   const inbox = view.docs[InboxDoc.definition.kind] as InboxState | undefined;

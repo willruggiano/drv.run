@@ -89,6 +89,12 @@ function details(data: unknown): SafeHtml {
         : undefined;
   return h`<details${patch ? h` open` : ""}><summary>${patch ? "Changes" : "Details"}</summary>${code(patch ?? JSON.stringify(data, null, 2), patch ? "diff" : "json")}</details>`;
 }
+export function toolStatus(
+  state: "pending" | "running" | "completed" | "failed" | "cancelled" | "unavailable",
+): SafeHtml {
+  const symbols = { completed: "✓", failed: "✕", pending: "◷", cancelled: "⊘", unavailable: "?" };
+  return h`<span class="tool-status" data-state="${state}" role="img" aria-label="${state}">${state === "running" ? h`${[0, 1, 2, 3].map((index) => h`<span aria-hidden="true" style="animation-delay:-${index * 225}ms"></span>`)}` : symbols[state]}</span>`;
+}
 export function tool(
   call: Call,
   result?: Result,
@@ -130,7 +136,7 @@ export function tool(
   const output = result ? messageText(result.message) : (slot?.output ?? "");
   const duration = result?.message.durationMs ?? nested?.durationMs;
   const metadata = result?.message.details ?? slot?.details;
-  const summary = h`<summary><span class="tool-status" data-state="${state}" role="img" aria-label="${state}">${state === "running" ? h`${[0, 1, 2, 3].map((index) => h`<span aria-hidden="true" style="animation-delay:-${index * 225}ms"></span>`)}` : (({ completed: "✓", failed: "✕", pending: "◷", cancelled: "⊘" } as Record<string, string>)[state] ?? "?")}</span><span class="tool-command" hx-ignore>${command}</span>${duration === undefined ? "" : h`<span class="tool-duration" title="${duration}ms">${duration < 1000 ? `${Math.round(duration)}ms` : `${(duration / 1000).toFixed(1)}s`}</span>`}</summary>`;
+  const summary = h`<summary>${toolStatus(state)}<span class="tool-command" hx-ignore>${command}</span>${duration === undefined ? "" : h`<span class="tool-duration" title="${duration}ms">${duration < 1000 ? `${Math.round(duration)}ms` : `${(duration / 1000).toFixed(1)}s`}</span>`}</summary>`;
   const outputMarkup = h`<div class="tool-result">${result ? h`${result.message.content.map((part) => (part.type === "text" ? code(part.text) : part.type === "image" ? image(part.mimeType, part.data) : ""))}` : output ? code(output) : ""}${slot?.droppedBytes || slot?.droppedLines ? h`<p class="notice">Output truncated: ${slot.droppedBytes ?? 0} bytes / ${slot.droppedLines ?? 0} lines omitted.</p>` : ""}${slot?.diagnostics?.length ? h`<details><summary>Diagnostics</summary>${code(JSON.stringify(slot.diagnostics, null, 2), "json")}</details>` : ""}${nested?.error ? h`<p class="error" hx-ignore>${nested.error}</p>` : ""}${details(metadata)}${result && !result.message.isError && name === "write" ? h`<details><summary>Written content</summary>${code(input)}</details>` : ""}</div>`;
   return h`<details id="${toolID(call.id)}" class="tool-call" data-call-id="${call.id}" data-tool="${call.name}" data-disclosure="${toolID(call.id)}" data-state="${state}"${state === "failed" ? h` open` : ""}>${summary}${outputMarkup}</details>`;
 }
@@ -193,7 +199,7 @@ export function entry(
     ),
   )}`;
   const html = boundary
-    ? h`<details class="tool-call context-event" data-state="completed" data-disclosure="context-${record.id}"><summary><span class="tool-status" data-state="completed" aria-label="Completed">✓</span><span class="tool-command">${record.kind === "pi.reset" ? "Context reset" : "Context compacted"}</span>${timing(record.id, duration)}</summary>${record.kind === "pi.compaction" ? h`<div class="compaction-summary">${rendered}</div>` : ""}<div id="archive-${record.id}" class="context-history">${archive}</div></details>${record.kind === "pi.reset" ? rendered : ""}`
+    ? h`<details class="tool-call context-event" data-state="completed" data-disclosure="context-${record.id}"><summary>${toolStatus("completed")}<span class="tool-command">${record.kind === "pi.reset" ? "Context reset" : "Context compacted"}</span>${timing(record.id, duration)}</summary>${record.kind === "pi.compaction" ? h`<div class="compaction-summary">${rendered}</div>` : ""}<div id="archive-${record.id}" class="context-history">${archive}</div></details>${record.kind === "pi.reset" ? rendered : ""}`
     : rendered;
   return h`<article id="entry-${record.id}" data-entry="${record.id}"${boundary ? "" : h` hx-morph-skip`}${!boundary && messages[0] ? h` data-role="${messages[0].role}"` : ""}${boundary ? h` data-context="${record.kind}"` : ""}${!html.length ? h` hidden` : ""}>${html}</article>`;
 }

@@ -94,7 +94,7 @@ article.trace-continues {
 .tool-call[data-state=failed] > summary .tool-status { color: var(--danger); }
 .tool-status:is([data-state=running], [data-state=completed]) { color: var(--accent); }
 .context-history { display: block; font: 14px/1.6 var(--font-ui); color: var(--fg); }
-.context-event > summary { font-family: var(--font-ui); }
+[data-context="pi.reset"] > .context-event > summary { font-family: var(--font-ui); }
 .tool-result { min-width: 0; }
 .text { white-space: pre-wrap; } .text p { margin: 0 0 10px; } .text p:last-child { margin-bottom: 0; }
 pre { white-space: pre; overflow: auto; background: var(--code-bg); padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; tab-size: 2; }

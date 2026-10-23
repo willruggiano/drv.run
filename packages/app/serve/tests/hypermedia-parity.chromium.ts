@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Review } from "harness";
+import { LiveDoc } from "@earendil-works/pi-durable";
 import { GlobalSettingsStore } from "../server.ts";
 import { conversationURL } from "../hypermedia.ts";
 import { modelKey, targetKey } from "../hypermedia-forms.ts";
@@ -557,11 +558,15 @@ await test("HTML draft reload and offline shell never persist conversation repre
   assert.deepEqual(b.errors, []);
 });
 
-await test("HTML compaction uses committed summaries and durations without replacing completed entry nodes", async (t) => {
+await test("HTML compaction shares tool progress styling and records completion without replacing entry nodes", async (t) => {
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
   const f = await fixture(t);
   await f.reopen({ ...f.options, settings: { compaction: { keepRecentTokens: 1 } } });
   const session = await f.create();
+  await writeFile(join(f.workspace, "notes.txt"), "Keep the key decisions.");
   f.faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("read", { path: "notes.txt" }), { stopReason: "toolUse" }),
     fauxAssistantMessage("First response."),
     fauxAssistantMessage("Second response."),
   ]);
@@ -577,10 +582,62 @@ await test("HTML compaction uses committed summaries and durations without repla
   );
   const first = await page.locator(`#entry-${records[0].id}`).elementHandle();
   assert(first);
-  f.faux.setResponses([fauxAssistantMessage("Summary of the completed work.")]);
+  f.faux.setResponses([
+    async () => {
+      await release.promise;
+      return fauxAssistantMessage("Summary of the completed work.");
+    },
+  ]);
   await page.locator('#composer [name="content"]').fill("/compact Keep the key decisions.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
+  const pending = page.locator('#live .context-event[data-state="running"]');
+  await pending.waitFor();
+  const progress = await session.harness.snapshot(LiveDoc, session.root.id, context);
+  assert(progress?.compactions && progress.compactions.length === 1);
+  const taskId = progress.compactions[0].taskId;
+  assert.equal(await pending.getAttribute("id"), `compaction-${taskId}`);
+  const spinner = pending.getByRole("img", { name: "running", exact: true });
+  assert.equal(await spinner.locator("span").count(), 4);
+  assert.equal(
+    await spinner
+      .locator("span")
+      .evaluateAll((nodes) =>
+        nodes.every((node) => getComputedStyle(node).animationName === "tool-spinner"),
+      ),
+    true,
+  );
+  const presentation = (node: Element) => {
+    const style = getComputedStyle(node);
+    return { color: style.color, font: style.fontFamily, size: style.fontSize };
+  };
+  const expectedStyle = await page
+    .locator('#transcript .tool-call[data-tool="read"] > summary')
+    .evaluate(presentation);
+  assert.deepEqual(await pending.locator("summary").evaluate(presentation), expectedStyle);
+  assert.equal(await pending.locator(".tool-duration").count(), 0);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  assert.equal(
+    await spinner
+      .locator("span")
+      .evaluateAll((nodes) =>
+        nodes.every((node) => getComputedStyle(node).animationName === "none"),
+      ),
+    true,
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await pending.locator("summary").click();
+  assert.equal(await pending.locator(".notice").isVisible(), true);
+  release.resolve();
   await page.locator('[data-context="pi.compaction"]').waitFor();
+  await pending.waitFor({ state: "detached" });
+  const completed = page.locator('[data-context="pi.compaction"] > .context-event');
+  assert.equal(await completed.getAttribute("data-state"), "completed");
+  assert.equal(await completed.getByRole("img", { name: "completed", exact: true }).count(), 1);
+  assert.equal(await completed.locator('.tool-status[data-state="running"]').count(), 0);
+  assert.deepEqual(
+    await completed.locator(":scope > summary").evaluate(presentation),
+    expectedStyle,
+  );
   const compacted = (await readHistory(session.root)).findLast(
     (entry) => entry.kind === "pi.compaction",
   );
@@ -592,8 +649,27 @@ await test("HTML compaction uses committed summaries and durations without repla
   );
   assert.equal(await first.evaluate((node) => !!node.closest(".context-history")), true);
   assert.equal(await page.locator('#composer [name="content"]').inputValue(), "");
-  assert(
-    Number(await page.locator(`#duration-${compacted.id}`).getAttribute("data-duration-ms")) >= 0,
+  const task = await session.harness.getTask(taskId, context);
+  assert(task?.startedAt !== undefined && task.endedAt !== undefined);
+  const duration = task.endedAt - task.startedAt;
+  assert.equal(
+    Number(await page.locator(`#duration-${compacted.id}`).getAttribute("data-duration-ms")),
+    duration,
+  );
+  const native = await b.browser.newContext({ javaScriptEnabled: false });
+  t.after(() => native.close());
+  const reloaded = await native.newPage();
+  await reloaded.goto(b.base + conversationURL(session));
+  assert.equal(
+    Number(await reloaded.locator(`#duration-${compacted.id}`).getAttribute("data-duration-ms")),
+    duration,
+  );
+  assert.equal(await reloaded.locator("#live .context-event").count(), 0);
+  assert.deepEqual(
+    await reloaded
+      .locator('[data-context="pi.compaction"] > .context-event > summary')
+      .evaluate(presentation),
+    expectedStyle,
   );
   assert.deepEqual(b.errors, []);
   await first.dispose();
