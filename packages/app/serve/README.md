@@ -1,18 +1,16 @@
 # serve
 
+<!-- FIXME: Refactor this doc to be more useful -->
+
 ## Running
-
-Run as the drv.run instance owner:
-
-```sh
-nix run .#app
-```
 
 There are no command-line options. `HOST` defaults to `127.0.0.1`; `PORT`
 defaults to `8080`. The server is unauthenticated. Execution uses drv.run guests
 only; there is no local execution target.
 
 ## Keyboard shortcuts
+
+<!-- FIXME: this should just be generated -->
 
 `ctrl+k` opens Sessions. Outside text fields and native selects, `t` opens the
 target selector, `m` opens the model selector, and `n` creates a session using
@@ -23,11 +21,15 @@ conversation search matches when those controls have focus.
 
 Focused browser tests (with Chromium on PATH):
 
+<!-- FIXME: why do we need NODE_OPTIONS? -->
+
 ```sh
 NODE_OPTIONS=--conditions=development node --test packages/app/serve/tests/key-mappings.chromium.ts
 ```
 
 ## Base directory
+
+<!-- FIXME: Move to a new public/configuration.md file -->
 
 For drv.run targets, **Base directory** in Sessions sets the new session's
 working path. Session settings can change it for the current conversation. Empty
@@ -42,6 +44,8 @@ it persists across restarts and is inherited by forks. File tools, commands, `@`
 completion, and repository status all use the current conversation's directory.
 
 ## Mentions and commands
+
+<!-- FIXME: Move to a new public/usage.md file -->
 
 Type `@` at a word boundary to browse paths in the session's guest workspace.
 Completion matches name prefixes; select a directory to browse inside it. Type
@@ -60,6 +64,8 @@ Use ↑/↓ or `ctrl+j/k` to navigate suggestions, `enter`/`tab` or a tap to sel
 and `escape` to dismiss. Selecting a command only inserts it; use Send or
 `ctrl+enter` to execute. Ordinary `enter` still inserts a newline when the
 suggestion list is closed.
+
+<!-- FIXME: Move most of the rest of this doc to CONTRIBUTING.md or docs/benchmarks.md -->
 
 Run the focused tests with Chromium and esbuild on PATH:
 

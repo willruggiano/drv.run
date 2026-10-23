@@ -25,7 +25,6 @@
       concept nixos test in tests/nixos/port-forwarding.nix)
 - [ ] HTTP proxy/egress control (ie. http proxy on the host controls network
       accesss from the guest)
-- [ ] Secrets injection (pi-gondolin style) using mitmproxy?
 - [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
       insight into pre/start/post activation timing, including cold and warm
       boots on flake's of varying (closure) size
