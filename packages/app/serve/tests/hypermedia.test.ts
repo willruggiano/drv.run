@@ -246,7 +246,6 @@ await test("HTML settings reject invalid forms before changing configuration or 
   const before = await current();
   const valid = {
     name: "A changed name",
-    instructions: "A changed instruction",
     target: targetKey(f.binding),
     model: modelKey(model),
     thinkingLevel: "high",

@@ -47,12 +47,12 @@ await test("HTML native settings, fork, reset, archive, context and export prese
   const path = conversationURL(session);
   await page.goto(b.base + path + "/settings");
   await page.locator('[name="name"]').fill("Renamed session");
-  await page.locator('[name="instructions"]').fill("Keep changes surgical.");
+  assert.equal(await page.locator('[name="instructions"]').count(), 0);
   await page.selectOption('[name="thinkingLevel"]', "high");
   await page.getByRole("button", { name: "Save settings" }).click();
   assert.equal((await sessionInfo(session)).name, "Renamed session");
   assert.equal((await session.root.agent(context)).thinkingLevel, "high");
-  assert.equal((await session.root.agent(context)).instructions, "Keep changes surgical.");
+
   await returnToConversation(page);
   await page.locator(`#entry-${records.at(-1)!.id} .entry-actions > summary`).click();
   await page
@@ -112,13 +112,13 @@ await test("HTML session autosaves drain before navigation, retain drafts and re
     await release.promise;
     await route.continue();
   });
-  await page.locator('[name="instructions"]').fill("Persist before leaving.");
+  await page.locator('[name="name"]').fill("Persist before leaving.");
   await returnToConversation(page);
   await requested.promise;
   assert.equal(new URL(page.url()).pathname, path + "/settings");
   release.resolve();
   await page.waitForURL(b.base + path);
-  assert.equal((await session.root.agent(context)).instructions, "Persist before leaving.");
+  assert.equal((await sessionInfo(session)).name, "Persist before leaving.");
   await page.waitForFunction(
     () =>
       document.querySelector<HTMLTextAreaElement>('#composer [name="content"]')?.value ===
@@ -137,19 +137,17 @@ await test("HTML session autosaves drain before navigation, retain drafts and re
       body: '<p id="form-error">Unavailable</p>',
     });
   });
-  await page.locator('[name="instructions"]').fill("Retry this change.");
+  await page.locator('[name="name"]').fill("Retry this change.");
   await returnToConversation(page);
   await page.waitForFunction(
     () => document.querySelector<HTMLFormElement>("#session-settings")?.dataset.failed === "true",
   );
   assert.equal(new URL(page.url()).pathname, path + "/settings");
-  assert.equal((await session.root.agent(context)).instructions, "Persist before leaving.");
-  assert.equal(await page.locator('[name="instructions"]').inputValue(), "Retry this change.");
+  assert.equal((await sessionInfo(session)).name, "Persist before leaving.");
+  assert.equal(await page.locator('[name="name"]').inputValue(), "Retry this change.");
   await page.unroute("**/settings");
   await page.getByRole("button", { name: "Save settings" }).click();
-  await waitFor(
-    async () => (await session.root.agent(context)).instructions === "Retry this change.",
-  );
+  await waitFor(async () => (await sessionInfo(session)).name === "Retry this change.");
   assert.deepEqual(b.errors, []);
 });
 

@@ -245,7 +245,7 @@ await test("main panes reach the top on mobile and wide screens without mobile h
     await page.setViewportSize({ width: 390, height: 900 });
     await page.locator("#footer-model").click();
     await page.locator("#preferences").waitFor();
-    assert.equal(await page.locator(".bar").isVisible(), true);
+    assert.equal(await page.locator(".bar").count(), 0);
     assert.equal(await page.locator("#close-view").isVisible(), true);
     await returnToConversation(page);
     await page.locator("#preferences").waitFor({ state: "hidden" });
@@ -272,7 +272,6 @@ await test("panel headers respect safe areas, stay above scrolling content and c
     insets: { top: 47, bottom: 34, left: 12, right: 12 },
   });
   const panels = [
-    { url: `${path}/settings`, title: "Session settings", pane: "#preferences", composer: true },
     {
       url: `/sessions/settings?return=${encodeURIComponent(path)}`,
       title: "Default preferences",
@@ -330,5 +329,37 @@ await test("panel headers respect safe areas, stay above scrolling content and c
   await page.locator("#close-view").click();
   await page.waitForURL(b.base + "/sessions");
   await page.locator("#landing").waitFor();
+  assert.deepEqual(b.errors, []);
+});
+
+await test("session settings center above the composer without a header or save indicator", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const page = b.page;
+  const path = conversationURL(session);
+  for (const width of [320, 390, 820, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(b.base + path + "/settings");
+    assert.equal(await page.locator("#app-header").count(), 0);
+    assert.equal(await page.locator("#session-settings .save-status").count(), 0);
+    assert.equal(await page.locator('#session-settings [name="instructions"]').count(), 0);
+    assert.equal(await page.locator("#session-settings > button").isVisible(), false);
+    for (const name of ["name", "target", "model", "thinkingLevel"])
+      assert.equal(await page.locator(`#session-settings [name="${name}"]`).isVisible(), true);
+    const pane = await page.locator("#preferences").boundingBox();
+    const settings = await page.locator("#preferences > div").boundingBox();
+    const footer = await page.locator("#app-footer").boundingBox();
+    assert(pane && settings && footer);
+    assert(settings.y > pane.y);
+    assert(settings.y + settings.height < footer.y);
+    assert(Math.abs(settings.y + settings.height / 2 - (pane.y + pane.height / 2)) < 12);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+      false,
+    );
+    await returnToConversation(page);
+    await page.waitForURL(b.base + path);
+  }
   assert.deepEqual(b.errors, []);
 });

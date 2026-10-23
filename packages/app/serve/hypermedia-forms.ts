@@ -1,6 +1,5 @@
 import { html as h, type SafeHtml } from "./html.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { AgentState } from "@earendil-works/pi-durable";
 import { hidden, icon } from "./hypermedia-render.ts";
 import type { Catalog, SessionInfo } from "./sessions.ts";
 import { settingFields, thinkingLevels, type GlobalSettings } from "./settings.ts";
@@ -52,13 +51,8 @@ export function options(
   const directoryInput = h`<label${target?.directoryRoot || existing?.directoryRoot ? "" : h` hidden`}><span>Base directory</span><input id="base-directory" name="baseDirectory" value="${directory}" maxlength="4096" placeholder="${target?.directoryRoot ?? existing?.directoryRoot ?? "/workspace"} (default)" list="directories" data-suggest hx-get="/sessions/directories" hx-trigger="input changed delay:120ms" hx-include="#targets" hx-target="#directories" hx-select="#directories" hx-swap="outerHTML" hx-sync="this:replace"></label>`;
   return h`<div id="options">${session ? hidden("presentation", "session") : ""}${targetSelect}${modelSelect}${thinkingSelect}${directoryInput}<datalist id="directories"></datalist></div>`;
 }
-export function sessionForm(
-  path: string,
-  catalog: Catalog,
-  info: SessionInfo,
-  agent: Pick<AgentState, "instructions">,
-): SafeHtml {
-  return h`<h1>Session settings</h1><form id="session-settings" method="post" action="${path}/settings" data-autosave hx-sync="this:queue last"><label><span>Session name</span><input name="name" maxlength="120" value="${info.name}"></label>${options(catalog, new URLSearchParams(), info)}<label><span>Additional instructions</span><textarea name="instructions" rows="3" maxlength="100000">${agent.instructions ?? ""}</textarea></label><button>Save settings</button><output class="save-status" role="status"></output></form>`;
+export function sessionForm(path: string, catalog: Catalog, info: SessionInfo): SafeHtml {
+  return h`<form id="session-settings" method="post" action="${path}/settings" data-autosave hx-sync="this:queue last"><label><span>Session name</span><input name="name" maxlength="120" value="${info.name}"></label>${options(catalog, new URLSearchParams(), info)}<button>Save settings</button></form>`;
 }
 export function globalForm(
   catalog: Catalog,

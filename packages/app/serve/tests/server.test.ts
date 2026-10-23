@@ -499,9 +499,9 @@ await test("conversation controls validate input and keep forks scoped to their 
   await session.root.submit({ type: "input", content: "Begin.", requestId: randomUUID() }, context);
   await session.root.waitForIdle(context);
   const history = await readHistory(session.root);
+  await session.root.configure({ instructions: "Keep configured instructions." }, context);
   const settings = {
     name: "",
-    instructions: "",
     target: targetKey(f.binding),
     model: modelKey(model),
   };
@@ -514,7 +514,7 @@ await test("conversation controls validate input and keep forks scoped to their 
   ] as const)
     assert.equal((await post(`${url}/${action}`, data)).status, 400);
   assert.equal((await post(`${url}/settings`, settings)).status, 303);
-  assert.equal((await session.root.agent(context)).instructions, "");
+  assert.equal((await session.root.agent(context)).instructions, "Keep configured instructions.");
   for (const name of ["a".repeat(121), "line\nbreak"])
     assert.equal((await post(`${url}/settings`, { ...settings, name })).status, 400);
   const renamed = await post(`${url}/settings`, { ...settings, name: "  Counter cleanup  " });
@@ -868,7 +868,6 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
     target: targetKey(f.binding),
     model: modelKey(model),
     thinkingLevel: "high",
-    instructions: "",
   });
   assert.equal(configured.status, 303);
   assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "high");

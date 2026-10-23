@@ -66,7 +66,6 @@ await test("HTML base directory is stored in Durable cwd, validates input, and d
       conversationURL(session) + "/settings",
       new URLSearchParams({
         name: "",
-        instructions: "",
         target: targetKey(f.binding),
         model: modelKey(model),
         baseDirectory,
