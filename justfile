@@ -8,7 +8,7 @@ default:
 # Run lightweight, Nix-agnostic checks
 check:
     just --fmt --check
-    treefmt --quiet --fail-on-change
+    nix fmt --quiet --quiet -- --fail-on-change --quiet
     markdownlint-cli2 >/dev/null
     ast-grep scan --error --report-style=short --globs '!microvm.nix/**'
     npm --prefix packages/app run check
@@ -33,7 +33,7 @@ ci: check test chromium
 fix:
     oxlint --type-aware --format=unix --fix
     markdownlint-cli2 --fix >/dev/null
-    treefmt --quiet
+    nix fmt --quiet --quiet -- --quiet
     just --fmt
     ruff format --quiet --extend-exclude microvm.nix
     ruff check --quiet --fix --extend-exclude microvm.nix
