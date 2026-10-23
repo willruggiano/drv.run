@@ -189,7 +189,7 @@ function controls(url: string, view: ConversationView, review: ReviewState): Saf
               "review",
               h`<input type="hidden" name="scope" data-command-argument>`,
             )
-  }</div><span class="spacer"></span>${busy ? h`<button class="submission-mode" form="composer" name="whenBusy" value="steer">Steer</button>${action(`${url}/abort`, "×", "stop", h``, h` id="stop" class="icon" aria-label="Stop" title="Stop"`)}` : ""}<button id="send" class="icon" form="composer" name="whenBusy" value="${busy ? "followUp" : "reject"}" aria-label="${busy ? "Queue" : "Send"}" title="${busy ? "Queue" : "Send"} (Ctrl/⌘ Enter)"><span aria-hidden="true">↑</span></button></div>`;
+  }</div><span class="spacer"></span>${busy ? h`<button class="submission-mode" form="composer" name="whenBusy" value="steer">Steer</button>${action(`${url}/abort`, icon("close"), "stop", h``, h` id="stop" class="icon" aria-label="Stop" title="Stop"`)}` : ""}<button id="send" class="icon" form="composer" name="whenBusy" value="${busy ? "followUp" : "reject"}" aria-label="${busy ? "Queue" : "Send"}" title="${busy ? "Queue" : "Send"} (Ctrl/⌘ Enter)">${icon("send")}</button></div>`;
 }
 function composerHTML(
   path: string,

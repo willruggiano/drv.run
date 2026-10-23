@@ -453,3 +453,66 @@ await test("queued messages share transcript rendering and footer metadata stays
   await session.root.waitForIdle(context);
   assert.deepEqual(b.errors, []);
 });
+
+await test("busy composer labels and icons share a centerline on touch and desktop", async (t) => {
+  const gate = Promise.withResolvers<void>();
+  t.after(() => gate.resolve());
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const entered = Promise.withResolvers<void>();
+  f.faux.setResponses([
+    async () => {
+      entered.resolve();
+      await gate.promise;
+      return fauxAssistantMessage("Done.");
+    },
+  ]);
+  await session.root.submit({ type: "input", content: "Wait." }, context);
+  await entered.promise;
+  for (const page of [b.page, await b.browser.newPage()]) {
+    await page.goto(b.base + conversationURL(session));
+    await page.locator('#controls[data-state="working"]').waitFor();
+    for (const width of [320, 390, 820, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const geometry = await page.locator("#controls").evaluate((controls) => {
+        return [".submission-mode", "#stop", "#send"].map((selector) => {
+          const button = controls.querySelector(selector)!;
+          const bounds = button.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(button);
+          const label =
+            button.querySelector("svg")?.getBoundingClientRect() ?? range.getBoundingClientRect();
+          return {
+            top: bounds.top,
+            bottom: bounds.bottom,
+            center: bounds.top + bounds.height / 2,
+            labelCenter: label.top + label.height / 2,
+          };
+        });
+      });
+      for (const button of geometry) {
+        assert.equal(button.top, geometry[0].top);
+        assert.equal(button.bottom, geometry[0].bottom);
+        assert(Math.abs(button.labelCenter - button.center) < 2);
+      }
+    }
+    for (const [selector, mode] of [
+      [".submission-mode", "steer"],
+      ["#send", "followUp"],
+    ]) {
+      await page.locator("#prompt").fill(mode);
+      await page.locator(selector).click();
+      await page.locator(`#queue article[data-mode="${mode}"]`).waitFor();
+      const items = (await session.harness.snapshot(InboxDoc, session.root.id, context))!.items;
+      const last = items.at(-1)!;
+      assert.equal(last.mode, mode);
+      assert.equal("content" in last && last.content, mode);
+      await page.locator(`#queue article[data-mode="${mode}"] button`).click();
+      await page.locator("#queue").waitFor({ state: "hidden" });
+    }
+  }
+  gate.resolve();
+  await session.root.waitForIdle(context);
+  assert.deepEqual(b.errors, []);
+});

@@ -9,16 +9,17 @@ export const link = (url: string, text: string, attributes = h``) =>
   h`<a href="${url}" ${attributes}>${text}</a>`;
 export const action = (
   url: string,
-  text: string,
+  text: string | SafeHtml,
   command = "",
   fields = h``,
   buttonAttributes = h``,
 ) =>
   h`<form method="post" action="${url}"${command ? h` data-command="${command}"` : ""}>${fields}<button${buttonAttributes}>${text}</button></form>`;
-export function icon(name: "settings" | "close" | "copy" | "quote" | "fork"): SafeHtml {
+export function icon(name: "settings" | "close" | "copy" | "quote" | "fork" | "send"): SafeHtml {
   const paths = {
     settings:
       '<path d="m9 3-.6 2.4-1.5.9-2.4-.7-3 5.2L3.3 12l.1 1.8-1.7 1.8 3 5.2 2.3-.7 1.6.9.5 2.4h6l.6-2.4 1.5-.9 2.4.7 3-5.2-1.8-1.2-.1-1.8 1.7-1.8-3-5.2-2.3.7-1.6-.9L15 3Z" transform="translate(1 -1) scale(.92)"/><circle cx="12" cy="12" r="3.2"/>',
+    send: '<path d="M12 20V4m-7 7 7-7 7 7"/>',
     close: '<path d="m6 6 12 12M18 6 6 18"/>',
     copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/>',
     quote: '<path d="M5 6h5v6H5zM14 6h5v6h-5zM10 12c0 4-2 6-5 6m14-6c0 4-2 6-5 6"/>',

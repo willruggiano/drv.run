@@ -122,7 +122,7 @@ textarea { display: block; width: 100%; resize: vertical; padding: 8px 10px; max
 .actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; } .compose-box > .actions { margin: 0; } .spacer { flex: 1; }
 #send { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
 #send, #stop { font-size: 20px; flex-shrink: 0; }
-.compose-box > .actions > button { display: inline-flex; align-items: center; justify-content: center; height: 40px; min-height: 40px; line-height: 1; }
+.compose-box > .actions > button, .compose-box > .actions > form > button { display: inline-flex; align-items: center; justify-content: center; height: 40px; min-height: 40px; line-height: 1; }
 #send, #stop, #input-toggle { width: 40px; padding: 0; }
 #input-toggle { font-size: 20px; } #input-mode { font-size: 11px; color: var(--muted); background: transparent; border-color: transparent; padding: 3px 6px; }
 #attachments { display: flex; flex-wrap: wrap; gap: 4px; } #attachments button { font-size: 11px; margin: 4px; }
@@ -230,7 +230,7 @@ a { color: var(--link); } [hidden] { display: none !important; }
   .pickers { grid-template-columns: 1fr; } #search-bar { padding: 6px 10px; } #search-count { min-width: 30px; text-align: center; } #sessions { max-height: 30dvh; }
 }
 @media (min-width: 651px) and (hover: hover) and (pointer: fine) {
-  .compose-box > .actions > button { height: 32px; min-height: 32px; }
+  .compose-box > .actions > button, .compose-box > .actions > form > button { height: 32px; min-height: 32px; }
   #send, #stop, #input-toggle { width: 32px; font-size: 18px; }
 }
 /* Keep action buttons in the accessibility tree without visible touch affordances. */

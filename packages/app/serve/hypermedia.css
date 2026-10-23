@@ -43,7 +43,7 @@ article:hover > .entry-actions > summary, .tool-call:hover > .entry-actions > su
 .stacked-layout .compose-box #composer { padding: 0; }
 #controls { margin: 0; }
 #controls > form { display: contents; }
-#controls #stop { height: 40px; min-height: 40px; line-height: 1; background: transparent; border-color: transparent; }
+#controls #stop { background: transparent; border-color: transparent; }
 .submission-mode { font-size: 11px; color: var(--muted); background: transparent; border-color: transparent; }
 .enhanced-only { display: none; }
 .enhanced .enhanced-only { display: inline-flex; }
@@ -98,7 +98,6 @@ pre:hover .code-copy, .code-copy:focus-visible { opacity: 1; }
   .entry-actions > summary { position: absolute; width: 1px; min-width: 0; height: 1px; min-height: 0; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); opacity: 0; }
   html:not(.enhanced) #transcript .entry-actions > summary { position: static; width: auto; min-width: 32px; height: auto; min-height: 32px; padding: 3px 6px; margin: 0; overflow: visible; clip-path: none; opacity: 1; }
 }
-@media (min-width: 651px) and (hover: hover) and (pointer: fine) { #controls #stop { height: 32px; min-height: 32px; } }
 
 #review-menu { inset: calc(env(safe-area-inset-top) + 54px) 10px auto auto; width: min(280px, calc(100% - 20px)); }
 @media (min-width: 651px) and (hover: hover) and (pointer: fine) { .bar > .icon, .bar .header-title { min-height: 30px; } }
