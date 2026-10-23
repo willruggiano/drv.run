@@ -386,7 +386,7 @@ await test("session settings center above the composer without a header or save 
   assert.deepEqual(b.errors, []);
 });
 
-await test("recent sessions and session settings share horizontal alignment", async (t) => {
+await test("recent sessions and session settings share a compact, horizontally aligned column", async (t) => {
   const f = await fixture(t);
   const sessions = [];
   for (let i = 0; i < 5; i++) sessions.push(await f.create());
@@ -403,6 +403,15 @@ await test("recent sessions and session settings share horizontal alignment", as
         .boundingBox();
       const heading = await page.locator("#recent-title").boundingBox();
       assert(landing && title && heading);
+      const available = await page.locator("#landing").evaluate((pane) => {
+        const style = getComputedStyle(pane);
+        return {
+          left: pane.getBoundingClientRect().left + parseFloat(style.paddingLeft),
+          width: pane.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+        };
+      });
+      assert.equal(landing.width, Math.min(560, available.width));
+      assert(Math.abs(landing.x - (available.left + (available.width - landing.width) / 2)) < 1);
       assert(Math.abs(heading.x - title.x) <= 1);
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
