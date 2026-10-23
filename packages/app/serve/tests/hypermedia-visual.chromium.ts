@@ -346,8 +346,29 @@ await test("session settings center above the composer without a header or save 
     assert.equal(await page.locator("#session-settings .save-status").count(), 0);
     assert.equal(await page.locator('#session-settings [name="instructions"]').count(), 0);
     assert.equal(await page.locator("#session-settings > button").isVisible(), false);
-    for (const name of ["name", "target", "model", "thinkingLevel"])
-      assert.equal(await page.locator(`#session-settings [name="${name}"]`).isVisible(), true);
+    for (const name of ["name", "target", "model", "thinkingLevel"]) {
+      const control = page.locator(`#session-settings [name="${name}"]`);
+      assert.equal(await control.isVisible(), true);
+      const row = await control.evaluate((input) => {
+        const label = input.closest("label")!.querySelector("span")!;
+        return {
+          value: input.getBoundingClientRect().toJSON(),
+          label: label.getBoundingClientRect().toJSON(),
+          valueSize: parseFloat(getComputedStyle(input).fontSize),
+          labelSize: parseFloat(getComputedStyle(label).fontSize),
+          alignment: getComputedStyle(input).textAlign,
+        };
+      });
+      assert(row.value.bottom <= row.label.top);
+      assert.equal(row.value.left, row.label.left);
+      assert(row.valueSize > row.labelSize);
+      assert.equal(row.alignment, "left");
+    }
+    const close = await page.locator("#close-view").boundingBox();
+    const form = await page.locator("#session-settings").boundingBox();
+    assert(close && form);
+    assert(close.y + close.height < form.y);
+    assert.equal(close.x + close.width, form.x + form.width);
     const pane = await page.locator("#preferences").boundingBox();
     const settings = await page.locator("#preferences > div").boundingBox();
     const footer = await page.locator("#app-footer").boundingBox();
