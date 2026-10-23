@@ -7,6 +7,8 @@ import { fixture, waitFor } from "./sessions-testing.ts";
 import { browserFixture, returnToConversation, openGlobalSettings } from "./browser-testing.ts";
 import { conversationURL } from "../hypermedia.ts";
 import { rename } from "../sessions.ts";
+import { html, renderHTML } from "../html.ts";
+import { toolStatus } from "../hypermedia-render.ts";
 const context = BACKGROUND_CONTEXT;
 
 await test("conversations stay bottom-aligned as history grows and preserve scrollback", async (t) => {
@@ -339,9 +341,18 @@ await test("session settings center above the composer without a header or save 
   const b = await browserFixture(t, f.sessions);
   const page = b.page;
   const path = conversationURL(session);
+  await page.goto(b.base + "/sessions");
+  const fallback = await page.locator(".session-heading strong").textContent();
+  assert.equal(fallback, "Untitled session");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(b.base + path);
+  assert.equal(await page.locator("#conversation-title").textContent(), fallback);
   for (const width of [320, 390, 820, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(b.base + path + "/settings");
+    const nameInput = page.locator('#session-settings [name="name"]');
+    assert.equal(await nameInput.inputValue(), "");
+    assert.equal(await nameInput.getAttribute("placeholder"), fallback);
     assert.equal(await page.locator("#app-header").count(), 0);
     assert.equal(await page.locator("#session-settings .save-status").count(), 0);
     assert.equal(await page.locator('#session-settings [name="instructions"]').count(), 0);
@@ -687,6 +698,58 @@ await test("attachment thumbnails remove only the selected file by pointer or ke
   assert.deepEqual(b.errors, []);
 });
 
+await test("tool status icons keep the completed icon dimensions without shifting the label", async (t) => {
+  const f = await fixture(t);
+  const { page, base } = await browserFixture(t, f.sessions);
+  await page.goto(base + "/sessions");
+  await page.setContent(
+    renderHTML(
+      html`<link rel="stylesheet" href="${base}/styles.css" />
+        <details class="tool-call">
+          <summary>
+            ${toolStatus("completed")}<span class="tool-command"
+              >Read · /workspace/project/packages/app/serve/hypermedia-render.ts</span
+            >
+          </summary>
+        </details>`,
+    ),
+  );
+  const geometry = () =>
+    page.locator("summary").evaluate((summary) => {
+      const icon = summary.querySelector(".tool-status")!.getBoundingClientRect();
+      const label = summary.querySelector(".tool-command")!.getBoundingClientRect();
+      return { icon: { width: icon.width, height: icon.height }, label: label.toJSON() };
+    });
+  for (const width of [320, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const open of [false, true]) {
+      await page.locator("details").evaluate((node: HTMLDetailsElement, open) => {
+        node.open = open;
+      }, open);
+      let reference: Awaited<ReturnType<typeof geometry>> | undefined;
+      for (const state of [
+        "completed",
+        "pending",
+        "running",
+        "failed",
+        "cancelled",
+        "unavailable",
+      ] as const) {
+        await page.locator(".tool-status").evaluate(
+          (node, markup) => {
+            node.outerHTML = markup;
+          },
+          renderHTML(toolStatus(state)),
+        );
+        const current = await geometry();
+        assert(current.icon.width > 0 && current.icon.height > 0);
+        if (reference) assert.deepEqual(current, reference, state);
+        else reference = current;
+      }
+    }
+  }
+});
+
 await test("transcripts have no action controls, session indicator, or reserved action gutter", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
@@ -934,6 +997,7 @@ await test("mobile footer navigates sessions and collapses without losing drafts
           x: rect.x,
           right: rect.right,
           center: rect.x + rect.width / 2,
+          centerY: rect.y + rect.height / 2,
           width: rect.width,
           height: rect.height,
           padding: style.padding,
@@ -949,6 +1013,9 @@ await test("mobile footer navigates sessions and collapses without losing drafts
         back: box("#footer-sessions"),
         toggle: box("#footer-collapse"),
         metadata: metadata.toJSON(),
+        row: box(".footer-row"),
+        model: box("#footer-model"),
+        usage: box("#footer-context"),
         overflow: document.documentElement.scrollWidth > innerWidth,
       };
     });
@@ -964,6 +1031,10 @@ await test("mobile footer navigates sessions and collapses without losing drafts
       assert(Math.abs(button.iconCenter - reference.iconCenter) < 1);
       assert(Math.abs(button.iconOffset) < 1);
     }
+    assert.equal(geometry.back.x, geometry.row.x);
+    assert.equal(geometry.toggle.right, geometry.row.right);
+    for (const control of [geometry.back, geometry.toggle, geometry.model, geometry.usage])
+      assert(Math.abs(control.centerY - geometry.row.centerY) < 1);
     assert(Math.abs(geometry.metadata.x + geometry.metadata.width / 2 - width / 2) < 1);
     assert(geometry.back.right <= geometry.metadata.left);
     assert(geometry.toggle.x >= geometry.metadata.right);

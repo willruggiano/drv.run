@@ -52,7 +52,7 @@ export function options(
   return h`<div id="options">${session ? hidden("presentation", "session") : ""}${targetSelect}${modelSelect}${thinkingSelect}${directoryInput}<datalist id="directories"></datalist></div>`;
 }
 export function sessionForm(path: string, catalog: Catalog, info: SessionInfo): SafeHtml {
-  return h`<form id="session-settings" method="post" action="${path}/settings" data-autosave hx-sync="this:queue last"><label><span>Session</span><input name="name" maxlength="120" value="${info.name}"></label>${options(catalog, new URLSearchParams(), info)}<button>Save settings</button></form>`;
+  return h`<form id="session-settings" method="post" action="${path}/settings" data-autosave hx-sync="this:queue last"><label><span>Session</span><input name="name" maxlength="120" value="${info.name}" placeholder="Untitled session"></label>${options(catalog, new URLSearchParams(), info)}<button>Save settings</button></form>`;
 }
 export function globalForm(
   catalog: Catalog,
