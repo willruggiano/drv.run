@@ -44,6 +44,16 @@ function connect() {
   if (root === selected) return;
   disconnect();
   selected = root;
+  const scroll = document.querySelector<HTMLElement>(".scrollport");
+  const opened = disclosures.get(root?.dataset.events ?? "");
+  if (opened)
+    root?.querySelectorAll<HTMLDetailsElement>("#transcript details").forEach((node) => {
+      node.open = opened.get(disclosureKey(node)) ?? node.open;
+    });
+  if (scroll) {
+    scroll.scrollTop = positions.get(root?.dataset.events ?? "") ?? scroll.scrollHeight;
+    scroll.addEventListener("scroll", localStatus, { passive: true });
+  }
 }
 function connection(event: Event, online: boolean) {
   const root = event.target;
@@ -160,17 +170,6 @@ function initializeComposer() {
   text.setAttribute("aria-controls", "completions");
   previews();
   resizePrompt();
-  const scroll = document.querySelector<HTMLElement>(".scrollport");
-  const root = document.querySelector<HTMLElement>("[data-events]");
-  const opened = disclosures.get(root?.dataset.events ?? "");
-  if (opened)
-    root?.querySelectorAll<HTMLDetailsElement>("#transcript details").forEach((node) => {
-      node.open = opened.get(disclosureKey(node)) ?? node.open;
-    });
-  if (scroll) {
-    scroll.scrollTop = positions.get(root?.dataset.events ?? "") ?? scroll.scrollHeight;
-    scroll.addEventListener("scroll", localStatus, { passive: true });
-  }
 }
 
 export function installStream() {

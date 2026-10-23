@@ -196,8 +196,12 @@ function composerHTML(
   view: ConversationView,
   review: ReviewState,
   metadata: SafeHtml,
+  reset?: { requestId: string; handoff: string },
 ): SafeHtml {
-  return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div class="composer-shell"><div class="compose-box"><form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop">${hidden("requestId", randomUUID())}<textarea id="prompt" name="content" aria-label="Message" data-completions hx-get="${path}/completions" hx-trigger="input changed delay:120ms, compositionend delay:120ms" hx-target="#completions" hx-select="#completions" hx-swap="outerHTML" hx-sync="this:replace" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>${controls(path, view, review)}</div></div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
+  const input = reset
+    ? h`<form class="compose-box" method="post" action="${path}/reset" data-command="reset" hx-sync="this:drop">${hidden("requestId", reset.requestId)}<textarea id="prompt" name="argument" aria-label="Handoff instructions" data-command-argument rows="2" maxlength="100000" placeholder="Handoff instructions (optional)…">${reset.handoff}</textarea><div class="actions"><a href="${path}" data-return aria-label="Cancel reset">Cancel reset</a><span class="spacer"></span><button id="send" class="icon" aria-label="Confirm reset" title="Confirm reset">${icon("send")}</button></div></form>`
+    : h`<div class="compose-box"><form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop">${hidden("requestId", randomUUID())}<textarea id="prompt" name="content" aria-label="Message" data-completions hx-get="${path}/completions" hx-trigger="input changed delay:120ms, compositionend delay:120ms" hx-target="#completions" hx-select="#completions" hx-swap="outerHTML" hx-sync="this:replace" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>${controls(path, view, review)}</div>`;
+  return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div class="composer-shell">${input}</div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
 }
 async function panelFrame(
   session: Session,
@@ -851,9 +855,9 @@ export async function hypermedia(
     );
     return;
   }
-  if (request.method === "GET" && (operation === "reset" || operation === "compact")) {
+  if (request.method === "GET" && operation === "compact") {
     page(
-      h`${navigation(path)}<main id="main-area"><section class="pane"><h1>${operation === "reset" ? "Reset context" : "Compact context"}</h1><p>History is preserved.</p><form method="post" action="${path}/${operation}" data-command="${operation}">${hidden("requestId", url.searchParams.get("requestId") ?? "")}<label>${operation === "reset" ? "Handoff" : "Instructions"}<textarea name="argument" data-command-argument maxlength="100000">${url.searchParams.get("argument") ?? ""}</textarea></label><button>${operation === "reset" ? "Confirm reset" : "Compact"}</button></form></section></main>`,
+      h`${navigation(path)}<main id="main-area"><section class="pane"><h1>Compact context</h1><p>History is preserved.</p><form method="post" action="${path}/compact" data-command="compact">${hidden("requestId", url.searchParams.get("requestId") ?? "")}<label>Instructions<textarea name="argument" data-command-argument maxlength="100000">${url.searchParams.get("argument") ?? ""}</textarea></label><button>Compact</button></form></section></main>`,
     );
     return;
   }
@@ -906,7 +910,7 @@ export async function hypermedia(
       );
       return;
     }
-    if (operation) throw new FormError(405, "Method not allowed.");
+    if (operation && operation !== "reset") throw new FormError(405, "Method not allowed.");
     const watch = await conversation.watch(context);
     try {
       const review = (await session.harness.snapshot(Review, conversation.id, context)) ?? {};
@@ -915,7 +919,7 @@ export async function hypermedia(
       const renderer = new ConversationFragments(path, records);
       renderer.render(watch.value, review);
       page(
-        h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events?head=${renderer.head}`)}><main id="main-area"><div class="scrollport pane" id="conversation-scroll" tabindex="0" aria-label="Conversation"><div id="transcript">${renderer.transcript(records.some((record) => record.kind === "pi.compaction") ? await compactionTimes(session, context) : undefined)}</div>${renderer.live(watch.value)}</div></main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`,
+        h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events?head=${renderer.head}`)}><main id="main-area"><div class="scrollport pane" id="conversation-scroll" tabindex="0" aria-label="Conversation"><div id="transcript">${renderer.transcript(records.some((record) => record.kind === "pi.compaction") ? await compactionTimes(session, context) : undefined)}</div>${renderer.live(watch.value)}</div></main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context), operation === "reset" ? { requestId: url.searchParams.get("requestId") ?? "", handoff: url.searchParams.get("argument") ?? "" } : undefined)}</section>`,
         info.name || "Untitled session",
         true,
       );

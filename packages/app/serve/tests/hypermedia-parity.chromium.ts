@@ -90,6 +90,98 @@ await test("HTML native settings, fork, reset, archive, context and export prese
   assert.deepEqual(await readHistory(session.root), records);
 });
 
+await test("HTML reset keeps the conversation and swaps only the composer with or without JavaScript", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const path = conversationURL(session);
+  for (const javaScriptEnabled of [true, false]) {
+    const browserContext = await b.browser.newContext({ javaScriptEnabled });
+    t.after(() => browserContext.close());
+    const page = await browserContext.newPage();
+    page.on("pageerror", (error) => b.errors.push(error));
+    page.setDefaultTimeout(10000);
+    const appearance = () =>
+      page.locator(".compose-box:has(#prompt), #prompt, #send").evaluateAll((nodes) =>
+        nodes.map((node) => {
+          const style = getComputedStyle(node);
+          const rect = node.getBoundingClientRect();
+          return {
+            background: style.backgroundColor,
+            border: style.border,
+            radius: style.borderRadius,
+            color: style.color,
+            padding: style.padding,
+            x: rect.x,
+            width: rect.width,
+          };
+        }),
+      );
+    for (const width of [390, 820]) {
+      f.faux.setResponses([fauxAssistantMessage("Conversation history.\n\n".repeat(60))]);
+      await (
+        await session.root.submit(
+          { type: "input", content: "Keep this conversation visible." },
+          context,
+        )
+      ).wait(context);
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(b.base + path);
+      const expected = await appearance();
+      assert.equal(expected.length, 3);
+      const entries = () =>
+        page.locator("#transcript article").evaluateAll((nodes) => nodes.map((node) => node.id));
+      const visibleEntries = await entries();
+      assert(visibleEntries.length > 0);
+      let before = await readHistory(session.root);
+      await page.goto(b.base + path + "/reset");
+      assert.deepEqual(await appearance(), expected);
+      assert.deepEqual(await entries(), visibleEntries);
+      assert.equal(await page.locator("#session-meta").isVisible(), true);
+      assert.equal(await page.locator("#composer").count(), 0);
+      const handoff = page.getByRole("textbox", { name: "Handoff instructions" });
+      assert.equal(await handoff.inputValue(), "");
+      if (javaScriptEnabled) {
+        await page.waitForFunction(() => {
+          const scroll = document.querySelector("#conversation-scroll")!;
+          return scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 32;
+        });
+        await handoff.fill("Keep these handoff edits while the conversation updates.");
+        f.faux.setResponses([fauxAssistantMessage("New conversation output.")]);
+        await (
+          await session.root.submit(
+            { type: "input", content: "Update while handing off." },
+            context,
+          )
+        ).wait(context);
+        before = await readHistory(session.root);
+        await page.locator(`#transcript #entry-${before.at(-1)!.id}`).waitFor();
+        assert.equal(
+          await handoff.inputValue(),
+          "Keep these handoff edits while the conversation updates.",
+        );
+        await handoff.fill("");
+      }
+      const confirm = page.getByRole("button", { name: "Confirm reset" });
+      assert.equal(await confirm.isEnabled(), true);
+      const box = await page.locator(".composer-shell .compose-box").boundingBox();
+      const button = await confirm.boundingBox();
+      assert(box && button);
+      assert(button.x >= box.x && button.x + button.width <= box.x + box.width);
+      assert(button.y >= box.y && button.y + button.height <= box.y + box.height);
+      assert(box.y + box.height <= 844);
+      assert.deepEqual(await readHistory(session.root), before);
+      await confirm.click();
+      await page.waitForURL(b.base + path);
+      const after = await readHistory(session.root);
+      assert.equal(after.length, before.length + 1);
+      assert.equal(after.at(-1)?.kind, "pi.reset");
+      assert.deepEqual((await session.root.context(context)).messages, []);
+    }
+  }
+  assert.deepEqual(b.errors, []);
+});
+
 await test("HTML session autosaves drain before navigation, retain drafts and recover from failed saves", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
