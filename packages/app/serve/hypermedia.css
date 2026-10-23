@@ -49,10 +49,11 @@ article:hover > .entry-actions > summary, .tool-call:hover > .entry-actions > su
 .enhanced .enhanced-only { display: inline-flex; }
 .enhanced .attachment-picker { display: none; }
 .attachment-picker { font-size: 12px; }
-#previews { display: flex; flex-wrap: wrap; gap: 4px; }
-#previews > div { position: relative; }
-#previews img { max-width: 64px; max-height: 64px; }
-#previews button { display: block; font-size: 11px; }
+#previews { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 8px; }
+#previews:empty { display: none; }
+#previews button { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px; min-height: 64px; padding: 0; border: 0; border-radius: 4px; background: transparent; }
+#previews button:hover { opacity: .65; }
+#previews img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: inherit; }
 #session-meta > form { display: none; }
 #bottom-line a { font: inherit; color: inherit; min-height: 24px; padding: 0; border: 0; background: transparent; text-align: left; min-width: 0; }
 #bottom-line a:hover { color: var(--fg); }

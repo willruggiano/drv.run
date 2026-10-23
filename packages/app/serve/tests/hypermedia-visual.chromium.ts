@@ -516,3 +516,69 @@ await test("busy composer labels and icons share a centerline on touch and deskt
   await session.root.waitForIdle(context);
   assert.deepEqual(b.errors, []);
 });
+
+await test("attachment thumbnails remove only the selected file by pointer or keyboard", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const page = b.page;
+  const names = ["first.png", "second.png", "third.png"];
+  const buffer = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6Z9kAAAAASUVORK5CYII=",
+    "base64",
+  );
+  for (const path of ["/sessions", conversationURL(session)]) {
+    await page.goto(b.base + path);
+    await page
+      .locator("#images")
+      .setInputFiles(names.map((name) => ({ name, mimeType: "image/png", buffer })));
+    await page.locator("#previews img").nth(2).waitFor();
+    assert.equal(await page.locator("#previews > button > img").count(), 3);
+    assert.equal(
+      await page
+        .locator("#previews button")
+        .evaluateAll((buttons) =>
+          buttons.every(
+            (button) =>
+              button.childNodes.length === 1 && button.firstElementChild?.tagName === "IMG",
+          ),
+        ),
+      true,
+    );
+    for (const width of [320, 390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const sizes = await page.locator("#previews img").evaluateAll((images) =>
+        images.map((image) => {
+          const rect = image.getBoundingClientRect();
+          return { width: rect.width, height: rect.height };
+        }),
+      );
+      assert(
+        sizes.every(
+          (size) => size.width > 0 && size.width <= 64 && size.height > 0 && size.height <= 64,
+        ),
+      );
+    }
+    const files = () =>
+      page
+        .locator("#images")
+        .evaluate((input: HTMLInputElement) => Array.from(input.files ?? [], (file) => file.name));
+    await page
+      .getByRole("button", { name: "Remove second.png", exact: true })
+      .locator("img")
+      .click();
+    assert.deepEqual(await files(), [names[0], names[2]]);
+    const first = page.getByRole("button", { name: "Remove first.png", exact: true });
+    await first.focus();
+    await page.keyboard.press("Enter");
+    assert.deepEqual(await files(), [names[2]]);
+    await page.getByRole("button", { name: "Remove third.png", exact: true }).focus();
+    await page.keyboard.press("Space");
+    assert.deepEqual(await files(), []);
+    assert.equal(await page.locator("#previews").isVisible(), false);
+    if (path !== "/sessions") assert.equal(await page.locator("#send").isDisabled(), true);
+    assert.equal(new URL(page.url()).pathname, path);
+  }
+  assert.equal((await f.sessions.catalog(context)).sessions.length, 1);
+  assert.deepEqual(b.errors, []);
+});

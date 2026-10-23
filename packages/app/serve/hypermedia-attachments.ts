@@ -19,10 +19,10 @@ export function previews() {
       )
         return;
       image.src = reader.result;
-      const preview = document.createElement("div");
       const remove = document.createElement("button");
       remove.type = "button";
-      remove.textContent = `Remove ${file.name}`;
+      remove.setAttribute("aria-label", `Remove ${file.name}`);
+      remove.title = `Remove ${file.name}`;
       remove.addEventListener("click", () => {
         const transfer = new DataTransfer();
         Array.from(controls(form).files.files ?? [])
@@ -32,8 +32,8 @@ export function previews() {
         controls(form).files.dispatchEvent(new Event("input", { bubbles: true }));
         previews();
       });
-      preview.append(image, remove);
-      container.append(preview);
+      remove.append(image);
+      container.append(remove);
     };
     reader.readAsDataURL(file);
   }
