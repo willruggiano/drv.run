@@ -104,6 +104,39 @@ function localStatus() {
   if (scroll && button)
     button.hidden = scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 32;
 }
+const commands = new Set<HTMLElement>();
+function truncateCommand(command: HTMLElement) {
+  const text = command.querySelector<HTMLElement>(".tool-command-text")!;
+  // Compare the full text against the space WITHOUT the marker to avoid toggling
+  // back and forth when the text fits but text plus marker does not.
+  const truncated = String(text.scrollWidth > command.clientWidth);
+  if (command.dataset.truncated !== truncated) command.dataset.truncated = truncated;
+}
+const commandSizes = new ResizeObserver((entries) => {
+  for (const { target } of entries) {
+    if (target instanceof HTMLElement && target.isConnected) truncateCommand(target);
+  }
+});
+function enhanceCommands() {
+  for (const command of commands) {
+    if (!command.isConnected) {
+      commandSizes.unobserve(command);
+      commands.delete(command);
+    }
+  }
+  for (const command of document.querySelectorAll<HTMLElement>(".tool-command")) {
+    if (!command.querySelector(".tool-command-text")) {
+      const text = document.createElement("span");
+      text.className = "tool-command-text";
+      text.append(...command.childNodes);
+      command.append(text);
+    }
+    command.dataset.truncated ??= "false";
+    truncateCommand(command);
+    commands.add(command);
+    commandSizes.observe(command);
+  }
+}
 const highlighterURL = "/highlight.js";
 let highlighter: Promise<typeof import("./highlight.ts")> | undefined;
 function enhance(root: ParentNode) {
@@ -132,6 +165,7 @@ function enhance(root: ParentNode) {
     const preference = document.querySelector<HTMLSelectElement>(`[data-preference=${name}]`);
     if (preference) preference.value = String(document.body.classList.contains(name));
   }
+  enhanceCommands();
   localStatus();
   installStatus();
 }
@@ -212,6 +246,7 @@ export function installStream() {
       swaps.delete(event.detail.ctx);
     }
     connect();
+    enhanceCommands();
     localStatus();
     updateSend();
   });

@@ -698,6 +698,145 @@ await test("attachment thumbnails remove only the selected file by pointer or ke
   assert.deepEqual(b.errors, []);
 });
 
+await test("tool commands reserve separate space for truncation and expand without clipping", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const append = () =>
+    session.root.commit(async (tx) => {
+      const call = fauxToolCall("bash", {
+        command: "python3 - <<'PY'\np='packages/app/serve/tests/" + "long/".repeat(80) + "'\nPY",
+      });
+      await tx.appendEntry(session.root.id, {
+        kind: "pi.assistant",
+        model: [
+          fauxAssistantMessage([
+            call,
+            fauxToolCall("bash", { command: "pwd" }),
+            fauxToolCall("bash", { command: "printf " + "a".repeat(60) }),
+          ]),
+          {
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: [],
+            isError: false,
+            durationMs: 120,
+            timestamp: 0,
+          },
+        ],
+      });
+    }, context);
+  await append();
+  const b = await browserFixture(t, f.sessions);
+  const page = b.page;
+  await page.goto(b.base + conversationURL(session));
+  const commands = page.locator("#transcript .tool-command");
+  const long = commands.first();
+  const short = commands.nth(1);
+  const medium = commands.nth(2);
+  for (const width of [320, 390, 650, 1440, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await waitFor(async () => (await long.getAttribute("data-truncated")) === "true");
+    assert.equal(await short.getAttribute("data-truncated"), "false");
+    await waitFor(
+      async () => (await medium.getAttribute("data-truncated")) === String(width < 650),
+    );
+    const collapsed = await long.evaluate((command) => {
+      const text = command.querySelector<HTMLElement>(".tool-command-text")!;
+      const marker = getComputedStyle(command, "::after");
+      return {
+        height: command.getBoundingClientRect().height,
+        reserved: command.getBoundingClientRect().right - text.getBoundingClientRect().right,
+        markerWidth: parseFloat(marker.width) + parseFloat(marker.paddingLeft),
+        clipped:
+          text.scrollWidth > text.clientWidth && getComputedStyle(text).overflowX === "hidden",
+        durationLeft: command
+          .parentElement!.querySelector(".tool-duration")!
+          .getBoundingClientRect().left,
+        summaryRight: command.parentElement!.getBoundingClientRect().right,
+        right: command.getBoundingClientRect().right,
+      };
+    });
+    assert(collapsed.clipped);
+    assert(collapsed.markerWidth > 0);
+    assert(collapsed.reserved >= collapsed.markerWidth - 1);
+    assert(collapsed.right <= collapsed.summaryRight);
+    assert(collapsed.right < collapsed.durationLeft);
+    await long.click();
+    const expanded = await long.evaluate((command) => {
+      const text = command.querySelector<HTMLElement>(".tool-command-text")!;
+      return {
+        height: command.getBoundingClientRect().height,
+        overflow: text.scrollWidth > text.clientWidth,
+        marker: getComputedStyle(command, "::after").content,
+      };
+    });
+    assert(expanded.height > collapsed.height);
+    assert.equal(expanded.overflow, false);
+    assert.equal(expanded.marker, "none");
+    await long.click();
+  }
+  // Newly streamed commands must get the same treatment as initial history.
+  await append();
+  await commands.nth(5).waitFor();
+  await waitFor(async () => (await commands.nth(3).getAttribute("data-truncated")) === "true");
+  assert.equal(await commands.nth(4).getAttribute("data-truncated"), "false");
+  assert.deepEqual(b.errors, []);
+});
+
+await test("image attachments have no baseline gap and use compact bottom spacing", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  await session.root.commit(async (tx) => {
+    await tx.appendEntry(session.root.id, {
+      kind: "pi.user",
+      model: [
+        {
+          role: "user",
+          timestamp: 0,
+          content: [
+            {
+              type: "image",
+              mimeType: "image/png",
+              data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6Z9kAAAAASUVORK5CYII=",
+            },
+          ],
+        },
+      ],
+    });
+  }, context);
+  const b = await browserFixture(t, f.sessions);
+  for (const javaScriptEnabled of [false, true]) {
+    const browserContext = await b.browser.newContext({ javaScriptEnabled });
+    const page = await browserContext.newPage();
+    await page.goto(b.base + conversationURL(session));
+    for (const width of [320, 390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const geometry = await page
+        .locator(".transcript-image")
+        .evaluate((image: HTMLImageElement) => {
+          const article = image.closest("article")!;
+          const style = getComputedStyle(article);
+          return {
+            gap: article.getBoundingClientRect().bottom - image.getBoundingClientRect().bottom,
+            expected: parseFloat(style.getPropertyValue("--trace-gap")),
+            padding: parseFloat(style.paddingBottom),
+            width: image.width,
+            height: image.height,
+            naturalWidth: image.naturalWidth,
+            naturalHeight: image.naturalHeight,
+          };
+        });
+      assert.equal(geometry.gap, geometry.expected);
+      assert.equal(geometry.padding, geometry.expected);
+      assert.equal(geometry.width, geometry.naturalWidth);
+      assert.equal(geometry.height, geometry.naturalHeight);
+    }
+    await browserContext.close();
+  }
+  assert.deepEqual(b.errors, []);
+});
+
 await test("tool status icons keep the completed icon dimensions without shifting the label", async (t) => {
   const f = await fixture(t);
   const { page, base } = await browserFixture(t, f.sessions);
@@ -965,6 +1104,8 @@ await test("mobile footer navigates sessions and collapses without losing drafts
   const queued = (await session.harness.snapshot(InboxDoc, session.root.id, context))!.items;
   const b = await browserFixture(t, f.sessions);
   const { page } = b;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: 34 } });
   const path = conversationURL(session);
   await page.goto(b.base + path);
   await page.waitForFunction(
@@ -1043,7 +1184,10 @@ await test("mobile footer navigates sessions and collapses without losing drafts
     await page.getByRole("button", { name: "Collapse composer", exact: true }).tap();
     assert.equal(await page.locator("#composer-shell").isVisible(), false);
     assert.equal(await page.locator("#queue").isVisible(), true);
-    assert.equal((await page.locator("#app-footer").boundingBox())?.height, 48);
+    const footer = await page.locator("#app-footer").boundingBox();
+    assert(footer);
+    assert.equal(footer.height, 40);
+    assert.equal(footer.y + footer.height, 844 - 34);
     await page.getByRole("button", { name: "Expand composer", exact: true }).tap();
     assert.equal(await page.locator("#composer-shell").isVisible(), true);
   }
