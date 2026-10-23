@@ -879,3 +879,170 @@ await test("scrollbars stay hidden site-wide while both axes retain native scrol
   }
   assert.deepEqual(b.errors, []);
 });
+
+await test("mobile footer navigates sessions and collapses without losing drafts, attachments or live state", async (t) => {
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const f = await fixture(t);
+  const session = await f.create();
+  const entered = Promise.withResolvers<void>();
+  f.faux.setResponses([
+    async () => {
+      entered.resolve();
+      await release.promise;
+      return fauxAssistantMessage("Done.");
+    },
+  ]);
+  await session.root.submit({ type: "input", content: "Wait." }, context);
+  await entered.promise;
+  await session.root.submit(
+    { type: "input", content: "Next task.", whenBusy: "followUp" },
+    context,
+  );
+  const queued = (await session.harness.snapshot(InboxDoc, session.root.id, context))!.items;
+  const b = await browserFixture(t, f.sessions);
+  const { page } = b;
+  const path = conversationURL(session);
+  await page.goto(b.base + path);
+  await page.waitForFunction(
+    () => document.querySelector("#connection")?.textContent === "Connected",
+  );
+  await page.locator("#prompt").fill("Keep this draft.\nAnd its second line.");
+  await page.locator("#images").setInputFiles({
+    name: "draft.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6Z9kAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
+  const request = await page.locator('#composer [name="requestId"]').inputValue();
+  const prompt = await page.locator("#prompt").elementHandle();
+  assert(prompt);
+  for (const width of [320, 390, 430, 650]) {
+    await page.setViewportSize({ width, height: 844 });
+    const geometry = await page.evaluate(() => {
+      const box = (selector: string) => {
+        const node = document.querySelector(selector)!;
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const ink =
+          node.querySelector("svg")?.getBoundingClientRect() ?? range.getBoundingClientRect();
+        return {
+          x: rect.x,
+          right: rect.right,
+          center: rect.x + rect.width / 2,
+          width: rect.width,
+          height: rect.height,
+          padding: style.padding,
+          background: style.backgroundColor,
+          iconCenter: ink.x + ink.width / 2,
+          iconOffset: ink.y + ink.height / 2 - (rect.y + rect.height / 2),
+        };
+      };
+      const metadata = document.querySelector(".footer-model-context")!.getBoundingClientRect();
+      return {
+        attach: box("#input-toggle"),
+        send: box("#send"),
+        back: box("#footer-sessions"),
+        toggle: box("#footer-collapse"),
+        metadata: metadata.toJSON(),
+        overflow: document.documentElement.scrollWidth > innerWidth,
+      };
+    });
+    for (const [button, reference] of [
+      [geometry.back, geometry.attach],
+      [geometry.toggle, geometry.send],
+    ]) {
+      assert.equal(button.width, reference.width);
+      assert.equal(button.height, reference.height);
+      assert.equal(button.padding, reference.padding);
+      assert.equal(button.background, "rgba(0, 0, 0, 0)");
+      assert(Math.abs(button.center - reference.center) < 1);
+      assert(Math.abs(button.iconCenter - reference.iconCenter) < 1);
+      assert(Math.abs(button.iconOffset) < 1);
+    }
+    assert(Math.abs(geometry.metadata.x + geometry.metadata.width / 2 - width / 2) < 1);
+    assert(geometry.back.right <= geometry.metadata.left);
+    assert(geometry.toggle.x >= geometry.metadata.right);
+    assert.equal(geometry.overflow, false);
+    assert.equal(await page.locator("#app-header .bar").isVisible(), false);
+    await page.getByRole("button", { name: "Collapse composer", exact: true }).tap();
+    assert.equal(await page.locator("#composer-shell").isVisible(), false);
+    assert.equal(await page.locator("#queue").isVisible(), true);
+    assert.equal((await page.locator("#app-footer").boundingBox())?.height, 48);
+    await page.getByRole("button", { name: "Expand composer", exact: true }).tap();
+    assert.equal(await page.locator("#composer-shell").isVisible(), true);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Collapse composer", exact: true }).tap();
+  await rename(session, "Renamed while collapsed");
+  await page.waitForFunction(
+    () =>
+      document.querySelector<HTMLElement>("#session-meta")?.dataset.name ===
+      "Renamed while collapsed",
+  );
+  assert.equal(await page.locator("#footer-collapse").getAttribute("aria-expanded"), "false");
+  assert.equal(await page.locator("#composer-shell").isVisible(), false);
+  for (const width of [651, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    assert.equal(await page.locator("#footer-sessions").isVisible(), false);
+    assert.equal(await page.locator("#footer-collapse").isVisible(), false);
+    assert.equal(await page.locator("#composer-shell").isVisible(), true);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#footer-collapse").focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await page.locator("#composer-shell").isVisible(), true);
+  assert.equal(await prompt.evaluate((node) => node === document.querySelector("#prompt")), true);
+  assert.equal(
+    await page.locator("#prompt").inputValue(),
+    "Keep this draft.\nAnd its second line.",
+  );
+  assert.equal(await page.locator('#composer [name="requestId"]').inputValue(), request);
+  assert.deepEqual(
+    await page
+      .locator("#images")
+      .evaluate((node: HTMLInputElement) => Array.from(node.files ?? [], (file) => file.name)),
+    ["draft.png"],
+  );
+  assert.deepEqual(
+    (await session.harness.snapshot(InboxDoc, session.root.id, context))!.items,
+    queued,
+  );
+  await page.keyboard.press("Space");
+  assert.equal(await page.locator("#composer-shell").isVisible(), false);
+  await page.getByRole("link", { name: "Sessions", exact: true }).tap();
+  await page.locator("#picker").waitFor();
+  assert.equal(new URL(page.url()).searchParams.get("return"), path);
+  assert.equal(await page.locator("#footer-collapse").count(), 0);
+  await page.locator('#session-list a[aria-current="true"]').click();
+  await page.locator("#conversation-scroll").waitFor();
+  assert.equal(await page.locator("#footer-collapse").getAttribute("aria-expanded"), "true");
+  assert.equal(
+    await page.locator("#prompt").inputValue(),
+    "Keep this draft.\nAnd its second line.",
+  );
+  assert.deepEqual(
+    await page
+      .locator("#images")
+      .evaluate((node: HTMLInputElement) => Array.from(node.files ?? [], (file) => file.name)),
+    ["draft.png"],
+  );
+  const native = await b.browser.newContext({
+    javaScriptEnabled: false,
+    viewport: { width: 390, height: 844 },
+  });
+  t.after(() => native.close());
+  const plain = await native.newPage();
+  await plain.goto(b.base + path);
+  assert.equal(await plain.locator("#footer-collapse").isVisible(), false);
+  assert.equal(await plain.locator("#composer-shell").isVisible(), true);
+  await plain.getByRole("link", { name: "Sessions", exact: true }).click();
+  await plain.locator("#picker").waitFor();
+  assert.equal(new URL(plain.url()).searchParams.get("return"), path);
+  assert.deepEqual(b.errors, []);
+  await prompt.dispose();
+});

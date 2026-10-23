@@ -202,7 +202,7 @@ function composerHTML(
   const input = reset
     ? h`<form class="compose-box" method="post" action="${path}/reset" data-command="reset" hx-sync="this:drop">${hidden("requestId", reset.requestId)}<textarea id="prompt" tabindex="1" name="argument" aria-label="Handoff instructions" data-command-argument rows="2" maxlength="100000" placeholder="Handoff instructions (optional)…">${reset.handoff}</textarea><div class="actions"><a href="${path}" data-return aria-label="Cancel reset">Cancel reset</a><span class="spacer"></span><button id="send" class="icon" aria-label="Confirm reset" title="Confirm reset">${icon("send")}</button></div></form>`
     : h`<div class="compose-box"><form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop">${hidden("requestId", randomUUID())}<textarea id="prompt" tabindex="1" name="content" aria-label="Message" data-completions hx-get="${path}/completions" hx-trigger="input changed delay:120ms, compositionend delay:120ms" hx-target="#completions" hx-select="#completions" hx-swap="outerHTML" hx-sync="this:replace" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>${controls(path, view, review)}</div>`;
-  return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div class="composer-shell">${input}</div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
+  return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div id="composer-shell" class="composer-shell">${input}</div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
 }
 async function panelFrame(
   session: Session,
@@ -560,7 +560,14 @@ export async function hypermedia(
         const conversation = await getConversation(session, Number(parts[4]), context);
         const watch = await conversation.watch(context);
         try {
-          metadata = await metadataHTML(session, conversation, watch.value, settings, context);
+          metadata = await metadataHTML(
+            session,
+            conversation,
+            watch.value,
+            settings,
+            context,
+            false,
+          );
         } finally {
           await watch.stop();
         }
@@ -1118,6 +1125,7 @@ async function metadataHTML(
   view: ConversationView,
   settings: GlobalSettingsStore | undefined,
   context: Context,
+  withControls = true,
 ): Promise<SafeHtml> {
   const [info, inspection] = await Promise.all([
     sessionInfo(session, conversation, undefined, context),
@@ -1143,8 +1151,15 @@ async function metadataHTML(
   const statistics = h`<a id="footer-stats" href="${path}/context" aria-label="Context"><span id="footer-input">↑${count(sum("input"))}</span><span id="footer-output">↓${count(sum("output"))}</span><span id="footer-read">R${count(sum("cacheRead"))}</span><span id="footer-hit">${status.lastResponse?.cacheHit == null ? "CH—" : `CH${status.lastResponse.cacheHit.toFixed(1)}%`}</span><span id="footer-cost">$${cost.toFixed(3)}</span></a>`;
   const model = h`<a id="footer-model" class="model-summary" href="${path}/settings" aria-label="Model and thinking settings"><span class="model-name">${info.model?.modelId ?? "No model"}</span>${dot}<span class="model-effort">${info.thinkingLevel}</span></a>`;
   const contextUsage = h`<a id="footer-context" class="context-usage" href="${path}/context" aria-label="Context usage details" data-level="${percent !== undefined && percent > 90 ? "critical" : percent !== undefined && percent > 70 ? "warning" : "normal"}">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${count(status.window)}${status.autoCompact ? " (auto)" : ""}</a>`;
+  const sessionsLink = withControls
+    ? h`<a id="footer-sessions" class="icon footer-chevron" href="/sessions?return=${encodeURIComponent(path)}" aria-label="Sessions" title="Sessions">${icon("chevron-left")}</a>`
+    : h``;
+  // The browser owns collapse state; metadata updates must not reset the toggle.
+  const collapse = withControls
+    ? h`<button id="footer-collapse" class="icon footer-chevron" type="button" aria-controls="composer-shell" aria-expanded="true" aria-label="Collapse composer" title="Collapse composer" hx-morph-skip>${icon("chevron-down")}</button>`
+    : h``;
   const newSession = h`${info.binding && info.model ? h`<form method="post" action="/sessions" data-command="new"><input type="hidden" name="id" value="${id}" data-command-request><input type="hidden" name="requestId" value="${id}" data-command-request>${hidden("target", targetKey(info.binding))}${hidden("model", modelKey(info.model))}${hidden("thinkingLevel", info.thinkingLevel)}${hidden("baseDirectory", info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/") ? info.cwd.slice(info.directoryRoot.length + 1) : "")}<button>New session</button></form>` : ""}`;
-  return h`<section id="session-meta" data-name="${info.name || `Conversation ${conversation.id}`}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}"><div id="bottom-line" aria-label="Conversation statistics"><div class="footer-row">${instance}${statistics}<div class="footer-model-context">${model}${dot}${contextUsage}</div></div></div>${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${newSession}</section>`;
+  return h`<section id="session-meta" data-name="${info.name || `Conversation ${conversation.id}`}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}"><div id="bottom-line" aria-label="Conversation statistics"><div class="footer-row">${sessionsLink}${instance}${statistics}<div class="footer-model-context">${model}${dot}${contextUsage}</div>${collapse}</div></div>${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${newSession}</section>`;
 }
 
 async function compactionTimes(session: Session, context: Context): Promise<Map<number, number>> {
