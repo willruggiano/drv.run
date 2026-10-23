@@ -16,12 +16,13 @@ export const action = (
 ) =>
   h`<form method="post" action="${url}"${command ? h` data-command="${command}"` : ""}>${fields}<button${buttonAttributes}>${text}</button></form>`;
 export function icon(
-  name: "settings" | "close" | "send" | "chevron-left" | "chevron-down",
+  name: "settings" | "close" | "check" | "send" | "chevron-left" | "chevron-down",
 ): SafeHtml {
   const paths = {
     settings:
       '<path d="m9 3-.6 2.4-1.5.9-2.4-.7-3 5.2L3.3 12l.1 1.8-1.7 1.8 3 5.2 2.3-.7 1.6.9.5 2.4h6l.6-2.4 1.5-.9 2.4.7 3-5.2-1.8-1.2-.1-1.8 1.7-1.8-3-5.2-2.3.7-1.6-.9L15 3Z" transform="translate(1 -1) scale(.92)"/><circle cx="12" cy="12" r="3.2"/>',
     send: '<path d="M12 20V4m-7 7 7-7 7 7"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
     close: '<path d="m6 6 12 12M18 6 6 18"/>',
     "chevron-left": '<path d="m15 6-6 6 6 6"/>',
     "chevron-down": '<path d="m6 9 6 6 6-6"/>',

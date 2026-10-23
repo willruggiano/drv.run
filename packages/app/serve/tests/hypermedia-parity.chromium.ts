@@ -126,6 +126,13 @@ await test("HTML reset keeps the conversation and swaps only the composer with o
       assert.equal(await page.locator("#composer").count(), 0);
       const handoff = page.getByRole("textbox", { name: "Handoff instructions" });
       assert.equal(await handoff.inputValue(), "");
+      const cancel = page.getByRole("link", { name: "Cancel reset" });
+      assert.equal(await cancel.locator("svg").count(), 1);
+      const cancelBox = await cancel.boundingBox();
+      const confirmBox = await page.getByRole("button", { name: "Confirm reset" }).boundingBox();
+      assert(cancelBox && confirmBox);
+      assert.equal(cancelBox.width, confirmBox.width);
+      assert.equal(cancelBox.height, confirmBox.height);
       if (javaScriptEnabled) {
         await page.waitForFunction(() => {
           const scroll = document.querySelector("#conversation-scroll")!;

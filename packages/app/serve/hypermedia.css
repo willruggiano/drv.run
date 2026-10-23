@@ -24,6 +24,7 @@ article.trace-start { padding-top: var(--trace-gap); }
 article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { margin-top: 0; }
 .composer-shell { padding: 8px var(--conversation-right) 5px var(--conversation-left); }
 .stacked-layout .compose-box #composer { padding: 0; }
+.compose-box > .actions > a.icon { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0; color: var(--fg); }
 #controls { margin: 0; }
 #controls > form { display: contents; }
 #controls #stop { background: transparent; border-color: transparent; }
@@ -72,7 +73,7 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 }
 @media (any-pointer: coarse) { .bar > .icon, .bar .header-title { min-height: 44px; } }
 
-@media (min-width: 651px) and (hover: hover) and (pointer: fine) { .bar > .icon, .bar .header-title { min-height: 30px; } }
+@media (min-width: 651px) and (hover: hover) and (pointer: fine) { .bar > .icon, .bar .header-title { min-height: 30px; } .compose-box > .actions > a.icon { width: 32px; height: 32px; } }
 
 #page:has(.new-composer[data-picker]) #session-meta { min-width: 0; }
 .new-composer[data-picker] { padding-bottom: 5px; }
