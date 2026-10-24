@@ -159,11 +159,11 @@
       jail = pkgs'.mkShell {
         inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
-        nativeBuildInputs = [pkgs.importNpmLock.hooks.linkNodeModulesHook];
         packages = [pkgs'.pi-jailed pkgs'.treefmt-wrapped];
       };
       toolchain = pkgs.mkShell {
         shellHook = ''
+          linkNodeModulesHook
           export ELM_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/drv-run-${builtins.baseNameOf pkgs.app.elmHome}"
           if [ ! -d "$ELM_HOME" ]; then
             mkdir -p "$ELM_HOME"
@@ -171,7 +171,7 @@
             chmod -R u+w "$ELM_HOME"
           fi
         '';
-        nativeBuildInputs = [pkgs.systemd.dev];
+        nativeBuildInputs = [pkgs.systemd.dev pkgs.importNpmLock.hooks.linkNodeModulesHook];
         # workspace support: https://github.com/NixOS/nixpkgs/pull/522939
         npmDeps = pkgs.app.dev;
         npmRoot = "packages/app";

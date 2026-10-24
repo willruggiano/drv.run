@@ -121,6 +121,15 @@
     };
   };
   nixpkgs.overlays = [self.overlays.default];
+  programs.git = {
+    enable = true;
+    config.url = {
+      "https://github.com/".insteadOf = "github:";
+      "https://git.sr.ht/".insteadOf = "sourcehut:";
+      "https://codeberg.org/".insteadOf = "codeberg:";
+      "https://gitlab.com/".insteadOf = "gitlab:";
+    };
+  };
   services.openssh = {
     enable = true;
     generateHostKeys = false;
