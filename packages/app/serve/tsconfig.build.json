@@ -7,5 +7,5 @@
     "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "htmx/*.ts", "elm/*.ts"]
 }

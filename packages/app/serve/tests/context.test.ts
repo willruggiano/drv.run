@@ -1,4 +1,4 @@
-import { conversationURL } from "../hypermedia.ts";
+import { conversationURL } from "../presentation.ts";
 import * as runtime from "../sessions.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";

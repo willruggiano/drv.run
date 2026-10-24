@@ -1,4 +1,4 @@
-import { composer, controls, report, updateSend } from "./hypermedia-dom.ts";
+import { composer, controls, report, updateSend } from "./dom.ts";
 let previewRevision = 0;
 export function previews() {
   const revision = ++previewRevision;

@@ -1,17 +1,26 @@
-import { html as h, renderHTML, type SafeHtml } from "./html.ts";
+import { FormError, form, field, inputContent } from "../forms.ts";
+import {
+  conversationURL,
+  history,
+  compactionTimes,
+  compactTokens,
+  type Call,
+  type Result,
+} from "../presentation.ts";
+import { html as h, renderHTML, type SafeHtml } from "../html.ts";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@earendil-works/chord/context";
 import type { EntryId, SubmissionId, Conversation } from "@earendil-works/pi-durable";
-import type { ContextInspection } from "./inspection.ts";
-import type { GlobalSettingsStore } from "./server.ts";
-import { settingFields } from "./settings.ts";
+import type { ContextInspection } from "../inspection.ts";
+import type { GlobalSettingsStore } from "../server.ts";
+import { settingFields } from "../settings.ts";
 import {
   commands,
   commandCompletions,
   directoryCompletion,
   pathCompletion,
-} from "./completions.ts";
+} from "../completions.ts";
 import {
   hidden,
   icon,
@@ -24,10 +33,7 @@ import {
   toolStatus,
   timing,
   contextHTML,
-  compactTokens,
-  type Call,
-  type Result,
-} from "./hypermedia-render.ts";
+} from "./render.ts";
 import {
   createForm,
   options,
@@ -36,7 +42,7 @@ import {
   thinking,
   modelKey,
   targetKey,
-} from "./hypermedia-forms.ts";
+} from "./forms.ts";
 import {
   InboxDoc,
   LiveDoc,
@@ -47,10 +53,9 @@ import {
   type InboxState,
   type UsageState,
   type Cursor,
-  type UserInput,
 } from "@earendil-works/pi-durable";
 import { Review } from "harness";
-import { endReview, startReview } from "./review.ts";
+import { endReview, startReview } from "../review.ts";
 import {
   getConversation,
   sessionInfo,
@@ -69,18 +74,7 @@ import {
   type Catalog,
   type Session,
   type SessionInfo,
-} from "./sessions.ts";
-
-export class FormError extends Error {
-  readonly status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
-
-export const conversationURL = (session: Session, id = session.root.id) =>
-  `/sessions/${session.id}/conversations/${id}`;
+} from "../sessions.ts";
 
 function sessionRow(item: Catalog["sessions"][number], back?: string): SafeHtml {
   const context = item.context;
@@ -110,7 +104,7 @@ export function htmlPage(
     : h`<span class="header-title">${title}</span>`;
   // htmx must see readyState=loading so initialization waits for DOMContentLoaded,
   // after the deferred extensions and module have registered their handlers.
-  const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/hypermedia.css"><script src="/htmx.js"></script><script src="/hx-sse.js" defer></script><script src="/hypermedia-morph.js" defer></script><script type="module" src="/hypermedia-client.js"></script></head>`;
+  const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
   const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div><p id="request-error" role="alert"></p></header>`;
   return renderHTML(
     h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${title === "Session settings" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
@@ -136,41 +130,6 @@ function redirect(request: IncomingMessage, response: ServerResponse, path: stri
     });
   } else response.writeHead(303, { Location: path });
   response.end();
-}
-
-export async function form(request: IncomingMessage, maximum = 128 * 1024): Promise<FormData> {
-  // Unlike JSON, ordinary forms are cross-site writable without a preflight.
-  if (!request.headers.origin) throw new FormError(403, "Origin header required for forms.");
-  const type = request.headers["content-type"] ?? "";
-  if (
-    !["application/x-www-form-urlencoded", "multipart/form-data"].includes(
-      type.split(";")[0].trim(),
-    )
-  )
-    throw new FormError(415, "Expected a form.");
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.from(chunk);
-    size += buffer.length;
-    if (size > maximum) throw new FormError(413, "Request too large.");
-    chunks.push(buffer);
-  }
-  try {
-    return await new Response(Buffer.concat(chunks), {
-      headers: { "Content-Type": type },
-    }).formData();
-  } catch {
-    throw new FormError(400, "Invalid form.");
-  }
-}
-export function field(data: FormData, key: string, max = 100_000): string {
-  const values = data.getAll(key);
-  const value = values[0];
-  if (values.length !== 1 || typeof value !== "string" || value.length > max)
-    throw new FormError(400, `Invalid ${key}.`);
-  // Native form encoders canonicalize textarea newlines to CRLF.
-  return value.replace(/\r\n?/g, "\n");
 }
 
 type ReviewState = { original?: number; active?: number };
@@ -1079,36 +1038,6 @@ function saved(request: IncomingMessage, response: ServerResponse, path: string)
     response.end();
   } else redirect(request, response, path);
 }
-export async function inputContent(data: FormData): Promise<UserInput | undefined> {
-  const text = optional(data, "content");
-  const images: Exclude<UserInput, string> = [];
-  let size = 0;
-  for (const file of data.getAll("images")) {
-    if (typeof file === "string") throw new FormError(400, "Invalid image.");
-    if (!file.size) continue;
-    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type))
-      throw new FormError(400, "Unsupported image type.");
-    size += file.size;
-    images.push({
-      type: "image",
-      mimeType: file.type,
-      data: Buffer.from(await file.arrayBuffer()).toString("base64"),
-    });
-  }
-  if (images.length > 4 || size > 5 * 1024 * 1024)
-    throw new FormError(400, "Attach up to four images, totaling at most 5 MiB.");
-  return images.length ? [{ type: "text", text }, ...images] : text.trim() ? text : undefined;
-}
-export async function history(conversation: Conversation, context: Context) {
-  const records: EntryRecord[] = [];
-  let cursor: Cursor | undefined;
-  do {
-    const page = await conversation.entries({ order: "ascending" }, 256, cursor, context);
-    records.push(...page.items);
-    cursor = page.next;
-  } while (cursor);
-  return records;
-}
 function navigation(path: string): SafeHtml {
   const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
   const search = h`<div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
@@ -1160,40 +1089,4 @@ async function metadataHTML(
     : h``;
   const newSession = h`${info.binding && info.model ? h`<form method="post" action="/sessions" data-command="new"><input type="hidden" name="id" value="${id}" data-command-request><input type="hidden" name="requestId" value="${id}" data-command-request>${hidden("target", targetKey(info.binding))}${hidden("model", modelKey(info.model))}${hidden("thinkingLevel", info.thinkingLevel)}${hidden("baseDirectory", info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/") ? info.cwd.slice(info.directoryRoot.length + 1) : "")}<button>New session</button></form>` : ""}`;
   return h`<section id="session-meta" data-name="${info.name || "Untitled session"}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}"><div id="bottom-line" aria-label="Conversation statistics"><div class="footer-row">${sessionsLink}${instance}${statistics}<div class="footer-model-context">${model}${dot}${contextUsage}</div>${collapse}</div></div>${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${newSession}</section>`;
-}
-
-export async function compactionTimes(
-  session: Session,
-  context: Context,
-): Promise<Map<number, number>> {
-  const times = new Map<number, number>();
-  let cursor: Cursor | undefined;
-  do {
-    const tasks = await session.harness.commit(
-      (tx) => tx.scanTasks({ kind: "pi.compaction", status: "terminal" }, 256, cursor),
-      context,
-    );
-    for (const task of tasks.items) {
-      if (
-        task.state.status !== "terminal" ||
-        task.state.outcome.status !== "completed" ||
-        task.startedAt === undefined ||
-        task.endedAt === undefined
-      )
-        continue;
-      const result = task.state.outcome.result;
-      if (!result || typeof result !== "object" || Array.isArray(result)) continue;
-      let entry = typeof result.entryId === "number" ? result.entryId : undefined;
-      if (entry === undefined && typeof result.submissionId === "number") {
-        const submission = await session.harness.submission(
-          result.submissionId as SubmissionId,
-          context,
-        );
-        entry = (await submission?.status(context))?.entry;
-      }
-      if (entry !== undefined) times.set(entry, task.endedAt - task.startedAt);
-    }
-    cursor = tasks.next;
-  } while (cursor);
-  return times;
 }

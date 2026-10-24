@@ -1,6 +1,6 @@
 import type { HtmxRequestCtx } from "htmx.org";
-import { completionToken, type CompletionToken } from "./completions.ts";
-import { composer, controls } from "./hypermedia-dom.ts";
+import { completionToken, type CompletionToken } from "../completions.ts";
+import { composer, controls } from "./dom.ts";
 let completionRevision = 0;
 let token: CompletionToken | undefined;
 export let completionIndex = 0;

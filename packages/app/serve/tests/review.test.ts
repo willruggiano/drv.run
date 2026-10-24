@@ -1,5 +1,5 @@
 import { Review } from "harness";
-import { conversationURL } from "../hypermedia.ts";
+import { conversationURL } from "../presentation.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";

@@ -1,8 +1,9 @@
+import { FormError } from "../forms.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { request } from "node:http";
 import { ProxyAuthorization } from "../auth.ts";
-import { FormError } from "../hypermedia.ts";
+
 import { fixture } from "./sessions-testing.ts";
 import { authorizationFixture, serve, post } from "./testing.ts";
 

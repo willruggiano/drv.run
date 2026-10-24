@@ -123,7 +123,7 @@ export async function run(args: string[], signal: AbortSignal) {
     if (!config.recordOnly) {
       // Packaged runs use the app's already-built assets. Source runs use the
       // same production builder, never a second HTML or CSS implementation.
-      if (await stat(join(source, "hypermedia-client.ts")).catch(() => undefined)) {
+      if (await stat(join(source, "htmx/client.ts")).catch(() => undefined)) {
         assets = join(temporary, "assets");
         await buildAssets(source, assets);
       }

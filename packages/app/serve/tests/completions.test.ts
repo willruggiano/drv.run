@@ -1,5 +1,5 @@
 import { completePaths } from "../sessions.ts";
-import { conversationURL } from "../hypermedia.ts";
+import { conversationURL } from "../presentation.ts";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";

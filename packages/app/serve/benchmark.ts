@@ -22,7 +22,7 @@ import {
   type TaskId,
 } from "@earendil-works/pi-durable";
 import type { CDPSession, Page } from "playwright";
-import { conversationURL } from "./hypermedia.ts";
+import { conversationURL } from "./presentation.ts";
 import { Sessions } from "./sessions.ts";
 import { httpServer } from "./server.ts";
 import { buildAssets } from "./build.ts";
@@ -522,27 +522,27 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
   let sessions: Sessions | undefined;
   let server: ReturnType<typeof httpServer> | undefined;
   try {
-    if (existsSync(join(options.assets, "hypermedia-client.ts")))
+    if (existsSync(join(options.assets, "htmx/client.ts")))
       await buildAssets(options.assets, directory);
     else
       for (const file of [
-        "elm.js",
-        "elm-client.js",
-        "elm.css",
+        "elm/main.js",
+        "elm/client.js",
         "highlight.js",
         "styles.css",
-        "hypermedia-client.js",
-        "hypermedia-sw.js",
+        "htmx/client.js",
+        "htmx/sw.js",
         "icon-192.png",
         "icon-512.png",
-        "hypermedia.css",
-        "htmx.js",
-        "hx-sse.js",
-        "hypermedia-morph.js",
-      ])
+        "htmx/vendor.js",
+        "htmx/sse.js",
+        "htmx/morph.js",
+      ]) {
+        await mkdir(dirname(join(directory, file)), { recursive: true });
         await copyFile(join(options.assets, file), join(directory, file));
+      }
     const client = await readFile(
-      join(directory, options.frontend === "elm" ? "elm.js" : "hypermedia-client.js"),
+      join(directory, options.frontend === "elm" ? "elm/main.js" : "htmx/client.js"),
       "utf8",
     );
     const css = await readFile(join(directory, "styles.css"), "utf8");
@@ -704,10 +704,9 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         await Promise.all(
           [
             ...(options.frontend === "elm"
-              ? ["elm.js", "elm-client.js", "elm.css"]
-              : ["htmx.js", "hx-sse.js", "hypermedia-client.js", "hypermedia-morph.js"]),
+              ? ["elm/main.js", "elm/client.js"]
+              : ["htmx/vendor.js", "htmx/sse.js", "htmx/client.js", "htmx/morph.js"]),
             "styles.css",
-            "hypermedia.css",
             "highlight.js",
           ].map(async (file) => [
             file,
@@ -718,8 +717,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       source: {
         clientSha256: hash(client),
         cssSha256: hash(css),
-        htmxSha256: hash(await readFile(join(directory, "htmx.js"), "utf8")),
-        hypermediaCssSha256: hash(await readFile(join(directory, "hypermedia.css"), "utf8")),
+        htmxSha256: hash(await readFile(join(directory, "htmx/vendor.js"), "utf8")),
         highlighterSha256: hash(highlighter),
       },
       workload: {

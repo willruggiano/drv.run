@@ -1,7 +1,8 @@
+import { buildAssets as buildElmAssets } from "./elm/build.ts";
+import { buildAssets as buildHtmxAssets } from "./htmx/build.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { appendFile, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { appendFile, copyFile, mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,14 +14,12 @@ export async function buildAssets(source: string, destination: string): Promise<
   await mkdir(destination, { recursive: true });
   const { stderr } = await promisify(execFile)("esbuild", [
     ...[
-      "elm-client.ts",
-      "elm.css",
-      "hypermedia-client.ts",
-      "hypermedia-morph.ts",
-      "hypermedia.css",
+      "elm/client.ts",
+      "htmx/client.ts",
+      "htmx/morph.ts",
       "highlight.ts",
       "styles.css",
-      "hypermedia-sw.js",
+      "htmx/sw.js",
     ].map((file) => join(source, file)),
     "--bundle",
     "--minify",
@@ -28,64 +27,14 @@ export async function buildAssets(source: string, destination: string): Promise<
     "--target=es2024",
     "--legal-comments=eof",
     "--log-level=warning",
+    `--outbase=${source}`,
     `--outdir=${destination}`,
   ]);
   if (stderr) process.stderr.write(stderr);
-  await promisify(execFile)(
-    "elm",
-    ["make", "src/Main.elm", "--optimize", `--output=${resolve(destination, "elm.js")}`],
-    { cwd: join(source, "elm") },
-  );
-  // Elm exports through top-level `this`. An enclosing type=module package makes
-  // esbuild replace it with undefined, so give the minifier explicit CommonJS input.
-  const elmSource = join(destination, "elm.cjs");
-  await rename(join(destination, "elm.js"), elmSource);
-  try {
-    await promisify(execFile)("esbuild", [
-      elmSource,
-      "--minify",
-      "--target=es2024",
-      "--legal-comments=eof",
-      `--outfile=${join(destination, "elm.js")}`,
-      "--log-level=warning",
-    ]);
-  } finally {
-    await rm(elmSource);
-  }
-  const manifest = JSON.parse(await readFile(join(source, "elm/elm.json"), "utf8")) as {
-    "elm-version": string;
-    dependencies: { direct: Record<string, string>; indirect: Record<string, string> };
-  };
-  const elmHome = process.env.ELM_HOME ?? join(homedir(), ".elm");
-  for (const [name, version] of Object.entries({
-    ...manifest.dependencies.direct,
-    ...manifest.dependencies.indirect,
-  })) {
-    const notice = await readFile(
-      join(elmHome, manifest["elm-version"], "packages", name, version, "LICENSE"),
-      "utf8",
-    );
-    await appendFile(join(destination, "elm.js"), `\n/*! ${name} ${version}\n${notice}*/\n`);
-  }
+  await buildElmAssets(join(source, "elm"), join(destination, "elm"));
+  await buildHtmxAssets(join(source, "htmx"), join(destination, "htmx"));
   // Upstream's CommonJS files omit the package-level BSD notice.
   const require = createRequire(resolve(source, "highlight.ts"));
-  const htmx = await readFile(require.resolve("htmx.org/dist/htmx.min.js"), "utf8");
-  // htmx 4.0.0 hx-sse cleanup aborts fetch before cancelling its reader. Chromium
-  // then rejects cancel() on the already-errored stream as an unhandled AbortError.
-  // Cancel the reader first; retain all upstream error handling and reconnection.
-  const sse = await readFile(require.resolve("htmx.org/dist/ext/hx-sse.js"), "utf8");
-  const cleanup = "connection.abortController?.abort();\n        connection.reader?.cancel?.();";
-  assert.equal(sse.split(cleanup).length, 2, "Recheck the pinned hx-sse cleanup patch");
-  await writeFile(
-    join(destination, "hx-sse.js"),
-    sse.replace(
-      cleanup,
-      "connection.reader?.cancel?.();\n        connection.abortController?.abort();",
-    ),
-  );
-  const htmxLicense = await readFile(require.resolve("htmx.org/LICENSE"), "utf8");
-  await writeFile(join(destination, "htmx.js"), `${htmx}\n/*! htmx\n${htmxLicense}*/\n`);
-  await appendFile(join(destination, "hx-sse.js"), `\n/*! htmx\n${htmxLicense}*/\n`);
   const license = await readFile(require.resolve("highlight.js/LICENSE"), "utf8");
   await appendFile(join(destination, "highlight.js"), `\n/*! highlight.js\n${license}*/\n`);
   for (const file of ["design-system.html", "icon-192.png", "icon-512.png"])

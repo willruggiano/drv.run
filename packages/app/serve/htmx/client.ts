@@ -1,12 +1,12 @@
-import { resizePrompt } from "./hypermedia-dom.ts";
-import { installDrafts } from "./hypermedia-drafts.ts";
-import { installAttachments } from "./hypermedia-attachments.ts";
-import { installCompletions } from "./hypermedia-completions.ts";
-import { installSearch } from "./hypermedia-search.ts";
-import { installKeys } from "./hypermedia-keys.ts";
-import { installSettings } from "./hypermedia-settings.ts";
-import { installPwa } from "./hypermedia-pwa.ts";
-import { installStream } from "./hypermedia-stream.ts";
+import { resizePrompt } from "./dom.ts";
+import { installDrafts } from "./drafts.ts";
+import { installAttachments } from "./attachments.ts";
+import { installCompletions } from "./completions.ts";
+import { installSearch } from "./search.ts";
+import { installKeys } from "./keys.ts";
+import { installSettings } from "./settings.ts";
+import { installPwa } from "./pwa.ts";
+import { installStream } from "./stream.ts";
 
 installDrafts();
 installAttachments();

@@ -1,8 +1,8 @@
-import { html as h, type SafeHtml } from "./html.ts";
+import { html as h, type SafeHtml } from "../html.ts";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { hidden, icon } from "./hypermedia-render.ts";
-import type { Catalog, SessionInfo } from "./sessions.ts";
-import { settingFields, thinkingLevels, type GlobalSettings } from "./settings.ts";
+import { hidden, icon } from "./render.ts";
+import type { Catalog, SessionInfo } from "../sessions.ts";
+import { settingFields, thinkingLevels, type GlobalSettings } from "../settings.ts";
 
 export const modelKey = (model: { provider: string; modelId: string }) =>
   JSON.stringify([model.provider, model.modelId]);

@@ -1,10 +1,10 @@
 import type { HtmxRequestCtx } from "htmx.org";
-import { composer, controls, resizePrompt, updateSend } from "./hypermedia-dom.ts";
-import { restoreDraft } from "./hypermedia-drafts.ts";
-import { previews } from "./hypermedia-attachments.ts";
-import { closeCompletions } from "./hypermedia-completions.ts";
-import { installStatus } from "./hypermedia-pwa.ts";
-import { localPreferences } from "./hypermedia-settings.ts";
+import { composer, controls, resizePrompt, updateSend } from "./dom.ts";
+import { restoreDraft } from "./drafts.ts";
+import { previews } from "./attachments.ts";
+import { closeCompletions } from "./completions.ts";
+import { installStatus } from "./pwa.ts";
+import { localPreferences } from "./settings.ts";
 let selected: HTMLElement | undefined;
 const positions = new Map<string, number>();
 const disclosures = new Map<string, Map<string, boolean>>();
@@ -138,7 +138,7 @@ function enhanceCommands() {
   }
 }
 const highlighterURL = "/highlight.js";
-let highlighter: Promise<typeof import("./highlight.ts")> | undefined;
+let highlighter: Promise<typeof import("../highlight.ts")> | undefined;
 function enhance(root: ParentNode) {
   root.querySelectorAll<HTMLTimeElement>("time[datetime]").forEach((time) => {
     const date = new Date(time.dateTime);

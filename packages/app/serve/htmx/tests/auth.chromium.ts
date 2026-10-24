@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { browserFixture } from "./browser-testing.ts";
-import { authorizationFixture } from "./testing.ts";
-import { fixture } from "./sessions-testing.ts";
+import { browserFixture } from "../../tests/browser-testing.ts";
+import { authorizationFixture } from "../../tests/testing.ts";
+import { fixture } from "../../tests/sessions-testing.ts";
 
 await test(
   "phone /auth authorizes, resumes polling, and removes credentials without a terminal",

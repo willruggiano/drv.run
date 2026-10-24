@@ -7,12 +7,13 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { AgentDoc, InboxDoc, LiveDoc } from "@earendil-works/pi-durable";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { Review } from "harness";
-import { modelKey, targetKey } from "../hypermedia-forms.ts";
-import { Environment, Metadata } from "../sessions.ts";
-import { ConversationFragments, conversationURL } from "../hypermedia.ts";
-import { benchmarkFixture } from "../benchmark.ts";
-import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
-import { serve } from "./testing.ts";
+import { modelKey, targetKey } from "../forms.ts";
+import { Environment, Metadata } from "../../sessions.ts";
+import { conversationURL } from "../../presentation.ts";
+import { ConversationFragments } from "../frontend.ts";
+import { benchmarkFixture } from "../../benchmark.ts";
+import { fixture, readHistory, waitFor, model } from "../../tests/sessions-testing.ts";
+import { serve } from "../../tests/testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 

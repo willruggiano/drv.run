@@ -1,25 +1,27 @@
 import assert from "node:assert/strict";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, X509Certificate } from "node:crypto";
 import { request } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { chromium } from "playwright";
-import { buildAssets } from "../build.ts";
-import { chromiumExecutable, serve } from "./testing.ts";
+import { buildAssets } from "../../build.ts";
+import { chromiumExecutable, serve } from "../../tests/testing.ts";
 import { test } from "node:test";
 import type { Htmx } from "htmx.org";
 import type { ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { httpServer } from "../server.ts";
+import { httpServer } from "../../server.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { LiveDoc } from "@earendil-works/pi-durable";
 import { Review } from "harness";
-import { html, renderHTML, type SafeHtml } from "../html.ts";
-import { conversationURL, htmlPage } from "../hypermedia.ts";
-import { browserFixture, submitCommand, visitOriginal, openSessions } from "./browser-testing.ts";
-import { fixture, readHistory, waitFor } from "./sessions-testing.ts";
+import { html, renderHTML, type SafeHtml } from "../../html.ts";
+import { conversationURL } from "../../presentation.ts";
+import { htmlPage } from "../frontend.ts";
+import { browserFixture } from "../../tests/browser-testing.ts";
+import { submitCommand, visitOriginal, openSessions } from "./testing.ts";
+import { fixture, readHistory, waitFor } from "../../tests/sessions-testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 const partial = (text: string) => {
@@ -43,7 +45,7 @@ await test(
     const f = await fixture(t);
     const session = await f.create();
     const assets = join(f.directory, "assets");
-    await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
+    await buildAssets(fileURLToPath(new URL("../../", import.meta.url)), assets);
     // Test-only certificate. Trust exactly this public key in Chromium, not arbitrary TLS errors.
     const key = `-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgBeMawVVAX+USxIC3
@@ -234,7 +236,7 @@ await test("htmx waits for delayed extensions before initializing the first SSE 
   const requested = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   t.after(() => release.resolve());
-  await b.page.route("**/hx-sse.js", async (route) => {
+  await b.page.route("**/htmx/sse.js", async (route) => {
     const response = await route.fetch();
     requested.resolve();
     await release.promise;
@@ -907,8 +909,8 @@ await test("pending review response cannot navigate a newer page; review subscri
 });
 
 await test("HTML projection measurements: same 150-entry, 40-update workload as the renderer baseline", async (t) => {
-  const { benchmarkFixture } = await import("../benchmark.ts");
-  const { ConversationFragments } = await import("../hypermedia.ts");
+  const { benchmarkFixture } = await import("../../benchmark.ts");
+  const { ConversationFragments } = await import("../frontend.ts");
   const { copyJson } = await import("@earendil-works/chord");
   const { readFile } = await import("node:fs/promises");
   const { gzipSync } = await import("node:zlib");
@@ -961,9 +963,9 @@ await test("HTML projection measurements: same 150-entry, 40-update workload as 
   await frontend.dispose();
   const assets: Record<string, { bytes: number; gzip: number }> = {};
   for (const name of [
-    "htmx.js",
-    "hypermedia-client.js",
-    "hypermedia.css",
+    "htmx/vendor.js",
+    "htmx/client.js",
+
     "styles.css",
     "highlight.js",
   ]) {
@@ -1050,8 +1052,9 @@ await test("HTML expands worker scope to auth and retires obsolete registrations
   let legacy = true;
   server.on("request", (request, response) => {
     if (!legacy) return handler(request, response);
-    if (request.url === "/sw.js" || request.url === "/hypermedia-sw.js") {
+    if (request.url === "/sw.js" || request.url === "/htmx/sw.js") {
       response.setHeader("Content-Type", "text/javascript");
+      response.setHeader("Service-Worker-Allowed", "/");
       response.end(
         'self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));',
       );
@@ -1071,7 +1074,7 @@ await test("HTML expands worker scope to auth and retires obsolete registrations
   await b.page.goto(base);
   await b.page.evaluate(async () => {
     await navigator.serviceWorker.register("/sw.js", { scope: "/" });
-    await navigator.serviceWorker.register("/hypermedia-sw.js", { scope: "/sessions" });
+    await navigator.serviceWorker.register("/htmx/sw.js", { scope: "/sessions" });
     await navigator.serviceWorker.ready;
     await (await caches.open("pi-shell-v26")).put("/", new Response("Retired shell"));
     await caches.open("unrelated-cache");
@@ -1084,7 +1087,7 @@ await test("HTML expands worker scope to auth and retires obsolete registrations
       return (
         workers.length === 1 &&
         !!navigator.serviceWorker.controller &&
-        new URL(navigator.serviceWorker.controller.scriptURL).pathname === "/hypermedia-sw.js" &&
+        new URL(navigator.serviceWorker.controller.scriptURL).pathname === "/htmx/sw.js" &&
         !(await caches.keys()).includes("pi-shell-v26")
       );
     }),

@@ -1,13 +1,13 @@
-import { returnToConversation } from "./browser-testing.ts";
+import { returnToConversation } from "./testing.ts";
 import type { Htmx } from "htmx.org";
-import { conversationURL } from "../hypermedia.ts";
-import { settingFields } from "../settings.ts";
-import { Sessions, inspectContext } from "../sessions.ts";
+import { conversationURL } from "../../presentation.ts";
+import { settingFields } from "../../settings.ts";
+import { Sessions, inspectContext } from "../../sessions.ts";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { GlobalSettingsStore } from "../server.ts";
+import { GlobalSettingsStore } from "../../server.ts";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -20,9 +20,9 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { EntryDraft } from "@earendil-works/pi-durable";
 import { chromium } from "playwright";
-import { readHistory, fixture, model } from "./sessions-testing.ts";
-import { chromiumExecutable, serve, post } from "./testing.ts";
-import { buildAssets } from "../build.ts";
+import { readHistory, fixture, model } from "../../tests/sessions-testing.ts";
+import { chromiumExecutable, serve, post } from "../../tests/testing.ts";
+import { buildAssets } from "../../build.ts";
 
 const context = BACKGROUND_CONTEXT;
 const text = (tokens: number) => "x".repeat(Math.floor(tokens * 3.5));
@@ -159,7 +159,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
   await empty.reset(undefined, context);
   const history = await readHistory(session.root);
   const assets = join(f.directory, "assets");
-  await buildAssets(fileURLToPath(new URL("..", import.meta.url)), assets);
+  await buildAssets(fileURLToPath(new URL("../../", import.meta.url)), assets);
   const base = await serve(t, sessions, assets, "127.0.0.1", store);
   const watch = await session.root.watch(context);
   const initial = { inspection: await inspectContext(session, watch.value, context) };

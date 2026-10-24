@@ -42,13 +42,13 @@ export function installPwa() {
                 (worker) =>
                   worker &&
                   (new URL(worker.scriptURL).pathname === "/sw.js" ||
-                    (new URL(worker.scriptURL).pathname === "/hypermedia-sw.js" &&
+                    (new URL(worker.scriptURL).pathname === "/htmx/sw.js" &&
                       new URL(item.scope).pathname !== "/")),
               ),
             )
             .map((item) => item.unregister()),
         );
-        return navigator.serviceWorker.register("/hypermedia-sw.js", { scope: "/" });
+        return navigator.serviceWorker.register("/htmx/sw.js", { scope: "/" });
       })
       .then((worker) => {
         registration = worker;

@@ -11,13 +11,14 @@ import {
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Review } from "harness";
 import { LiveDoc } from "@earendil-works/pi-durable";
-import { GlobalSettingsStore } from "../server.ts";
-import { conversationURL } from "../hypermedia.ts";
-import { modelKey, targetKey } from "../hypermedia-forms.ts";
-import { rename, sessionInfo, Sessions } from "../sessions.ts";
-import { browserFixture, returnToConversation, openSessions } from "./browser-testing.ts";
-import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
-import { directoryFixture, serve } from "./testing.ts";
+import { GlobalSettingsStore } from "../../server.ts";
+import { conversationURL } from "../../presentation.ts";
+import { modelKey, targetKey } from "../forms.ts";
+import { rename, sessionInfo, Sessions } from "../../sessions.ts";
+import { browserFixture } from "../../tests/browser-testing.ts";
+import { returnToConversation, openSessions } from "./testing.ts";
+import { fixture, readHistory, waitFor, model } from "../../tests/sessions-testing.ts";
+import { directoryFixture, serve } from "../../tests/testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 

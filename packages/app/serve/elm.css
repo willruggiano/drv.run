@@ -1,9 +1,0 @@
-/* Archive rows have a stable parent. Order affects layout, never DOM identity. */
-.elm-transcript { display: flex; flex-direction: column; reading-flow: flex-visual; }
-.elm-transcript > [hidden] { display: none; }
-.elm-transcript > .elm-context-head { padding-bottom: 0; }
-.elm-context-head > .context-event { margin-bottom: 0; }
-.elm-context-end { padding-bottom: calc(14px + var(--trace-gap)); }
-.elm-context-end:has(> header) { padding-top: var(--trace-gap); }
-.elm-context-end > header { color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; min-height: 24px; }
-elm-code { display: contents; }

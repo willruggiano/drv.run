@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { copyJson } from "@earendil-works/chord";
 import { test } from "node:test";
-import { ElmProjection } from "../elm-frontend.ts";
-import { benchmarkFixture } from "../benchmark.ts";
-import { fixture, readHistory } from "./sessions-testing.ts";
-import { serve } from "./testing.ts";
-import { conversationURL } from "../hypermedia.ts";
+import { ElmProjection } from "../frontend.ts";
+import { benchmarkFixture } from "../../benchmark.ts";
+import { fixture, readHistory } from "../../tests/sessions-testing.ts";
+import { serve } from "../../tests/testing.ts";
+import { conversationURL } from "../../presentation.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
@@ -162,7 +162,7 @@ await test("Elm releases early-disconnected watches and bounds pending entries d
     await t.test(stage, { timeout: 10000 }, async (t) => {
       const f = await fixture(t);
       const session = await f.create();
-      const { httpServer } = await import("../server.ts");
+      const { httpServer } = await import("../../server.ts");
       const server = httpServer(f.sessions, "127.0.0.1");
       const disconnected = Promise.withResolvers<void>();
       server.on("request", (_request, response) =>

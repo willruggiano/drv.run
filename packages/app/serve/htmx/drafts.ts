@@ -1,7 +1,7 @@
 import type { HtmxRequestCtx } from "htmx.org";
-import { composer, controls, resizePrompt, updateSend, report } from "./hypermedia-dom.ts";
-import { previews } from "./hypermedia-attachments.ts";
-import { closeCompletions } from "./hypermedia-completions.ts";
+import { composer, controls, resizePrompt, updateSend, report } from "./dom.ts";
+import { previews } from "./attachments.ts";
+import { closeCompletions } from "./completions.ts";
 type Draft = { text: string; files: File[]; requestId: string; creationId?: string };
 const drafts = new Map<string, Draft>();
 const requestPages = new WeakMap<HtmxRequestCtx, number>();

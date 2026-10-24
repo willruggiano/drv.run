@@ -14,8 +14,8 @@ import {
   Environment,
   sessionInfo,
 } from "../sessions.ts";
-import { conversationURL } from "../hypermedia.ts";
-import { modelKey, targetKey } from "../hypermedia-forms.ts";
+import { conversationURL } from "../presentation.ts";
+import { modelKey, targetKey } from "../htmx/forms.ts";
 import { directoryFixture, post, serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;

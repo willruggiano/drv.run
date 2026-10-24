@@ -12,5 +12,5 @@
     "target": "ES2024",
     "lib": ["ES2024", "DOM", "DOM.Iterable"]
   },
-  "include": ["*.ts", "tests/*.ts"]
+  "include": ["*.ts", "tests/*.ts", "htmx/**/*.ts", "elm/**/*.ts"]
 }

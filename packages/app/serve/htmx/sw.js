@@ -1,6 +1,6 @@
 // Cache only public assets and a static offline page, never session HTML or SSE.
-const CACHE = "pi-hypermedia-shell-v3";
-const SHELL = ["/sessions/offline", "/sessions/manifest.webmanifest", "/styles.css", "/hypermedia.css", "/hypermedia-client.js", "/htmx.js", "/hx-sse.js", "/hypermedia-morph.js", "/highlight.js", "/icon.svg", "/icon-192.png", "/icon-512.png"];
+const CACHE = "pi-hypermedia-shell-v4";
+const SHELL = ["/sessions/offline", "/sessions/manifest.webmanifest", "/styles.css", "/htmx/client.js", "/htmx/vendor.js", "/htmx/sse.js", "/htmx/morph.js", "/highlight.js", "/icon.svg", "/icon-192.png", "/icon-512.png"];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));
 });

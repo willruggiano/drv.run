@@ -65,7 +65,7 @@ inline source =
 
 codeView : String -> String -> Html msg
 codeView language source =
-    Html.node "elm-code" [ attribute "language" language, attribute "source" source ] []
+    Html.node "elm-code" [ class "code-container", attribute "language" language, attribute "source" source ] []
 
 
 markdown : String -> Html msg
@@ -489,7 +489,7 @@ transcript toggle opened query selected entriesById tools durations =
                 [ ( "entry-" ++ key
                   , article
                         (attrs
-                            ++ [ class "elm-context-head"
+                            ++ [ class "context-head"
                                , attribute "data-context"
                                     (if entry.boundary == Reset then
                                         "pi.reset"
@@ -509,7 +509,7 @@ transcript toggle opened query selected entriesById tools durations =
                         [ boundaryHead ]
                   )
                 , ( "end-" ++ key
-                  , div [ class "elm-context-end", style "order" (String.fromInt (position entry.id True)), hidden (not show) ]
+                  , div [ class "context-end", style "order" (String.fromInt (position entry.id True)), hidden (not show) ]
                         (if entry.boundary == Reset then
                             content
 
@@ -519,4 +519,4 @@ transcript toggle opened query selected entriesById tools durations =
                   )
                 ]
     in
-    Html.Keyed.node "div" [ id "transcript", class "elm-transcript" ] (List.concatMap render rows)
+    Html.Keyed.node "div" [ id "transcript", class "ordered-transcript" ] (List.concatMap render rows)

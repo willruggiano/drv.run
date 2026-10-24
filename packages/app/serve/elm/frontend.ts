@@ -21,10 +21,17 @@ import {
   completePaths,
   type Sessions,
   type Session,
-} from "./sessions.ts";
-import { form, field, inputContent, history, compactionTimes, FormError } from "./hypermedia.ts";
-import { compactTokens, type Call, type Result } from "./hypermedia-render.ts";
-import { completionToken, commandCompletions, pathCompletion } from "./completions.ts";
+} from "../sessions.ts";
+import { form, field, inputContent, FormError } from "../forms.ts";
+import {
+  conversationURL,
+  history,
+  compactionTimes,
+  compactTokens,
+  type Call,
+  type Result,
+} from "../presentation.ts";
+import { completionToken, commandCompletions, pathCompletion } from "../completions.ts";
 
 export type Block =
   | { kind: "text" | "thinking" | "code"; text: string }
@@ -351,7 +358,7 @@ export async function elmFrontend(
       response,
       await Promise.all(
         catalog.sessions.map(async (item) => ({
-          path: `/elm/sessions/${item.id}/conversations/${(await sessions.get(item.id)).root.id}`,
+          path: `/elm${conversationURL(await sessions.get(item.id))}`,
           title: item.name || "Untitled session",
         })),
       ),
@@ -369,7 +376,7 @@ export async function elmFrontend(
   if (request.method === "GET" && !operation) {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     response.end(
-      '<!doctype html><html lang="en" class="enhanced"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Conversation</title><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/hypermedia.css"><link rel="stylesheet" href="/elm.css"><script src="/elm.js" defer></script><script src="/elm-client.js" type="module"></script></head><body class="stacked-layout bottom-align"><div id="elm"></div></body></html>',
+      '<!doctype html><html lang="en" class="enhanced"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Conversation</title><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/elm/main.js" defer></script><script src="/elm/client.js" type="module"></script></head><body class="stacked-layout bottom-align"><div id="elm"></div></body></html>',
     );
     return;
   }

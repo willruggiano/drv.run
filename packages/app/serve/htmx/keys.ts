@@ -1,13 +1,13 @@
 import { installSelectKeyMappings, navigationDirection, moveFocus } from "./key-mappings.ts";
-import { composer, controls } from "./hypermedia-dom.ts";
+import { composer, controls } from "./dom.ts";
 import {
   closeCompletions,
   completionItems,
   selectCompletion,
   applyCompletion,
   completionIndex,
-} from "./hypermedia-completions.ts";
-import { search } from "./hypermedia-search.ts";
+} from "./completions.ts";
+import { search } from "./search.ts";
 
 export function installKeys() {
   installSelectKeyMappings(document);

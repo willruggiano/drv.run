@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { InboxDoc, LiveDoc, type TaskId, type Conversation } from "@earendil-works/pi-durable";
-import { browserFixture } from "./browser-testing.ts";
-import { fixture, readHistory, waitFor } from "./sessions-testing.ts";
-import { conversationURL } from "../hypermedia.ts";
-import { rename, type Sessions, type Session } from "../sessions.ts";
-import { httpServer } from "../server.ts";
+import { browserFixture } from "../../tests/browser-testing.ts";
+import { fixture, readHistory, waitFor } from "../../tests/sessions-testing.ts";
+import { conversationURL } from "../../presentation.ts";
+import { rename, type Sessions, type Session } from "../../sessions.ts";
+import { httpServer } from "../../server.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -73,59 +73,13 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     const path = conversationURL(session);
-    for (const width of [390, 1440]) {
-      await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
-      let reference: Buffer | undefined;
-      for (const frontend of ["htmx", "elm"]) {
-        await page.goto(b.base + (frontend === "elm" ? "/elm" : "") + path);
-        await page.waitForFunction(
-          () => document.querySelector("#connection")?.textContent === "Connected",
-        );
-        await page.locator('[data-call-id="build"] > summary').click();
-        await page.locator("pre code").first().waitFor();
-        await page.evaluate(
-          () =>
-            new Promise<void>((resolve) =>
-              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-            ),
-        );
-        const screenshot = await page.screenshot(
-          b.screenshots ? { path: join(b.screenshots, `${frontend}-${width}.png`) } : {},
-        );
-        if (frontend === "htmx") reference = screenshot;
-        else {
-          assert(reference);
-          const changedPixels = await page.evaluate(
-            async ([first, second]) => {
-              const images = await Promise.all(
-                [first, second].map(async (encoded) => {
-                  const bytes = Uint8Array.from(atob(encoded), (character) =>
-                    character.charCodeAt(0),
-                  );
-                  const image = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
-                  const canvas = document.createElement("canvas");
-                  canvas.width = image.width;
-                  canvas.height = image.height;
-                  const context = canvas.getContext("2d")!;
-                  context.drawImage(image, 0, 0);
-                  return context.getImageData(0, 0, image.width, image.height).data;
-                }),
-              );
-              let changed = 0;
-              for (let i = 0; i < images[0].length; i += 4)
-                if (
-                  [0, 1, 2, 3].some((channel) => images[0][i + channel] !== images[1][i + channel])
-                )
-                  changed++;
-              return changed;
-            },
-            [reference.toString("base64"), screenshot.toString("base64")],
-          );
-          // The custom code element changes seven corner antialiasing pixels.
-          assert(changedPixels <= 10, `${changedPixels} pixels differ at width ${width}`);
-        }
-      }
-    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(b.base + "/elm" + path);
+    await page.waitForFunction(
+      () => document.querySelector("#connection")?.textContent === "Connected",
+    );
+    await page.locator('[data-call-id="build"] > summary').click();
+    await page.locator("pre code").first().waitFor();
     const node = await page.locator(`#entry-${records.first.id}`).elementHandle();
     assert(node);
     const prompt = page.getByRole("textbox", { name: "Message", exact: true });
@@ -858,7 +812,7 @@ await test(
     const page = b.page;
     await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
     // Exercise the adapter's port interface without a second workflow model or network timing.
-    await page.route("**/elm.js", (route) =>
+    await page.route("**/elm/main.js", (route) =>
       route.fulfill({ contentType: "text/javascript", body: "" }),
     );
     await page.addInitScript(() => {

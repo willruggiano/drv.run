@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -17,8 +17,8 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { readHistory, fixture, model } from "./sessions-testing.ts";
 import { checkCLI, chromiumExecutable, directoryFixture, serve, post } from "./testing.ts";
 import { GlobalSettingsStore, httpServer } from "../server.ts";
-import { conversationURL } from "../hypermedia.ts";
-import { modelKey, targetKey } from "../hypermedia-forms.ts";
+import { conversationURL } from "../presentation.ts";
+import { modelKey, targetKey } from "../htmx/forms.ts";
 import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
 import { buildAssets } from "../build.ts";
 
@@ -370,8 +370,12 @@ await test("built browser assets preserve module formats and selected highlight 
   // Production builds inside a package with type=module; Elm still loads as a classic script.
   await writeFile(join(assets, "package.json"), JSON.stringify({ type: "module" }));
   await buildAssets(dirname(dirname(fileURLToPath(import.meta.url))), assets);
+  assert.deepEqual(
+    (await readdir(assets, { recursive: true })).filter((file) => file.endsWith(".css")),
+    ["styles.css"],
+  );
   const scope: { Elm?: { Main?: { init?: unknown } } } = {};
-  runInNewContext(await readFile(join(assets, "elm.js"), "utf8"), scope);
+  runInNewContext(await readFile(join(assets, "elm/main.js"), "utf8"), scope);
   assert.equal(typeof scope.Elm?.Main?.init, "function");
   const { default: highlighter }: { default: typeof import("highlight.js") } = await import(
     pathToFileURL(join(assets, "highlight.js")).href
@@ -398,6 +402,21 @@ await test("built browser assets preserve module formats and selected highlight 
     assert.equal(highlighter.getLanguage(alias), highlighter.getLanguage(name));
   const f = await fixture(t);
   const base = await serve(t, f.sessions, assets);
+  for (const file of [
+    "elm/main.js",
+    "elm/client.js",
+    "htmx/client.js",
+    "htmx/morph.js",
+    "htmx/vendor.js",
+    "htmx/sse.js",
+    "htmx/sw.js",
+  ]) {
+    const asset = await fetch(`${base}/${file}`);
+    assert.equal(asset.status, 200);
+    assert.equal(asset.headers.get("content-type"), "text/javascript; charset=utf-8");
+    assert.equal(asset.headers.get("service-worker-allowed"), file === "htmx/sw.js" ? "/" : null);
+    assert.deepEqual(Buffer.from(await asset.arrayBuffer()), await readFile(join(assets, file)));
+  }
   const response = await fetch(`${base}/highlight.js`);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "text/javascript; charset=utf-8");

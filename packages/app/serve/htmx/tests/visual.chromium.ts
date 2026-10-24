@@ -3,12 +3,13 @@ import { test } from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { InboxDoc } from "@earendil-works/pi-durable";
-import { fixture, waitFor } from "./sessions-testing.ts";
-import { browserFixture, returnToConversation, openGlobalSettings } from "./browser-testing.ts";
-import { conversationURL } from "../hypermedia.ts";
-import { rename } from "../sessions.ts";
-import { html, renderHTML } from "../html.ts";
-import { toolStatus } from "../hypermedia-render.ts";
+import { fixture, waitFor } from "../../tests/sessions-testing.ts";
+import { browserFixture } from "../../tests/browser-testing.ts";
+import { returnToConversation, openGlobalSettings } from "./testing.ts";
+import { conversationURL } from "../../presentation.ts";
+import { rename } from "../../sessions.ts";
+import { html, renderHTML } from "../../html.ts";
+import { toolStatus } from "../render.ts";
 const context = BACKGROUND_CONTEXT;
 
 await test("conversations stay bottom-aligned as history grows and preserve scrollback", async (t) => {
@@ -847,7 +848,7 @@ await test("tool status icons keep the completed icon dimensions without shiftin
         <details class="tool-call">
           <summary>
             ${toolStatus("completed")}<span class="tool-command"
-              >Read · /workspace/project/packages/app/serve/hypermedia-render.ts</span
+              >Read · /workspace/project/packages/app/serve/htmx/render.ts</span
             >
           </summary>
         </details>`,

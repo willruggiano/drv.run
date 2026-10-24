@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type { Page } from "playwright";
-import { fixture } from "./sessions-testing.ts";
-import { browserFixture } from "./browser-testing.ts";
-import { conversationURL } from "../hypermedia.ts";
+import { fixture } from "../../tests/sessions-testing.ts";
+import { browserFixture } from "../../tests/browser-testing.ts";
+import { conversationURL } from "../../presentation.ts";
 
 async function focused(page: Page, id: string) {
   assert.equal(

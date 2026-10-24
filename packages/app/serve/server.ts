@@ -1,7 +1,9 @@
-import { elmFrontend } from "./elm-frontend.ts";
+import { FormError } from "./forms.ts";
+import { elmFrontend } from "./elm/frontend.ts";
 import { html as h } from "./html.ts";
-import { authPage, ProxyAuthorization } from "./auth.ts";
-import { hypermedia, html, FormError } from "./hypermedia.ts";
+import { ProxyAuthorization } from "./auth.ts";
+import { authPage } from "./htmx/auth.ts";
+import { hypermedia, html } from "./htmx/frontend.ts";
 import { openApplication } from "./application.ts";
 import { ownerOptions } from "./instances.ts";
 import { readFile } from "node:fs/promises";
@@ -265,6 +267,51 @@ export function httpServer(
       const controller = new AbortController();
       response.once("close", () => controller.abort());
       const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
+      if (
+        request.method === "GET" &&
+        [
+          "/elm/client.js",
+          "/elm/main.js",
+          "/htmx/client.js",
+          "/htmx/vendor.js",
+          "/htmx/sse.js",
+          "/htmx/morph.js",
+          "/highlight.js",
+          "/styles.css",
+          "/design-system.html",
+          "/icon.svg",
+          "/icon-192.png",
+          "/icon-512.png",
+          "/htmx/sw.js",
+        ].includes(url.pathname)
+      ) {
+        const file = url.pathname.slice(1);
+        const types: Record<string, string> = {
+          "elm/client.js": "text/javascript; charset=utf-8",
+          "elm/main.js": "text/javascript; charset=utf-8",
+          "htmx/client.js": "text/javascript; charset=utf-8",
+          "htmx/vendor.js": "text/javascript; charset=utf-8",
+          "htmx/sse.js": "text/javascript; charset=utf-8",
+          "htmx/morph.js": "text/javascript; charset=utf-8",
+          "highlight.js": "text/javascript; charset=utf-8",
+          "styles.css": "text/css; charset=utf-8",
+          "design-system.html": "text/html; charset=utf-8",
+          "icon.svg": "image/svg+xml",
+          "icon-192.png": "image/png",
+          "icon-512.png": "image/png",
+          "htmx/sw.js": "text/javascript; charset=utf-8",
+        };
+        if (file === "icon.svg") {
+          response.setHeader("Content-Type", types[file]);
+          return response.end(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#101217"/><text x="64" y="90" text-anchor="middle" font-size="92" fill="#9dd5ae">π</text></svg>',
+          );
+        }
+        if (file === "htmx/sw.js") response.setHeader("Service-Worker-Allowed", "/");
+        const data = await readFile(join(assets, file));
+        response.setHeader("Content-Type", types[file]);
+        return response.end(data);
+      }
       if (url.pathname === "/auth" || url.pathname.startsWith("/auth/"))
         return await authPage(request, response, url, authorization, controller.signal);
       if (url.pathname === "/elm" || url.pathname.startsWith("/elm/"))
@@ -276,54 +323,6 @@ export function httpServer(
         response.writeHead(303, { Location: "/sessions" });
         response.end();
         return;
-      }
-      if (
-        request.method === "GET" &&
-        [
-          "/elm-client.js",
-          "/elm.js",
-          "/elm.css",
-          "/hypermedia-client.js",
-          "/htmx.js",
-          "/hx-sse.js",
-          "/hypermedia-morph.js",
-          "/hypermedia.css",
-          "/highlight.js",
-          "/styles.css",
-          "/design-system.html",
-          "/icon.svg",
-          "/icon-192.png",
-          "/icon-512.png",
-          "/hypermedia-sw.js",
-        ].includes(url.pathname)
-      ) {
-        const file = url.pathname.slice(1);
-        const types: Record<string, string> = {
-          "elm-client.js": "text/javascript; charset=utf-8",
-          "elm.js": "text/javascript; charset=utf-8",
-          "elm.css": "text/css; charset=utf-8",
-          "hypermedia-client.js": "text/javascript; charset=utf-8",
-          "htmx.js": "text/javascript; charset=utf-8",
-          "hx-sse.js": "text/javascript; charset=utf-8",
-          "hypermedia-morph.js": "text/javascript; charset=utf-8",
-          "hypermedia.css": "text/css; charset=utf-8",
-          "highlight.js": "text/javascript; charset=utf-8",
-          "styles.css": "text/css; charset=utf-8",
-          "design-system.html": "text/html; charset=utf-8",
-          "icon.svg": "image/svg+xml",
-          "icon-192.png": "image/png",
-          "icon-512.png": "image/png",
-          "hypermedia-sw.js": "text/javascript; charset=utf-8",
-        };
-        if (file === "icon.svg") {
-          response.setHeader("Content-Type", types[file]);
-          return response.end(
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#101217"/><text x="64" y="90" text-anchor="middle" font-size="92" fill="#9dd5ae">π</text></svg>',
-          );
-        }
-        const data = await readFile(join(assets, file));
-        response.setHeader("Content-Type", types[file]);
-        return response.end(data);
       }
       throw new RequestError(404, "Not found.");
     })().catch((error: unknown) => {

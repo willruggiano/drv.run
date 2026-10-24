@@ -10,6 +10,26 @@ import { test } from "node:test";
 import { chromium } from "playwright";
 import { checkCLI, chromiumExecutable } from "./testing.ts";
 import { benchmark, benchmarkOptions } from "../benchmark.ts";
+import { conversationURL } from "../presentation.ts";
+import { fixture } from "./sessions-testing.ts";
+import { browserFixture } from "./browser-testing.ts";
+
+await test("both frontends use only the shared stylesheet", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  for (const prefix of ["", "/elm"]) {
+    await b.page.goto(b.base + prefix + conversationURL(session));
+    await b.page.locator("#prompt").waitFor();
+    assert.deepEqual(
+      await b.page.evaluate(() =>
+        Array.from(document.styleSheets, (sheet) => sheet.href && new URL(sheet.href).pathname),
+      ),
+      ["/styles.css"],
+    );
+  }
+  assert.deepEqual(b.errors, []);
+});
 
 await test("mobile browser page benchmark returns complete JSON-compatible samples", async () => {
   const report = await benchmark(benchmarkOptions(["--runs", "2", "--turns", "2"]));

@@ -16,7 +16,7 @@ declare const Elm: { Main: { init(options: { flags: unknown }): App } };
 
 // These elements own only their contents. Elm owns their attributes and placement.
 const highlighterURL = "/highlight.js";
-let highlighter: Promise<typeof import("./highlight.ts")> | undefined;
+let highlighter: Promise<typeof import("../highlight.ts")> | undefined;
 class ElmCode extends HTMLElement {
   static observedAttributes = ["language", "source"];
   connectedCallback() {

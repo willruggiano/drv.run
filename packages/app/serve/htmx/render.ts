@@ -1,7 +1,8 @@
-import { html as h, raw, type SafeHtml } from "./html.ts";
+import { compactTokens, type Call, type Result } from "../presentation.ts";
+import { html as h, raw, type SafeHtml } from "../html.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import type { EntryRecord, LiveState, ToolSlot, NestedToolSlot } from "@earendil-works/pi-durable";
-import type { ContextInspection, ContextPart } from "./inspection.ts";
+import type { ContextInspection, ContextPart } from "../inspection.ts";
 
 export const hidden = (name: string, value: string) =>
   h`<input type="hidden" name="${name}" value="${value}">`;
@@ -81,8 +82,6 @@ export function messageText(message: Message): string {
     )
     .join("\n\n");
 }
-export type Call = { id: string; name: string; arguments: Record<string, unknown> };
-export type Result = { entry: number; message: Extract<Message, { role: "toolResult" }> };
 export const toolID = (id: string) => `tool-${Buffer.from(id).toString("base64url")}`;
 function details(data: unknown): SafeHtml {
   if (!data || typeof data !== "object") return h``;
@@ -207,12 +206,6 @@ export function entry(
     ? h`<details class="tool-call context-event" data-state="completed" data-disclosure="context-${record.id}"><summary>${toolStatus("completed")}<span class="tool-command">${record.kind === "pi.reset" ? "Context reset" : "Context compacted"}</span>${timing(record.id, duration)}</summary>${record.kind === "pi.compaction" ? h`<div class="compaction-summary">${rendered}</div>` : ""}<div id="archive-${record.id}" class="context-history">${archive}</div></details>${record.kind === "pi.reset" ? rendered : ""}`
     : rendered;
   return h`<article id="entry-${record.id}" data-entry="${record.id}"${boundary ? "" : h` hx-morph-skip`}${!boundary && messages[0] ? h` data-role="${messages[0].role}"` : ""}${boundary ? h` data-context="${record.kind}"` : ""}${!html.length ? h` hidden` : ""}>${html}</article>`;
-}
-export function compactTokens(value: number): string {
-  if (value < 1000) return String(value);
-  if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
-  if (value < 1_000_000) return `${Math.round(value / 1000)}k`;
-  return `${(value / 1_000_000).toFixed(value < 10_000_000 ? 1 : 0)}M`;
 }
 export function contextHTML(data: ContextInspection): SafeHtml {
   if (data.state === "unavailable")
