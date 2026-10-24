@@ -154,7 +154,12 @@
                 email = "root@guest"
               '';
 
-              environment.systemPackages = [pkgs.kitty.terminfo];
+              environment.systemPackages = with pkgs; [
+                gdu
+                kitty.terminfo
+                otel-cli
+                subtrace
+              ];
             }
           ];
 
@@ -332,6 +337,7 @@
         nixpkgs.overlays = [drv-run.overlays.default];
 
         environment.systemPackages = with pkgs; [
+          gdu
           htop-vim
           kitty.terminfo
           otel-cli
