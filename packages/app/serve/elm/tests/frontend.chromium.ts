@@ -100,6 +100,7 @@ await test(
     assert.equal(await node.getAttribute("data-archives"), String(reset.id));
     assert.equal(await node.isVisible(), false);
     await page.locator(`[data-context="pi.reset"] summary`).click();
+    await page.locator(`#entry-${records.first.id}`).waitFor();
     assert.equal(await node.isVisible(), true);
     assert.equal(await prompt.inputValue(), "Retain this newer draft");
     assert.equal(
@@ -305,7 +306,7 @@ await test(
     await prompt.fill("one\ntwo\nthree\nfour");
     await fits();
     assert.equal(await height(), multiline);
-    await page.getByRole("button", { name: "Cancel reset", exact: true }).click();
+    await page.getByRole("link", { name: "Cancel reset", exact: true }).click();
     await waitFor(async () => (await height()) === commandHeight);
     await prompt.fill("Send and clear");
     f.faux.setResponses([fauxAssistantMessage("Accepted")]);

@@ -1,3 +1,7 @@
+import type { Context } from "@earendil-works/chord/context";
+import type { Conversation } from "@earendil-works/pi-durable";
+import { sessionInfo, rename, selectEnvironment, type Sessions, type Session } from "./sessions.ts";
+import { thinkingLevels } from "./settings.ts";
 import type { IncomingMessage } from "node:http";
 import type { UserInput } from "@earendil-works/pi-durable";
 
@@ -63,4 +67,62 @@ export async function inputContent(data: FormData): Promise<UserInput | undefine
   if (images.length > 4 || size > 5 * 1024 * 1024)
     throw new FormError(400, "Attach up to four images, totaling at most 5 MiB.");
   return images.length ? [{ type: "text", text }, ...images] : text.trim() ? text : undefined;
+}
+
+export async function saveSessionSettings(
+  data: FormData,
+  sessions: Sessions,
+  session: Session,
+  conversation: Conversation,
+  context: Context,
+): Promise<void> {
+  const modelKey = (model: { provider: string; modelId: string }) =>
+    JSON.stringify([model.provider, model.modelId]);
+  const targetKey = (target: { provider: string; target: string }) =>
+    JSON.stringify([target.provider, target.target]);
+  const thinking = (value: string) => thinkingLevels.find((level) => level === value);
+  const optional = (data: FormData, key: string) => (data.has(key) ? field(data, key) : "");
+  const catalog = await sessions.catalog(context);
+  const current = await sessionInfo(session, conversation, catalog.targets, context);
+  const name = field(data, "name", 120);
+  const targetValue = field(data, "target", 8192),
+    modelValue = field(data, "model", 1024);
+  const target = catalog.targets.find((item) => targetKey(item) === targetValue && item.available);
+  const model = catalog.models.find((item) => modelKey(item) === modelValue);
+  const level = optional(data, "thinkingLevel");
+  if (level && !thinking(level)) throw new FormError(400, "Invalid thinking level.");
+  if (!model && (!current.model || modelKey(current.model) !== modelValue))
+    throw new FormError(409, "Model is unavailable.");
+  if (!target && (!current.binding || targetKey(current.binding) !== targetValue))
+    throw new FormError(409, "Target is unavailable.");
+  const baseDirectory = optional(data, "baseDirectory");
+  const currentBase =
+    current.directoryRoot && current.cwd.startsWith(current.directoryRoot + "/")
+      ? current.cwd.slice(current.directoryRoot.length + 1)
+      : "";
+  if (!target && baseDirectory !== currentBase) throw new FormError(409, "Target is unavailable.");
+  const cwd = target?.directoryRoot
+    ? await sessions.baseDirectory(target, baseDirectory)
+    : (target?.cwd ?? current.cwd);
+  // Validate every field before persisting any part of the form.
+  if (Array.from(name).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))
+    throw new FormError(400, "Invalid session name.");
+  if (
+    target &&
+    (!current.binding || targetKey(current.binding) !== targetValue || current.cwd !== cwd)
+  )
+    await selectEnvironment(session, { ...target, cwd }, conversation);
+  await conversation.configure(
+    {
+      ...(model ? { model: { provider: model.provider, modelId: model.modelId } } : {}),
+      ...(model
+        ? { thinkingLevel: sessions.resolveThinking(model, thinking(level)) }
+        : level
+          ? { thinkingLevel: thinking(level) }
+          : {}),
+      cwd,
+    },
+    context,
+  );
+  if (name !== current.name) await rename(session, name);
 }

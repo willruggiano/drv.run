@@ -1,4 +1,4 @@
-import { FormError, form, field, inputContent } from "../forms.ts";
+import { FormError, form, field, inputContent, saveSessionSettings } from "../forms.ts";
 import {
   conversationURL,
   history,
@@ -60,8 +60,6 @@ import {
   getConversation,
   sessionInfo,
   repository as repositoryInfo,
-  rename,
-  selectEnvironment,
   completePaths,
   completeWorkingDirectories,
   changeDirectory,
@@ -890,52 +888,7 @@ export async function hypermedia(
   if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
   const data = await form(request, operation === "submit" ? 8 * 1024 * 1024 : 128 * 1024);
   if (operation === "settings") {
-    const catalog = await sessions.catalog(context);
-    const current = await sessionInfo(session, conversation, catalog.targets, context);
-    const name = field(data, "name", 120);
-    const targetValue = field(data, "target", 8192),
-      modelValue = field(data, "model", 1024);
-    const target = catalog.targets.find(
-      (item) => targetKey(item) === targetValue && item.available,
-    );
-    const model = catalog.models.find((item) => modelKey(item) === modelValue);
-    const level = optional(data, "thinkingLevel");
-    if (level && !thinking(level)) throw new FormError(400, "Invalid thinking level.");
-    if (!model && (!current.model || modelKey(current.model) !== modelValue))
-      throw new FormError(409, "Model is unavailable.");
-    if (!target && (!current.binding || targetKey(current.binding) !== targetValue))
-      throw new FormError(409, "Target is unavailable.");
-    const baseDirectory = optional(data, "baseDirectory");
-    const currentBase =
-      current.directoryRoot && current.cwd.startsWith(current.directoryRoot + "/")
-        ? current.cwd.slice(current.directoryRoot.length + 1)
-        : "";
-    if (!target && baseDirectory !== currentBase)
-      throw new FormError(409, "Target is unavailable.");
-    const cwd = target?.directoryRoot
-      ? await sessions.baseDirectory(target, baseDirectory)
-      : (target?.cwd ?? current.cwd);
-    // Validate every field before persisting any part of the form.
-    if (Array.from(name).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))
-      throw new FormError(400, "Invalid session name.");
-    if (
-      target &&
-      (!current.binding || targetKey(current.binding) !== targetValue || current.cwd !== cwd)
-    )
-      await selectEnvironment(session, { ...target, cwd }, conversation);
-    await conversation.configure(
-      {
-        ...(model ? { model: { provider: model.provider, modelId: model.modelId } } : {}),
-        ...(model
-          ? { thinkingLevel: sessions.resolveThinking(model, thinking(level)) }
-          : level
-            ? { thinkingLevel: thinking(level) }
-            : {}),
-        cwd,
-      },
-      context,
-    );
-    if (name !== current.name) await rename(session, name);
+    await saveSessionSettings(data, sessions, session, conversation, context);
     saved(request, response, `${path}/settings`);
     return;
   }

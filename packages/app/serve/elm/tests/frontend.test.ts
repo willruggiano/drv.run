@@ -5,6 +5,7 @@ import { ElmProjection } from "../frontend.ts";
 import { benchmarkFixture } from "../../benchmark.ts";
 import { fixture, readHistory } from "../../tests/sessions-testing.ts";
 import { serve } from "../../tests/testing.ts";
+import { sessionInfo } from "../../sessions.ts";
 import { conversationURL } from "../../presentation.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -22,6 +23,7 @@ const metadata = {
   cost: "0",
   context: "—",
   level: "normal",
+  resume: false,
 };
 await test("Elm projection never retransmits completed history on document-only updates", () => {
   const { view } = benchmarkFixture(200);
@@ -216,4 +218,47 @@ await test("Elm releases early-disconnected watches and bounds pending entries d
       assert.equal(watches.length, 1);
       await watches[0].closed;
     });
+});
+
+await test("Elm session settings use the same validation and persistence as native forms", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const base = await serve(t, f.sessions);
+  const path = base + "/elm" + conversationURL(session);
+  const catalog = await f.sessions.catalog(BACKGROUND_CONTEXT);
+  const model = catalog.models[0];
+  const target = catalog.targets[0];
+  const initial = await sessionInfo(session);
+  const values = {
+    name: "Edited session",
+    model: JSON.stringify([model.provider, model.modelId]),
+    target: JSON.stringify([target.provider, target.target]),
+    thinkingLevel: "low",
+    baseDirectory: "",
+  };
+  const post = (body: typeof values, origin = base) =>
+    fetch(path + "/settings", {
+      method: "POST",
+      headers: { Origin: origin },
+      body: new URLSearchParams(body),
+    });
+  assert.equal((await post(values, "https://evil.example")).status, 403);
+  for (const invalid of [
+    { thinkingLevel: "unknown" },
+    { name: "Invalid\u0001" },
+    { model: "unknown" },
+    { target: "unknown" },
+  ])
+    assert.equal((await post({ ...values, ...invalid })).ok, false);
+  assert.deepEqual(await sessionInfo(session), initial);
+  assert.deepEqual(await (await post(values)).json(), { saved: true });
+  const settings = await (await fetch(path + "/panel?view=settings")).json();
+  assert.equal(settings.name, values.name);
+  assert.equal(settings.model, values.model);
+  assert.equal(settings.target, values.target);
+  assert.equal(settings.thinking, "low");
+  assert.equal((await session.root.agent(BACKGROUND_CONTEXT)).thinkingLevel, "low");
+  assert.deepEqual(await (await fetch(path + "/export")).json(), await readHistory(session.root));
+  assert.equal((await fetch(path + "/panel?view=unknown")).status, 400);
+  assert.equal((await fetch(path + "/directories?target=unknown")).status, 409);
 });

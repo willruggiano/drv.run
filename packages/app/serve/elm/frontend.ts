@@ -13,16 +13,22 @@ import {
   type UsageState,
   type Conversation,
   type SubmissionId,
+  type Cursor,
 } from "@earendil-works/pi-durable";
 import {
   getConversation,
   sessionInfo,
   contextStatus,
   completePaths,
+  completeWorkingDirectories,
+  inspectContext,
+  changeDirectory,
+  Metadata,
+  Environment,
   type Sessions,
   type Session,
 } from "../sessions.ts";
-import { form, field, inputContent, FormError } from "../forms.ts";
+import { form, field, inputContent, FormError, saveSessionSettings } from "../forms.ts";
 import {
   conversationURL,
   history,
@@ -31,7 +37,16 @@ import {
   type Call,
   type Result,
 } from "../presentation.ts";
-import { completionToken, commandCompletions, pathCompletion } from "../completions.ts";
+import { Review } from "harness";
+import { startReview, endReview } from "../review.ts";
+import type { ContextInspection } from "../inspection.ts";
+import { thinkingLevels } from "../settings.ts";
+import {
+  completionToken,
+  commandCompletions,
+  pathCompletion,
+  directoryCompletion,
+} from "../completions.ts";
 
 export type Block =
   | { kind: "text" | "thinking" | "code"; text: string }
@@ -51,7 +66,21 @@ export type DisplayTool = {
   written: string;
   notice: string;
 };
-const commands = new Set(["sessions", "search", "compact", "reset", "stop", "resume"]);
+const commands = new Set([
+  "sessions",
+  "search",
+  "compact",
+  "reset",
+  "stop",
+  "resume",
+  "settings",
+  "model",
+  "fork",
+  "export",
+  "cd",
+  "review",
+  "endreview",
+]);
 function message(value: Message): DisplayMessage {
   const blocks: Block[] =
     typeof value.content === "string"
@@ -166,7 +195,7 @@ export class ElmProjection {
     for (const record of records) this.records.set(record.id, record);
     this.entries = undefined;
   }
-  project(view: ConversationView, metadata: Metadata) {
+  project(view: ConversationView, metadata: Metadata, inspection?: ContextInspection) {
     const { calls, results } = this;
     const records: EntryRecord[] = [];
     if (view.entries !== this.entries) {
@@ -248,10 +277,6 @@ export class ElmProjection {
         ? [`Retry ${live.generation.attempt}: ${live.generation.retry.error}`]
         : []),
       ...(live?.generation?.deferred ? ["Waiting for provider response…"] : []),
-      ...(live?.compactions ?? []).map(
-        (item) =>
-          `${item.blocking ? "Compacting context" : "Background compaction"} · ${item.reason} · Attempt ${item.attempt}${item.retry ? ` · ${item.retry.error}` : ""}`,
-      ),
       ...(live?.compactionFailure ? [`Compaction failed: ${live.compactionFailure.error}`] : []),
     ];
     const regions = {
@@ -260,12 +285,18 @@ export class ElmProjection {
         messages: liveMessages,
         tools: extra.map((slot) => slot.callId),
         notices,
+        compactions: (live?.compactions ?? []).map((item) => ({
+          id: String(item.taskId),
+          title: item.blocking ? "Compacting context" : "Background compaction",
+          detail: `${item.reason} · Attempt ${item.attempt}${item.retry ? ` · ${item.retry.error}` : ""}`,
+        })),
       },
       queue,
       metadata,
+      ...(inspection ? { inspection } : {}),
     };
     const changed: Partial<typeof regions> = {};
-    for (const key of ["live", "queue", "metadata"] as const) {
+    for (const key of ["live", "queue", "metadata", "inspection"] as const) {
       const encoded = JSON.stringify(regions[key]);
       if (this.regions.get(key) !== encoded) {
         Object.assign(changed, { [key]: regions[key] });
@@ -299,6 +330,7 @@ type Metadata = {
   cost: string;
   context: string;
   level: string;
+  resume: boolean;
 };
 async function metadata(
   session: Session,
@@ -318,7 +350,8 @@ async function metadata(
       : undefined;
   return {
     durations: {},
-    title: info.name || `Conversation ${conversation.id}`,
+    resume: info.needsResume,
+    title: info.name || "Untitled session",
     instance: info.binding
       ? `${info.binding.provider === "local" ? "local" : info.binding.target} · ${info.cwd}`
       : "No execution environment",
@@ -366,18 +399,132 @@ export async function elmFrontend(
     return;
   }
   const match =
-    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt))?$/.exec(
+    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|export|directories))?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
   const session = await sessions.get(match[1]);
   const conversation = await getConversation(session, Number(match[2]), context);
   const operation = match[3];
-  if (request.method === "GET" && !operation) {
+  if (
+    request.method === "GET" &&
+    (!operation || ["settings", "context", "branches"].includes(operation))
+  ) {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     response.end(
       '<!doctype html><html lang="en" class="enhanced"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Conversation</title><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/elm/main.js" defer></script><script src="/elm/client.js" type="module"></script></head><body class="stacked-layout bottom-align"><div id="elm"></div></body></html>',
     );
+    return;
+  }
+  if (request.method === "GET" && operation === "panel") {
+    const pane = url.searchParams.get("view");
+    if (pane === "settings") {
+      const catalog = await sessions.catalog(context);
+      const info = await sessionInfo(session, conversation, catalog.targets, context);
+      const modelKey = (item: { provider: string; modelId: string }) =>
+        JSON.stringify([item.provider, item.modelId]);
+      const targetKey = (item: { provider: string; target: string }) =>
+        JSON.stringify([item.provider, item.target]);
+      const model = info.model ? modelKey(info.model) : "";
+      const target = info.binding ? targetKey(info.binding) : "";
+      json(response, {
+        name: info.name,
+        model,
+        target,
+        thinking: info.thinkingLevel,
+        directory:
+          info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/")
+            ? info.cwd.slice(info.directoryRoot.length + 1)
+            : "",
+        models: [
+          ...(!catalog.models.some((item) => modelKey(item) === model) && info.model
+            ? [
+                {
+                  key: model,
+                  label: `${info.model.modelId} (unavailable, keep)`,
+                  levels: thinkingLevels,
+                  default: "off",
+                },
+              ]
+            : []),
+          ...catalog.models.map((item) => ({
+            key: modelKey(item),
+            label: `${item.provider} / ${item.name}`,
+            levels: item.thinkingLevels,
+            default: item.defaultThinkingLevel,
+          })),
+        ],
+        targets: [
+          ...(!catalog.targets.some((item) => targetKey(item) === target) && info.binding
+            ? [
+                {
+                  key: target,
+                  label: `${info.binding.target} (unavailable, keep)`,
+                  disabled: false,
+                  root: info.directoryRoot ?? "",
+                },
+              ]
+            : []),
+          ...catalog.targets.map((item) => ({
+            key: targetKey(item),
+            label: item.label,
+            disabled: !item.available && targetKey(item) !== target,
+            root: item.directoryRoot ?? "",
+          })),
+        ],
+      });
+    } else if (pane === "branches") {
+      const items = [];
+      let cursor: Cursor | undefined;
+      do {
+        const page = await session.harness.commit(
+          (tx) => tx.scanConversations({}, 256, cursor),
+          context,
+        );
+        for (const record of page.items) {
+          const review = await session.harness.snapshot(Review, record.id, context);
+          items.push({
+            path: `/elm${conversationURL(session, record.id)}`,
+            title:
+              review?.original !== undefined
+                ? `Review ${record.id}`
+                : record.id === session.root.id
+                  ? "Main"
+                  : `Branch ${record.id}`,
+            parent: review?.original ?? record.parent?.conversationId ?? null,
+          });
+        }
+        cursor = page.next;
+      } while (cursor);
+      json(response, items);
+    } else throw new FormError(400, "Unknown panel.");
+    return;
+  }
+  if (request.method === "GET" && operation === "directories") {
+    const target = ((await sessions.options.targets?.(context)) ?? []).find(
+      (item) =>
+        JSON.stringify([item.provider, item.target]) === url.searchParams.get("target") &&
+        item.available,
+    );
+    if (!target) throw new FormError(409, "Execution target is unavailable.");
+    json(
+      response,
+      await sessions.completeDirectories(target, url.searchParams.get("directory") ?? "", context),
+    );
+    return;
+  }
+  if (request.method === "POST" && operation === "settings") {
+    await saveSessionSettings(await form(request), sessions, session, conversation, context);
+    json(response, { saved: true });
+    return;
+  }
+  if (request.method === "GET" && operation === "export") {
+    response.setHeader("Content-Type", "application/json");
+    response.setHeader(
+      "Content-Disposition",
+      `attachment; filename="pi-${session.id}-${conversation.id}.json"`,
+    );
+    response.end(JSON.stringify(await history(conversation, context), null, 2));
     return;
   }
   if (request.method === "GET" && operation === "receipt") {
@@ -400,11 +547,26 @@ export async function elmFrontend(
     const token = completionToken(text, caret);
     const items =
       token?.kind === "command"
-        ? commandCompletions(token.query).filter((item) => commands.has(item.value.trim().slice(1)))
-        : token?.kind === "path"
-          ? (await completePaths(session, token.query, conversation, context)).map(pathCompletion)
-          : [];
-    json(response, { start: token?.start ?? caret, end: token?.end ?? caret, items });
+        ? commandCompletions(
+            token.query,
+            (await session.harness.snapshot(Review, conversation.id, context))?.original !==
+              undefined,
+          ).filter((item) => commands.has(item.value.trim().slice(1)))
+        : token?.kind === "directory"
+          ? (await completeWorkingDirectories(session, token.query, conversation, context)).map(
+              directoryCompletion,
+            )
+          : token?.kind === "path"
+            ? (await completePaths(session, token.query, conversation, context)).map(pathCompletion)
+            : [];
+    json(response, {
+      start: token?.start ?? caret,
+      end: token?.end ?? caret,
+      items: items.map((item) => ({
+        ...item,
+        label: item.description ? `${item.label} · ${item.description}` : item.label,
+      })),
+    });
     return;
   }
   if (request.method === "GET" && operation === "events") {
@@ -420,6 +582,15 @@ export async function elmFrontend(
     const stopCommits = session.harness.subscribeCommits((publication) => {
       if (response.destroyed) return;
       for (const change of publication.changes) {
+        if (
+          change.type === "document" &&
+          (change.record.kind === Metadata.definition.kind ||
+            (change.conversationId === conversation.id &&
+              [Environment.definition.kind, "pi.agent"].includes(change.record.kind)))
+        ) {
+          dirty = true;
+          if (ready) void send();
+        }
         if (change.type === "entry" && change.value.conversationId === conversation.id) {
           // Bound commits retained while history or metadata reads are in flight.
           if (pendingEntries.length >= 1024) {
@@ -490,7 +661,15 @@ export async function elmFrontend(
             break;
           }
           projector.include(pendingEntries.splice(0));
-          const frame = projector.project(current, { ...info, durations });
+          const inspection =
+            url.searchParams.get("pane") === "context"
+              ? await inspectContext(session, current, context)
+              : undefined;
+          if (view !== current) {
+            dirty = true;
+            continue;
+          }
+          const frame = projector.project(current, { ...info, durations }, inspection);
           if (frame) response.write(`data: ${JSON.stringify({ ...frame, subscription })}\n\n`);
         }
       } catch {
@@ -571,6 +750,14 @@ export async function elmFrontend(
         throw new FormError(404, "Submission not found in this conversation.");
       if (result === "already_placed") throw new FormError(409, "Submission was already placed.");
     }
+  } else if (command === "cd") await changeDirectory(session, argument, conversation, context);
+  else if (command === "review" || command === "endreview") {
+    const result =
+      command === "review"
+        ? await startReview(session, conversation, context, argument || undefined)
+        : await endReview(session, conversation, context);
+    json(response, { requestId, revision, path: `/elm${conversationURL(session, result.id)}` });
+    return;
   } else throw new FormError(400, "Unsupported command.");
   json(response, { requestId, revision });
 }

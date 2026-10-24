@@ -12,13 +12,14 @@ import Html.Lazy
 import Http
 import Json.Decode as D
 import Json.Encode as E
+import Panel
 import Protocol exposing (State)
 import Task
 import Transcript
 import Url exposing (Url)
 
 
-port stream : { path : String, epoch : Int } -> Cmd msg
+port stream : { path : String, epoch : Int, pane : String } -> Cmd msg
 
 
 port incoming : (D.Value -> msg) -> Sub msg
@@ -62,6 +63,75 @@ type alias Completions =
     { start : Int, end : Int, items : List Completion }
 
 
+type Pane
+    = Conversation
+    | Preferences
+    | Context
+    | Branches
+
+
+route : String -> ( String, Pane )
+route path =
+    let
+        parts =
+            String.split "/" path
+
+        pane =
+            case List.drop 6 parts |> List.head of
+                Just "settings" ->
+                    Preferences
+
+                Just "context" ->
+                    Context
+
+                Just "branches" ->
+                    Branches
+
+                _ ->
+                    Conversation
+    in
+    ( String.join "/" (List.take 6 parts), pane )
+
+
+connect : Model -> Cmd Msg
+connect model =
+    stream
+        { path = model.path
+        , epoch = model.epoch
+        , pane =
+            case model.pane of
+                Context ->
+                    "context"
+
+                Preferences ->
+                    "settings"
+
+                Branches ->
+                    "branches"
+
+                Conversation ->
+                    ""
+        }
+
+
+loadPanel : Model -> Cmd Msg
+loadPanel model =
+    case model.pane of
+        Preferences ->
+            Http.get { url = model.path ++ "/panel?view=settings", expect = Http.expectJson (SettingsLoaded model.epoch) Panel.settingsDecoder }
+
+        Branches ->
+            Http.get { url = model.path ++ "/panel?view=branches", expect = Http.expectJson (BranchesLoaded model.epoch) Panel.branchesDecoder }
+
+        _ ->
+            Cmd.none
+
+
+navigate : String -> Model -> ( Model, Cmd Msg )
+navigate path model =
+    ( model, Maybe.map (\key -> Nav.pushUrl key path) model.key |> Maybe.withDefault Cmd.none )
+
+
 type alias Model =
     { key : Maybe Nav.Key
     , path : String
@@ -81,6 +151,16 @@ type alias Model =
     , searchIndex : Int
     , catalog : Maybe (List ( String, String ))
     , reset : Maybe String
+    , pane : Pane
+    , settings : Maybe Panel.Settings
+    , savedSettings : Maybe Panel.Settings
+    , saving : Maybe Panel.Settings
+    , nextNavigation : Maybe Browser.UrlRequest
+    , directories : List String
+    , directoryRequest : Int
+    , branches : List Panel.Branch
+    , composerExpanded : Bool
+    , image : Maybe String
     , latest : Bool
     }
 
@@ -114,6 +194,15 @@ type Msg
     | Catalog Int (Result Http.Error (List ( String, String )))
     | ResetArgument String
     | ConfirmReset
+    | Response String Pending (Result Http.Error ( String, String, Maybe String ))
+    | SettingsLoaded Int (Result Http.Error Panel.Settings)
+    | EditSetting Panel.Field String
+    | SaveSettings
+    | SettingsSaved Int Panel.Settings (Result Http.Error Bool)
+    | Directories Int Int (Result Http.Error (List String))
+    | BranchesLoaded Int (Result Http.Error (List Panel.Branch))
+    | CloseImage
+    | Collapse
     | Latest
     | NoOp
 
@@ -126,7 +215,7 @@ emptyDraft =
 initModel : String -> String -> Model
 initModel path nonce =
     { key = Nothing
-    , path = path
+    , path = Tuple.first (route path)
     , epoch = 1
     , nonce = nonce
     , counter = 0
@@ -143,6 +232,16 @@ initModel path nonce =
     , searchIndex = 0
     , catalog = Nothing
     , reset = Nothing
+    , pane = Tuple.second (route path)
+    , settings = Nothing
+    , savedSettings = Nothing
+    , saving = Nothing
+    , nextNavigation = Nothing
+    , directories = []
+    , directoryRequest = 0
+    , branches = []
+    , composerExpanded = True
+    , image = Nothing
     , latest = False
     }
 
@@ -165,7 +264,7 @@ main =
                     model =
                         { base | key = Just key, drafts = drafts }
                 in
-                ( model, stream { path = model.path, epoch = model.epoch } )
+                ( model, Cmd.batch [ connect model, loadPanel model ] )
         , view = view
         , update = update
         , subscriptions = \_ -> incoming Incoming
@@ -258,7 +357,7 @@ request path pending =
             else
                 Http.jsonBody (E.object (List.map (\( k, v ) -> ( k, E.string v )) fields))
     in
-    Http.post { url = path ++ "/command", body = body, expect = Http.expectJson (Acknowledged path pending) (D.map2 Tuple.pair (D.field "requestId" D.string) (D.field "revision" D.string)) }
+    Http.post { url = path ++ "/command", body = body, expect = Http.expectJson (Response path pending) (D.map3 (\identity revision next -> ( identity, revision, next )) (D.field "requestId" D.string) (D.field "revision" D.string) (Protocol.optional "path" D.string)) }
 
 
 submit : String -> String -> String -> Bool -> Model -> ( Model, Cmd Msg )
@@ -319,26 +418,62 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         UrlRequested requestUrl ->
-            case requestUrl of
-                Browser.Internal url ->
-                    if url.path == "/elm/catalog" then
-                        update OpenSessions model
+            if model.pane == Preferences && (model.saving /= Nothing || model.settings /= model.savedSettings) then
+                update SaveSettings { model | nextNavigation = Just requestUrl }
 
-                    else if String.startsWith "/elm/sessions/" url.path then
-                        ( model, Maybe.map (\key -> Nav.pushUrl key (Url.toString url)) model.key |> Maybe.withDefault Cmd.none )
+            else
+                case requestUrl of
+                    Browser.Internal url ->
+                        if url.path == "/elm/catalog" then
+                            update OpenSessions model
 
-                    else
-                        ( model, Nav.load (Url.toString url) )
+                        else if String.endsWith "/export" url.path then
+                            ( model, browser (E.object [ ( "kind", E.string "download" ), ( "url", E.string url.path ) ]) )
 
-                Browser.External url ->
-                    ( model, Nav.load url )
+                        else if String.startsWith "/elm/sessions/" url.path then
+                            ( model, Maybe.map (\key -> Nav.pushUrl key (url.path ++ (Maybe.map ((++) "?") url.query |> Maybe.withDefault "") ++ (Maybe.map ((++) "#") url.fragment |> Maybe.withDefault ""))) model.key |> Maybe.withDefault Cmd.none )
+
+                        else
+                            ( model, Nav.load (Url.toString url) )
+
+                    Browser.External url ->
+                        ( model, Nav.load url )
 
         UrlChanged url ->
             let
+                ( path, pane ) =
+                    route url.path
+
                 updated =
-                    { model | path = url.path, epoch = model.epoch + 1, state = Protocol.empty, connection = Connecting, error = "", catalog = Nothing, search = Nothing, reset = Nothing, composing = False, completions = Nothing, completionRequest = model.completionRequest + 1 }
+                    { model
+                        | path = path
+                        , pane = pane
+                        , epoch = model.epoch + 1
+                        , state =
+                            if path == model.path then
+                                model.state
+
+                            else
+                                Protocol.empty
+                        , connection = Connecting
+                        , error = ""
+                        , catalog = Nothing
+                        , search = Nothing
+                        , reset = Nothing
+                        , composing = False
+                        , completions = Nothing
+                        , completionRequest = model.completionRequest + 1
+                        , settings = Nothing
+                        , savedSettings = Nothing
+                        , saving = Nothing
+                        , nextNavigation = Nothing
+                        , directories = []
+                        , directoryRequest = model.directoryRequest + 1
+                        , image = Nothing
+                        , branches = []
+                    }
             in
-            ( updated, stream { path = updated.path, epoch = updated.epoch } )
+            ( updated, Cmd.batch [ connect updated, loadPanel updated, browser (E.object [ ( "kind", E.string "resize" ) ]) ] )
 
         Incoming raw ->
             let
@@ -365,7 +500,7 @@ update msg model =
                                 in
                                 case result of
                                     Err _ ->
-                                        ( { model | connection = Broken "Protocol error; retry to resynchronize.", error = "Protocol error; retry to resynchronize." }, stream { path = "", epoch = model.epoch } )
+                                        ( { model | connection = Broken "Protocol error; retry to resynchronize.", error = "Protocol error; retry to resynchronize." }, stream { path = "", epoch = model.epoch, pane = "" } )
 
                                     Ok state ->
                                         let
@@ -391,7 +526,7 @@ update msg model =
                                     updated =
                                         { model | epoch = model.epoch + 1, connection = Connecting }
                                 in
-                                ( updated, stream { path = updated.path, epoch = updated.epoch } )
+                                ( updated, connect updated )
 
                             "disconnected" ->
                                 ( { model | connection = Disconnected }, Cmd.none )
@@ -415,6 +550,26 @@ update msg model =
 
                             "search" ->
                                 update (Search "") model
+
+                            "image" ->
+                                case D.decodeValue D.string payload of
+                                    Ok src ->
+                                        ( { model | image = Just src }, browser (E.object [ ( "kind", E.string "dialog" ), ( "id", E.string "image-dialog" ) ]) )
+
+                                    Err _ ->
+                                        ( model, Cmd.none )
+
+                            "dismiss" ->
+                                if model.pane /= Conversation then
+                                    case Url.fromString ("http://localhost" ++ model.path) of
+                                        Just url ->
+                                            update (UrlRequested (Browser.Internal url)) model
+
+                                        Nothing ->
+                                            ( model, Cmd.none )
+
+                                else
+                                    update Dismiss model
 
                             _ ->
                                 ( model, Cmd.none )
@@ -447,6 +602,27 @@ update msg model =
                     "/sessions" ->
                         update OpenSessions model
 
+                    "/settings" ->
+                        navigate (model.path ++ "/settings") { model | completions = Nothing }
+
+                    "/model" ->
+                        navigate (model.path ++ "/settings") { model | completions = Nothing }
+
+                    "/fork" ->
+                        navigate (model.path ++ "/branches") { model | completions = Nothing }
+
+                    "/export" ->
+                        ( { model | completions = Nothing }, browser (E.object [ ( "kind", E.string "download" ), ( "url", E.string (model.path ++ "/export") ) ]) )
+
+                    "/cd" ->
+                        submit "cd" argument mode True model
+
+                    "/review" ->
+                        submit "review" argument mode True model
+
+                    "/endreview" ->
+                        submit "endreview" "" mode True model
+
                     "/reset" ->
                         ( { model | reset = Just argument, completions = Nothing }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
 
@@ -470,6 +646,25 @@ update msg model =
 
         Command command argument ->
             submit command argument "reject" False model
+
+        Response path pending result ->
+            let
+                ( updated, cmd ) =
+                    update (Acknowledged path pending (Result.map (\( identity, revision, _ ) -> ( identity, revision )) result)) model
+
+                next =
+                    case result of
+                        Ok ( identity, revision, destination ) ->
+                            if identity == pending.identity && revision == pending.revision && path == model.path && (Maybe.map .identity (draftFor model).pending == Just pending.identity) then
+                                destination
+
+                            else
+                                Nothing
+
+                        _ ->
+                            Nothing
+            in
+            ( updated, Cmd.batch [ cmd, Maybe.map (\destination -> Tuple.second (navigate destination updated)) next |> Maybe.withDefault Cmd.none ] )
 
         Acknowledged path pending result ->
             let
@@ -565,7 +760,7 @@ update msg model =
                         updated =
                             { model | epoch = model.epoch + 1, connection = Connecting, error = "" }
                     in
-                    ( updated, stream { path = updated.path, epoch = updated.epoch } )
+                    ( updated, connect updated )
 
                 _ ->
                     case (draftFor model).pending of
@@ -779,7 +974,99 @@ update msg model =
             ( { model | reset = Just str }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
 
         ConfirmReset ->
-            submit "reset" (Maybe.withDefault "" model.reset) "reject" True model
+            if model.composing then
+                ( model, Cmd.none )
+
+            else
+                submit "reset" (Maybe.withDefault "" model.reset) "reject" True model
+
+        SettingsLoaded epoch result ->
+            if epoch /= model.epoch || model.pane /= Preferences then
+                ( model, Cmd.none )
+
+            else
+                case result of
+                    Ok settings ->
+                        ( { model | settings = Just settings, savedSettings = Just settings }, Cmd.none )
+
+                    Err error ->
+                        ( { model | error = httpError error }, Cmd.none )
+
+        EditSetting field str ->
+            let
+                updated =
+                    { model | settings = Maybe.map (Panel.edit field str) model.settings, error = "", directories = [], directoryRequest = model.directoryRequest + 1 }
+            in
+            if field == Panel.Directory then
+                ( updated, Http.get { url = model.path ++ "/directories?target=" ++ Url.percentEncode (Maybe.map .target updated.settings |> Maybe.withDefault "") ++ "&directory=" ++ Url.percentEncode str, expect = Http.expectJson (Directories model.epoch updated.directoryRequest) (D.list D.string) } )
+
+            else if List.member field [ Panel.Target, Panel.Model, Panel.Thinking ] then
+                update SaveSettings updated
+
+            else
+                ( updated, Cmd.none )
+
+        Directories epoch revision result ->
+            if epoch /= model.epoch || revision /= model.directoryRequest then
+                ( model, Cmd.none )
+
+            else
+                ( { model | directories = Result.withDefault [] result }, Cmd.none )
+
+        SaveSettings ->
+            case model.settings of
+                Just settings ->
+                    if model.saving /= Nothing || model.savedSettings == Just settings then
+                        ( model, Cmd.none )
+
+                    else
+                        ( { model | saving = Just settings, error = "" }, Http.post { url = model.path ++ "/settings", body = Panel.settingsBody settings, expect = Http.expectJson (SettingsSaved model.epoch settings) (D.field "saved" D.bool) } )
+
+                Nothing ->
+                    ( model, Cmd.none )
+
+        SettingsSaved epoch settings result ->
+            if epoch /= model.epoch then
+                ( model, Cmd.none )
+
+            else
+                case result of
+                    Ok True ->
+                        let
+                            updated =
+                                { model | saving = Nothing, savedSettings = Just settings }
+                        in
+                        if updated.settings /= updated.savedSettings then
+                            update SaveSettings updated
+
+                        else
+                            case updated.nextNavigation of
+                                Just destination ->
+                                    update (UrlRequested destination) { updated | nextNavigation = Nothing }
+
+                                Nothing ->
+                                    ( updated, Cmd.none )
+
+                    _ ->
+                        ( { model | saving = Nothing, error = "Settings were not saved. Your changes are retained; retry saving.", savedSettings = Nothing }, Cmd.none )
+
+        BranchesLoaded epoch result ->
+            if epoch /= model.epoch || model.pane /= Branches then
+                ( model, Cmd.none )
+
+            else
+                case result of
+                    Ok branches ->
+                        ( { model | branches = branches }, Cmd.none )
+
+                    Err error ->
+                        ( { model | error = httpError error }, Cmd.none )
+
+        CloseImage ->
+            ( { model | image = Nothing }, Cmd.none )
+
+        Collapse ->
+            ( { model | composerExpanded = not model.composerExpanded }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
 
         Latest ->
             ( model, browser (E.object [ ( "kind", E.string "latest" ) ]) )
@@ -824,6 +1111,9 @@ keyDown model =
                         ChooseCompletion model.completionIndex
                     , True
                     )
+
+                else if key == "Enter" && (ctrl || meta) && model.reset /= Nothing then
+                    ( ConfirmReset, True )
 
                 else if key == "Enter" && (ctrl || meta) then
                     ( Send
@@ -877,9 +1167,6 @@ view model =
                     )
                     original
                     state.tools
-
-        nativePath =
-            String.dropLeft 4 model.path
 
         link path label =
             a [ href path ] [ text label ]
@@ -956,13 +1243,59 @@ view model =
 
         live =
             section [ id "live", attribute "aria-label" "Live output" ]
-                (List.map (\item -> Html.article [ attribute "data-role" item.role ] (message item)) state.live.messages
+                (List.indexedMap
+                    (\index item ->
+                        let
+                            previous =
+                                (List.take index state.live.messages |> List.reverse)
+                                    ++ (Dict.values state.entries |> List.reverse |> List.concatMap (.messages >> List.reverse))
+                                    |> List.head
+
+                            speaker role =
+                                if role == "toolResult" then
+                                    "assistant"
+
+                                else
+                                    role
+
+                            same =
+                                Maybe.map (.role >> speaker) previous == Just (speaker item.role)
+                        in
+                        Html.article
+                            [ attribute "data-role" item.role
+                            , A.classList [ ( "same-speaker", same ) ]
+                            , attribute "data-separator"
+                                (if previous /= Nothing && not same then
+                                    "true"
+
+                                 else
+                                    "false"
+                                )
+                            ]
+                            (message item)
+                    )
+                    state.live.messages
                     ++ List.map (Transcript.blockView Toggle opened state.tools << Protocol.ToolRef) state.live.tools
+                    ++ List.map
+                        (\item ->
+                            let
+                                key =
+                                    "compaction-" ++ item.id
+
+                                expanded =
+                                    Dict.get key opened |> Maybe.withDefault False
+                            in
+                            Html.details [ id key, class "tool-call context-event", attribute "data-state" "running", A.property "open" (E.bool expanded) ]
+                                [ Html.summary [ preventDefaultOn "click" (D.succeed ( Toggle key (not expanded), True )) ] [ Transcript.toolStatus "running", Transcript.commandLabel item.title ]
+                                , p [ class "notice" ] [ text item.detail ]
+                                ]
+                        )
+                        state.live.compactions
                     ++ List.map (\notice -> p [ class "notice" ] [ text notice ]) state.live.notices
                 )
 
         queue =
-            section [ id "queue", attribute "aria-label" "Queued messages" ]
+            section [ id "queue", hidden (model.pane == Context), attribute "aria-label" "Queued messages" ]
                 (if List.isEmpty state.queue then
                     []
 
@@ -1096,24 +1429,97 @@ view model =
 
         resetComposer argument =
             form [ class "compose-box", onSubmit ConfirmReset ]
-                [ textarea [ id "prompt", A.rows 2, A.placeholder "Handoff instructions (optional)…", attribute "aria-label" "Handoff instructions", value argument, onInput ResetArgument ] []
-                , div [ class "actions" ] [ button [ A.type_ "button", onClick Dismiss ] [ text "Cancel reset" ], span [ class "spacer" ] [], button [ id "send", class "icon", attribute "aria-label" "Confirm reset", A.disabled (draft.pending /= Nothing) ] [ Transcript.icon "send" ] ]
+                [ textarea [ id "prompt", A.rows 2, A.placeholder "Handoff instructions…", A.maxlength 100000, A.tabindex 1, attribute "aria-label" "Handoff instructions", value argument, onInput ResetArgument, keyDown model, on "compositionstart" (D.succeed (Composition True)), on "compositionend" (D.succeed (Composition False)) ] []
+                , div [ class "actions" ] [ a [ class "icon", href model.path, attribute "aria-label" "Cancel reset", A.title "Cancel reset", preventDefaultOn "click" (D.succeed ( Dismiss, True )) ] [ Transcript.icon "close" ], span [ class "spacer" ] [], button [ id "send", class "icon", attribute "aria-label" "Confirm reset", A.disabled (draft.pending /= Nothing) ] [ Transcript.icon "check" ] ]
                 ]
 
         metadata =
             section [ id "session-meta" ]
                 [ div [ id "bottom-line", attribute "aria-label" "Conversation statistics" ]
                     [ div [ class "footer-row" ]
-                        [ span [ id "footer-instance" ] [ text state.metadata.instance ]
-                        , a [ id "footer-stats", href (nativePath ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ])
+                        [ a [ id "footer-sessions", class "icon footer-chevron", href "/elm/catalog", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ]
+                        , span [ id "footer-instance" ] [ text state.metadata.instance ]
+                        , a [ id "footer-stats", href (model.path ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ])
                         , div [ class "footer-model-context" ]
-                            [ a [ id "footer-model", class "model-summary", href (nativePath ++ "/settings"), attribute "aria-label" "Model and thinking settings" ] [ span [ class "model-name" ] [ text state.metadata.model ], dot, span [ class "model-effort" ] [ text state.metadata.thinking ] ]
+                            [ a [ id "footer-model", class "model-summary", href (model.path ++ "/settings"), attribute "aria-label" "Model and thinking settings" ] [ span [ class "model-name" ] [ text state.metadata.model ], dot, span [ class "model-effort" ] [ text state.metadata.thinking ] ]
                             , dot
-                            , a [ id "footer-context", class "context-usage", attribute "data-level" state.metadata.level, href (nativePath ++ "/context"), attribute "aria-label" "Context usage details" ] [ text state.metadata.context ]
+                            , a [ id "footer-context", class "context-usage", attribute "data-level" state.metadata.level, href (model.path ++ "/context"), attribute "aria-label" "Context usage details" ] [ text state.metadata.context ]
                             ]
+                        , button
+                            [ id "footer-collapse"
+                            , class "icon footer-chevron"
+                            , A.type_ "button"
+                            , attribute "aria-controls" "composer-shell"
+                            , attribute "aria-expanded"
+                                (if model.composerExpanded then
+                                    "true"
+
+                                 else
+                                    "false"
+                                )
+                            , attribute "aria-label"
+                                (if model.composerExpanded then
+                                    "Collapse composer"
+
+                                 else
+                                    "Expand composer"
+                                )
+                            , A.title
+                                (if model.composerExpanded then
+                                    "Collapse composer"
+
+                                 else
+                                    "Expand composer"
+                                )
+                            , onClick Collapse
+                            ]
+                            [ Transcript.icon "chevron-down" ]
                         ]
                     ]
                 ]
+
+        panel =
+            case model.pane of
+                Preferences ->
+                    section [ id "preferences", class "pane", attribute "aria-label" "Session settings" ]
+                        [ a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
+                        , div []
+                            [ Maybe.map (Panel.settingsView EditSetting SaveSettings model.directories) model.settings |> Maybe.withDefault (p [ attribute "role" "status" ] [ text "Loading settings…" ])
+                            , if model.error /= "" then
+                                button [ onClick SaveSettings ] [ text "Retry saving settings" ]
+
+                              else
+                                text ""
+                            ]
+                        ]
+
+                Context ->
+                    Maybe.map Panel.contextView state.inspection |> Maybe.withDefault (section [ id "context-view", class "pane" ] [ text "Loading context…" ])
+
+                Branches ->
+                    section [ id "branch-picker", class "pane" ]
+                        [ div [ id "branches" ]
+                            (List.map
+                                (\item ->
+                                    a
+                                        [ class "session"
+                                        , href item.path
+                                        , attribute "aria-current"
+                                            (if item.path == model.path then
+                                                "true"
+
+                                             else
+                                                "false"
+                                            )
+                                        ]
+                                        [ Html.strong [] [ text item.title ], Maybe.map (\parent -> Html.small [] [ text ("From " ++ String.fromInt parent) ]) item.parent |> Maybe.withDefault (text "") ]
+                                )
+                                model.branches
+                            )
+                        ]
+
+                Conversation ->
+                    text ""
 
         body =
             case model.catalog of
@@ -1121,11 +1527,11 @@ view model =
                     [ section [ class "pane", id "session-list" ] (List.map (\( path, title ) -> a [ class "session", href path ] [ span [ class "session-heading" ] [ Html.strong [] [ text title ] ] ]) items) ]
 
                 Nothing ->
-                    [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy6 viewTranscript opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ] ]
+                    [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy6 viewTranscript opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
                     , queue
-                    , footer [ id "app-footer", class "composer-area" ]
+                    , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
                         [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
-                        , div [ class "composer-shell" ]
+                        , div [ id "composer-shell", class "composer-shell" ]
                             [ Maybe.map resetComposer model.reset |> Maybe.withDefault composer
                             , pendingError
                             , if draft.missingFiles then
@@ -1135,6 +1541,11 @@ view model =
                                 text ""
                             ]
                         , metadata
+                        , if state.metadata.resume then
+                            button [ onClick (Command "resume" "") ] [ text "Resume interrupted execution" ]
+
+                          else
+                            text ""
                         , p [ id "connection", class "sr-only", attribute "role" "status" ] [ text connection ]
                         ]
                     , div [ id "search-bar", hidden (model.search == Nothing) ]
@@ -1170,30 +1581,70 @@ view model =
                                         )
                                     ]
                                 , span [ class "spacer" ] []
-                                , button [ class "icon", onClick (SearchMove -1), attribute "aria-label" "Previous match" ] [ text "↑" ]
-                                , button [ class "icon", onClick (SearchMove 1), attribute "aria-label" "Next match" ] [ text "↓" ]
+                                , button [ id "search-prev", class "icon", onClick (SearchMove -1), attribute "aria-label" "Previous match" ] [ text "↑" ]
+                                , button [ id "search-next", class "icon", onClick (SearchMove 1), attribute "aria-label" "Next match" ] [ text "↓" ]
                                 ]
                             ]
                         ]
                     ]
     in
-    { title = state.metadata.title
-    , body =
-        [ main_ [ id "page", attribute "data-view" "conversation" ]
-            (header [ id "app-header" ]
-                [ div [ class "bar" ]
-                    [ h1 []
-                        [ a [ id "conversation-title", class "header-title", href "/elm/catalog", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
-                            [ text
-                                (if model.catalog /= Nothing then
-                                    "Sessions"
+    { title =
+        if model.catalog /= Nothing then
+            "Sessions"
 
-                                 else
-                                    state.metadata.title
-                                )
-                            ]
+        else
+            case model.pane of
+                Preferences ->
+                    "Session settings"
+
+                Context ->
+                    "Context"
+
+                Branches ->
+                    "Branches"
+
+                Conversation ->
+                    state.metadata.title
+    , body =
+        [ main_
+            [ id "page"
+            , attribute "data-view"
+                (if model.pane == Conversation then
+                    "conversation"
+
+                 else
+                    "panel"
+                )
+            ]
+            (header [ id "app-header" ]
+                [ div [ class "bar", hidden (model.pane == Preferences) ]
+                    [ h1 []
+                        [ if model.pane == Context || model.pane == Branches then
+                            span [ class "header-title" ]
+                                [ text
+                                    (if model.pane == Context then
+                                        "Context"
+
+                                     else
+                                        "Branches"
+                                    )
+                                ]
+
+                          else
+                            a [ id "conversation-title", class "header-title", href "/elm/catalog", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
+                                [ text
+                                    (if model.catalog /= Nothing then
+                                        "Sessions"
+
+                                     else
+                                        state.metadata.title
+                                    )
+                                ]
                         ]
-                    , if model.catalog /= Nothing then
+                    , if model.pane == Context || model.pane == Branches then
+                        a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
+
+                      else if model.catalog /= Nothing then
                         iconButton "close" "Conversation" Dismiss
 
                       else
@@ -1209,7 +1660,7 @@ view model =
                             text ""
                     ]
                 ]
-                :: body
+                :: (body ++ [ Maybe.map (\src -> Html.node "dialog" [ id "image-dialog", preventDefaultOn "cancel" (D.succeed ( CloseImage, True )) ] [ Html.img [ A.src src, A.alt "Attachment" ] [], button [ onClick CloseImage ] [ text "Close image" ] ]) model.image |> Maybe.withDefault (text "") ])
             )
         ]
     }

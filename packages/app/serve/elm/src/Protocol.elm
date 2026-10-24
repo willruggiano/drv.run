@@ -2,6 +2,7 @@ module Protocol exposing (Block(..), Boundary(..), Entry, Frame, Live, Message, 
 
 import Dict exposing (Dict)
 import Json.Decode as D exposing (Decoder)
+import Panel
 
 
 type Block
@@ -31,7 +32,7 @@ type alias Tool =
 
 
 type alias Live =
-    { busy : Bool, messages : List Message, tools : List String, notices : List String }
+    { busy : Bool, messages : List Message, tools : List String, notices : List String, compactions : List { id : String, title : String, detail : String } }
 
 
 type alias QueueItem =
@@ -50,16 +51,17 @@ type alias Metadata =
     , hit : String
     , cost : String
     , context : String
+    , resume : Bool
     , level : String
     }
 
 
 type alias State =
-    { subscription : String, sequence : Int, entries : Dict Int Entry, tools : Dict String Tool, live : Live, queue : List QueueItem, metadata : Metadata }
+    { subscription : String, sequence : Int, entries : Dict Int Entry, tools : Dict String Tool, live : Live, queue : List QueueItem, metadata : Metadata, inspection : Maybe Panel.Context }
 
 
 type alias Frame =
-    { subscription : String, sequence : Int, snapshot : Bool, conversation : Int, entries : List Entry, tools : List Tool, live : Maybe Live, queue : Maybe (List QueueItem), metadata : Maybe Metadata }
+    { subscription : String, sequence : Int, snapshot : Bool, conversation : Int, entries : List Entry, tools : List Tool, live : Maybe Live, queue : Maybe (List QueueItem), metadata : Maybe Metadata, inspection : Maybe Panel.Context }
 
 
 empty : State
@@ -68,9 +70,10 @@ empty =
     , sequence = 0
     , entries = Dict.empty
     , tools = Dict.empty
-    , live = { busy = False, messages = [], tools = [], notices = [] }
+    , live = { busy = False, messages = [], tools = [], notices = [], compactions = [] }
+    , inspection = Nothing
     , queue = []
-    , metadata = { durations = Dict.empty, title = "Conversation", instance = "", model = "", thinking = "", input = "0", output = "0", read = "0", hit = "CH—", cost = "0.000", context = "—", level = "normal" }
+    , metadata = { durations = Dict.empty, title = "Conversation", instance = "", model = "", thinking = "", input = "0", output = "0", read = "0", hit = "CH—", cost = "0.000", context = "—", level = "normal", resume = False }
     }
 
 
@@ -182,6 +185,7 @@ metadataDecoder =
         |> andMap (D.field "hit" D.string)
         |> andMap (D.field "cost" D.string)
         |> andMap (D.field "context" D.string)
+        |> andMap (optional "resume" D.bool |> D.map (Maybe.withDefault False))
         |> andMap (D.field "level" D.string)
 
 
@@ -201,9 +205,10 @@ frameDecoder =
                         |> andMap (D.field "conversation" D.int)
                         |> andMap (D.field "entries" (D.list entryDecoder))
                         |> andMap (D.field "tools" (D.list toolDecoder))
-                        |> andMap (optional "live" (D.map4 Live (D.field "busy" D.bool) (D.field "messages" (D.list messageDecoder)) (D.field "tools" (D.list D.string)) (D.field "notices" (D.list D.string))))
+                        |> andMap (optional "live" (D.map5 Live (D.field "busy" D.bool) (D.field "messages" (D.list messageDecoder)) (D.field "tools" (D.list D.string)) (D.field "notices" (D.list D.string)) (optional "compactions" (D.list (D.map3 (\id title detail -> { id = id, title = title, detail = detail }) (D.field "id" D.string) (D.field "title" D.string) (D.field "detail" D.string))) |> D.map (Maybe.withDefault []))))
                         |> andMap (optional "queue" (D.list (D.map3 QueueItem (D.field "id" D.int) (D.field "mode" D.string) (D.field "blocks" (D.list blockDecoder)))))
                         |> andMap (optional "metadata" metadataDecoder)
+                        |> andMap (optional "inspection" Panel.contextDecoder)
             )
 
 
@@ -258,6 +263,12 @@ apply conversation frame state =
             , live = Maybe.withDefault state.live frame.live
             , queue = Maybe.withDefault state.queue frame.queue
             , metadata = Maybe.withDefault state.metadata frame.metadata
+            , inspection =
+                if frame.snapshot then
+                    frame.inspection
+
+                else
+                    Maybe.map Just frame.inspection |> Maybe.withDefault state.inspection
             }
 
 

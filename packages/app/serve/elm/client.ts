@@ -1,6 +1,8 @@
 type App = {
   ports: {
-    stream: { subscribe(callback: (value: { path: string; epoch: number }) => void): void };
+    stream: {
+      subscribe(callback: (value: { path: string; epoch: number; pane?: string }) => void): void;
+    };
     persist: { subscribe(callback: (value: unknown) => void): void };
     browser: { subscribe(callback: (value: BrowserRequest) => void): void };
     incoming: { send(value: { kind: string; epoch: number; payload: unknown }): void };
@@ -8,15 +10,43 @@ type App = {
 };
 type BrowserRequest =
   | { kind: "rendered"; epoch: number }
+  | { kind: "download"; url: string }
   | { kind: "selection"; caret: number }
   | { kind: "highlight"; query: string; entries: number[]; current: number | null }
-  | { kind: "focus" | "reveal"; id: string }
+  | { kind: "focus" | "reveal" | "dialog"; id: string }
   | { kind: "resize" | "latest" | "cancel-completions" };
 declare const Elm: { Main: { init(options: { flags: unknown }): App } };
 
-// These elements own only their contents. Elm owns their attributes and placement.
+// These elements own their contents and measured truncation. Elm owns input attributes and placement.
 const highlighterURL = "/highlight.js";
 let highlighter: Promise<typeof import("../highlight.ts")> | undefined;
+class ElmCommand extends HTMLElement {
+  static observedAttributes = ["source"];
+  private readonly text = document.createElement("span");
+  private readonly sizes = new ResizeObserver(() => this.measure());
+  constructor() {
+    super();
+    this.text.className = "tool-command-text";
+  }
+  connectedCallback() {
+    this.replaceChildren(this.text);
+    this.render();
+    this.sizes.observe(this);
+  }
+  disconnectedCallback() {
+    this.sizes.disconnect();
+  }
+  attributeChangedCallback() {
+    if (this.isConnected) this.render();
+  }
+  private render() {
+    this.text.textContent = this.getAttribute("source") ?? "";
+    this.measure();
+  }
+  private measure() {
+    this.dataset.truncated = String(this.text.scrollWidth > this.clientWidth);
+  }
+}
 class ElmCode extends HTMLElement {
   static observedAttributes = ["language", "source"];
   connectedCallback() {
@@ -72,6 +102,7 @@ class ElmTime extends HTMLElement {
     this.title = ElmTime.dateTime.format(date);
   }
 }
+customElements.define("elm-command", ElmCommand);
 customElements.define("elm-code", ElmCode);
 customElements.define("elm-time", ElmTime);
 let drafts: unknown = {};
@@ -82,9 +113,21 @@ try {
 }
 const app = Elm.Main.init({ flags: { nonce: crypto.randomUUID(), drafts } });
 document.body.classList.add("stacked-layout", "bottom-align");
+try {
+  for (const [name, key, fallback] of [
+    ["wrap-code", "pi.html.wrap-code", false],
+    ["bottom-align", "pi.bottomAlign", true],
+  ] as const) {
+    const stored = localStorage.getItem(key);
+    document.body.classList.toggle(name, stored === null ? fallback : stored === "true");
+  }
+} catch {
+  /* Optional local preferences. */
+}
 let stopStream: (() => void) | undefined;
 let epoch = 0;
 let path = location.pathname;
+let pane = "";
 let pinned = true;
 let restore: number | undefined;
 const positions = new Map<string, number>();
@@ -120,7 +163,7 @@ function resize(force = false) {
     if (node) promptObserver.observe(node, { box: "border-box" });
     force = true;
   }
-  if (!node || (!force && node.value === resizedValue)) return;
+  if (!node || !node.checkVisibility() || (!force && node.value === resizedValue)) return;
   resizedValue = node.value;
   promptWidth = node.getBoundingClientRect().width;
   node.style.height = "auto";
@@ -139,12 +182,13 @@ app.ports.stream.subscribe((request) => {
   stopStream = undefined;
   epoch = request.epoch;
   if (!request.path) return;
-  if (path !== request.path) {
+  if (path !== request.path || (pane !== (request.pane ?? "") && !request.pane)) {
     // The old scrollport may already be gone. Positions are captured by scroll events.
     path = request.path;
     restore = positions.get(path);
     pinned = restore === undefined;
   }
+  pane = request.pane ?? "";
   // Restore draft sizing even offline; leave a fresh empty composer to the first frame.
   afterRender(() => {
     const node = prompt();
@@ -163,14 +207,16 @@ app.ports.stream.subscribe((request) => {
   };
   function connect() {
     if (stopped) return;
-    const connection = new EventSource(`${request.path}/events`);
+    const connection = new EventSource(
+      `${request.path}/events${request.pane === "context" ? "?pane=context" : ""}`,
+    );
     current = connection;
     let receivedAt: number | undefined;
     connection.onmessage = (event) => {
       if (connection !== current) return;
       receivedAt ??= performance.now();
       const node = scroll();
-      if (node && restore === undefined)
+      if (node && !node.hidden && restore === undefined)
         pinned = node.scrollHeight - node.clientHeight - node.scrollTop < 32;
       let payload: unknown;
       try {
@@ -220,7 +266,7 @@ app.ports.browser.subscribe((request) => {
       case "rendered": {
         if (request.epoch !== epoch) return;
         const node = scroll();
-        if (node) {
+        if (node && !node.hidden) {
           if (restore !== undefined) {
             node.scrollTop = restore;
             restore = undefined;
@@ -263,8 +309,16 @@ app.ports.browser.subscribe((request) => {
           document.getElementById(`entry-${request.current}`)?.scrollIntoView({ block: "center" });
         break;
       }
+      case "download": {
+        const link = document.createElement("a");
+        link.href = request.url;
+        link.download = "";
+        link.click();
+        break;
+      }
       case "resize":
-        resize();
+        resize(true);
+        if (restore === undefined && pinned && scroll()?.checkVisibility()) latest();
         break;
       case "latest":
         latest();
@@ -272,6 +326,9 @@ app.ports.browser.subscribe((request) => {
       case "selection":
         prompt()?.focus();
         prompt()?.setSelectionRange(request.caret, request.caret);
+        break;
+      case "dialog":
+        document.querySelector<HTMLDialogElement>(`#${request.id}`)?.showModal();
         break;
       case "focus":
         document.getElementById(request.id)?.focus();
@@ -286,7 +343,7 @@ document.addEventListener(
   "scroll",
   (event) => {
     const node = scroll();
-    if (event.target === node && node) {
+    if (event.target === node && node && !node.hidden) {
       pinned = node.scrollHeight - node.clientHeight - node.scrollTop < 32;
       positions.set(path, node.scrollTop);
       send("latest", !pinned);
@@ -329,8 +386,20 @@ for (const name of ["paste", "drop"])
 document.addEventListener("dragover", (event) => {
   if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
 });
+document.addEventListener("click", (event) => {
+  const image =
+    event.target instanceof Element &&
+    event.target.closest<HTMLImageElement>("img.transcript-image");
+  if (image) send("image", image.src);
+});
 document.addEventListener("keydown", (event) => {
-  if (event.key === "f" && (event.ctrlKey || event.metaKey)) {
+  if (event.defaultPrevented || event.isComposing) return;
+  if (document.querySelector("dialog[open]")) return;
+  if (event.key === "Escape") {
+    send("dismiss", null);
+    return;
+  }
+  if (event.key === "f" && (event.ctrlKey || event.metaKey) && scroll()?.checkVisibility()) {
     event.preventDefault();
     send("search", null);
   }

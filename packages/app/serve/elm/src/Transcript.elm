@@ -1,4 +1,4 @@
-module Transcript exposing (blockView, entrySearch, icon, transcript, viewMessage)
+module Transcript exposing (blockView, commandLabel, entrySearch, icon, toolStatus, transcript, viewMessage)
 
 import Dict exposing (Dict)
 import Html exposing (Html, a, article, button, code, details, div, header, img, p, pre, span, strong, summary, text)
@@ -21,11 +21,53 @@ icon name =
             "send" ->
                 [ Svg.path [ S.d "M12 20V4m-7 7 7-7 7 7" ] [] ]
 
+            "check" ->
+                [ Svg.path [ S.d "m5 12 4 4L19 6" ] [] ]
+
+            "chevron-left" ->
+                [ Svg.path [ S.d "m15 6-6 6 6 6" ] [] ]
+
+            "chevron-down" ->
+                [ Svg.path [ S.d "m6 9 6 6 6-6" ] [] ]
+
             "close" ->
                 [ Svg.path [ S.d "m6 6 12 12M18 6 6 18" ] [] ]
 
             _ ->
                 [ Svg.path [ S.d "m9 3-.6 2.4-1.5.9-2.4-.7-3 5.2L3.3 12l.1 1.8-1.7 1.8 3 5.2 2.3-.7 1.6.9.5 2.4h6l.6-2.4 1.5-.9 2.4.7 3-5.2-1.8-1.2-.1-1.8 1.7-1.8-3-5.2-2.3.7-1.6-.9L15 3Z", S.transform "translate(1 -1) scale(.92)" ] [], Svg.circle [ S.cx "12", S.cy "12", S.r "3.2" ] [] ]
+        )
+
+
+commandLabel : String -> Html msg
+commandLabel source =
+    Html.node "elm-command" [ class "tool-command", attribute "source" source ] []
+
+
+toolStatus : String -> Html msg
+toolStatus state =
+    span [ class "tool-status", attribute "data-state" state, attribute "role" "img", attribute "aria-label" state ]
+        (if state == "running" then
+            List.map (\index -> span [ style "animation-delay" ("-" ++ String.fromInt (index * 225) ++ "ms") ] []) (List.range 0 3)
+
+         else
+            [ text
+                (case state of
+                    "completed" ->
+                        "✓"
+
+                    "failed" ->
+                        "✕"
+
+                    "pending" ->
+                        "◷"
+
+                    "cancelled" ->
+                        "⊘"
+
+                    _ ->
+                        "?"
+                )
+            ]
         )
 
 
@@ -133,31 +175,8 @@ toolView toggle opened tools key =
             in
             details [ class "tool-call", attribute "data-call-id" key, attribute "data-state" tool.state, A.property "open" (E.bool isOpen) ]
                 [ summary [ preventDefaultOn "click" (D.succeed ( toggle key (not isOpen), True )) ]
-                    [ span [ class "tool-status", attribute "data-state" tool.state, attribute "role" "img", attribute "aria-label" tool.state ]
-                        (if tool.state == "running" then
-                            List.map (\index -> span [ style "animation-delay" ("-" ++ String.fromInt (index * 225) ++ "ms") ] []) (List.range 0 3)
-
-                         else
-                            [ text
-                                (case tool.state of
-                                    "completed" ->
-                                        "✓"
-
-                                    "failed" ->
-                                        "✕"
-
-                                    "pending" ->
-                                        "◷"
-
-                                    "cancelled" ->
-                                        "⊘"
-
-                                    _ ->
-                                        "?"
-                                )
-                            ]
-                        )
-                    , span [ class "tool-command" ] [ text tool.command ]
+                    [ toolStatus tool.state
+                    , commandLabel tool.command
                     , if tool.duration == "" then
                         text ""
 
@@ -353,7 +372,7 @@ transcript toggle opened query selected entriesById tools durations =
                 entries
                 |> List.reverse
 
-        previousEntries =
+        neighbors items =
             List.foldl
                 (\( entry, ancestors ) ( groups, previous ) ->
                     ( if List.isEmpty entry.messages then
@@ -370,8 +389,44 @@ transcript toggle opened query selected entriesById tools durations =
                     )
                 )
                 ( Dict.empty, Dict.empty )
-                rows
+                items
                 |> Tuple.second
+
+        previousEntries =
+            neighbors rows
+
+        nextEntries =
+            neighbors (List.reverse rows)
+
+        speaker entry =
+            let
+                role =
+                    List.head entry.messages |> Maybe.map .role |> Maybe.withDefault ""
+            in
+            if role == "toolResult" then
+                "assistant"
+
+            else
+                role
+
+        trace block =
+            case block of
+                ToolRef _ ->
+                    True
+
+                Thinking _ ->
+                    True
+
+                _ ->
+                    False
+
+        continues first second =
+            speaker first
+                /= ""
+                && speaker first
+                == speaker second
+                && (List.concatMap .blocks first.messages |> List.reverse |> List.head |> Maybe.map trace |> Maybe.withDefault False)
+                && (List.concatMap .blocks second.messages |> List.head |> Maybe.map trace |> Maybe.withDefault False)
 
         positions =
             List.indexedMap
@@ -416,10 +471,10 @@ transcript toggle opened query selected entriesById tools durations =
                     List.head entry.messages |> Maybe.map .role |> Maybe.withDefault ""
 
                 previousRole =
-                    previous |> Maybe.andThen (.messages >> List.head) |> Maybe.map .role |> Maybe.withDefault ""
+                    previous |> Maybe.map speaker |> Maybe.withDefault ""
 
                 same =
-                    role /= "" && role == previousRole
+                    speaker entry /= "" && speaker entry == previousRole
 
                 attrs =
                     [ id ("entry-" ++ key)
@@ -435,7 +490,7 @@ transcript toggle opened query selected entriesById tools durations =
                          else
                             "false"
                         )
-                    , A.classList [ ( "same-speaker", same ), ( "search-current", selected == Just entry.id ) ]
+                    , A.classList [ ( "same-speaker", same ), ( "trace-start", previous |> Maybe.map (\prior -> continues prior entry) |> Maybe.withDefault False ), ( "trace-continues", Dict.get entry.id nextEntries |> Maybe.map (continues entry) |> Maybe.withDefault False ), ( "search-current", selected == Just entry.id ) ]
                     ]
 
                 content =
@@ -447,16 +502,14 @@ transcript toggle opened query selected entriesById tools durations =
                 boundaryHead =
                     details [ class "tool-call context-event", attribute "aria-owns" (rows |> List.filter (\( _, parents ) -> List.head parents == Just entry.id) |> List.map (\( child, _ ) -> "entry-" ++ String.fromInt child.id) |> String.join " "), A.property "open" (E.bool contextOpen) ]
                         [ summary [ preventDefaultOn "click" (D.succeed ( toggle ("context-" ++ key) (not contextOpen), True )) ]
-                            [ span [ class "tool-status", attribute "data-state" "completed" ] [ text "✓" ]
-                            , span [ class "tool-command" ]
-                                [ text
-                                    (if entry.boundary == Reset then
-                                        "Context reset"
+                            [ toolStatus "completed"
+                            , commandLabel
+                                (if entry.boundary == Reset then
+                                    "Context reset"
 
-                                     else
-                                        "Context compacted"
-                                    )
-                                ]
+                                 else
+                                    "Context compacted"
+                                )
                             , case Dict.get key durations of
                                 Nothing ->
                                     text ""

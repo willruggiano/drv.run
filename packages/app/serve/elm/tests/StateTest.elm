@@ -5,6 +5,7 @@ import Expect
 import Http
 import Json.Decode as D
 import Main
+import Panel
 import Protocol
 import Test exposing (describe, test)
 import Url
@@ -73,7 +74,7 @@ tests =
                         Protocol.empty
 
                     snapshot =
-                        { subscription = "a", sequence = 1, snapshot = True, conversation = 1, entries = [], tools = [], live = Just initial.live, queue = Just [], metadata = Just initial.metadata }
+                        { subscription = "a", sequence = 1, snapshot = True, conversation = 1, entries = [], tools = [], live = Just initial.live, queue = Just [], metadata = Just initial.metadata, inspection = Nothing }
                 in
                 case Protocol.apply 1 snapshot initial of
                     Err reason ->
@@ -88,7 +89,7 @@ tests =
                         Protocol.empty
 
                     snapshot =
-                        { subscription = "a", sequence = 1, snapshot = True, conversation = 1, entries = [], tools = [], live = Just initial.live, queue = Just [], metadata = Just initial.metadata }
+                        { subscription = "a", sequence = 1, snapshot = True, conversation = 1, entries = [], tools = [], live = Just initial.live, queue = Just [], metadata = Just initial.metadata, inspection = Nothing }
                 in
                 case Protocol.apply 1 snapshot initial of
                     Err reason ->
@@ -111,7 +112,7 @@ tests =
                         Protocol.empty
 
                     snapshot =
-                        { subscription = "a", sequence = 1, snapshot = True, conversation = 1, entries = [ { id = 1, boundary = Protocol.Normal, messages = [] } ], tools = [], live = Just initial.live, queue = Just [], metadata = Just initial.metadata }
+                        { subscription = "a", sequence = 1, snapshot = True, conversation = 1, entries = [ { id = 1, boundary = Protocol.Normal, messages = [] } ], tools = [], live = Just initial.live, queue = Just [], metadata = Just initial.metadata, inspection = Nothing }
                 in
                 case Protocol.apply 1 snapshot initial |> Result.andThen (Protocol.apply 1 { snapshot | subscription = "b", entries = [] }) of
                     Err reason ->
@@ -177,7 +178,7 @@ tests =
                         { initial | subscription = "current", sequence = 5 }
 
                     frame =
-                        { subscription = "current", sequence = 6, snapshot = False, conversation = 1, entries = [], tools = [], live = Nothing, queue = Nothing, metadata = Nothing }
+                        { subscription = "current", sequence = 6, snapshot = False, conversation = 1, entries = [], tools = [], live = Nothing, queue = Nothing, metadata = Nothing, inspection = Nothing }
                 in
                 Expect.all
                     (List.map
@@ -216,4 +217,68 @@ tests =
 
                     Ok draft ->
                         Expect.equal (Just ( "r1:submit", False )) (Maybe.map (\pending -> ( pending.identity, pending.missingFiles )) draft.pending)
+        , test "session panel routes retain conversation identity and local state" <|
+            \_ ->
+                let
+                    base =
+                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
+
+                    edited =
+                        Main.update (Main.Edit "draft") base |> Tuple.first
+
+                    collapsed =
+                        Main.update Main.Collapse edited |> Tuple.first
+                in
+                case Url.fromString "http://localhost/elm/sessions/test/conversations/1/settings" of
+                    Nothing ->
+                        Expect.fail "Invalid test URL"
+
+                    Just url ->
+                        let
+                            panel =
+                                Main.update (Main.UrlChanged url) collapsed |> Tuple.first
+                        in
+                        Expect.equal { path = base.path, drafts = collapsed.drafts, state = collapsed.state, expanded = False, epoch = base.epoch + 1 } { path = panel.path, drafts = panel.drafts, state = panel.state, expanded = panel.composerExpanded, epoch = panel.epoch }
+        , test "settings autosave drains newer edits without overwriting them" <|
+            \_ ->
+                let
+                    base =
+                        Main.initModel "/elm/sessions/test/conversations/1/settings" "nonce"
+
+                    initial =
+                        { name = "Initial", model = "model", target = "target", thinking = "off", directory = "", models = [], targets = [] }
+
+                    loaded =
+                        Main.update (Main.SettingsLoaded base.epoch (Ok initial)) base |> Tuple.first
+
+                    edited =
+                        Main.update (Main.EditSetting Panel.Name "First") loaded |> Tuple.first
+
+                    saving =
+                        Main.update Main.SaveSettings edited |> Tuple.first
+
+                    newer =
+                        Main.update (Main.EditSetting Panel.Name "Second") saving |> Tuple.first
+
+                    acknowledged =
+                        Main.update (Main.SettingsSaved base.epoch { initial | name = "First" } (Ok True)) newer |> Tuple.first
+                in
+                Expect.equal ( Just "Second", Just "First", Just "Second" ) ( Maybe.map .name acknowledged.settings, Maybe.map .name acknowledged.savedSettings, Maybe.map .name acknowledged.saving )
+        , test "late panel loads and saves cannot replace another route's state" <|
+            \_ ->
+                let
+                    base =
+                        Main.initModel "/elm/sessions/other/conversations/1/settings" "nonce"
+
+                    current =
+                        { base | epoch = 2 }
+
+                    stale =
+                        { name = "Old", model = "model", target = "target", thinking = "off", directory = "", models = [], targets = [] }
+                in
+                Expect.all
+                    (List.map (\msg _ -> Expect.equal current (Main.update msg current |> Tuple.first))
+                        [ Main.SettingsLoaded 1 (Ok stale), Main.SettingsSaved 1 stale (Ok True), Main.BranchesLoaded 1 (Ok []), Main.Directories 1 0 (Ok [ "old" ]) ]
+                    )
+                    ()
         ]
