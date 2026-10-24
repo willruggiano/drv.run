@@ -53,6 +53,19 @@
   createVolumes = (import "${microvm}/lib/volumes.nix" {inherit pkgs;}).createVolumesScript (
     map (volume: volume // {autoCreate = true;}) (lib.filter (volume: !volume.readOnly) guest.config.microvm.volumes)
   );
+  # The expression and builder are individual store files, not the drv.run
+  # source tree. E enters as data with store context; no user flake is reevaluated.
+  imageExpression = pkgs.writeText "drv-run-environment-image.nix" ''
+    { environment }:
+    let pkgs = import ${nixpkgs} {
+      system = ${builtins.toJSON pkgs.stdenv.hostPlatform.system};
+      config = {};
+      overlays = [];
+    };
+    in import ${../../nix/mkEnvironmentImage.nix} { inherit pkgs; } {
+      environment = builtins.storePath environment;
+    }
+  '';
   worker = pkgs.writeShellApplication {
     name = "worker";
     runtimeInputs = with pkgs; [
@@ -60,11 +73,12 @@
       coreutils
       git # we might want to use `programs.git` host-wide instead
       e2fsprogs
+      jq
       openssh
     ];
     text =
       lib.replaceStrings
-      ["@proxy@" "@runner@" "@create-volumes@" "@mitm-proxy-seed@"]
+      ["@proxy@" "@runner@" "@create-volumes@" "@mitm-proxy-seed@" "@image-expression@" "@timing@"]
       [
         "${config.systemd.package}/lib/systemd/systemd-ssh-proxy"
         (toString guest.config.microvm.declaredRunner)
@@ -77,6 +91,8 @@
               ;;
           esac
         '')
+        (toString imageExpression)
+        (builtins.readFile ../timing.sh)
       ]
       (builtins.readFile ./pre.sh);
   };
@@ -84,19 +100,18 @@
     name = "provision";
     runtimeInputs = [
       pkgs.coreutils
-      config.nix.package
+      pkgs.jq
       pkgs.openssh
     ];
-    text = lib.replaceStrings ["@service-ssh@"] [(toString serviceSSH)] (
+    text = lib.replaceStrings ["@service-ssh@" "@timing@"] [(toString serviceSSH) (builtins.readFile ../timing.sh)] (
       builtins.readFile ./post.sh
     );
   };
   tap = import ./tap.nix {inherit pkgs;};
   launcher = pkgs.writeShellApplication {
     name = "drv.run";
-    runtimeInputs = with pkgs; [coreutils openssh systemd];
-    text =
-      builtins.readFile ./command.sh;
+    runtimeInputs = with pkgs; [coreutils jq openssh systemd];
+    text = lib.replaceStrings ["@timing@"] [(builtins.readFile ../timing.sh)] (builtins.readFile ./command.sh);
   };
 in {
   imports = [../nix.nix ./network.nix ./mitm-proxy.nix];
@@ -160,13 +175,12 @@ in {
           volumes = guest.config.microvm.volumes;
         in
           builtins.length volumes
-          == 2
-          && (builtins.elemAt volumes 0).image == "state.img"
-          && !(builtins.elemAt volumes 0).readOnly
-          && (builtins.elemAt volumes 1).image == "seed.img"
-          && (builtins.elemAt volumes 1).readOnly
+          == 3
+          && lib.count (volume: volume.image == "state.img" && !volume.readOnly && volume.label == "drv-run-state") volumes == 1
+          && lib.count (volume: volume.image == "seed.img" && volume.readOnly) volumes == 1
+          && lib.count (volume: volume.image == "environment.erofs" && volume.readOnly && !volume.direct) volumes == 1
           && lib.all (volume: !volume.autoCreate) volumes;
-        message = "drv.run requires writable state.img and read-only seed.img volumes with automatic creation disabled.";
+        message = "drv.run requires labeled writable state.img, read-only seed.img and cached read-only environment.erofs, with automatic creation disabled.";
       }
       {
         assertion = builtins.elem pkgs.stdenv.hostPlatform.system ["x86_64-linux" "aarch64-linux"];
@@ -242,6 +256,8 @@ in {
         ExecStop = "%S/drv.run/%i/runner/bin/microvm-shutdown";
         ExecStopPost = "${lib.getExe' pkgs.coreutils "rm"} -f %t/drv.run.%i/client.conf";
         KillMode = "control-group";
+        CPUAccounting = true;
+        IOAccounting = true;
         Restart = "no";
         RuntimeDirectory = "drv.run.%i";
         RuntimeDirectoryMode = "0700";

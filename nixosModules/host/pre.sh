@@ -1,6 +1,10 @@
 # shellcheck shell=bash
 set -euo pipefail
 
+timing_directory="$RUNTIME_DIRECTORY"
+@timing@
+phase preparation-start
+
 if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
   echo 'Error: the user service manager needs read/write access to /dev/kvm' >&2
   exit 1
@@ -31,8 +35,12 @@ if [[ ! -d $STATE_DIRECTORY/ready ]]; then
   printf '%s\n' "$ref" >"$STATE_DIRECTORY/reference"
   # Evaluate the Flake closure while creating independent Instance resources.
   # systemd owns all ExecStartPre children, including on failure or interruption.
-  nix print-dev-env --option accept-flake-config false --print-build-logs --json \
-    --profile "$STATE_DIRECTORY/environment" -- "$ref" </dev/null >/dev/null &
+  (
+    phase environment-start
+    nix print-dev-env --option accept-flake-config false --print-build-logs --json \
+      --profile "$STATE_DIRECTORY/environment" -- "$ref" </dev/null >/dev/null
+    phase environment-ready
+  ) &
   environment_pid=$!
   nix-store --realise @runner@ --add-root "$STATE_DIRECTORY/runner" --indirect >/dev/null &
   runner_pid=$!
@@ -44,6 +52,13 @@ if [[ ! -d $STATE_DIRECTORY/ready ]]; then
     @create-volumes@
   )
   wait "$environment_pid"
+  environment=$(readlink -e "$STATE_DIRECTORY/environment")
+  test ! -e "$STATE_DIRECTORY/environment-image"
+  test ! -L "$STATE_DIRECTORY/environment-image"
+  phase image-start
+  nix build --impure --file @image-expression@ --argstr environment "$environment" \
+    --out-link "$STATE_DIRECTORY/environment-image" </dev/null
+  phase image-ready
   wait "$runner_pid"
   mv "$STATE_DIRECTORY/creating" "$STATE_DIRECTORY/ready"
 elif [[ -e $RUNTIME_DIRECTORY/reference ]]; then
@@ -57,6 +72,10 @@ test ! -L "$STATE_DIRECTORY/state.img"
 test -f "$STATE_DIRECTORY/reference"
 test -x "$STATE_DIRECTORY/runner/bin/microvm-run"
 test -e "$STATE_DIRECTORY/environment"
+test -L "$STATE_DIRECTORY/environment-image"
+test -f "$STATE_DIRECTORY/environment-image/store.erofs"
+environment=$(readlink -e "$STATE_DIRECTORY/environment")
+ln -s "$STATE_DIRECTORY/environment-image/store.erofs" "$RUNTIME_DIRECTORY/environment.erofs"
 ln -s "$STATE_DIRECTORY/state.img" "$RUNTIME_DIRECTORY/state.img"
 ln -s "$STATE_DIRECTORY/host-key" "$RUNTIME_DIRECTORY/host-key"
 ssh-keygen -q -t ed25519 -N '' -f "$RUNTIME_DIRECTORY/client-key"
@@ -68,6 +87,7 @@ staging=$(mktemp -d "$RUNTIME_DIRECTORY/seed.XXXXXXXX")
 trap 'rm -rf "$staging"' EXIT
 cp "$RUNTIME_DIRECTORY/authorized-keys" "$staging/authorized-keys"
 cp "$STATE_DIRECTORY/host-key" "$staging/host-key"
+printf '%s\n' "$environment" >"$staging/environment"
 chmod 0600 "$staging/"*
 @mitm-proxy-seed@
 truncate -s 8M "$RUNTIME_DIRECTORY/seed.img"
@@ -80,3 +100,4 @@ ProxyUseFdpass yes
 IdentityFile $RUNTIME_DIRECTORY/client-key
 UserKnownHostsFile $RUNTIME_DIRECTORY/known_hosts
 EOF
+phase preparation-ready

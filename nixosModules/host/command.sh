@@ -1,5 +1,6 @@
 # shellcheck shell=bash
 set -euo pipefail
+read -r request_uptime _ </proc/uptime
 
 export XDG_RUNTIME_DIR="/run/user/$EUID"
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
@@ -58,6 +59,9 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+timing_directory=$runtime
+@timing@
+phase request-received "$request_uptime"
 printf '%s\n' "$ref" >"$runtime/reference"
 printf 'Starting %s...\n' "$unit" >&2
 submitted=true

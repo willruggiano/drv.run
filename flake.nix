@@ -80,7 +80,11 @@
       };
     };
 
-    checks = eachSystem (pkgs: {
+    checks = eachSystem (pkgs: let
+      environmentImage = import ./nix/nixosTests/environment-image.nix {inherit pkgs;};
+    in {
+      environment-image = environmentImage.artifact;
+      nixos-environment-image = environmentImage.integration;
       app-tape = pkgs.app.tape;
       app-tests = pkgs.app;
       bench-tests = pkgs.bench;

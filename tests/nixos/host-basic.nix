@@ -716,8 +716,8 @@ in {
         egress("other", other_target)
 
     with subtest("failed provisioning closes its master and releases its TAP"):
-        # A valid store path that is not a prepared environment fails only after
-        # SSH authentication and nix copy have succeeded.
+        # The pinned image must reject a host expectation that names a different
+        # store path, without publishing client readiness.
         operator(f"mv {state}/environment {state}/saved-environment")
         operator(f"ln -s ${pkgs.bash} {state}/environment")
         host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start {unit}"))

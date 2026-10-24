@@ -359,10 +359,42 @@ def collect(
         state, runtime = instance_paths(name, manifest)
         require((runtime / "client.conf").is_file(), "client.conf not published")
         os.kill(integer(measured["main_pid"]), 0)
-        for field in ("environment", "runner"):
+        for field in ("environment", "runner", "environment-image"):
             link = state / field
             require(link.is_symlink(), f"missing {field} symlink")
             phase[field] = str(link.resolve(strict=True))
+        image_stat = (state / "environment-image/store.erofs").stat()
+        phase["image_bytes"] = image_stat.st_size
+        phase["image_allocated_bytes"] = image_stat.st_blocks * 512
+        environment = text(phase["environment"])
+        info = obj(
+            cast(
+                Json,
+                json.loads(
+                    manager.run(
+                        [
+                            "nix",
+                            "path-info",
+                            "--json",
+                            "--json-format",
+                            "1",
+                            "--closure-size",
+                            environment,
+                        ]
+                    )
+                ),
+            )
+        )
+        phase["closure_nar_bytes"] = integer(obj(info[environment])["closureSize"])
+        # Preserve phase-local CPU, block/flush counters and pressure snapshots.
+        # Host and guest monotonic clocks have independent origins.
+        atomic_text(
+            trial / "host-phases.jsonl", (runtime / "timings.jsonl").read_text()
+        )
+        atomic_text(
+            trial / "guest-phases.jsonl",
+            manager.run(["ssh", "-T", runtime.name, "environment-timings"]),
+        )
         phase.update(measured)
         phase["outcome"] = "success"
     except ActivationError as error:
@@ -531,6 +563,15 @@ def load_batch(output: Path, batch: str, count: int) -> list[dict[str, Json]]:
 def summarize(samples: list[dict[str, Json]]) -> dict[str, Json]:
     measured = [sample for sample in samples if sample["batch"] == "measured"]
     successes = [sample for sample in measured if sample["outcome"] == "success"]
+    images: dict[str, Json] = {}
+    environments: set[str] = set()
+    for sample in successes:
+        environments.add(text(sample["environment"]))
+        image = text(sample["environment-image"])
+        size = integer(sample["image_bytes"])
+        entry = obj(images.setdefault(image, {"instances": 0, "bytes": size}))
+        require(entry["bytes"] == size, "image size changed for the same store path")
+        entry["instances"] = integer(entry["instances"]) + 1
     metrics: dict[str, Json] = {}
     for field in ("launcher_s", *METRICS):
         values = [
@@ -553,6 +594,11 @@ def summarize(samples: list[dict[str, Json]]) -> dict[str, Json]:
         "successful_count": len(successes),
         "failure_count": len(measured) - len(successes),
         "metrics": metrics,
+        "images": images,
+        "distinct_environments": len(environments),
+        "distinct_image_bytes": sum(
+            integer(obj(entry)["bytes"]) for entry in images.values()
+        ),
     }
 
 
@@ -683,7 +729,7 @@ def hyperfine(output: Path, batch: str, count: int, manifest: dict[str, Json]) -
             "--kill-after=5s",
             f"{integer(manifest['timeout'])}s",
             "env",
-            f"SSH_ORIGINAL_COMMAND={text(manifest['reference'])} exit",
+            f"SSH_ORIGINAL_COMMAND={text(manifest['reference'])} {text(manifest['command'])}",
             text(manifest["launcher"]),
         ]
     )
@@ -733,6 +779,10 @@ class Arguments(argparse.Namespace):
     reference: str = ""
     runs: int = 20
     timeout: int = 300
+    command: str = "exit"
+    cache_state: str = "unspecified"
+    notes: str = ""
+    no_warmup: bool = False
     batch: str = ""
 
 
@@ -758,9 +808,11 @@ def run(args: Arguments) -> int:
                 "timeout": args.timeout,
                 "runtime_base": str(runtime),
                 "state_base": command(["systemd-path", "user-state-private"]).strip(),
-                "cache_state": "warm-host-new-instance",
+                "cache_state": args.cache_state,
+                "command": args.command,
+                "warmup": not args.no_warmup,
                 "activation_timing": "exec-start-pre-start-to-active-enter",
-                "operator_notes": {},
+                "operator_notes": args.notes,
                 "versions": {
                     "python": platform.python_version(),
                     "systemd": command(["systemctl", "--version"]).strip(),
@@ -781,7 +833,10 @@ def run(args: Arguments) -> int:
         complete = False
         error_message: str | None = None
         try:
-            for batch, count in (("warmup", 1), ("measured", args.runs)):
+            batches = ([] if args.no_warmup else [("warmup", 1)]) + [
+                ("measured", args.runs)
+            ]
+            for batch, count in batches:
                 print(
                     f"{batch}: {count} run(s); log: {output / batch / 'hyperfine.log'}",
                     file=sys.stderr,
@@ -841,6 +896,30 @@ def main(argv: list[str] | None = None) -> int:
     _ = launch.add_argument("--runs", type=positive, default=20)
     _ = launch.add_argument("--timeout", type=positive, default=300)
     _ = launch.add_argument("--output", type=absolute, required=True)
+    _ = launch.add_argument(
+        "--command",
+        default="exit",
+        help="Command to measure inside the prepared environment",
+    )
+    _ = launch.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="Include the first cold activation in measurements",
+    )
+    _ = launch.add_argument("--notes", default="")
+    _ = launch.add_argument(
+        "--cache-state",
+        help="Operator-supplied initial cache state; cache contents are not changed",
+        choices=(
+            "unspecified",
+            "local-warm",
+            "local-cold",
+            "closure-only",
+            "binary-cache",
+            "dependencies-absent",
+        ),
+        default="unspecified",
+    )
     for name in ("prepare", "conclude", "recover"):
         hook = sub.add_parser(name)
         _ = hook.add_argument("--output", type=absolute, required=True)

@@ -2,6 +2,8 @@
 set -euo pipefail
 
 profile=/nix/var/nix/profiles/project
+ready=/run/drv-run-environment/ready
+test -f "$ready"
 
 case ${SSH_ORIGINAL_COMMAND:-} in
 'nix-daemon --stdio')
@@ -13,7 +15,12 @@ root-environment)
     echo 'Error: invalid prepared environment path' >&2
     exit 1
   fi
-  exec nix print-dev-env --json --profile "$profile" -- "$environment" >/dev/null
+  test "$(<"$ready")" = "$environment"
+  test "$(readlink -e "$profile")" = "$environment"
+  exit 0
+  ;;
+environment-timings)
+  exec cat /run/drv-run-environment/timings.jsonl
   ;;
 esac
 
@@ -25,4 +32,4 @@ cd /workspace
 if [[ -z ${SSH_ORIGINAL_COMMAND:-} ]]; then
   exec nix develop -- "$profile"
 fi
-exec nix develop "$profile" --command @bash@ -c "$SSH_ORIGINAL_COMMAND"
+exec nix develop "$profile" --command @command@ "$SSH_ORIGINAL_COMMAND"

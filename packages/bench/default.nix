@@ -4,6 +4,7 @@
   hyperfine,
   lib,
   nix,
+  openssh,
   python3,
   systemd,
   writeShellApplication,
@@ -15,6 +16,7 @@ writeShellApplication {
     coreutils
     hyperfine
     nix
+    openssh
     python3
     systemd
   ];

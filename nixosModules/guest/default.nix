@@ -14,6 +14,7 @@
     microvm.nixosModules.microvm
     impermanence.nixosModules.impermanence
     ./cloud-hypervisor.nix
+    ./environment.nix
     ../nix.nix
   ];
 
@@ -21,6 +22,10 @@
     {
       assertion = config.boot.initrd.systemd.enable;
       message = "drv.run persistence requires systemd initrd mount ordering.";
+    }
+    {
+      assertion = config.microvm.storeOnDisk && config.microvm.registerClosure && config.nix.enable && config.microvm.writableStoreOverlay != null;
+      message = "drv.run environment images require a registered generic store and a private writable overlay.";
     }
   ];
 
@@ -95,13 +100,23 @@
     volumes = [
       {
         image = "state.img";
-        label = null;
+        label = "drv-run-state";
         mountPoint = "/persist";
         fsType = "ext4";
         size = 16 * 1024;
         # The worker only formats a new sparse file, whose unwritten bytes are zero.
         mkfsExtraArgs = ["-E" "assume_storage_prezeroed=1"];
         autoCreate = false;
+      }
+      {
+        image = "environment.erofs";
+        fsType = "erofs";
+        label = null;
+        mountPoint = null;
+        size = 0;
+        autoCreate = false;
+        readOnly = true;
+        direct = false;
       }
     ];
     writableStoreOverlay = lib.mkDefault "/nix/.rw-store";
@@ -141,13 +156,24 @@
       KbdInteractiveAuthentication = false;
       DisableForwarding = true;
       PermitUserRC = false;
-      ForceCommand = lib.getExe (
+      ForceCommand = lib.getExe (let
+        command = pkgs.writeShellApplication {
+          name = "prepared-command";
+          runtimeInputs = [pkgs.jq];
+          text =
+            builtins.readFile ../timing.sh
+            + ''
+              timing_directory=/run/drv-run-environment
+              phase shell-ready
+              exec ${lib.getExe pkgs.bashInteractive} -c "$1"
+            '';
+        };
+      in
         pkgs.writeShellApplication {
           name = "ssh-guest";
-          runtimeInputs = [config.nix.package];
-          text = lib.replaceStrings ["@bash@"] [(lib.getExe pkgs.bashInteractive)] (builtins.readFile ./guest.sh);
-        }
-      );
+          runtimeInputs = [config.nix.package pkgs.coreutils];
+          text = lib.replaceStrings ["@command@"] [(lib.getExe command)] (builtins.readFile ./guest.sh);
+        });
     };
   };
   # TODO: Why are these "extraDependencies"?

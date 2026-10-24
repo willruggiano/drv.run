@@ -77,6 +77,8 @@ def phase(index: int = 0, batch: str = "measured") -> dict[str, b.Json]:
         batch=batch,
         index=index,
         unit=NAME,
+        environment="/nix/store/fixture-env",
+        **{"environment-image": "/nix/store/fixture-image", "image_bytes": 4096},
         outcome="success",
         cleanup="success",
     )
@@ -161,6 +163,23 @@ class TimingsTest(unittest.TestCase):
 
 
 class ReportTest(unittest.TestCase):
+    def test_image_reuse_and_storage_across_revisions(self) -> None:
+        samples = [phase(index) for index in range(3)]
+        samples[2].update(
+            environment="/nix/store/changed-env",
+            **{
+                "environment-image": "/nix/store/changed-image",
+                "image_bytes": 8192,
+            },
+        )
+        for sample in samples:
+            sample["launcher_s"] = 1.0
+        summary = b.summarize(samples)
+        self.assertEqual(summary["distinct_environments"], 2)
+        self.assertEqual(summary["distinct_image_bytes"], 12288)
+        images = b.obj(summary["images"])
+        self.assertEqual(b.obj(images["/nix/store/fixture-image"])["instances"], 2)
+
     def test_order_failures_and_statistics(self) -> None:
         phases = [phase(index) for index in range(6)]
         samples = b.join_samples(
@@ -252,12 +271,28 @@ class FakeSystemd:
         state.mkdir(parents=True)
         runtime.mkdir(parents=True)
         (runtime / "client.conf").touch()
-        for field in ("runner", "environment"):
+        _ = (runtime / "timings.jsonl").write_text(
+            json.dumps({"phase": "client-ready", "monotonic_s": 10}) + "\n"
+        )
+        for field in ("runner", "environment", "environment-image"):
             target = state / (field + "-target")
             target.mkdir()
             (state / field).symlink_to(target)
+        _ = (state / "environment-image/store.erofs").write_bytes(b"fixture")
 
     def run(self, argv: list[str]) -> str:
+        if argv[0] == "nix":
+            assert argv[1:-1] == [
+                "path-info",
+                "--json",
+                "--json-format",
+                "1",
+                "--closure-size",
+            ]
+            return json.dumps({argv[-1]: {"closureSize": 4096}})
+        if argv[0] == "ssh":
+            assert argv[1] == "-T" and argv[3] == "environment-timings"
+            return json.dumps({"phase": "shell-ready", "monotonic_s": 2}) + "\n"
         if argv[0] == "busctl":
             if argv[7] == "ListUnits":
                 rows: list[b.Json] = [
@@ -338,6 +373,17 @@ class LifecycleTest(unittest.TestCase):
         self.assertFalse((self.output / "pending.json").exists())
         self.assertEqual(b.read_json(self.trial() / "phase.json")["outcome"], "success")
         self.assertEqual(b.read_json(self.trial() / "phase.json")["cleanup"], "success")
+        measured = b.read_json(self.trial() / "phase.json")
+        self.assertEqual(measured["image_bytes"], len(b"fixture"))
+        self.assertEqual(measured["closure_nar_bytes"], 4096)
+        self.assertEqual(
+            json.loads((self.trial() / "host-phases.jsonl").read_text())["phase"],
+            "client-ready",
+        )
+        self.assertEqual(
+            json.loads((self.trial() / "guest-phases.jsonl").read_text())["phase"],
+            "shell-ready",
+        )
         frozen = b.read_json(self.trial() / "unit.json")
         self.assertEqual(b.prop(properties(frozen), "ActiveState", "s"), "active")
         for path in b.instance_paths(NAME, self.manifest):
