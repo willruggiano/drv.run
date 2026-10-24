@@ -5,7 +5,6 @@
   lib,
   nix,
   python3,
-  runCommand,
   systemd,
   writeShellApplication,
   ...
@@ -29,20 +28,10 @@ writeShellApplication {
       --bash ${lib.getExe bash} "$@"
   '';
   meta.description = "drv.run benchmark runner";
-  # TODO: currently broken. Fix if you get the chance but keep the definition here!
-  # passthru.tests =
-  #   runCommand "bench-tests" {
-  #     src = lib.fileset.toSource {
-  #       root = ./.;
-  #       fileset = lib.fileset.unions [
-  #         ./main.py
-  #         ./tests
-  #       ];
-  #     };
-  #     nativeBuildInputs = [python3];
-  #   } ''
-  #     cd $src
-  #     python3 -m unittest discover -s .tests -p '*_test.py'
-  #     touch $out
-  #   '';
+  derivationArgs.postCheck = ''
+    PYTHONPATH=${lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [./main.py ./tests];
+    }} ${lib.getExe python3} -B -m unittest discover -s bench.tests -p '*_test.py'
+  '';
 }

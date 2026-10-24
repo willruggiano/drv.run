@@ -83,8 +83,7 @@
     checks = eachSystem (pkgs: {
       app-tape = pkgs.app.tape;
       app-tests = pkgs.app;
-      # TODO: re-enable these when fixed!
-      # bench-tests = pkgs.bench.tests;
+      bench-tests = pkgs.bench;
       mitm-proxy-tests = pkgs.mitm-proxy;
       nixos-mitm-proxy-tests = pkgs.mitm-proxy.tests;
     });
