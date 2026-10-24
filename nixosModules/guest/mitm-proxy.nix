@@ -27,7 +27,11 @@
     httpsProxy = "http://_gateway:${toString port}";
     envVars.HTTPS_PROXY = config.networking.proxy.httpsProxy;
   };
-  systemd.globalEnvironment = config.networking.proxy.envVars;
+  # Unlike globalEnvironment's generated unit entries, this also covers
+  # transient services started with systemd-run.
+  systemd.settings.Manager.DefaultEnvironment =
+    lib.mapAttrsToList (name: value: "${name}=${lib.escapeShellArg value}")
+    config.networking.proxy.envVars;
   # Gate SSH sessions, not the VSOCK listening socket, on network readiness.
   systemd.services."sshd@" = {
     wants = ["network-online.target"];
