@@ -28,7 +28,7 @@
       url = "path:microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nixpkgs.url = "github:NixOS/nixpkgs?ref=nixpkgs-unstable";
+    nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
     pi = {
       url = "github:earendil-works/pi/stable";
       inputs = {
