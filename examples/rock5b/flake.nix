@@ -66,9 +66,10 @@
               --cachix-cache drv-run \
               --push-build-closure
 
-            exec deploy --fast-connection=true --hostname=192.168.4.38 --skip-checks ./examples/rock5b "$@"
+            exec deploy --fast-connection=true --hostname=rock5b --skip-checks ./examples/rock5b "$@"
           '';
         });
+        meta.description = "prime the binary cache and then deploy the rock5b";
       };
     });
 

@@ -30,7 +30,7 @@ in {
     };
     env = mkOption {
       type = attrs;
-      default = null;
+      default = {};
       description = "Environment variables visible to pi";
     };
   };

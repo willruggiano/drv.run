@@ -11,9 +11,11 @@
   libxcb,
   makeWrapper,
   nodejs,
+  openssh,
   pi-src,
   runCommand,
   stdenv,
+  systemd,
   typescript,
   writeShellApplication,
 }: let
@@ -110,7 +112,8 @@ in
       done
 
       makeWrapper ${nodejs}/bin/node "$out/bin/serve" \
-        --add-flags "$out/lib/app/serve/dist/server.js"
+        --add-flags "$out/lib/app/serve/dist/server.js" \
+        --suffix PATH : ${lib.makeBinPath [openssh systemd]}
       runHook postInstall
     '';
 
