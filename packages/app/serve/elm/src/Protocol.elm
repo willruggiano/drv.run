@@ -40,7 +40,8 @@ type alias QueueItem =
 
 
 type alias Metadata =
-    { durations : Dict String Int
+    { branches : List Panel.Branch
+    , durations : Dict String Int
     , title : String
     , instance : String
     , model : String
@@ -73,7 +74,7 @@ empty =
     , live = { busy = False, messages = [], tools = [], notices = [], compactions = [] }
     , inspection = Nothing
     , queue = []
-    , metadata = { durations = Dict.empty, title = "Conversation", instance = "", model = "", thinking = "", input = "0", output = "0", read = "0", hit = "CH—", cost = "0.000", context = "—", level = "normal", resume = False }
+    , metadata = { branches = [], durations = Dict.empty, title = "Conversation", instance = "", model = "", thinking = "", input = "0", output = "0", read = "0", hit = "CH—", cost = "0.000", context = "—", level = "normal", resume = False }
     }
 
 
@@ -174,6 +175,7 @@ toolDecoder =
 metadataDecoder : Decoder Metadata
 metadataDecoder =
     D.succeed Metadata
+        |> andMap (D.field "branches" Panel.branchesDecoder)
         |> andMap (D.field "durations" (D.dict D.int))
         |> andMap (D.field "title" D.string)
         |> andMap (D.field "instance" D.string)

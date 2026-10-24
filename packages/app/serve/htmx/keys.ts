@@ -29,6 +29,14 @@ export function installKeys() {
       }
     }
     if (event.key === "Escape") {
+      const branches = document.querySelector<HTMLDetailsElement>("#branch-disclosure[open]");
+      if (branches?.checkVisibility()) {
+        branches.open = false;
+        branches.querySelector("summary")?.focus();
+        event.preventDefault();
+        return;
+      }
+
       if (closeCompletions()) {
         event.preventDefault();
         return;

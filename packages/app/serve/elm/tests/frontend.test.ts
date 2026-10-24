@@ -11,6 +11,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 const metadata = {
+  branches: [],
   durations: {},
   title: "Test",
   instance: "",

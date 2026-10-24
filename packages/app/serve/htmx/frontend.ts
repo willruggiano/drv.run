@@ -1,3 +1,4 @@
+import { BranchTree, type Branch } from "../branches.ts";
 import { FormError, form, field, inputContent, saveSessionSettings } from "../forms.ts";
 import {
   conversationURL,
@@ -96,6 +97,7 @@ export function htmlPage(
   back?: string,
   title = "Sessions",
   conversation = false,
+  branches = h``,
 ): string {
   const sessionsPath = `/sessions${back ? `?return=${encodeURIComponent(back)}` : "?view=sessions"}`;
   const heading = conversation
@@ -104,7 +106,7 @@ export function htmlPage(
   // htmx must see readyState=loading so initialization waits for DOMContentLoaded,
   // after the deferred extensions and module have registered their handlers.
   const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
-  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div><p id="request-error" role="alert"></p></header>`;
+  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}<p id="request-error" role="alert"></p></header>`;
   return renderHTML(
     h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${title === "Session settings" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
   );
@@ -116,11 +118,12 @@ export function html(
   back?: string,
   title?: string,
   conversation = false,
+  branches = h``,
 ): void {
   // Native form POSTs must retain a same-origin Origin, not null.
   response.setHeader("Referrer-Policy", "same-origin");
   response.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
-  response.end(htmlPage(content, back, title, conversation));
+  response.end(htmlPage(content, back, title, conversation, branches));
 }
 function redirect(request: IncomingMessage, response: ServerResponse, path: string): void {
   if (request.headers["hx-request"] === "true") {
@@ -178,6 +181,25 @@ async function panelFrame(
     await watch.stop();
   }
 }
+function branchRows(
+  session: Session,
+  current: number,
+  branches: Branch[],
+  parent: number | null = null,
+): SafeHtml {
+  return h`${branches
+    .filter((branch) => branch.parent === parent)
+    .map((branch) => {
+      const children = branchRows(session, current, branches, branch.id);
+      const timestamp = branch.activity === null ? null : new Date(branch.activity).toISOString();
+      return h`<li id="branch-${branch.id}"><div class="branch-row"><a href="${conversationURL(session, branch.id)}" aria-current="${branch.id === current}">${toolStatus(branch.state)}<span class="branch-name">${branch.title}</span>${timestamp ? h`<time class="branch-time" aria-label="Most recent activity" datetime="${timestamp}">${timestamp.slice(11, 16)}</time>` : h`<span class="branch-time" aria-label="No activity yet">—</span>`}</a></div>${children.length ? h`<ul>${children}</ul>` : ""}</li>`;
+    })}`;
+}
+function branchHeader(session: Session, current: number, branches: Branch[]): SafeHtml {
+  const name = branches.find((branch) => branch.id === current)?.title ?? `Branch ${current}`;
+  return h`<details id="branch-disclosure" class="branch-disclosure"><summary aria-label="Conversation branches">${icon("fork")}<span>${name.toLowerCase()}</span><span class="branch-chevron" aria-hidden="true">›</span></summary><nav class="branch-panel" aria-label="Conversation branches"><ul id="branch-tree">${branchRows(session, current, branches)}</ul></nav></details>`;
+}
+
 function liveHTML(view: ConversationView, calls: ReadonlyMap<string, Call> = new Map()): SafeHtml {
   const live = view.docs[LiveDoc.definition.kind] as LiveState | undefined;
   const compactions = (live?.compactions ?? []).map(
@@ -366,6 +388,8 @@ async function events(
 ): Promise<void> {
   const conversation = await getConversation(session, id, context);
   const watch = await conversation.watch(context);
+  const branches = new BranchTree(session);
+  let branchesDirty = true;
   let view = watch.value;
   let review: ReviewState | undefined;
   let ready = false,
@@ -375,6 +399,10 @@ async function events(
   let timingsDirty = true;
   let durations = new Map<number, number>();
   const stopCommits = session.harness.subscribeCommits((publication) => {
+    if (branches.invalidate(publication)) {
+      branchesDirty = true;
+      if (ready) queueMicrotask(schedule);
+    }
     for (const change of publication.changes) {
       if (
         (change.type === "task" &&
@@ -466,6 +494,10 @@ async function events(
         if (!inspection && metadata) {
           metadata = false;
           fragment = h`${fragment}${partial("session-meta", await metadataHTML(session, conversation, current, settings, context))}`;
+        }
+        if (!inspection && branchesDirty) {
+          branchesDirty = false;
+          fragment = h`${fragment}${partial("branch-tree", branchRows(session, id, await branches.read(context)), "innerMorph")}`;
         }
         if (fragment.length && !response.destroyed) {
           const id = inspection || sentHead === renderer.head ? "" : `id: ${renderer.head}\n`;
@@ -731,7 +763,8 @@ export async function hypermedia(
     content: SafeHtml,
     title = titles[operation ?? ""] ?? "Conversation",
     conversationPage = false,
-  ) => html(response, content, 200, path, title, conversationPage);
+    branches = h``,
+  ) => html(response, content, 200, path, title, conversationPage, branches);
   if (request.method === "GET" && operation === "settings") {
     const catalog = await sessions.catalog(context);
     const info = await sessionInfo(session, conversation, catalog.targets, context);
@@ -880,6 +913,7 @@ export async function hypermedia(
         h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events?head=${renderer.head}`)}><main id="main-area"><div class="scrollport pane" id="conversation-scroll" tabindex="0" aria-label="Conversation"><div id="transcript">${renderer.transcript(records.some((record) => record.kind === "pi.compaction") ? await compactionTimes(session, context) : undefined)}</div>${renderer.live(watch.value)}</div></main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context), operation === "reset" ? { requestId: url.searchParams.get("requestId") ?? "", handoff: url.searchParams.get("argument") ?? "" } : undefined)}</section>`,
         info.name || "Untitled session",
         true,
+        branchHeader(session, conversation.id, await new BranchTree(session).read(context)),
       );
     } finally {
       await watch.stop();

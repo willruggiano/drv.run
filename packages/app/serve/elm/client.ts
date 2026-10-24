@@ -396,6 +396,14 @@ document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || event.isComposing) return;
   if (document.querySelector("dialog[open]")) return;
   if (event.key === "Escape") {
+    const branches = document.querySelector<HTMLDetailsElement>("#branch-disclosure[open]");
+    if (branches?.checkVisibility()) {
+      branches.open = false;
+      branches.querySelector("summary")?.focus();
+      event.preventDefault();
+      return;
+    }
+
     send("dismiss", null);
     return;
   }

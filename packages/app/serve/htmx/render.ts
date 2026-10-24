@@ -17,9 +17,10 @@ export const action = (
 ) =>
   h`<form method="post" action="${url}"${command ? h` data-command="${command}"` : ""}>${fields}<button${buttonAttributes}>${text}</button></form>`;
 export function icon(
-  name: "settings" | "close" | "check" | "send" | "chevron-left" | "chevron-down",
+  name: "fork" | "settings" | "close" | "check" | "send" | "chevron-left" | "chevron-down",
 ): SafeHtml {
   const paths = {
+    fork: '<circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M18 7v2c0 5-12 1-12 8"/>',
     settings:
       '<path d="m9 3-.6 2.4-1.5.9-2.4-.7-3 5.2L3.3 12l.1 1.8-1.7 1.8 3 5.2 2.3-.7 1.6.9.5 2.4h6l.6-2.4 1.5-.9 2.4.7 3-5.2-1.8-1.2-.1-1.8 1.7-1.8-3-5.2-2.3.7-1.6-.9L15 3Z" transform="translate(1 -1) scale(.92)"/><circle cx="12" cy="12" r="3.2"/>',
     send: '<path d="M12 20V4m-7 7 7-7 7 7"/>',

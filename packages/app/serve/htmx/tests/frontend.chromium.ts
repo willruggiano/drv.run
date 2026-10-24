@@ -297,7 +297,10 @@ await test("SSE heads avoid initial history, append keyed entries, and morph res
   assert(initial.onlyPartials);
   assert(
     initial.parts.every(
-      (part) => part.id !== "transcript" && part.entries === 0 && part.swap === "outerMorph",
+      (part) =>
+        part.id !== "transcript" &&
+        part.entries === 0 &&
+        part.swap === (part.id === "branch-tree" ? "innerMorph" : "outerMorph"),
     ),
   );
   const node = await page.locator(`#entry-${first.id}`).elementHandle();

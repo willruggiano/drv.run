@@ -1,3 +1,4 @@
+import { BranchTree, type Branch } from "../branches.ts";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@earendil-works/chord/context";
@@ -13,7 +14,6 @@ import {
   type UsageState,
   type Conversation,
   type SubmissionId,
-  type Cursor,
 } from "@earendil-works/pi-durable";
 import {
   getConversation,
@@ -320,6 +320,7 @@ export class ElmProjection {
 }
 
 type Metadata = {
+  branches: (Branch & { path: string })[];
   durations: Record<string, number>;
   title: string;
   instance: string;
@@ -351,6 +352,7 @@ async function metadata(
       ? (status.lastResponse.tokens / status.window) * 100
       : undefined;
   return {
+    branches: [],
     durations: {},
     resume: info.needsResume,
     title: info.name || "Untitled session",
@@ -476,29 +478,13 @@ export async function elmFrontend(
         ],
       });
     } else if (pane === "branches") {
-      const items = [];
-      let cursor: Cursor | undefined;
-      do {
-        const page = await session.harness.commit(
-          (tx) => tx.scanConversations({}, 256, cursor),
-          context,
-        );
-        for (const record of page.items) {
-          const review = await session.harness.snapshot(Review, record.id, context);
-          items.push({
-            path: `/elm${conversationURL(session, record.id)}`,
-            title:
-              review?.original !== undefined
-                ? `Review ${record.id}`
-                : record.id === session.root.id
-                  ? "Main"
-                  : `Branch ${record.id}`,
-            parent: review?.original ?? record.parent?.conversationId ?? null,
-          });
-        }
-        cursor = page.next;
-      } while (cursor);
-      json(response, items);
+      json(
+        response,
+        (await new BranchTree(session).read(context)).map((branch) => ({
+          ...branch,
+          path: `/elm${conversationURL(session, branch.id)}`,
+        })),
+      );
     } else throw new FormError(400, "Unknown panel.");
     return;
   }
@@ -578,11 +564,16 @@ export async function elmFrontend(
     let dirty = true;
     let ready = false;
     let sending = false;
+    const branches = new BranchTree(session);
     let timingsDirty = true;
     let durations: Record<string, number> = {};
     const pendingEntries: EntryRecord[] = [];
     const stopCommits = session.harness.subscribeCommits((publication) => {
       if (response.destroyed) return;
+      if (branches.invalidate(publication)) {
+        dirty = true;
+        if (ready) void send();
+      }
       for (const change of publication.changes) {
         if (
           change.type === "document" &&
@@ -671,7 +662,15 @@ export async function elmFrontend(
             dirty = true;
             continue;
           }
-          const frame = projector.project(current, { ...info, durations }, inspection);
+          const tree = (await branches.read(context)).map((branch) => ({
+            ...branch,
+            path: `/elm${conversationURL(session, branch.id)}`,
+          }));
+          const frame = projector.project(
+            current,
+            { ...info, durations, branches: tree },
+            inspection,
+          );
           if (frame) response.write(`data: ${JSON.stringify({ ...frame, subscription })}\n\n`);
         }
       } catch {

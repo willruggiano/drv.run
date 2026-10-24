@@ -1653,6 +1653,11 @@ view model =
                       else
                         a [ id "menu-toggle", class "icon", href "/sessions/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
                     ]
+                , if model.pane == Conversation && model.catalog == Nothing then
+                    branchHeader model.path state.metadata.branches
+
+                  else
+                    text ""
                 , p [ id "request-error", attribute "role" "alert" ]
                     [ text model.error
                     , case model.connection of
@@ -1667,6 +1672,62 @@ view model =
             )
         ]
     }
+
+
+branchHeader : String -> List Panel.Branch -> Html Msg
+branchHeader path branches =
+    let
+        current =
+            List.filter (\branch -> branch.path == path) branches |> List.head
+
+        rows parent =
+            branches
+                |> List.filter (\branch -> branch.parent == parent)
+                |> List.map
+                    (\branch ->
+                        let
+                            children =
+                                rows (Just branch.id)
+                        in
+                        Html.li [ id ("branch-" ++ String.fromInt branch.id) ]
+                            [ div [ class "branch-row" ]
+                                [ a
+                                    [ href branch.path
+                                    , attribute "aria-current"
+                                        (if branch.path == path then
+                                            "true"
+
+                                         else
+                                            "false"
+                                        )
+                                    ]
+                                    [ Transcript.toolStatus branch.state
+                                    , span [ class "branch-name" ] [ text branch.title ]
+                                    , case branch.activity of
+                                        Just timestamp ->
+                                            Html.node "elm-time" [ class "branch-time", attribute "aria-label" "Most recent activity", attribute "timestamp" (String.fromFloat timestamp) ] []
+
+                                        Nothing ->
+                                            span [ class "branch-time", attribute "aria-label" "No activity yet" ] [ text "—" ]
+                                    ]
+                                ]
+                            , if List.isEmpty children then
+                                text ""
+
+                              else
+                                Html.ul [] children
+                            ]
+                    )
+    in
+    Html.details [ id "branch-disclosure", class "branch-disclosure" ]
+        [ Html.summary [ attribute "aria-label" "Conversation branches" ]
+            [ Transcript.icon "fork"
+            , span [] [ text (Maybe.map (.title >> String.toLower) current |> Maybe.withDefault "branches") ]
+            , span [ class "branch-chevron", attribute "aria-hidden" "true" ] [ text "›" ]
+            ]
+        , Html.nav [ class "branch-panel", attribute "aria-label" "Conversation branches" ]
+            [ Html.ul [ id "branch-tree" ] (rows Nothing) ]
+        ]
 
 
 viewTranscript : Dict String Bool -> String -> Maybe Int -> Dict Int Protocol.Entry -> Dict String Protocol.Tool -> Dict String Int -> Html Msg

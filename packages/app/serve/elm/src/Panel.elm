@@ -113,12 +113,12 @@ settingsView change save directories settings =
 
 
 type alias Branch =
-    { path : String, title : String, parent : Maybe Int }
+    { path : String, title : String, parent : Maybe Int, id : Int, state : String, activity : Maybe Float }
 
 
 branchesDecoder : Decoder (List Branch)
 branchesDecoder =
-    D.list (D.map3 Branch (D.field "path" D.string) (D.field "title" D.string) (D.field "parent" (D.nullable D.int)))
+    D.list (D.map6 Branch (D.field "path" D.string) (D.field "title" D.string) (D.field "parent" (D.nullable D.int)) (D.field "id" D.int) (D.field "state" D.string) (D.field "activity" (D.nullable D.float)))
 
 
 type Context
