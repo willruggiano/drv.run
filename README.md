@@ -16,6 +16,24 @@ ssh drv.run github:willruggiano/drv.run
 You're in! To what you may ask? A _NixOS microvm_, with your entire build
 environment ready to go for whatever it is you want to do!
 
+## Project entry points
+
+- Commands and verification: [justfile](justfile), [flake.nix](flake.nix).
+- Formatting: [packages/formatter.nix](packages/formatter.nix).
+- Harness integration:
+  [packages/app/harness/index.ts](packages/app/harness/index.ts).
+- Session lifecycle:
+  [packages/app/serve/sessions.ts](packages/app/serve/sessions.ts).
+- Test fixtures:
+  [sessions-testing.ts](packages/app/serve/tests/sessions-testing.ts),
+  [browser-testing.ts](packages/app/serve/tests/browser-testing.ts).
+- Host/guest lifecycle: [[docs/architecture.md]],
+  [nixosModules/host/](nixosModules/host/),
+  [nixosModules/guest/](nixosModules/guest/).
+
+Pi dependencies come from the flake pin, not arbitrary registry releases. See
+the [lockfile consistency assertions](packages/app/default.nix).
+
 ## Principles
 
 - **Think first:** Verify behavior against the upstream sources. State

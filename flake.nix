@@ -84,6 +84,7 @@
       app-tape = pkgs.app.tape;
       app-tests = pkgs.app;
       bench-tests = pkgs.bench;
+      llms-snapshot = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
       mitm-proxy-tests = pkgs.mitm-proxy;
       nixos-mitm-proxy-tests = pkgs.mitm-proxy.tests;
     });
@@ -91,6 +92,116 @@
     devShells = eachSystem (pkgs: let
       inherit (self.devShells.${pkgs.stdenv.hostPlatform.system}) toolchain;
       pkgs' = pkgs.extend self.overlays.dev;
+      nix = pkgs.nixVersions.nix_2_35;
+      llms = pkgs.writeTextFile {
+        name = "llms.txt";
+        destination = "/llms.txt";
+        text = ''
+          # drv.run development context
+
+          ## Using these references
+
+          - Read only the references relevant to the current task; do not preload every document.
+          - Use the working tree for drv.run code. Store paths are immutable dependency references, not the current checkout.
+          - Verify dependency behavior against these pinned sources before consulting online documentation.
+
+          ## Tools and preferences
+
+          - Prefer jj over git for repository operations. Inspect the current change and parents before committing; do not assume a linear history.
+          - Prefer rg over grep, fd over find, and eza over ls for interactive inspection, not as mandatory replacements in scripts.
+          - Use jq for JSON and ast-grep for structural code searches.
+          - Use project formatters and checks rather than introducing alternative tooling.
+
+          ## Commands
+
+          Run project commands from the repository root. Use PATH-resolved tools; store paths below select pinned sources and manuals.
+
+          Inspect the working copy and select changes deliberately:
+          ```sh
+          jj status
+          jj log -r '@ | @-'
+          jj diff --stat
+          jj diff --git -- flake.nix
+          jj help -k revsets
+          jj help commit
+          ```
+
+          Enter the development environment, verify changes, and inspect generated context:
+          ```sh
+          nix develop .#default
+          just check
+          just test
+          just chromium
+          NODE_OPTIONS=--conditions=development node --test --test-name-pattern='XDG context' packages/app/harness/tests/context.test.ts
+          system=$(nix eval --impure --raw --expr builtins.currentSystem)
+          nix build ".#checks.$system.llms-snapshot" --no-link -L
+          nix eval --raw ".#checks.$system.llms-snapshot.text"
+          ```
+
+          Keep long checks in a task-specific zmx session. Inspect existing sessions before reusing a name; wait for completion and check the exit status, not just the last log lines.
+          ```sh
+          zmx list
+          zmx run drv-run-checks -d nix flake check -L
+          zmx history drv-run-checks | tail -100
+          zmx wait drv-run-checks
+          ```
+
+          Find NixOS option definitions, then read their types, defaults and surrounding module code. Options may be nested rather than written as a dotted name.
+          ```sh
+          rg -n -F 'services.openssh' ${inputs.nixpkgs}/nixos/modules
+          rg -n -C 6 'PasswordAuthentication =|PermitRootLogin =' ${inputs.nixpkgs}/nixos/modules/services/networking/ssh/sshd.nix
+          rg -n 'mkOption|mkEnableOption' nixosModules
+          man -M ${pkgs.systemd.man}/share/man systemd.service
+          man -M ${pkgs.openssh.man}/share/man sshd_config
+          ```
+
+          ## Pinned dependency references
+
+          Harness, conversations and extensions:
+            ${inputs.pi}/packages/durable/README.md
+          Durable usage examples:
+            ${inputs.pi}/packages/durable/test/examples/
+          Remote execution semantics:
+            ${inputs.pi}/packages/env/docs/semantics.md
+          Remote execution protocol:
+            ${inputs.pi}/packages/env/docs/protocol.md
+          Cancellation and context propagation:
+            ${inputs.pi}/packages/chord/src/context/index.ts
+          Telemetry contracts:
+            ${inputs.pi}/packages/telemetry/README.md
+
+          Nix command and language reference:
+            ${nix.doc}/share/doc/nix/manual/
+          Nix shell applications and trivial builders:
+            ${inputs.nixpkgs}/pkgs/build-support/trivial-builders/default.nix
+          Nix build phases:
+            ${inputs.nixpkgs}/doc/stdenv/stdenv.chapter.md
+          Nix module semantics:
+            ${inputs.nixpkgs}/doc/module-system/module-system.chapter.md
+          NixOS modules and options:
+            ${inputs.nixpkgs}/nixos/modules/
+          Elm dependency APIs:
+            ${pkgs.app.elmHome}/${(lib.importJSON ./packages/app/serve/elm/elm.json).elm-version}/packages/elm/
+
+          MicroVM configuration:
+            ${inputs.microvm}/README.md
+          Persistence:
+            ${inputs.impermanence}/README.org
+          Deployment:
+            ${inputs.deploy-rs}/README.md
+          Coding jail:
+            ${inputs.jail}/README.md
+          Secrets:
+            ${inputs.sops-nix}/README.md
+        '';
+        checkPhase = ''
+          runHook preCheck
+          # Hashes vary across systems and source snapshots; retain names and suffixes.
+          ${lib.getExe pkgs.gnused} -E 's@/nix/store/[0-9a-z]{32}-@/nix/store/HASH-@g' "$target" > actual.txt
+          ${lib.getExe' pkgs.diffutils "diff"} -u ${./tests/llms.txt} actual.txt
+          runHook postCheck
+        '';
+      };
     in {
       default = pkgs.mkShell {
         inherit (toolchain) npmDeps npmRoot;
@@ -102,7 +213,9 @@
         packages = [pkgs'.pi-jailed pkgs'.treefmt-wrapped];
       };
       toolchain = pkgs.mkShell {
+        passthru = {inherit llms;};
         shellHook = ''
+          export XDG_CONFIG_DIRS="${llms}:''${XDG_CONFIG_DIRS:-/etc/xdg}"
           linkNodeModulesHook
           export ELM_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/drv-run-${builtins.baseNameOf pkgs.app.elmHome}"
           if [ ! -d "$ELM_HOME" ]; then
@@ -147,6 +260,7 @@
           libnotify
           man
           markdownlint-cli2
+          nix
           nix-eval-jobs
           nix-fast-build
           nix-update
