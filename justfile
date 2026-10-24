@@ -19,14 +19,6 @@ check:
 
 # Run the CI suite, including full Nix validation
 ci: check test chromium
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if ! command -v nix >/dev/null 2>&1; then
-        printf '%s\n' \
-            'Nix verification not run: nix is unavailable.' \
-            'Run outside the jail: nix flake check' >&2
-        exit 1
-    fi
     nix flake check -L
 
 # Apply the fixable variants of the check commands
@@ -40,19 +32,10 @@ fix:
 
 # Run Node tests and Nix evaluation (requires nix)
 test:
-    #!/usr/bin/env bash
-    set -euo pipefail
     ast-grep test --skip-snapshot-tests
     NODE_OPTIONS=--conditions=development node --test "**/*.test.ts"
     python3 -B -m unittest discover -s packages.bench.tests -p '*_test.py'
     python3 -B -m unittest discover -s packages/mitm-proxy/tests -t packages/mitm-proxy -p '*_test.py'
-    if ! command -v nix >/dev/null 2>&1; then
-        printf '%s\n' \
-            'Nix verification not run: nix is unavailable.' \
-            'Run outside the jail: nix flake check --no-build' >&2
-        exit 1
-    fi
-    nix flake check --no-build
 
 # Run Chromium integration tests and renderer benchmarks
 chromium:

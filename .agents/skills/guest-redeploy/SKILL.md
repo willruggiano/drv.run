@@ -7,63 +7,106 @@ description:
 
 # Guest -> local -> rock5b
 
-Run local commands from the repository root. Import committed work only; never
-reset local changes, modify guest uncommitted work, or clean/recreate the
-instance.
+Both local and remote must have clean working copies. If either are not clean,
+inform the user and ask how to proceed.
 
-Use the guest branch, bookmark, commit, or workspace the user names. Otherwise,
-use `HEAD` in the selected guest checkout (default: `/workspace/drv.run`). In a
-Jujutsu workspace, use `@-` as the default committed tip, not the working-copy
-commit `@` or another workspace's Git `HEAD`. Ask if the source is ambiguous,
-including multiple working-copy parents.
+## SSH to the guest
 
-Unless the user names a local destination, import into the current local
-checkout. Use its unambiguous branch/bookmark; ask if several could apply. A
-detached checkout needs no new branch unless requested. Never assume the local
-destination has the same name as the guest source.
+Discover the running instance through rock5b:
 
-1. Inspect `jj status`, local history, and destination bookmarks. Discover the
-   guest: `ssh -T -F examples/rock5b/.ssh/config rock5b 'drv.run list -u me'`.
-   Through that host, run
-   `su --login me --command 'exec ssh -T drv.run.ID <guest-command>'`. Quote
-   each shell layer. Inspect `/workspace/drv.run` and `jj workspace list`, then
-   inspect status and history in the selected guest checkout. Resolve the source
-   to a full commit ID and identify the already-imported base from both
-   histories; do not assume the previous instance, hashes, or ancestry still
-   match.
-2. Pin the source by re-resolving it and testing equality with `<tip>`
-   immediately before export: use `git rev-parse <source>` for Git or
-   `jj log -r <source> --no-graph -T commit_id` in the selected Jujutsu
-   workspace. For a default Jujutsu source, `<source>` is `@-`. Run Git export
-   commands in the workspace's backing Git repository; a linked Jujutsu
-   workspace need not have a `.git` directory. Create a uniquely named temporary
-   ref at `<tip>` with `git update-ref <export-ref> <tip> <all-zero-old-oid>`
-   and install an EXIT trap to delete only that ref, checking its expected
-   value. Export with
-   `git bundle create - <export-ref> ^<already-imported-base>`; omit the
-   exclusion if there is no shared base. Use a ref even for a bare commit ID:
-   Git can refuse a hash-only bundle as empty. Never move a guest
-   branch/bookmark for export. Guest shell hooks print to stdout: emit a unique
-   newline-delimited marker before the bundle, capture bytes, strip the prefix,
-   and validate the bundle header. Run `git bundle verify`; fetch the exported
-   ref into a unique local `refs/heads/instance-recovery/<id>` ref.
-3. With an empty working-copy commit, fast-forward via `jj rebase -r @ -d <tip>`
-   when ancestry matches. Otherwise cherry-pick only new commits using
-   `jj duplicate '<guest-base>..<tip>' --insert-before @`. For rewritten
-   history, inspect `git range-diff` and preserve a backup ref. Resolve
-   conflicts without dropping local fixes; squash resolutions into the imported
-   commit. Never duplicate previously imported work.
-4. Run `just check`, Node tests, and the Nix-free tests listed in `justfile`.
-   Fix regressions; tolerate failures only when explicitly authorized.
-   Formatting can modify files even when checks fail: inspect, commit, and
+```sh
+ssh -T -F examples/rock5b/.ssh/config rock5b 'drv.run list -u me'
+```
+
+Replace `drv.run.ID` below with the selected instance name. If several instances
+could apply, ask which one to use. Connect through rock5b as its `me` user, then
+inspect only the selected checkout (default: `/workspace/drv.run`):
+
+```sh
+ssh -T -F examples/rock5b/.ssh/config rock5b \
+  "su --login me --command 'exec ssh -T drv.run.ID bash -s'" <<'GUEST'
+cd /workspace/drv.run || exit 1
+pwd
+jj --ignore-working-copy workspace list
+jj --ignore-working-copy status
+jj --ignore-working-copy log -n 15
+GUEST
+```
+
+The quoted heredoc keeps guest commands out of the local and host shells.
+`--ignore-working-copy` avoids snapshotting guest edits. Do not switch to
+another workspace unless the user requests it.
+
+## Fetch
+
+```sh
+jj status
+jj log -n 15
+jj bookmark list
+.agents/skills/guest-redeploy/scripts/guest-fetch.py
+```
+
+The helper discovers the only running guest through rock5b and fetches the
+committed parent (`@-`) of **`/workspace/drv.run`**, not another workspace's Git
+`HEAD`. It supports Git checkouts too (default `HEAD`). Override only when
+requested:
+
+```sh
+.agents/skills/guest-redeploy/scripts/guest-fetch.py --instance drv.run.ID --workspace /workspace/drv.run
+.agents/skills/guest-redeploy/scripts/guest-fetch.py --source BOOKMARK --base KNOWN_IMPORTED_COMMIT
+```
+
+It refuses ambiguous sources, pins the source immediately before export, creates
+and cleans up a unique guest ref, strips login chatter, verifies the bundle, and
+fetches into a unique local `instance-recovery/*` ref. Linked Jujutsu workspaces
+are supported. Neither checkout nor destination bookmarks are moved. The bundle
+and a JSON receipt (tip, export base, recovery ref) are saved under `.scratch/`.
+
+The default export-base hint is local `@-`. If it is not a guest ancestor, the
+helper transfers full history instead. **An export base is not necessarily the
+last imported commit after cherry-picks or rewrites:** inspect both histories
+before integrating. Do not duplicate previously imported work. If multiple
+guests, parents, or possible destinations exist, ask rather than guess.
+
+## Integrate
+
+Use the current local checkout unless the user names a destination. Identify its
+unambiguous branch/bookmark; never assume it matches the guest source. A
+detached checkout needs no new bookmark. Preserve existing uncommitted work
+before moving an empty working-copy commit.
+
+For an empty working copy whose parent is an ancestor of the fetched tip:
+
+```sh
+jj rebase -r @ -d TIP
+```
+
+Otherwise, identify the already-imported guest base from both histories and copy
+only new commits, preserving local fixes:
+
+```sh
+jj duplicate 'GUEST_BASE..TIP' --insert-before @
+```
+
+For rewritten history, inspect `git range-diff` and preserve a backup ref first.
+Resolve conflicts without dropping local fixes; squash resolutions into the
+imported commit. Keep existing messages; use Conventional Commits for new fixes.
+
+## Verify and deploy
+
+1. Run `just check`, Node tests, and the Nix-free tests listed in `justfile`,
+   including `python3 -B -m unittest discover -s scripts -p '*_test.py'` and
+   `just chromium`. Fix regressions; tolerate failures only when explicitly
+   authorized. Formatting can change files even on failure: inspect, commit, and
    rerun.
-5. Move the selected local branch/bookmark, if any, to the verified tip, remove
-   the temporary recovery ref, and verify a clean, conflict-free working copy.
-   Recheck bookmarks before moving them; do not undo concurrent user renames or
-   deletions. Preserve existing commit messages; use Conventional Commits for
-   new fixes.
-6. Run `rockctl deploy` with a 24-hour timeout (`86400` seconds). Require exit
+2. Recheck destination bookmarks before moving the selected one to the verified
+   tip; do not undo concurrent user renames or deletions. Remove the recovery
+   ref with the expected tip (the helper prints the command). Verify a clean,
+   conflict-free working copy.
+3. Run `rockctl deploy` with a 24-hour timeout (`86400` seconds). Require exit
    code zero and confirmed activation. Report the tip, checks, and
-   `.scratch/rock5b-deploy.log`. Nix is unavailable in jail: explicitly defer
-   `nix flake check` to the operator; deployment success does not replace full
-   validation.
+   `.scratch/rock5b-deploy.log`.
+
+Nix is unavailable in jail: explicitly defer `nix flake check` to the operator;
+deployment success does not replace full validation. Do not hide unavailable
+checks or bypass them with fake executables.
