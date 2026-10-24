@@ -3,6 +3,9 @@
   pkgs,
   ...
 }: {
+  # FIXME: This does NOT belong in here. We don't have a good place for it right
+  # now because it's the first one, but when we do the second one we should invest
+  # in better organization of these kinds of non-core things.
   environment = {
     systemPackages = [pkgs.gh];
     sessionVariables.GH_CONFIG_DIR = "/run/drv-run-seed/mitm-proxy/gh";
@@ -42,6 +45,8 @@
       UMask = "0077";
     };
     path = [pkgs.iproute2 pkgs.jq pkgs.git];
+    # TODO: is this actually necessary? Can we do this at build time instead via
+    # nixos options?
     script = ''
       gateway=$(ip -j -4 route show default | jq -er 'if length == 1 then .[0].gateway else error("expected one default gateway") end')
       git config --file /run/mitm-proxy/gitconfig http.https://github.com/.proxy "http://$gateway:${toString port}"

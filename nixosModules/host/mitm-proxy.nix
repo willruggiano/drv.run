@@ -26,9 +26,10 @@ in {
       default = 3128;
       description = "Host listener for the guest credential proxy.";
     };
+    # This is dumb! What if we want another such client that isn't github?
     clientId = lib.mkOption {
       type = lib.types.str;
-      default = "";
+      default = "Iv23liZlNYpFfQGoQv57";
       description = "GitHub App client ID, with device flow and expiring user tokens enabled.";
     };
     caCertificate = lib.mkOption {

@@ -31,13 +31,16 @@
     systems = ["x86_64-linux" "aarch64-linux"];
     eachSystem = f:
       nixpkgs.lib.genAttrs systems (system: let
-        pkgs = import nixpkgs {inherit system;};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [drv-run.overlays.default];
+        };
       in
         f pkgs);
   in {
     devShells = eachSystem (pkgs: {
       default = pkgs.mkShellNoCC {
-        packages = [pkgs.age pkgs.sops pkgs.ssh-to-age];
+        packages = with pkgs; [age sops ssh-to-age];
       };
     });
 
@@ -75,191 +78,42 @@
         path = deploy-rs.lib.aarch64-linux.activate.nixos self.nixosConfigurations.rock5b;
         user = "root";
       };
-      # remoteBuild = true;
-      sshOpts = [
-        "-F"
-        "/dev/null"
-        "-i"
-        "examples/rock5b/.ssh/id_ed25519"
-        "-o"
-        "IdentitiesOnly=yes"
-        "-o"
-        "IdentityAgent=none"
-        "-o"
-        "UserKnownHostsFile=examples/rock5b/.ssh/known_hosts"
-        "-o"
-        "GlobalKnownHostsFile=/dev/null"
-        "-o"
-        "StrictHostKeyChecking=yes"
-        "-o"
-        "BatchMode=yes"
-        "-o"
-        "ForwardAgent=no"
-        "-o"
-        "ForwardX11=no"
-        "-o"
-        "ClearAllForwardings=yes"
-        "-o"
-        "ConnectTimeout=10"
-        "-o"
-        "ServerAliveInterval=15"
-        "-o"
-        "ServerAliveCountMax=3"
-      ];
       sshUser = "root";
     };
 
-    checks =
-      eachSystem (pkgs:
-        deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy);
+    checks = eachSystem (
+      pkgs: deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy
+    );
 
     nixosConfigurations.rock5b = nixpkgs.lib.nixosSystem {
       modules = [
-        self.nixosModules.base
-        self.nixosModules.dev
-        self.nixosModules.rock5b
+        self.nixosModules.rock5b # hardware: https://radxa.com/products/rock5/5b
+        self.nixosModules.system # users, ssh, and a few helpful sysadmin tools
+        self.nixosModules.drv-run # serve nixos microvms over ssh
+        self.nixosModules.mitm # proxies guest credentials, eg. for git access
+        self.nixosModules.tailscale # so we can serve guest https over tailscale
       ];
     };
 
     nixosModules = {
-      base = {
-        config,
-        pkgs,
-        ...
-      }: {
-        imports = [sops-nix.nixosModules.sops];
-
-        sops.age.sshKeyPaths = ["/etc/ssh/ssh_host_ed25519_key"];
-        sops.gnupg.sshKeyPaths = [];
-
-        users = {
-          mutableUsers = false;
-          users = {
-            root = {
-              hashedPassword = "!";
-              openssh.authorizedKeys.keys =
-                config.users.users.me.openssh.authorizedKeys.keys
-                ++ config.users.users.pi.openssh.authorizedKeys.keys;
-            };
-            me = {
-              isNormalUser = true;
-              uid = 1000;
-              group = "me";
-              hashedPassword = "!";
-              openssh.authorizedKeys.keys = [
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWXJHDkOTwqq+3W5JgBxGWyDNlhxVcQB/2lwBRwg8/f me@local"
-              ];
-            };
-            pi = {
-              isNormalUser = true;
-              uid = 1001;
-              group = "pi";
-              hashedPassword = "!";
-              openssh.authorizedKeys.keys = [
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILyrIElca7UIajXHQmmFhmpbrVfs9ceui8r9wjNL0zs+ pi@local"
-              ];
-            };
-          };
-          groups = {
-            me.gid = 1000;
-            pi.gid = 1001;
-          };
-        };
-
-        environment.systemPackages = with pkgs; [
-          kitty.terminfo
-          sysz
-        ];
-
-        programs.htop = {
-          enable = true;
-          package = pkgs.htop-vim;
-        };
-
-        services.openssh = {
-          enable = true;
-          openFirewall = true;
-          settings = {
-            AuthenticationMethods = "publickey";
-            PermitRootLogin = "prohibit-password";
-            PasswordAuthentication = false;
-            KbdInteractiveAuthentication = false;
-          };
-        };
-
-        nix.settings = {
-          experimental-features = ["nix-command" "flakes"];
-          sandbox = true;
-        };
-
-        system.stateVersion = "26.11";
-      };
-
-      dev = {
+      drv-run = {
         config,
         lib,
         pkgs,
         ...
       }: {
-        imports =
-          [
-            drv-run.nixosModules.host
-            drv-run.nixosModules.pi
-          ]
-          ++ lib.optional (builtins.pathExists ./mitm-proxy-ca.nix) ./mitm-proxy-ca.nix;
-
-        assertions = [
-          {
-            assertion = builtins.pathExists ./mitm-proxy-ca.nix;
-            message = "Run scripts/setup-mitm-proxy.sh before deploying the credential proxy.";
-          }
+        imports = [
+          drv-run.nixosModules.host
+          drv-run.nixosModules.pi
         ];
 
-        sops.secrets.tailscale-auth-key = {
-          sopsFile = ./secrets/tailscale-auth-key;
-          format = "binary";
-          restartUnits = ["tailscaled-autoconnect.service"];
-        };
-
-        # Create this SOPS-encrypted binary file locally, using the same host age
-        # recipient as tailscale-auth-key. No plaintext key enters the Nix store.
-        sops.secrets.parallel-api-key = lib.mkIf (builtins.pathExists ./secrets/parallel-api-key) {
-          sopsFile = ./secrets/parallel-api-key;
-          format = "binary";
-          owner = config.services.pi.user;
-          mode = "0400";
-        };
-
-        # Foreground Serve owns its configuration for the lifetime of this unit.
-        # HTTPS must first be enabled in the tailnet; never use Funnel for Pi.
-        systemd.services.pi-https = {
-          description = "Pi HTTPS over Tailscale";
-          wantedBy = ["multi-user.target"];
-          wants = ["tailscaled-autoconnect.service"];
-          after = ["tailscaled-autoconnect.service"];
-          serviceConfig = {
-            Type = "exec";
-            ExecStart = "${lib.getExe config.services.tailscale.package} serve --https=443 http://127.0.0.1:${toString config.services.pi.port}";
-            Restart = "always";
-            RestartSec = 5;
-          };
-        };
-
         services = {
-          tailscale = {
-            enable = true;
-            openFirewall = true;
-            authKeyFile = config.sops.secrets.tailscale-auth-key.path;
-            # Keep the host's LAN DNS and routing; only join the tailnet.
-            extraUpFlags = ["--accept-dns=false" "--accept-routes=false"];
-          };
-
+          # Configure drv.run to serve nixos microvms over ssh. Later on we'll
+          # setup pi over https and connect it to drv.run as the harness's
+          # execution environment. This gives us microvms over ssh, and also
+          # (some lines down) an assistant (pi) over private https that executes
+          # tools and runs code in a nixos microvm!
           drv-run = {
-            mitm-proxy = {
-              clientId = "Iv23liZlNYpFfQGoQv57";
-              owners.me.githubUserId = 11872440;
-            };
-
             guest.extraModules = [
               {
                 microvm.vcpu = 4;
@@ -271,6 +125,7 @@
                   memoryPercent = 50;
                 };
 
+                # avoid cli warnings that annoy agents (lmao)
                 programs.git = {
                   enable = true;
                   config.user = {
@@ -278,29 +133,13 @@
                     email = "root@guest";
                   };
                 };
-
                 environment.etc."jj/config.toml".text = ''
                   [user]
                   name = "root"
                   email = "root@guest"
                 '';
 
-                environment.systemPackages = with pkgs; [
-                  kitty.terminfo
-                ];
-
-                environment.persistence."/persist".users.root.directories = [
-                  {
-                    directory = ".pi/agent";
-                    mode = "0700";
-                  }
-                ];
-                systemd.tmpfiles.rules = [
-                  "d /root/.pi 0700 root root - -"
-                  "d /root/.pi/agent 0700 root root - -"
-                  "C /root/.pi/agent/settings.json 0600 root root - ${./.pi/settings.json}"
-                  "C /root/.pi/agent/keybindings.json 0600 root root - ${./.pi/keybindings.json}"
-                ];
+                environment.systemPackages = [pkgs.kitty.terminfo];
               }
             ];
 
@@ -310,13 +149,73 @@
             };
           };
 
+          # Configure our homegrown pi-based frontend application and serve it over
+          # tailscale dns. Access it on your phone from anywhere!
           pi = {
             enable = true;
+            env = {
+              HOST = "127.0.0.1";
+              ORIGIN = "https://rock5b.tailc7072.ts.net";
+              PARALLEL_API_KEY_FILE = config.sops.secrets.parallel-api-key.path;
+            };
             user = "me";
-            host = "127.0.0.1";
-            origin = "https://rock5b.tailc7072.ts.net";
-            parallelApiKeyFile = lib.mkIf (builtins.pathExists ./secrets/parallel-api-key) config.sops.secrets.parallel-api-key.path;
           };
+          sops.secrets.parallel-api-key = {
+            sopsFile = ./secrets/parallel-api-key;
+            format = "binary";
+            owner = config.services.pi.user;
+            mode = "0400";
+          };
+        };
+      };
+
+      mitm = {config, ...}: {
+        assertions = [
+          {
+            assertion = builtins.pathExists ./secrets/mitm-proxy-ca-key;
+            message = "run scripts/setup-proxy-ca.sh and try again";
+          }
+        ];
+        sops.secrets.mitm-proxy-ca-key = {
+          sopsFile = ./secrets/mitm-proxy-ca-key;
+          format = "binary";
+          mode = "0400";
+          restartUnits = ["mitm-proxy.service"];
+        };
+        system.activationScripts.mitm-proxy.deps = ["setupSecrets"];
+
+        services.drv-run.mitm-proxy = {
+          # A trusted CA is required to proxy HTTPS.
+          caPrivateKeyFile = config.sops.secrets.mitm-proxy-ca-key.path;
+          caCertificate = ''
+            -----BEGIN CERTIFICATE-----
+            MIIEPTCCAqWgAwIBAgIUeborlbdunarvp2zF6Pqt1TJGNXUwDQYJKoZIhvcNAQEL
+            BQAwJjEkMCIGA1UEAwwbZHJ2LnJ1biBjcmVkZW50aWFsIHByb3h5IENBMB4XDTI2
+            MTAyNDA5NTEyMFoXDTM2MTAyMTA5NTEyMFowJjEkMCIGA1UEAwwbZHJ2LnJ1biBj
+            cmVkZW50aWFsIHByb3h5IENBMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKC
+            AYEAyjubrO5fdMgrHIMg50mYaCvtRr7391FoJvo2vWGb+LuSXjIBmbps9vM4AQjC
+            SlYjNu/3uciACt3EVWWqpSa0aqa7AXPklx23HES2K88tZ+9MjIB+AYHRQHreQcKr
+            zn5b8CISFraXN7wx70KZjUf7fn7SKYoPirjdGSRW6Q/TKJCxeUzPpc81NGibrdvA
+            mxr5h3Pt0aSxr4VWXw467+SW+mHUj2hKUKK0WHjs9OT/JMAkd4rgaGSL0mlCiLvf
+            tZOfCdGEFEsMsRtpl6vTRJo60GGwVYBca5FnjB8EAGr3GYF80f9KGWJzAxAGU9X1
+            8XT3MxVy/w3YaRT9CoGzNlhh6UhYBvPbclwH9jvU8J0+bRjyuyO8ajXxY5Fqt8pQ
+            LyEnZnxbYvpLAS8uxChU5bthRLI573TicMQzFE8isdeiMc1+CHEfxh+WrWmGjE5f
+            V4CvWJmHgkLTaoYrvUWSoipGA4MetBQJwb2gKhK2BZfEhrc4n4I12wv5cPxr+m4B
+            J9vTAgMBAAGjYzBhMB8GA1UdIwQYMBaAFHOFuerKpdBZ1pQfeu6GSLHKsH9pMA8G
+            A1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBRzhbnqyqXQ
+            WdaUH3ruhkixyrB/aTANBgkqhkiG9w0BAQsFAAOCAYEAfh+wSWHd4faO8rxSApjK
+            2qCPqyhtvVf+U5z41EVGarEpzOPTDvQH2oZ7qvJ53hJcviNpp45hwjn5tWxesMsw
+            9lATlp6pOTEzCZSEquyt403mPHg3Ewy7BnE25PI+8yS8x1fzo1WsP/jbfpaF6UJZ
+            kIycCirF6maLGi7R6XvOoMXcc4KPq8GP6F1kBkdeJCvxGzObdcRIOOCWLidTARkT
+            GG3o940sDu/PNWLRzCMZ/nODnYSjrTX613TFXcXUVrLBvMndqA1NPP9NIikqL2d8
+            Ly0y877zVH6CVh77EcegA/M/i3dME3Sh2szejdLcMADNX8aFd0Ft/9Yx5GjvPTM4
+            Lfqx7p6Sb7bohGPBw+qZwej3W6O7WXiuFQIt8Rcj71Nonenb7AvbR6fxyMu0vMko
+            ywi/63nzMOUmPb9ca/luSyf9uNHUUGKlIwQ+WJoDD5pDqlKBUVILBKyu+a0MeoE5
+            sjH8lkqOo+5/2tUp7YecLF+58LK4Y7DjgZYZFlmgTdZN
+            -----END CERTIFICATE-----
+          '';
+
+          owners.me.githubUserId = 11872440;
         };
       };
 
@@ -407,6 +306,111 @@
             dd if=${firmware}/idbloader.img of="$img" bs=512 seek=64 conv=notrunc
             dd if=${firmware}/u-boot.itb of="$img" bs=512 seek=16384 conv=notrunc
           '';
+        };
+      };
+
+      system = {
+        config,
+        pkgs,
+        ...
+      }: {
+        system.stateVersion = "26.11";
+        imports = [sops-nix.nixosModules.sops];
+        nixpkgs.overlays = [drv-run.overlays.default];
+
+        environment.systemPackages = with pkgs; [
+          htop-vim
+          kitty.terminfo
+          otel-cli
+          otel-desktop-viewer
+          subtrace
+          sysz
+        ];
+
+        nix.settings = {
+          experimental-features = ["nix-command" "flakes"];
+          sandbox = true;
+        };
+
+        services.openssh = {
+          enable = true;
+          openFirewall = true;
+          settings = {
+            AuthenticationMethods = "publickey";
+            PermitRootLogin = "prohibit-password";
+            PasswordAuthentication = false;
+            KbdInteractiveAuthentication = false;
+          };
+        };
+
+        sops.age.sshKeyPaths = ["/etc/ssh/ssh_host_ed25519_key"];
+        sops.gnupg.sshKeyPaths = [];
+
+        users = {
+          mutableUsers = false;
+          users = {
+            root = {
+              hashedPassword = "!";
+              openssh.authorizedKeys.keys =
+                config.users.users.me.openssh.authorizedKeys.keys
+                ++ config.users.users.pi.openssh.authorizedKeys.keys;
+            };
+            me = {
+              isNormalUser = true;
+              uid = 1000;
+              group = "me";
+              hashedPassword = "!";
+              openssh.authorizedKeys.keys = [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWXJHDkOTwqq+3W5JgBxGWyDNlhxVcQB/2lwBRwg8/f me@local"
+              ];
+            };
+            pi = {
+              isNormalUser = true;
+              uid = 1001;
+              group = "pi";
+              hashedPassword = "!";
+              openssh.authorizedKeys.keys = [
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILyrIElca7UIajXHQmmFhmpbrVfs9ceui8r9wjNL0zs+ pi@local"
+              ];
+            };
+          };
+          groups = {
+            me.gid = 1000;
+            pi.gid = 1001;
+          };
+        };
+      };
+
+      tailscale = {
+        config,
+        lib,
+        ...
+      }: {
+        services = {
+          tailscale = {
+            enable = true;
+            openFirewall = true;
+            authKeyFile = config.sops.secrets.tailscale-auth-key.path;
+            # Keep the host's LAN DNS and routing; only join the tailnet.
+            extraUpFlags = ["--accept-dns=false" "--accept-routes=false"];
+          };
+        };
+        sops.secrets.tailscale-auth-key = {
+          sopsFile = ./secrets/tailscale-auth-key;
+          format = "binary";
+          restartUnits = ["tailscaled-autoconnect.service"];
+        };
+        systemd.services.pi-https = {
+          description = "serve pi over https via tailscale";
+          wantedBy = ["multi-user.target"];
+          wants = ["tailscaled-autoconnect.service"];
+          after = ["tailscaled-autoconnect.service"];
+          serviceConfig = {
+            Type = "exec";
+            ExecStart = "${lib.getExe config.services.tailscale.package} serve --https=443 http://127.0.0.1:${toString config.services.pi.port}";
+            Restart = "always";
+            RestartSec = 5;
+          };
         };
       };
     };

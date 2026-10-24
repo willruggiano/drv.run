@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Generate the proxy CA, encrypt its private key, and write its public Nix module.
+# FIXME: This is stupid. It writes to a file that I do not want. It's 2026 for
+# fucks sake! Let's be smart and use `nix eval` to edit the nix code in place :D
 set +x
 set -euo pipefail
 umask 077
 
 if (($# != 0)); then
-  printf 'Usage: ./scripts/setup-mitm-proxy.sh (no arguments)\n' >&2
+  printf 'Usage: ./scripts/setup-proxy-ca.sh (no arguments)\n' >&2
   exit 1
 fi
 
