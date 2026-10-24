@@ -77,6 +77,7 @@ const commands = new Set([
   "settings",
   "model",
   "fork",
+  "tree",
   "export",
   "cd",
   "rename",
@@ -403,7 +404,7 @@ export async function elmFrontend(
     return;
   }
   const match =
-    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|export|directories))?$/.exec(
+    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|export|directories))?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -412,7 +413,7 @@ export async function elmFrontend(
   const operation = match[3];
   if (
     request.method === "GET" &&
-    (!operation || ["settings", "context", "branches"].includes(operation))
+    (!operation || ["settings", "context", "branches", "tree"].includes(operation))
   ) {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     response.end(

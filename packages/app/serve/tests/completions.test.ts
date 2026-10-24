@@ -66,6 +66,10 @@ await test("completion tokens respect boundaries, quoting and cursor position", 
     commandCompletions("endreview", true).map((item) => item.value),
     ["/endreview "],
   );
+  assert.deepEqual(
+    commandCompletions("tr").map((item) => item.value),
+    ["/tree "],
+  );
   assert.deepEqual(commandCompletions("unknown"), []);
   assert.deepEqual(commandCompletions("help"), []);
 });

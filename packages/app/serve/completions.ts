@@ -6,6 +6,7 @@ export const commands = [
   { name: "cd", description: "Change working directory · defaults to home" },
   { name: "rename", description: "Rename session · empty name clears it" },
   { name: "fork", description: "Open branches" },
+  { name: "tree", description: "Open conversation tree" },
   { name: "review", description: "Review in a fresh conversation · optional scope" },
   { name: "endreview", description: "End the review and return to the original conversation" },
   { name: "compact", description: "Compact context · optional instructions" },

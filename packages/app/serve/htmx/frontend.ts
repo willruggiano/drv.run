@@ -108,7 +108,7 @@ export function htmlPage(
   const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
   const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}<p id="request-error" role="alert"></p></header>`;
   return renderHTML(
-    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${title === "Session settings" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
+    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${title === "Session settings" || title === "Conversation tree" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
   );
 }
 export function html(
@@ -171,12 +171,13 @@ async function panelFrame(
   settings: GlobalSettingsStore | undefined,
   context: Context,
   content: SafeHtml,
+  tree = false,
 ): Promise<SafeHtml> {
   const path = conversationURL(session, conversation.id);
   const watch = await conversation.watch(context);
   try {
     const review = (await session.harness.snapshot(Review, conversation.id, context)) ?? {};
-    return h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events`)}><main id="main-area">${content}</main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context))}</section>`;
+    return h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events${tree ? "?pane=tree" : ""}`)}><main id="main-area">${content}</main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context, true, tree))}</section>`;
   } finally {
     await watch.stop();
   }
@@ -192,7 +193,7 @@ function branchRows(
     .map((branch) => {
       const children = branchRows(session, current, branches, branch.id);
       const timestamp = branch.activity === null ? null : new Date(branch.activity).toISOString();
-      return h`<li id="branch-${branch.id}"><div class="branch-row"><a href="${conversationURL(session, branch.id)}" aria-current="${branch.id === current}">${toolStatus(branch.state)}<span class="branch-name">${branch.title}</span>${timestamp ? h`<time class="branch-time" aria-label="Most recent activity" datetime="${timestamp}">${timestamp.slice(11, 16)}</time>` : h`<span class="branch-time" aria-label="No activity yet">—</span>`}</a></div>${children.length ? h`<ul>${children}</ul>` : ""}</li>`;
+      return h`<li id="branch-${branch.id}"><div class="branch-row"><a href="${conversationURL(session, branch.id)}" aria-current="${branch.id === current}"><span class="branch-name">${branch.title}</span>${toolStatus(branch.state)}${timestamp ? h`<time class="branch-time" aria-label="Most recent activity" datetime="${timestamp}">${timestamp.slice(11, 16)}</time>` : h`<span class="branch-time" aria-label="No activity yet">—</span>`}</a></div>${children.length ? h`<ul>${children}</ul>` : ""}</li>`;
     })}`;
 }
 function branchHeader(session: Session, current: number, branches: Branch[]): SafeHtml {
@@ -383,9 +384,10 @@ async function events(
   response: ServerResponse,
   context: Context,
   settings?: GlobalSettingsStore,
-  inspection = false,
+  pane = "",
   head?: string,
 ): Promise<void> {
+  const inspection = pane === "context";
   const conversation = await getConversation(session, id, context);
   const watch = await conversation.watch(context);
   const branches = new BranchTree(session);
@@ -493,7 +495,7 @@ async function events(
         }
         if (!inspection && metadata) {
           metadata = false;
-          fragment = h`${fragment}${partial("session-meta", await metadataHTML(session, conversation, current, settings, context))}`;
+          fragment = h`${fragment}${partial("session-meta", await metadataHTML(session, conversation, current, settings, context, true, pane === "tree"))}`;
         }
         if (!inspection && branchesDirty) {
           branchesDirty = false;
@@ -739,7 +741,7 @@ export async function hypermedia(
     return;
   }
   const match =
-    /^\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|fork|cd|rename|compact|reset|cancel|context|export|completions|repository))?)?$/.exec(
+    /^\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|tree|fork|cd|rename|compact|reset|cancel|context|export|completions|repository))?)?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -754,6 +756,7 @@ export async function hypermedia(
   const titles: Record<string, string> = {
     settings: "Session settings",
     branches: "Branches",
+    tree: "Conversation tree",
     context: "Context",
     history: "History",
     compact: "Compact context",
@@ -775,6 +778,20 @@ export async function hypermedia(
         settings,
         context,
         h`<section id="preferences" class="pane" aria-label="Session settings"><a id="close-view" class="icon" href="${path}" data-return aria-label="Conversation" title="Return to conversation">${icon("close")}</a><div>${sessionForm(path, catalog, info)}</div></section>`,
+      ),
+    );
+    return;
+  }
+  if (request.method === "GET" && operation === "tree") {
+    const branches = await new BranchTree(session).read(context);
+    page(
+      await panelFrame(
+        session,
+        conversation,
+        settings,
+        context,
+        h`<section id="tree-view" class="pane" aria-label="Conversation tree"><nav class="branch-panel" aria-label="Conversation branches"><ul id="branch-tree">${branchRows(session, conversation.id, branches)}</ul></nav></section>`,
+        true,
       ),
     );
     return;
@@ -879,7 +896,7 @@ export async function hypermedia(
         response,
         context,
         settings,
-        url.searchParams.get("pane") === "context",
+        url.searchParams.get("pane") ?? "",
         typeof request.headers["last-event-id"] === "string"
           ? request.headers["last-event-id"]
           : (url.searchParams.get("head") ?? undefined),
@@ -1033,7 +1050,7 @@ function saved(request: IncomingMessage, response: ServerResponse, path: string)
   } else redirect(request, response, path);
 }
 function navigation(path: string): SafeHtml {
-  const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/rename`, "Rename session", "rename", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
+  const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/tree`, "Conversation tree", h`data-command="tree"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/rename`, "Rename session", "rename", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
   const search = h`<div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
   return h`${commands}${search}`;
 }
@@ -1049,6 +1066,7 @@ async function metadataHTML(
   settings: GlobalSettingsStore | undefined,
   context: Context,
   withControls = true,
+  tree = false,
 ): Promise<SafeHtml> {
   const [info, inspection] = await Promise.all([
     sessionInfo(session, conversation, undefined, context),
@@ -1075,7 +1093,9 @@ async function metadataHTML(
   const model = h`<a id="footer-model" class="model-summary" href="${path}/settings" aria-label="Model and thinking settings"><span class="model-name">${info.model?.modelId ?? "No model"}</span>${dot}<span class="model-effort">${info.thinkingLevel}</span></a>`;
   const contextUsage = h`<a id="footer-context" class="context-usage" href="${path}/context" aria-label="Context usage details" data-level="${percent !== undefined && percent > 90 ? "critical" : percent !== undefined && percent > 70 ? "warning" : "normal"}">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${count(status.window)}${status.autoCompact ? " (auto)" : ""}</a>`;
   const sessionsLink = withControls
-    ? h`<a id="footer-sessions" class="icon footer-chevron" href="/sessions?return=${encodeURIComponent(path)}" aria-label="Sessions" title="Sessions">${icon("chevron-left")}</a>`
+    ? tree
+      ? h`<a id="footer-sessions" class="icon footer-chevron" href="${path}" data-return aria-label="Conversation" title="Return to conversation">${icon("chevron-left")}</a>`
+      : h`<a id="footer-sessions" class="icon footer-chevron" href="/sessions?return=${encodeURIComponent(path)}" aria-label="Sessions" title="Sessions">${icon("chevron-left")}</a>`
     : h``;
   // The browser owns collapse state; metadata updates must not reset the toggle.
   const collapse = withControls

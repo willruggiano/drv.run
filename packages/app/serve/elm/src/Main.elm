@@ -68,6 +68,7 @@ type Pane
     | Preferences
     | Context
     | Branches
+    | Tree
 
 
 route : String -> ( String, Pane )
@@ -86,6 +87,9 @@ route path =
 
                 Just "branches" ->
                     Branches
+
+                Just "tree" ->
+                    Tree
 
                 _ ->
                     Conversation
@@ -108,6 +112,9 @@ connect model =
 
                 Branches ->
                     "branches"
+
+                Tree ->
+                    "tree"
 
                 Conversation ->
                     ""
@@ -610,6 +617,9 @@ update msg model =
 
                     "/fork" ->
                         navigate (model.path ++ "/branches") { model | completions = Nothing }
+
+                    "/tree" ->
+                        navigate (model.path ++ "/tree") { model | completions = Nothing }
 
                     "/export" ->
                         ( { model | completions = Nothing }, browser (E.object [ ( "kind", E.string "download" ), ( "url", E.string (model.path ++ "/export") ) ]) )
@@ -1440,7 +1450,11 @@ view model =
             section [ id "session-meta" ]
                 [ div [ id "bottom-line", attribute "aria-label" "Conversation statistics" ]
                     [ div [ class "footer-row" ]
-                        [ a [ id "footer-sessions", class "icon footer-chevron", href "/elm/catalog", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ]
+                        [ if model.pane == Tree then
+                            a [ id "footer-sessions", class "icon footer-chevron", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "chevron-left" ]
+
+                          else
+                            a [ id "footer-sessions", class "icon footer-chevron", href "/elm/catalog", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ]
                         , span [ id "footer-instance" ] [ text state.metadata.instance ]
                         , a [ id "footer-stats", href (model.path ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ])
                         , div [ class "footer-model-context" ]
@@ -1498,6 +1512,10 @@ view model =
 
                 Context ->
                     Maybe.map Panel.contextView state.inspection |> Maybe.withDefault (section [ id "context-view", class "pane" ] [ text "Loading context…" ])
+
+                Tree ->
+                    section [ id "tree-view", class "pane", attribute "aria-label" "Conversation tree" ]
+                        [ branchPanel model.path state.metadata.branches ]
 
                 Branches ->
                     section [ id "branch-picker", class "pane" ]
@@ -1606,6 +1624,9 @@ view model =
                 Branches ->
                     "Branches"
 
+                Tree ->
+                    "Conversation tree"
+
                 Conversation ->
                     state.metadata.title
     , body =
@@ -1620,7 +1641,7 @@ view model =
                 )
             ]
             (header [ id "app-header" ]
-                [ div [ class "bar", hidden (model.pane == Preferences) ]
+                [ div [ class "bar", hidden (model.pane == Preferences || model.pane == Tree) ]
                     [ h1 []
                         [ if model.pane == Context || model.pane == Branches then
                             span [ class "header-title" ]
@@ -1679,7 +1700,20 @@ branchHeader path branches =
     let
         current =
             List.filter (\branch -> branch.path == path) branches |> List.head
+    in
+    Html.details [ id "branch-disclosure", class "branch-disclosure" ]
+        [ Html.summary [ attribute "aria-label" "Conversation branches" ]
+            [ Transcript.icon "fork"
+            , span [] [ text (Maybe.map (.title >> String.toLower) current |> Maybe.withDefault "branches") ]
+            , span [ class "branch-chevron", attribute "aria-hidden" "true" ] [ text "›" ]
+            ]
+        , branchPanel path branches
+        ]
 
+
+branchPanel : String -> List Panel.Branch -> Html Msg
+branchPanel path branches =
+    let
         rows parent =
             branches
                 |> List.filter (\branch -> branch.parent == parent)
@@ -1701,8 +1735,8 @@ branchHeader path branches =
                                             "false"
                                         )
                                     ]
-                                    [ Transcript.toolStatus branch.state
-                                    , span [ class "branch-name" ] [ text branch.title ]
+                                    [ span [ class "branch-name" ] [ text branch.title ]
+                                    , Transcript.toolStatus branch.state
                                     , case branch.activity of
                                         Just timestamp ->
                                             Html.node "elm-time" [ class "branch-time", attribute "aria-label" "Most recent activity", attribute "timestamp" (String.fromFloat timestamp) ] []
@@ -1719,15 +1753,8 @@ branchHeader path branches =
                             ]
                     )
     in
-    Html.details [ id "branch-disclosure", class "branch-disclosure" ]
-        [ Html.summary [ attribute "aria-label" "Conversation branches" ]
-            [ Transcript.icon "fork"
-            , span [] [ text (Maybe.map (.title >> String.toLower) current |> Maybe.withDefault "branches") ]
-            , span [ class "branch-chevron", attribute "aria-hidden" "true" ] [ text "›" ]
-            ]
-        , Html.nav [ class "branch-panel", attribute "aria-label" "Conversation branches" ]
-            [ Html.ul [ id "branch-tree" ] (rows Nothing) ]
-        ]
+    Html.nav [ class "branch-panel", attribute "aria-label" "Conversation branches" ]
+        [ Html.ul [ id "branch-tree" ] (rows Nothing) ]
 
 
 viewTranscript : Dict String Bool -> String -> Maybe Int -> Dict Int Protocol.Entry -> Dict String Protocol.Tool -> Dict String Int -> Html Msg
