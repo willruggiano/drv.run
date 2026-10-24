@@ -19,7 +19,6 @@ in
     derivationArgs = {
       doCheck = true;
       nativeCheckInputs = [python git gh];
-
       checkPhase = ''
         runHook preCheck
         export PYTHONDONTWRITEBYTECODE=1
@@ -29,7 +28,7 @@ in
       '';
     };
 
-    passthru.tests.service = testers.runNixOSTest (import ../../tests/nixos/mitm-proxy.nix);
+    passthru.tests = testers.runNixOSTest (import ../../tests/nixos/mitm-proxy.nix);
 
     meta = {
       description = "Host-side credential substitution for drv.run";

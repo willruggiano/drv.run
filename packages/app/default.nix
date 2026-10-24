@@ -1,21 +1,19 @@
 {
-  pi-src,
   autoPatchelfHook,
   buildNpmPackage,
   callPackage,
   chromium,
-  esbuild,
   elmPackages,
-  runCommand,
+  esbuild,
   git,
   importNpmLock,
   lib,
   libxcb,
   makeWrapper,
   nodejs,
-  openssh,
+  pi-src,
+  runCommand,
   stdenv,
-  systemd,
   typescript,
   writeShellApplication,
 }: let
@@ -41,24 +39,28 @@
     "${name}: refresh packages/app/package-lock.json to match the pinned Pi source";
       pi + "/${package.directory}.tgz")
   piLocks;
+
+  fs = lib.fileset;
 in
   buildNpmPackage (finalAttrs: {
     pname = "app";
     inherit (manifest) version;
-    src = lib.fileset.toSource {
+    src = fs.toSource {
       root = ./.;
+      # TODO: use a gitignore filter on the harness and serve subdirs
       fileset =
-        lib.fileset.difference
-        (lib.fileset.unions [./package.json ./package-lock.json ./harness ./serve])
-        (lib.fileset.unions [
-          (lib.fileset.maybeMissing ./harness/dist)
-          (lib.fileset.maybeMissing ./serve/dist)
-          (lib.fileset.maybeMissing ./harness/node_modules)
-          (lib.fileset.maybeMissing ./serve/node_modules)
-          (lib.fileset.maybeMissing ./serve/elm/elm-stuff)
+        fs.difference
+        (fs.unions [./package.json ./package-lock.json ./harness ./serve])
+        (fs.unions [
+          (fs.maybeMissing ./harness/dist)
+          (fs.maybeMissing ./serve/dist)
+          (fs.maybeMissing ./harness/node_modules)
+          (fs.maybeMissing ./serve/node_modules)
+          (fs.maybeMissing ./serve/elm/elm-stuff)
         ]);
     };
-    outputs = ["out" "dev"];
+
+    inherit (importNpmLock) npmConfigHook;
     npmDeps = importNpmLock {
       npmRoot = ./.;
       inherit packageSourceOverrides;
@@ -74,8 +76,8 @@ in
           lock.packages;
         };
     };
-    inherit (importNpmLock) npmConfigHook;
     npmRebuildFlags = ["--ignore-scripts"];
+
     nativeBuildInputs = [autoPatchelfHook esbuild git makeWrapper typescript elmPackages.elm elmPackages.elm-format elmPackages.elm-test];
     preBuild = ''
       export ELM_HOME="$TMPDIR/elm-home"
@@ -90,11 +92,11 @@ in
       npm test
       runHook postCheck
     '';
+
+    outputs = ["out" "dev"];
     installPhase = ''
       runHook preInstall
 
-      # The development output also runs the browser benchmark. It is not in
-      # the server's runtime closure.
       mkdir -p "$dev" "$out/lib/app" "$out/bin"
       cp -R node_modules harness serve package.json package-lock.json "$dev/"
       rm -rf "$dev/node_modules/.bin"
@@ -106,26 +108,27 @@ in
         tarball="$(npm pack --workspace="$workspace" --ignore-scripts --silent --pack-destination "$TMPDIR")"
         tar -xzf "$TMPDIR/$tarball" -C "$out/lib/app/$workspace" --strip-components=1
       done
-      substituteInPlace "$out/lib/app/harness/dist/drv-run.js" \
-        --replace-fail '?? "ssh"' '?? "${openssh}/bin/ssh"'
-      substituteInPlace "$out/lib/app/serve/dist/instances.js" \
-        --replace-fail '?? "systemctl"' '?? "${systemd}/bin/systemctl"'
+
       makeWrapper ${nodejs}/bin/node "$out/bin/serve" \
         --add-flags "$out/lib/app/serve/dist/server.js"
       runHook postInstall
     '';
-    passthru.elmHome = elmHome;
-    passthru.tape = callPackage ./tape {
-      app = finalAttrs.finalPackage;
-      piRevision = pi-src.rev or "unknown";
+
+    passthru = {
+      bench.render = writeShellApplication {
+        name = "serve-bench-render";
+        runtimeInputs = [chromium esbuild];
+        text = ''
+          exec ${lib.getExe nodejs} ${finalAttrs.finalPackage.dev}/serve/dist/benchmark.js "$@"
+        '';
+      };
+      elmHome = elmHome;
+      tape = callPackage ./tape {
+        app = finalAttrs.finalPackage;
+        piRevision = pi-src.rev or "unknown";
+      };
     };
-    passthru.bench.render = writeShellApplication {
-      name = "serve-bench-render";
-      runtimeInputs = [chromium esbuild];
-      text = ''
-        exec ${lib.getExe nodejs} ${finalAttrs.finalPackage.dev}/serve/dist/benchmark.js "$@"
-      '';
-    };
+
     meta = {
       description = "Coding harness and web frontend for drv.run";
       mainProgram = "serve";

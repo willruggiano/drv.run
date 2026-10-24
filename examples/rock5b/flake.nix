@@ -107,65 +107,62 @@
           drv-run.nixosModules.pi
         ];
 
-        services = {
-          # Configure drv.run to serve nixos microvms over ssh. Later on we'll
-          # setup pi over https and connect it to drv.run as the harness's
-          # execution environment. This gives us microvms over ssh, and also
-          # (some lines down) an assistant (pi) over private https that executes
-          # tools and runs code in a nixos microvm!
-          drv-run = {
-            guest.extraModules = [
-              {
-                microvm.vcpu = 4;
-                microvm.mem = 4096;
+        # Configure drv.run to serve nixos microvms over ssh. Later on we'll
+        # setup pi over https and connect it to drv.run as the harness's
+        # execution environment. This gives us microvms over ssh, and also
+        # (some lines down) an assistant (pi) over private https that executes
+        # tools and runs code in a nixos microvm!
+        services.drv-run = {
+          guest.extraModules = [
+            {
+              microvm.vcpu = 4;
+              microvm.mem = 4096;
 
-                zramSwap = {
-                  enable = true;
-                  algorithm = "zstd";
-                  memoryPercent = 50;
+              zramSwap = {
+                enable = true;
+                algorithm = "zstd";
+                memoryPercent = 50;
+              };
+
+              # avoid cli warnings that annoy agents (lmao)
+              programs.git = {
+                enable = true;
+                config.user = {
+                  name = "root";
+                  email = "root@guest";
                 };
+              };
+              environment.etc."jj/config.toml".text = ''
+                [user]
+                name = "root"
+                email = "root@guest"
+              '';
 
-                # avoid cli warnings that annoy agents (lmao)
-                programs.git = {
-                  enable = true;
-                  config.user = {
-                    name = "root";
-                    email = "root@guest";
-                  };
-                };
-                environment.etc."jj/config.toml".text = ''
-                  [user]
-                  name = "root"
-                  email = "root@guest"
-                '';
+              environment.systemPackages = [pkgs.kitty.terminfo];
+            }
+          ];
 
-                environment.systemPackages = [pkgs.kitty.terminfo];
-              }
-            ];
-
-            network = {
-              uplink = "enP4p65s0";
-              dnsServers = ["192.168.4.1"];
-            };
+          network = {
+            uplink = "enP4p65s0";
+            dnsServers = ["192.168.4.1"];
           };
+        };
 
-          # Configure our homegrown pi-based frontend application and serve it over
-          # tailscale dns. Access it on your phone from anywhere!
-          pi = {
-            enable = true;
-            env = {
-              HOST = "127.0.0.1";
-              ORIGIN = "https://rock5b.tailc7072.ts.net";
-              PARALLEL_API_KEY_FILE = config.sops.secrets.parallel-api-key.path;
-            };
-            user = "me";
+        # Configure our homegrown pi-based frontend application and serve it over
+        # tailscale dns. Access it on your phone from anywhere!
+        services.pi = {
+          enable = true;
+          env = {
+            ORIGIN = "https://rock5b.tailc7072.ts.net";
+            PARALLEL_API_KEY_FILE = config.sops.secrets.parallel-api-key.path;
           };
-          sops.secrets.parallel-api-key = {
-            sopsFile = ./secrets/parallel-api-key;
-            format = "binary";
-            owner = config.services.pi.user;
-            mode = "0400";
-          };
+          user = "me";
+        };
+        sops.secrets.parallel-api-key = {
+          sopsFile = ./secrets/parallel-api-key;
+          format = "binary";
+          owner = config.services.pi.user;
+          mode = "0400";
         };
       };
 
