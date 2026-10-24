@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext
+from itertools import product
 from pathlib import Path
 from typing import cast, override
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from auth import Account, Authorization
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from main import (
+    API_HOST,
     HOST,
     CertificateAuthority,
     Owner,
@@ -39,7 +41,7 @@ BOB = "drv_run_" + "b" * 64
 def policy_fixture(
     credentials: Mapping[str, Account],
     authorization: Authorization,
-    resolve: Callable[[], Awaitable[str]] = resolve_upstream,
+    resolve: Callable[[str], Awaitable[str]] = resolve_upstream,
 ) -> Policy:
     # Policy-only tests have no TCP reader. Transport tests exercise real gates.
     return Policy(credentials, authorization, resolve, pause=lambda _: nullcontext())
@@ -51,21 +53,23 @@ def basic(password: str, username: str = "x-access-token") -> str:
 
 def flow(
     path: str = "/alice/project.git/info/refs?service=git-upload-pack",
+    host: str = HOST,
 ) -> http.HTTPFlow:
     client = connection.Client(peername=("10.0.0.2", 1234), sockname=("10.0.0.1", 3128))
     client.tls = True
-    client.sni = HOST
-    result = http.HTTPFlow(client, connection.Server(address=(HOST, 443)))
+    client.sni = host
+    result = http.HTTPFlow(client, connection.Server(address=(host, 443)))
     result.live = True
-    result.request = http.Request.make("GET", "https://github.com" + path)
-    result.request.headers["Host"] = "github.com"
+    result.request = http.Request.make("GET", "https://" + host + path)
+    result.request.headers["Host"] = host
     return result
 
 
 def connect(policy: Policy, request: http.HTTPFlow) -> None:
     tunnel = http.HTTPFlow(request.client_conn, request.server_conn)
-    tunnel.request = http.Request.make("CONNECT", "https://github.com:443")
-    tunnel.request.authority = "github.com:443"
+    host = request.request.host
+    tunnel.request = http.Request.make("CONNECT", f"https://{host}:443")
+    tunnel.request.authority = f"{host}:443"
     policy.http_connect(tunnel)
     assert tunnel.response is None
 
@@ -114,15 +118,99 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("proxy-authorization", request.request.headers)
                 self.assertTrue(request.request.stream)
 
-    async def test_challenge_and_unknown_credentials(self) -> None:
+    async def test_api_credentials_are_owner_scoped(self) -> None:
+        for scheme, placeholder, token in [
+            ("token", ALICE, "ghu_token1"),
+            ("Bearer", BOB, "ghu_token2"),
+        ]:
+            for method, path in [
+                ("GET", "/repos/alice/repo/pulls?state=open"),
+                ("POST", "/graphql"),
+                ("POST", "/repos/alice/repo/pulls"),
+                ("PATCH", "/repos/alice/repo/issues/1"),
+                ("PUT", "/repos/alice/repo/pulls/1/merge"),
+                ("DELETE", "/repos/alice/repo/issues/1/labels/bug"),
+            ]:
+                with self.subTest(scheme=scheme, method=method, path=path):
+                    policy = policy_fixture(
+                        {ALICE: Account("alice", 1), BOB: Account("bob", 2)},
+                        self.authorization,
+                    )
+                    request = flow(path, API_HOST)
+                    request.request.method = method
+                    request.request.content = placeholder.encode()
+                    request.request.headers["Authorization"] = f"{scheme} {placeholder}"
+                    request.request.headers["Proxy-Authorization"] = basic(placeholder)
+                    request.request.headers["Connection"] = "Authorization"
+                    connect(policy, request)
+                    await policy.requestheaders(request)
+                    self.assertIsNone(request.response)
+                    self.assertEqual(
+                        request.request.headers["Authorization"], "Bearer " + token
+                    )
+                    self.assertEqual(request.request.content, placeholder.encode())
+                    self.assertEqual(request.request.path, path)
+                    self.assertNotIn("proxy-authorization", request.request.headers)
+                    self.assertNotIn("connection", request.request.headers)
+                    self.assertTrue(request.request.stream)
+                    await policy.response(request)
+                    self.assertEqual(policy.leases, {})
+
+    async def test_api_rejects_unknown_placeholders_and_duplicate_credentials(
+        self,
+    ) -> None:
+        for headers, method, status in [
+            ([("Authorization", "token " + BOB)], "GET", 403),
+            (
+                [
+                    ("Authorization", "token " + ALICE),
+                    ("Authorization", "token " + BOB),
+                ],
+                "GET",
+                403,
+            ),
+        ]:
+            with self.subTest(headers=headers, method=method):
+                policy = policy_fixture(
+                    {ALICE: Account("alice", 1)}, self.authorization
+                )
+                request = flow("/user", API_HOST)
+                connect(policy, request)
+                request.request.method = method
+                for key, value in headers:
+                    request.request.headers.set_all(
+                        key, [*request.request.headers.get_all(key), value]
+                    )
+                await policy.requestheaders(request)
+                assert request.response is not None
+                self.assertEqual(request.response.status_code, status)
+                self.assertEqual(policy.leases, {})
+
+    async def test_tunnel_cannot_switch_between_git_and_api(self) -> None:
+        for tunnel_host, request_host in [(HOST, API_HOST), (API_HOST, HOST)]:
+            policy = policy_fixture({ALICE: Account("alice", 1)}, self.authorization)
+            request = flow("/graphql", tunnel_host)
+            connect(policy, request)
+            # Even consistent inner Host/SNI/authority cannot change CONNECT's origin.
+            request.client_conn.sni = request_host
+            request.request.host = request_host
+            request.request.headers["Host"] = request_host
+            request.request.headers["Authorization"] = "token " + ALICE
+            await policy.requestheaders(request)
+            assert request.response is not None
+            self.assertEqual(request.response.status_code, 403)
+            request.server_conn.address = (request_host, 443)
+            request.server_conn.sni = request_host
+            await policy.server_connect(
+                ServerConnectionHookData(request.server_conn, request.client_conn)
+            )
+            self.assertIsNotNone(request.server_conn.error)
+            self.assertEqual(policy.leases, {})
+
+    async def test_unknown_placeholders_and_duplicate_credentials(self) -> None:
         for headers, status in [
-            ([], 401),
-            ([("Authorization", basic("unknown"))], 403),
+            ([("Authorization", basic(BOB))], 403),
             ([("Authorization", basic(ALICE, "wrong"))], 403),
-            ([("Authorization", "Bearer " + ALICE)], 403),
-            ([("Authorization", "Basic !invalid!")], 403),
-            ([("Authorization", "Basic dXNlcg==")], 403),
-            ([("Authorization", "Basic /w==")], 403),
             ([("Authorization", basic(ALICE)), ("Authorization", basic(BOB))], 403),
         ]:
             with self.subTest(headers=headers):
@@ -141,30 +229,78 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(request.response.status_code, status)
                 self.assertFalse(request.request.stream)
 
-    def test_connect_is_exact_and_cannot_be_nested(self) -> None:
-        for host, port, authority in [
-            ("api.github.com", 443, "api.github.com:443"),
-            ("github.com", 80, "github.com:80"),
-            ("127.0.0.1", 443, "127.0.0.1:443"),
-            ("github.com", 443, "other.test:443"),
+    def test_connect_is_default_allow_but_cannot_be_nested_or_change_authority(
+        self,
+    ) -> None:
+        for host, port in [
+            ("uploads.github.com", 443),
+            ("api.github.com.evil.test", 443),
+            ("github.com", 80),
+            ("example.test", 8443),
         ]:
             policy = policy_fixture({}, self.authorization)
             request = flow()
             request.request.host = host
             request.request.port = port
-            request.request.authority = authority
+            request.request.authority = f"{host}:{port}"
             policy.http_connect(request)
-            assert request.response is not None
-            self.assertEqual(request.response.status_code, 403)
+            self.assertIsNone(request.response)
+            self.assertEqual(policy.tunnels[request.client_conn.id], (host, port))
+            policy.http_connect(request)
+            self.assertIsNotNone(request.response)
+            policy.client_disconnected(request.client_conn)
+            self.assertEqual(policy.tunnels, {})
         policy = policy_fixture({}, self.authorization)
         request = flow()
-        connect(policy, request)
-        request.request.authority = "github.com:443"
+        request.request.authority = "other.test:443"
         policy.http_connect(request)
         self.assertIsNotNone(request.response)
-        policy.client_disconnected(request.client_conn)
+        self.assertEqual(policy.tunnels, {})
 
-    async def test_only_git_endpoints(self) -> None:
+    async def test_unseeded_credentials_and_anonymous_requests_pass_unchanged(
+        self,
+    ) -> None:
+        for host, authorization in product(
+            (HOST, API_HOST),
+            (
+                None,
+                "token user-token",
+                "Bearer user-token",
+                basic("user-token"),
+                "Basic !invalid!",
+                "Basic dXNlcg==",
+                "Basic /w==",
+            ),
+        ):
+            with self.subTest(host=host, authorization=authorization):
+                policy = policy_fixture(
+                    {ALICE: Account("alice", 1)}, self.authorization
+                )
+                request = flow(host=host)
+                connect(policy, request)
+                if authorization is not None:
+                    request.request.headers["Authorization"] = authorization
+                headers = request.request.headers.copy()
+                await policy.requestheaders(request)
+                self.assertIsNone(request.response)
+                self.assertEqual(request.request.headers, headers)
+                self.assertTrue(request.request.stream)
+                self.assertEqual(policy.leases, {})
+
+    async def test_unconfigured_api_methods_do_not_receive_host_credentials(
+        self,
+    ) -> None:
+        policy = policy_fixture({ALICE: Account("alice", 1)}, self.authorization)
+        request = flow("/user", API_HOST)
+        request.request.method = "TRACE"
+        request.request.headers["Authorization"] = "token " + ALICE
+        connect(policy, request)
+        await policy.requestheaders(request)
+        self.assertIsNone(request.response)
+        self.assertEqual(request.request.headers["Authorization"], "token " + ALICE)
+        self.assertEqual(policy.leases, {})
+
+    async def test_only_git_endpoints_receive_host_credentials(self) -> None:
         for method, path, allowed in [
             ("GET", "/alice/repo/info/refs?service=git-upload-pack", True),
             ("GET", "/alice/repo.git/info/refs?service=git-receive-pack", True),
@@ -186,28 +322,37 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
                 connect(policy, request)
                 await policy.requestheaders(request)
                 await policy.response(request)
-                self.assertEqual(request.response is None, allowed)
+                self.assertIsNone(request.response)
+                self.assertEqual(
+                    request.request.headers["Authorization"],
+                    basic("ghu_token1" if allowed else ALICE),
+                )
                 self.assertEqual(request.request.path, path)
 
     async def test_authorities_and_tls_must_agree(self) -> None:
-        for change in [
-            "no-connect",
-            "plaintext",
-            "sni",
-            "host",
-            "duplicate-host",
-            "authority",
-            "upgrade",
-            "trailer",
-        ]:
-            with self.subTest(change=change):
+        for host, change in product(
+            (HOST, API_HOST),
+            [
+                "no-connect",
+                "plaintext",
+                "sni",
+                "host",
+                "duplicate-host",
+                "authority",
+                "upgrade",
+                "trailer",
+            ],
+        ):
+            with self.subTest(host=host, change=change):
                 policy = policy_fixture(
                     {ALICE: Account("alice", 1)}, self.authorization
                 )
-                request = flow()
+                request = flow(host=host)
                 if change != "no-connect":
                     connect(policy, request)
-                request.request.headers["Authorization"] = basic(ALICE)
+                request.request.headers["Authorization"] = (
+                    basic(ALICE) if host == HOST else "token " + ALICE
+                )
                 if change == "plaintext":
                     request.client_conn.tls = False
                 elif change == "sni":
@@ -215,9 +360,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
                 elif change == "host":
                     request.request.headers["host"] = "other.test"
                 elif change == "duplicate-host":
-                    request.request.headers.set_all(
-                        "host", ["github.com", "github.com"]
-                    )
+                    request.request.headers.set_all("host", [host, host])
                 elif change == "authority":
                     request.request.authority = "other.test"
                 elif change in ("upgrade", "trailer"):
@@ -294,7 +437,8 @@ class ConnectionTest(unittest.IsolatedAsyncioTestCase):
             ("::1", False),
         ]:
 
-            async def resolve(address: str = address) -> str:
+            async def resolve(host: str, address: str = address) -> str:
+                self.assertEqual(host, HOST)
                 return address
 
             policy = policy_fixture({}, self.authorization, resolve)
@@ -312,8 +456,53 @@ class ConnectionTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(data.server.address, (address, 443))
                 self.assertEqual(data.server.sni, HOST)
 
+    async def test_api_resolves_and_pins_its_own_address(self) -> None:
+        for address in ("93.184.216.34", "127.0.0.1", "169.254.169.254"):
+
+            async def resolve(host: str, address: str = address) -> str:
+                self.assertEqual(host, API_HOST)
+                return address
+
+            policy = policy_fixture({}, self.authorization, resolve)
+            request = flow("/user", API_HOST)
+            connect(policy, request)
+            request.server_conn.sni = API_HOST
+            await policy.server_connect(
+                ServerConnectionHookData(request.server_conn, request.client_conn)
+            )
+            if address == "93.184.216.34":
+                self.assertIsNone(request.server_conn.error)
+                self.assertEqual(request.server_conn.address, (address, 443))
+                self.assertEqual(request.server_conn.sni, API_HOST)
+            else:
+                self.assertIsNotNone(request.server_conn.error)
+
+    async def test_passthrough_also_pins_dns_and_denies_private_addresses(self) -> None:
+        for address in ("93.184.216.34", "127.0.0.1", "10.0.0.1", "169.254.169.254"):
+
+            async def resolve(host: str, address: str = address) -> str:
+                self.assertEqual(host, "example.test")
+                return address
+
+            policy = policy_fixture({}, self.authorization, resolve)
+            request = flow(host="example.test")
+            request.request.port = 8443
+            request.request.authority = "example.test:8443"
+            request.server_conn.address = ("example.test", 8443)
+            policy.http_connect(request)
+            self.assertIsNone(request.response)
+            await policy.server_connect(
+                ServerConnectionHookData(request.server_conn, request.client_conn)
+            )
+            self.assertEqual(
+                request.server_conn.error is None, address == "93.184.216.34"
+            )
+            if request.server_conn.error is None:
+                self.assertEqual(request.server_conn.address, (address, 8443))
+
     async def test_resolution_failure_denies(self) -> None:
-        async def resolve() -> str:
+        async def resolve(host: str) -> str:
+            self.assertEqual(host, HOST)
             raise OSError("DNS failed")
 
         policy = policy_fixture({}, self.authorization, resolve)

@@ -62,7 +62,10 @@
 in {
   name = "mitm-proxy";
   nodes.machine = {lib, ...}: {
-    imports = [../../nixosModules/host/mitm-proxy.nix];
+    imports = [
+      ../../nixosModules/host/mitm-proxy.nix
+      (import ../../nixosModules/guest/mitm-proxy.nix {port = 3128;})
+    ];
     # This feature publishes a guest module for its caller. No microVM, launcher,
     # flake activation, or host-basic lifecycle is needed to test its service.
     options.services.drv-run.guest.extraModules = lib.mkOption {
@@ -71,7 +74,9 @@ in {
     };
     config = {
       virtualisation.memorySize = 768;
-      networking.hosts."93.184.216.34" = ["github.com" "api.github.com"];
+      networking.hosts."93.184.216.34" = ["github.com" "api.github.com" "example.test"];
+      # The proxy and guest clients share this test VM, rather than a gateway.
+      networking.proxy.httpsProxy = lib.mkForce "http://127.0.0.1:3128";
       networking.interfaces.lo.ipv4.addresses = [
         {
           address = "93.184.216.34";
@@ -79,7 +84,12 @@ in {
         }
       ];
       networking.nftables.enable = true;
-      environment.systemPackages = [pkgs.git pkgs.gh pkgs.python3 pkgs.curl];
+      environment.systemPackages = [
+        pkgs.git
+        pkgs.gh
+        pkgs.python3
+        pkgs.curl
+      ];
       users.users.alice = {
         isNormalUser = true;
         uid = 1000;
@@ -124,6 +134,7 @@ in {
     };
   };
   testScript = ''
+    import json
     import shlex
 
     machine.wait_for_unit("fixture.service")
@@ -146,10 +157,9 @@ in {
         machine.fail(as_alice("mitm-proxy logout --user alice"))
         machine.fail("su -s /bin/sh mitm-proxy -c 'test -w /run/mitm-proxy-ca/mitmproxy-ca.pem'")
 
-    # Exercise the same Git-facing configuration as a guest, without nesting VMs.
-    machine.succeed(as_alice("git config --global http.https://github.com/.proxy http://127.0.0.1:3128; "
-                            "git config --global credential.https://github.com.helper " +
-                            shlex.quote("!env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR=/run/mitm-proxy/alice gh auth git-credential")))
+    # Publish the same seed paths and permissions used by the guest module.
+    machine.succeed("install -d -m 0750 -g alice /run/drv-run-seed/mitm-proxy/gh; "
+                    "cp -p /run/mitm-proxy/alice/{config,hosts}.yml /run/drv-run-seed/mitm-proxy/gh/")
     git = as_alice("GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/alice/repo.git")
     machine.fail(git)
 
@@ -168,6 +178,22 @@ in {
             machine.succeed(f"git --git-dir=/srv/git/{owner}/repo.git cat-file -e refs/heads/main:value")
         machine.fail(as_alice("test -r /var/lib/mitm-proxy-auth/alice.json"))
 
+    with subtest("ordinary gh inherits the system-wide HTTPS proxy"):
+        gh = "env GH_CONFIG_DIR=/run/drv-run-seed/mitm-proxy/gh gh"
+        machine.succeed(gh + " api user")
+        machine.succeed(gh + " pr list --repo alice/repo")
+        requests = json.loads(machine.succeed("cat /srv/git/api-requests.json"))
+        assert requests[-2:] == [
+            {"method": "GET", "url": "https://api.github.com/user"},
+            {"method": "POST", "url": "https://api.github.com/graphql"},
+        ]
+        machine.succeed("systemd-run --wait --pipe --setenv=GH_CONFIG_DIR=/run/drv-run-seed/mitm-proxy/gh gh api user")
+        # No GitHub credential rule applies to device login or unrelated origins.
+        machine.succeed("curl --fail https://github.com/login/device/code "
+                        "--data 'client_id=test-app&scope=offline_access'")
+        machine.succeed("curl --fail https://example.test/passthrough "
+                        "--cacert /srv/git/tls/upstream-ca-cert.pem --data unchanged")
+
     with subtest("service restart preserves authorization and the guest capability"):
         machine.succeed("cp /run/mitm-proxy/alice/hosts.yml /run/saved-hosts.yml; "
                         "cp /run/mitm-proxy-ca/mitmproxy-ca.pem /run/saved-ca; "
@@ -180,6 +206,7 @@ in {
     with subtest("logout denies new Git requests without restarting guests or service"):
         machine.succeed(as_alice("python3 ${control} logout"))
         machine.fail(git)
+        machine.fail(gh + " api user")
         machine.succeed("test ! -e /var/lib/mitm-proxy-auth/alice.json")
 
     with subtest("the app owner can enroll but another host user cannot control that account"):

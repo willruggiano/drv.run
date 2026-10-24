@@ -11,8 +11,8 @@ from typing import cast
 from unittest.mock import patch
 from urllib.parse import parse_qs
 
-from auth import Account, Authorization, GitHub
-from main import HOST, Owner, Policy, create_master, prepare
+from auth import Account, Authorization, GitHub, object_value
+from main import API_HOST, HOST, Owner, Policy, create_master, prepare
 from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.tools.dump import DumpMaster
 from tornado.httpclient import HTTPRequest, HTTPResponse
@@ -64,7 +64,17 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
         get_addon = cast(Callable[[str], object], master.addons.get)
         policy = cast(Policy, get_addon("policy"))
 
-        async def resolve() -> str:
+        async def resolve(host: str) -> str:
+            self.assertIn(
+                host,
+                (
+                    HOST,
+                    API_HOST,
+                    "example.test",
+                    "api.github.com.evil.test",
+                    "other.test",
+                ),
+            )
             return "93.184.216.34"
 
         policy.resolve = resolve
@@ -79,7 +89,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
         ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
             # Emulate an isolated routed network without weakening Policy's
             # address checks or adding a production localhost exception.
-            if (host, port) == ("93.184.216.34", 443):
+            if host == "93.184.216.34" and port in (443, 8443):
                 host, port = "127.0.0.1", upstream_port
             return await original(host, port, local_addr=local_addr)
 
@@ -250,6 +260,167 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                     await writer.drain()
                     _ = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
                     self.assertEqual(fixture.streamed, b"ok")
+                self.assertEqual(fixture.errors, [])
+
+    async def test_default_allow_preserves_tls_credentials_and_bodies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            clock = Clock()
+            oauth = OAuth(clock)
+            authorization = Authorization(root / "auth", github(oauth, clock))
+            fixture = Fixture(root, oauth)
+            async with self.proxy(root, authorization, fixture) as (_, port):
+                for host, upstream_port, sni, ca in [
+                    ("example.test", 443, "example.test", "tls/upstream-ca-cert.pem"),
+                    ("example.test", 8443, "example.test", "tls/upstream-ca-cert.pem"),
+                    ("example.test", 443, API_HOST, "tls/upstream-ca-cert.pem"),
+                    (
+                        "api.github.com.evil.test",
+                        443,
+                        "api.github.com.evil.test",
+                        "tls/upstream-ca-cert.pem",
+                    ),
+                    (HOST, 8443, HOST, "tls/upstream-ca-cert.pem"),
+                    (HOST, 443, HOST, "ca-source/fixture-ca-cert.pem"),
+                    (API_HOST, 443, API_HOST, "ca-source/fixture-ca-cert.pem"),
+                ]:
+                    with self.subTest(host=host, port=upstream_port, sni=sni):
+                        reader, writer = await asyncio.open_connection(
+                            "127.0.0.1", port
+                        )
+                        try:
+                            writer.write(
+                                f"CONNECT {host}:{upstream_port} HTTP/1.1\r\nHost: {host}:{upstream_port}\r\n\r\n".encode()
+                            )
+                            await writer.drain()
+                            _ = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
+                            # Unconfigured origins must present their own certificate,
+                            # not one signed by the proxy CA (even with GitHub SNI).
+                            context = ssl.create_default_context(cafile=str(root / ca))
+                            await asyncio.wait_for(
+                                writer.start_tls(context, server_hostname=sni), 5
+                            )
+                            body = b"unchanged request body"
+                            writer.write(
+                                (
+                                    f"POST /passthrough HTTP/1.1\r\nHost: {host}\r\n"
+                                    "Authorization: Bearer caller-owned-token\r\n"
+                                    "X-Example: unchanged\r\n"
+                                    f"Content-Length: {len(body)}\r\n\r\n"
+                                ).encode()
+                                + body
+                            )
+                            await writer.drain()
+                            _ = await asyncio.wait_for(reader.read(), 5)
+                            request = fixture.passthrough_requests[-1]
+                            self.assertEqual(request.method, "POST")
+                            self.assertEqual(request.url, f"https://{host}/passthrough")
+                            self.assertEqual(
+                                request.headers["Authorization"],
+                                "Bearer caller-owned-token",
+                            )
+                            self.assertEqual(request.headers["X-Example"], "unchanged")
+                            self.assertEqual(request.body, body)
+                        finally:
+                            writer.close()
+                            with suppress(ConnectionResetError):
+                                await writer.wait_closed()
+                self.assertEqual(len(fixture.passthrough_requests), 7)
+                self.assertEqual(fixture.errors, [])
+
+    async def test_gh_rest_and_pull_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            clock = Clock()
+            oauth = OAuth(clock)
+            account = Account("alice", 1)
+            authorization = Authorization(root / "auth", github(oauth, clock))
+            await enroll(authorization, oauth, account)
+            fixture = Fixture(root, oauth)
+            async with self.proxy(root, authorization, fixture) as (_, port):
+                environment = {
+                    **os.environ,
+                    "HOME": str(root),
+                    "GH_CONFIG_DIR": str(root / "public/alice"),
+                    "GH_TELEMETRY": "false",
+                    "GH_NO_UPDATE_NOTIFIER": "1",
+                    "HTTPS_PROXY": f"http://127.0.0.1:{port}",
+                    "SSL_CERT_FILE": str(root / "ca-source/fixture-ca-cert.pem"),
+                    "NO_PROXY": "",
+                    "no_proxy": "",
+                }
+                for key in (
+                    "GH_TOKEN",
+                    "GITHUB_TOKEN",
+                    "GH_HOST",
+                    "GH_HTTP_UNIX_SOCKET",
+                ):
+                    _ = environment.pop(key, None)
+
+                async def gh(*arguments: str, succeeds: bool = True) -> None:
+                    process = await asyncio.create_subprocess_exec(
+                        "gh",
+                        *arguments,
+                        env=environment,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    try:
+                        code = await asyncio.wait_for(process.wait(), 30)
+                    finally:
+                        if process.returncode is None:
+                            process.kill()
+                            _ = await process.wait()
+                    self.assertEqual(code == 0, succeeds, arguments)
+
+                await gh("api", "user")
+                await gh("pr", "list", "--repo", "alice/repo")
+                await gh(
+                    "api",
+                    "--method",
+                    "PATCH",
+                    "repos/alice/repo/issues/1",
+                    "-f",
+                    "title=Updated",
+                )
+                self.assertEqual(
+                    [(request.method, request.url) for request in fixture.api_requests],
+                    [
+                        ("GET", "https://api.github.com/user"),
+                        ("POST", "https://api.github.com/graphql"),
+                        ("PATCH", "https://api.github.com/repos/alice/repo/issues/1"),
+                    ],
+                )
+                body = fixture.api_requests[-1].body
+                assert body is not None
+                self.assertEqual(json.loads(body), {"title": "Updated"})
+                for request in fixture.api_requests:
+                    self.assertEqual(
+                        request.headers["Authorization"], "Bearer ghu_token1"
+                    )
+                body = fixture.api_requests[1].body
+                assert body is not None
+                payload = object_value(cast(object, json.loads(body)))
+                variables = object_value(payload["variables"])
+                self.assertEqual(variables["owner"], "alice")
+                self.assertEqual(variables["repo"], "repo")
+
+                # GitHub permission denials must not invalidate the owner token.
+                await gh("pr", "list", "--repo", "bob/repo", succeeds=False)
+                await gh("api", "user")
+                # Expiry refreshes on the host with no change to the guest seed.
+                clock.now += 28800
+                await gh("api", "user")
+                self.assertEqual(
+                    fixture.api_requests[-1].headers["Authorization"],
+                    "Bearer ghu_token2",
+                )
+                count = len(fixture.api_requests)
+                await gh("api", "--hostname", "other.test", "user", succeeds=False)
+                self.assertEqual(len(fixture.api_requests), count)
+                await authorization.logout(account)
+                await gh("api", "user", succeeds=False)
+                self.assertEqual(len(fixture.api_requests), count)
                 self.assertEqual(fixture.errors, [])
 
     async def test_git_and_streaming(self) -> None:

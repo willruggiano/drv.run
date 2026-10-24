@@ -42,9 +42,12 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from mitmproxy import connection, http, options
+from mitmproxy.addons.next_layer import NextLayer as ProtocolDetection
 from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.certs import CertStore
 from mitmproxy.net.http.http1 import expected_http_body_size
+from mitmproxy.proxy import layer
+from mitmproxy.proxy.layers.tcp import TCPLayer
 from mitmproxy.proxy.mode_servers import ProxyConnectionHandler
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
 from mitmproxy.tools.dump import DumpMaster
@@ -53,19 +56,21 @@ from tornado.httpserver import HTTPServer
 from tornado.httputil import HTTPServerRequest
 from tornado.web import Application, HTTPError, RequestHandler
 
-# Initial policy: HTTPS Git smart HTTP, not GitHub's web/API endpoints.
+# Only these origins need TLS interception for credential substitution.
 HOST = "github.com"
+API_HOST = "api.github.com"
+CREDENTIAL_TARGETS = ((HOST, 443), (API_HOST, 443))
 REPOSITORY = r"/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+"
 DISCOVERY = re.compile(REPOSITORY + r"/info/refs\?service=git-(upload|receive)-pack")
 TRANSFER = re.compile(REPOSITORY + r"/git-(upload|receive)-pack")
 PLACEHOLDER = re.compile(r"drv_run_[0-9a-f]{64}")
 
 
-async def resolve_upstream() -> str:
+async def resolve_upstream(host: str) -> str:
     import socket
 
     addresses = await asyncio.get_running_loop().getaddrinfo(
-        HOST, 443, family=socket.AF_INET, type=socket.SOCK_STREAM
+        host, 443, family=socket.AF_INET, type=socket.SOCK_STREAM
     )
     return str(addresses[0][4][0])
 
@@ -149,7 +154,7 @@ class Policy:
         self,
         credentials: Mapping[str, Account],
         authorization: Authorization,
-        resolve: Callable[[], Awaitable[str]] = resolve_upstream,
+        resolve: Callable[[str], Awaitable[str]] = resolve_upstream,
         *,
         pause: Callable[[http.HTTPFlow], AbstractContextManager[None]],
     ) -> None:
@@ -159,24 +164,33 @@ class Policy:
             str, tuple[Account, str, AbstractAsyncContextManager[str]]
         ] = {}
         self.pause: Callable[[http.HTTPFlow], AbstractContextManager[None]] = pause
-        self.resolve: Callable[[], Awaitable[str]] = resolve
-        self.tunnels: set[str] = set()
+        self.resolve: Callable[[str], Awaitable[str]] = resolve
+        self.tunnels: dict[str, tuple[str, int]] = {}
 
     def http_connect(self, flow: http.HTTPFlow) -> None:
         # mitmproxy catches addon exceptions. Install the denial before checking
         # anything, and remove it only once all policy checks have succeeded.
         flow.response = http.Response.make(403)
+        host, port = flow.request.host, flow.request.port
+        authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
         if (
-            flow.request.host == HOST
-            and flow.request.port == 443
-            and flow.request.authority.lower() == f"{HOST}:443"
+            host
+            and 0 < port <= 65535
+            and flow.request.authority.lower() == authority.lower()
             and flow.client_conn.id not in self.tunnels
         ):
-            self.tunnels.add(flow.client_conn.id)
+            self.tunnels[flow.client_conn.id] = (host, port)
             flow.response = None
 
+    def next_layer(self, data: layer.NextLayer) -> None:
+        target = self.tunnels.get(data.context.client.id)
+        if target is not None and target not in CREDENTIAL_TARGETS:
+            # Select this before mitmproxy's TLS/HTTP detection. Do not decrypt,
+            # parse, or retain traffic for destinations without credential rules.
+            data.layer = TCPLayer(data.context, ignore=True)
+
     def client_disconnected(self, client: connection.Client) -> None:
-        self.tunnels.discard(client.id)
+        _ = self.tunnels.pop(client.id, None)
 
     async def requestheaders(self, flow: http.HTTPFlow) -> None:
         completed = False
@@ -203,40 +217,80 @@ class Policy:
             flow.response = http.Response.make(403)
             flow.request.stream = False
             request = flow.request
+            target = self.tunnels.get(flow.client_conn.id)
+            if (
+                target is None
+                and (request.host, request.port) not in CREDENTIAL_TARGETS
+            ):
+                request.stream = True
+                flow.response = None
+                return
+            if target not in CREDENTIAL_TARGETS:
+                return
+            assert target is not None
+            host, _ = target
             hosts = request.headers.get_all("host")
             if (
-                flow.client_conn.id not in self.tunnels
-                or not flow.client_conn.tls
-                or flow.client_conn.sni != HOST
+                not flow.client_conn.tls
+                or flow.client_conn.sni != host
                 or request.scheme != "https"
-                or request.host != HOST
+                or request.host != host
                 or request.port != 443
                 or len(hosts) > 1
-                or any(host.lower() not in (HOST, f"{HOST}:443") for host in hosts)
-                or request.authority.lower() not in ("", HOST, f"{HOST}:443")
-                or "upgrade" in request.headers
-                or "trailer" in request.headers
-                or not (
+                or any(value.lower() not in (host, f"{host}:443") for value in hosts)
+                or request.authority.lower() not in ("", host, f"{host}:443")
+            ):
+                return
+            request.stream = True
+            flow.response = None
+            if host == HOST:
+                if not (
                     (request.method == "GET" and DISCOVERY.fullmatch(request.path))
                     or (request.method == "POST" and TRANSFER.fullmatch(request.path))
-                )
+                ):
+                    return
+            elif request.method not in (
+                "GET",
+                "HEAD",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "OPTIONS",
             ):
                 return
             authorization = request.headers.get_all("authorization")
             if not authorization:
-                flow.response = http.Response.make(
-                    401, headers={"WWW-Authenticate": 'Basic realm="mitm-proxy"'}
-                )
                 return
             if len(authorization) != 1:
+                flow.response = http.Response.make(403)
+                request.stream = False
                 return
             scheme, encoded = authorization[0].split(" ", 1)
-            if scheme.lower() != "basic":
+            username = ""
+            if host == HOST:
+                if scheme.lower() != "basic":
+                    return
+                username, placeholder = (
+                    base64.b64decode(encoded, validate=True)
+                    .decode("ascii")
+                    .split(":", 1)
+                )
+            else:
+                # gh sends "token"; also accept the standard Bearer scheme.
+                if scheme.lower() not in ("token", "bearer"):
+                    return
+                placeholder = encoded
+            if not PLACEHOLDER.fullmatch(placeholder):
                 return
-            username, placeholder = (
-                base64.b64decode(encoded, validate=True).decode("ascii").split(":", 1)
-            )
-            if username != "x-access-token":
+            # From here on this is a credential substitution, not passthrough.
+            flow.response = http.Response.make(403)
+            request.stream = False
+            if (
+                (host == HOST and username != "x-access-token")
+                or "upgrade" in request.headers
+                or "trailer" in request.headers
+            ):
                 return
             account = self.credentials.get(placeholder)
             if account is None:
@@ -244,12 +298,16 @@ class Policy:
             lease = self.authorization.lease(account)
             token = await lease.__aenter__()
             self.leases[flow.id] = (account, token, lease)
-            replacement = base64.b64encode(f"{username}:{token}".encode()).decode()
+            if host == HOST:
+                encoded = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+                replacement = "Basic " + encoded
+            else:
+                replacement = "Bearer " + token
             # Do not allow the client to nominate credentials as a hop-by-hop
             # header, or to pass proxy credentials on to the upstream server.
             request.headers.set_all("connection", [])
             request.headers.set_all("proxy-authorization", [])
-            request.headers["authorization"] = "Basic " + replacement
+            request.headers["authorization"] = replacement
             request.stream = True
             flow.response = None
         except (ValueError, UnicodeError, binascii.Error):
@@ -263,19 +321,25 @@ class Policy:
 
     async def server_connect(self, data: ServerConnectionHookData) -> None:
         data.server.error = "mitm-proxy: upstream denied"
+        target = self.tunnels.get(data.client.id, data.server.address)
         if (
-            data.client.id not in self.tunnels
-            or data.client.sni != HOST
-            or data.server.address != (HOST, 443)
+            target is None
+            or data.server.address != target
             or data.server.transport_protocol != "tcp"
-            or data.server.sni != HOST
         ):
             return
-        address = await self.resolve()
+        host, port = target
+        if target in CREDENTIAL_TARGETS and (
+            data.client.id not in self.tunnels
+            or data.client.sni != host
+            or data.server.sni != host
+        ):
+            return
+        address = await self.resolve(host)
         if not public_address(address):
             return
         # Pin the checked numeric address: no second DNS lookup at connect.
-        data.server.address = (address, 443)
+        data.server.address = (address, port)
         data.server.error = None
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
@@ -452,7 +516,6 @@ def create_master(
         # streamed bodies. Git's large pushes must retain HTTP/1 chunk framing.
         http2=False,
         rawtcp=False,
-        websocket=False,
     )
     # Do not emit flows or addon tracebacks (which may contain credentials).
     # Keep ErrorCheck active so startup errors still cause a nonzero exit.
@@ -463,9 +526,15 @@ def create_master(
     proxyserver = get_addon("proxyserver")
     assert isinstance(proxyserver, Proxyserver)
     backpressure = Backpressure(proxyserver)
+    detection = get_addon("nextlayer")
+    assert isinstance(detection, ProtocolDetection)
+    # Run the tunnel decision before mitmproxy constructs TLS layers.
+    cast(Callable[[ProtocolDetection], None], master.addons.remove)(detection)
     # mitmproxy 12.2.3 leaves AddonManager.add's variadic argument untyped.
-    cast(Callable[[Backpressure, Policy], None], master.addons.add)(
-        backpressure, Policy(credentials, authorization, pause=backpressure.pause)
+    cast(Callable[[Backpressure, Policy, ProtocolDetection], None], master.addons.add)(
+        backpressure,
+        Policy(credentials, authorization, pause=backpressure.pause),
+        detection,
     )
     return master
 

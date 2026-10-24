@@ -6,8 +6,10 @@ import ssl
 import sys
 from contextlib import suppress
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlsplit
 
+from auth import object_value, text
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from main import CertificateAuthority
@@ -29,7 +31,16 @@ def certificate_authority(directory: Path) -> CertificateAuthority:
 def certificate(directory: Path) -> ssl.SSLContext:
     store = CertStore.from_store(directory, "upstream", 2048)
     entry = store.get_cert(
-        "github.com", [x509.DNSName("github.com"), x509.DNSName("api.github.com")]
+        "github.com",
+        [
+            x509.DNSName(host)
+            for host in (
+                "github.com",
+                "api.github.com",
+                "example.test",
+                "api.github.com.evil.test",
+            )
+        ],
     )
     cert = directory / "server.pem"
     key = directory / "server.key"
@@ -52,6 +63,8 @@ class Fixture:
         self.oauth: OAuth = oauth
         self.received: asyncio.Event = asyncio.Event()
         self.requests: list[tuple[str, str, str]] = []
+        self.api_requests: list[HTTPRequest] = []
+        self.passthrough_requests: list[HTTPRequest] = []
         self.errors: list[Exception] = []
         self.streamed: bytes | None = None
 
@@ -83,16 +96,85 @@ class Fixture:
             for key, value in (line.split(":", 1) for line in lines if line)
         }
         url = urlsplit(target)
-        if url.path in ("/login/device/code", "/login/oauth/access_token", "/user"):
+        if url.path == "/passthrough":
             body = await reader.readexactly(int(headers.get("content-length", "0")))
-            code, data = self.oauth.respond(
+            self.passthrough_requests.append(
                 HTTPRequest(
                     "https://" + headers["host"] + target,
                     method=method,
                     headers=HTTPHeaders(headers),
-                    body=body if method == "POST" else None,
+                    body=body,
                 )
             )
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            await writer.drain()
+            return
+        if headers["host"] == "api.github.com" or url.path in (
+            "/login/device/code",
+            "/login/oauth/access_token",
+        ):
+            body = await reader.readexactly(int(headers.get("content-length", "0")))
+            request = HTTPRequest(
+                "https://" + headers["host"] + target,
+                method=method,
+                headers=HTTPHeaders(headers),
+                body=body if method in ("POST", "PATCH") else None,
+            )
+            if url.path in ("/login/device/code", "/login/oauth/access_token", "/user"):
+                code, data = self.oauth.respond(request)
+            else:
+                payload = object_value(cast(object, json.loads(body)))
+                if url.path == "/graphql":
+                    assert method == "POST"
+                    variables = object_value(payload["variables"])
+                    owner = text(variables, "owner")
+                    assert text(variables, "repo") == "repo"
+                    data = {
+                        "data": {
+                            "repository": {
+                                "pullRequests": {
+                                    "nodes": [
+                                        {
+                                            "number": 1,
+                                            "title": "Test",
+                                            "state": "OPEN",
+                                            "url": "https://github.com/alice/repo/pull/1",
+                                            "headRefName": "feature",
+                                            "isCrossRepository": False,
+                                            "isDraft": False,
+                                            "createdAt": "2026-01-01T00:00:00Z",
+                                        }
+                                    ],
+                                    "totalCount": 1,
+                                    "pageInfo": {"hasNextPage": False, "endCursor": ""},
+                                }
+                            }
+                        }
+                    }
+                else:
+                    assert (
+                        method == "PATCH" and url.path == "/repos/alice/repo/issues/1"
+                    )
+                    owner = "alice"
+                    data = {"title": text(payload, "title")}
+                token = headers.get("authorization", "").removeprefix("Bearer ")
+                code = (
+                    200
+                    if self.oauth.permitted(token, owner, method == "PATCH")
+                    else 403
+                )
+            if headers["host"] == "api.github.com" and code == 200:
+                self.api_requests.append(request)
+                _ = (self.root / "api-requests.json").write_text(
+                    json.dumps(
+                        [
+                            {"method": item.method, "url": item.url}
+                            for item in self.api_requests
+                        ]
+                    )
+                )
             response = json.dumps(data).encode()
             writer.write(
                 f"HTTP/1.1 {code} OK\r\nContent-Type: application/json\r\nContent-Length: {len(response)}\r\nConnection: close\r\n\r\n".encode()
@@ -114,8 +196,11 @@ class Fixture:
         write = "git-receive-pack" in target
         if not self.oauth.permitted(token, owner, write):
             code = 401 if token not in self.oauth.access else 403
+            challenge = (
+                'WWW-Authenticate: Basic realm="GitHub"\r\n' if code == 401 else ""
+            )
             writer.write(
-                f"HTTP/1.1 {code} Denied\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode()
+                f"HTTP/1.1 {code} Denied\r\n{challenge}Content-Length: 0\r\nConnection: close\r\n\r\n".encode()
             )
             await writer.drain()
             return
