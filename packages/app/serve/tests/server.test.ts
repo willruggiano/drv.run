@@ -515,6 +515,63 @@ await test("exact-size benchmark history retains complete tool pairs and text-on
   assert.throws(() => benchmarkFixture(2, 5.5));
 });
 
+await test("rename commands update session metadata from a branch without model input", async (t) => {
+  for (const frontend of ["htmx", "elm"] as const) {
+    await t.test(frontend, async (t) => {
+      const f = await fixture(t);
+      const session = await f.create();
+      const other = await f.create();
+      await session.root.submit({ type: "write", entry: { kind: "test", data: {} } }, context);
+      const history = await readHistory(session.root);
+      const branch = await session.root.fork(
+        history.at(-1)!.id,
+        { ownership: { kind: "ownerless" } },
+        context,
+      );
+      const info = await runtime.sessionInfo(session, branch);
+      const base = await serve(t, f.sessions);
+      const path = conversationURL(session, branch.id);
+      const submit = (fields: Record<string, string>) =>
+        frontend === "htmx"
+          ? post(base + path + "/rename", fields)
+          : post(base + "/elm" + path + "/command", {
+              command: "rename",
+              requestId: randomUUID(),
+              revision: randomUUID(),
+              ...fields,
+            });
+      const success = frontend === "htmx" ? 303 : 200;
+      assert.equal((await submit({ argument: "  Counter cleanup  " })).status, success);
+      assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
+      assert.equal((await runtime.sessionInfo(session, branch)).name, "Counter cleanup");
+      for (const argument of ["a".repeat(121), "line\nbreak", "null\0byte", "delete\x7f"]) {
+        assert.equal((await submit({ argument })).status, 400);
+        assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
+      }
+      const empty: Record<string, string>[] = [{ argument: "" }, { argument: "   " }, {}];
+      for (const fields of empty) {
+        assert.equal((await submit(fields)).status, success);
+        assert.equal((await runtime.sessionInfo(session)).name, "");
+      }
+      const name = "x".repeat(120);
+      assert.equal((await submit({ argument: `  ${name}  ` })).status, success);
+      assert.equal((await runtime.sessionInfo(session)).name, name);
+      assert.equal((await runtime.sessionInfo(other)).name, "");
+      assert.deepEqual(await runtime.sessionInfo(session, branch), { ...info, name });
+      assert.deepEqual(await readHistory(session.root), history);
+      assert.deepEqual(await readHistory(branch), history);
+      assert.equal(f.faux.state.callCount, 0);
+      await f.reopen();
+      const restored = await f.sessions.get(session.id);
+      assert.equal((await runtime.sessionInfo(restored)).name, name);
+      assert.equal(
+        (await f.sessions.catalog()).sessions.find((item) => item.id === session.id)?.name,
+        name,
+      );
+    });
+  }
+});
+
 await test("conversation controls validate input and keep forks scoped to their session", async (t) => {
   const f = await fixture(t);
   const session = await f.create();

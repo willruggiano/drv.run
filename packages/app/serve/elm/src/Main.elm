@@ -617,6 +617,9 @@ update msg model =
                     "/cd" ->
                         submit "cd" argument mode True model
 
+                    "/rename" ->
+                        submit "rename" argument mode True model
+
                     "/review" ->
                         submit "review" argument mode True model
 

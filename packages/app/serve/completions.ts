@@ -4,6 +4,7 @@ export const commands = [
   { name: "settings", description: "Session settings" },
   { name: "model", description: "Choose a model" },
   { name: "cd", description: "Change working directory · defaults to home" },
+  { name: "rename", description: "Rename session · empty name clears it" },
   { name: "fork", description: "Open branches" },
   { name: "review", description: "Review in a fresh conversation · optional scope" },
   { name: "endreview", description: "End the review and return to the original conversation" },

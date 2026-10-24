@@ -23,6 +23,7 @@ import {
   completeWorkingDirectories,
   inspectContext,
   changeDirectory,
+  rename,
   Metadata,
   Environment,
   type Sessions,
@@ -78,6 +79,7 @@ const commands = new Set([
   "fork",
   "export",
   "cd",
+  "rename",
   "review",
   "endreview",
 ]);
@@ -751,6 +753,7 @@ export async function elmFrontend(
       if (result === "already_placed") throw new FormError(409, "Submission was already placed.");
     }
   } else if (command === "cd") await changeDirectory(session, argument, conversation, context);
+  else if (command === "rename") await rename(session, argument);
   else if (command === "review" || command === "endreview") {
     const result =
       command === "review"

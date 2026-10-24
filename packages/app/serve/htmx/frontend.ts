@@ -63,6 +63,7 @@ import {
   completePaths,
   completeWorkingDirectories,
   changeDirectory,
+  rename,
   inspectContext,
   contextStatus,
   Environment,
@@ -706,7 +707,7 @@ export async function hypermedia(
     return;
   }
   const match =
-    /^\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|fork|cd|compact|reset|cancel|context|export|completions|repository))?)?$/.exec(
+    /^\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|fork|cd|rename|compact|reset|cancel|context|export|completions|repository))?)?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -903,6 +904,12 @@ export async function hypermedia(
     redirect(request, response, conversationURL(session, fork.id));
     return;
   }
+  if (operation === "rename") {
+    await rename(session, optional(data, "argument"));
+    response.setHeader("HX-Push-Url", "false");
+    saved(request, response, path);
+    return;
+  }
   if (operation === "cd") {
     await changeDirectory(session, field(data, "argument", 4096), conversation, context);
     response.setHeader("HX-Push-Url", "false");
@@ -992,7 +999,7 @@ function saved(request: IncomingMessage, response: ServerResponse, path: string)
   } else redirect(request, response, path);
 }
 function navigation(path: string): SafeHtml {
-  const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
+  const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/rename`, "Rename session", "rename", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
   const search = h`<div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
   return h`${commands}${search}`;
 }

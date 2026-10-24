@@ -5,12 +5,62 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { browserFixture } from "../../tests/browser-testing.ts";
 import { LiveDoc, type TaskId, type CompactionResult } from "@earendil-works/pi-durable";
-import { fixture, waitFor } from "../../tests/sessions-testing.ts";
+import { fixture, readHistory, waitFor } from "../../tests/sessions-testing.ts";
 import { conversationURL } from "../../presentation.ts";
 import { Review } from "harness";
 import { rename, sessionInfo, inspectContext } from "../../sessions.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+await test("rename completes and updates the session title in both frontends", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const { page, base, errors } = await browserFixture(t, f.sessions);
+  page.setDefaultTimeout(10000);
+  for (const frontend of ["htmx", "elm"]) {
+    const path = (frontend === "elm" ? "/elm" : "") + conversationURL(session);
+    await page.goto(base + path);
+    await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
+    await page.fill("#prompt", "/rena");
+    await page.locator("#completions [role=option]").waitFor();
+    await page.press("#prompt", "Tab");
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "/rename ",
+    );
+    const name = `<b>${frontend} session</b>`;
+    await page.fill("#prompt", `/rename   ${name}  `);
+    await page.press("#prompt", "Control+Enter");
+    await waitFor(async () => (await sessionInfo(session)).name === name);
+    await page.waitForFunction(
+      (title) => document.querySelector("#conversation-title")?.textContent === title,
+      name,
+    );
+    assert.equal(await page.locator("#conversation-title b").count(), 0);
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    const invalid = `/rename ${"x".repeat(121)}`;
+    await page.fill("#prompt", invalid);
+    await page.press("#prompt", "Control+Enter");
+    await page.waitForFunction(() => !!document.querySelector("#request-error")?.textContent);
+    assert.equal(await page.inputValue("#prompt"), invalid);
+    assert.equal((await sessionInfo(session)).name, name);
+    if (frontend === "elm")
+      await page.getByRole("button", { name: "Keep draft; dismiss uncertain command" }).click();
+    await page.fill("#prompt", "/rename");
+    await page.locator("#send").click();
+    await waitFor(async () => (await sessionInfo(session)).name === "");
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#conversation-title")?.textContent === "Untitled session" &&
+        document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    assert.equal(new URL(page.url()).pathname, path);
+  }
+  assert.deepEqual(await readHistory(session.root), []);
+  assert.equal(f.faux.state.callCount, 0);
+  assert.deepEqual(errors, []);
+});
 
 await test("conversation frontend visual parity", { timeout: 60000 }, async (t) => {
   const f = await fixture(t);
