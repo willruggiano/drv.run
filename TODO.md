@@ -14,6 +14,9 @@
         over ls")
 - SDLC improvements:
   - [ ] See above "Nicer way to..."
+  - [ ] Related to^ we should prepend to `XDG_CONFIG_DIRS` and export using our
+        devshell, which will automatically cause that file to pick up _project
+        specific llm guidance_, in addition to /etc/llms.txt
   - [ ] Move everything in the justfile to nix, delete justfile
   - [ ] Formalize project package definition (run unit tests in checkPhase,
         export benchmarks, integration tests, and nixos vm tests via

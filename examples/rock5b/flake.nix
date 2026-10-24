@@ -44,32 +44,47 @@
       };
     });
 
-    apps = eachSystem (pkgs: {
+    apps = eachSystem (pkgs: let
+      build = pkgs.writeShellApplication {
+        name = "rock5b.build";
+        runtimeInputs = [
+          pkgs.cachix
+          pkgs.nix
+        ];
+        text = let
+          system = "aarch64-linux";
+        in ''
+          nix-fast-build \
+            --flake ./examples/rock5b \
+            --systems ${system}   \
+            --select 'flake: {
+              host  = flake.nixosConfigurations.rock5b.config.system.build.toplevel;
+              guest = flake.deploy.nodes.rock5b.profiles.system.path;
+              shell = flake.inputs.drv-run.devShells.${system}.default;
+            }'
+        '';
+      };
+    in {
+      build = {
+        type = "app";
+        program = nixpkgs.lib.getExe build;
+        meta.description = "nix-fast-build the host, guest, and shell outputs";
+      };
       deploy = {
         type = "app";
         program = nixpkgs.lib.getExe (pkgs.writeShellApplication {
-          name = "deploy";
+          name = "rock5b.deploy";
           runtimeInputs = [
-            pkgs.nix
-            pkgs.openssh
+            build
             deploy-rs.packages.${pkgs.stdenv.hostPlatform.system}.default
+            pkgs.openssh
           ];
           text = ''
-            nix-fast-build \
-              --flake ./examples/rock5b \
-              --select 'flake: {
-                host  = flake.nixosConfigurations.rock5b.config.system.build.toplevel;
-                guest = flake.deploy.nodes.rock5b.profiles.system.path;
-                shell = flake.inputs.drv-run.devShells.aarch64-linux.default;
-              }' \
-              --systems aarch64-linux \
-              --cachix-cache drv-run \
-              --push-build-closure
-
+            rock5b.build --cachix-cache drv-run --push-build-closure
             exec deploy --fast-connection=true --hostname=rock5b --skip-checks ./examples/rock5b "$@"
           '';
         });
-        meta.description = "prime the binary cache and then deploy the rock5b";
+        meta.description = "build and deploy the rock5b";
       };
     });
 
