@@ -539,9 +539,7 @@ await test("HTML draft reload and offline shell never persist conversation repre
   const cached = await page.evaluate(async () =>
     (
       await Promise.all(
-        (
-          await caches.keys()
-        ).map(async (key) =>
+        (await caches.keys()).map(async (key) =>
           (await (await caches.open(key)).keys()).map((request) => new URL(request.url).pathname),
         ),
       )
