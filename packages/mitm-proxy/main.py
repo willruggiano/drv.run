@@ -22,6 +22,7 @@ from contextlib import (
     suppress,
 )
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast, override
 
@@ -37,6 +38,9 @@ from auth import (
     object_value,
     text,
 )
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from mitmproxy import connection, http, options
 from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.certs import CertStore
@@ -305,9 +309,76 @@ class Owner:
     user_id: int
 
 
-def prepare(state: Path, public: Path, owners: Sequence[Owner], gid: int) -> None:
+@dataclass(frozen=True)
+class CertificateAuthority:
+    certificate: str
+    private_key_file: Path
+
+
+def prepare(
+    state: Path,
+    public: Path,
+    owners: Sequence[Owner],
+    gid: int,
+    ca: CertificateAuthority,
+    ca_store: Path,
+) -> None:
+    certificates = x509.load_pem_x509_certificates(ca.certificate.encode())
+    if len(certificates) != 1:
+        raise ValueError("expected one CA certificate")
+    certificate = certificates[0]
+    key = serialization.load_pem_private_key(ca.private_key_file.read_bytes(), None)
+    if not isinstance(key, (rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey)):
+        raise TypeError("unsupported CA key type")
+    if key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    ) != certificate.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    ):
+        raise ValueError("CA certificate and private key do not match")
+    try:
+        constraints = certificate.extensions.get_extension_for_class(
+            x509.BasicConstraints
+        ).value
+        usage = certificate.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound as error:
+        raise ValueError("missing CA constraints") from error
+    if not constraints.ca or not usage.key_cert_sign:
+        raise ValueError("certificate cannot sign certificates")
+    if (
+        not certificate.not_valid_before_utc
+        <= datetime.now(UTC)
+        < certificate.not_valid_after_utc
+    ):
+        raise ValueError("CA certificate is not currently valid")
+
+    # Only the runtime directory receives the decrypted key. Never let mitmproxy
+    # silently generate a CA that differs from the guest's build-time trust root.
+    ca_store.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = ca_store / ".mitmproxy-ca.pem"
+    _ = temporary.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+        + certificate.public_bytes(serialization.Encoding.PEM)
+    )
+    os.chown(temporary, 0, gid)
+    temporary.chmod(0o640)
+    _ = temporary.replace(ca_store / "mitmproxy-ca.pem")
+    _ = CertStore.from_files(
+        ca_store / "mitmproxy-ca.pem", ca_store / "mitmproxy-dhparam.pem"
+    )
+    for entry in ca_store.iterdir():
+        os.chown(entry, 0, gid)
+        entry.chmod(0o640)
+    os.chown(ca_store, 0, gid)
+    ca_store.chmod(0o750)
+
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _ = CertStore.from_store(str(state), "mitmproxy", 2048)
+    for obsolete in state.glob("mitmproxy-*"):
+        obsolete.unlink()
     public.mkdir(mode=0o755, parents=True, exist_ok=True)
     public.chmod(0o755)
     # Remove publications for owners whose access was removed.
@@ -319,22 +390,30 @@ def prepare(state: Path, public: Path, owners: Sequence[Owner], gid: int) -> Non
         if not marker.exists():
             with marker.open("x") as file:
                 _ = file.write("drv_run_" + secrets.token_hex(32))
-        if not PLACEHOLDER.fullmatch(marker.read_text()):
+        placeholder = marker.read_text()
+        if not PLACEHOLDER.fullmatch(placeholder):
             raise ValueError("invalid persisted mitm-proxy placeholder")
         directory = public / owner.name
         directory.mkdir(mode=0o750, exist_ok=True)
         os.chown(directory, 0, owner.gid)
         # mkdir's mode is masked by the service's UMask=0077.
         directory.chmod(0o750)
-        for source, name in [
-            (marker, "placeholder"),
-            (state / "mitmproxy-ca-cert.pem", "ca.pem"),
+        # JSON is also YAML; gh reads this without an online login or token export.
+        hosts = json.dumps(
+            {"github.com": {"oauth_token": placeholder, "git_protocol": "https"}}
+        ).encode()
+        for name, content in [
+            # Without a schema version gh attempts an online account migration.
+            ("config.yml", b"version: 1\n"),
+            ("hosts.yml", hosts),
         ]:
             temporary = directory / ("." + name)
-            _ = shutil.copyfile(source, temporary)
+            _ = temporary.write_bytes(content)
             os.chown(temporary, 0, owner.gid)
             temporary.chmod(0o640)
             _ = temporary.replace(directory / name)
+        for obsolete in ["placeholder", "ca.pem"]:
+            (directory / obsolete).unlink(missing_ok=True)
     # The proxy can read, but cannot alter state consumed by privileged prepare.
     for entry in state.iterdir():
         os.chown(entry, 0, gid)
@@ -359,6 +438,9 @@ def create_master(
     credentials: Mapping[str, Account],
     authorization: Authorization,
 ) -> DumpMaster:
+    _ = CertStore.from_files(
+        state / "mitmproxy-ca.pem", state / "mitmproxy-dhparam.pem"
+    )
     opts = options.Options(
         confdir=str(state),
         listen_host="0.0.0.0",
@@ -574,7 +656,7 @@ class Arguments(argparse.Namespace):
     user: str | None = None
 
 
-def configuration(path: Path) -> tuple[str, int, list[Owner]]:
+def configuration(path: Path) -> tuple[str, int, list[Owner], CertificateAuthority]:
     data = object_value(cast(object, json.loads(path.read_text())))
     client_id = text(data, "clientId")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", client_id):
@@ -587,16 +669,25 @@ def configuration(path: Path) -> tuple[str, int, list[Owner]]:
         owner = object_value(value)
         account = Account(name, integer(owner, "githubUserId"))
         owners.append(Owner(account.name, integer(owner, "gid"), account.user_id))
-    return client_id, port, owners
+    ca = CertificateAuthority(
+        text(data, "caCertificate"), Path(text(data, "caPrivateKeyFile"))
+    )
+    return client_id, port, owners, ca
 
 
 async def run(
     args: Arguments, state: Path, tokens: Path, show: Callable[[Device], None]
 ) -> None:
-    client_id, port, owners = configuration(Path(args.config))
+    client_id, port, owners, ca = configuration(Path(args.config))
+    ca_store = Path("/run/mitm-proxy-ca")
     if args.operation == "prepare":
         prepare(
-            state, Path("/run/mitm-proxy"), owners, pwd.getpwnam("mitm-proxy").pw_gid
+            state,
+            Path("/run/mitm-proxy"),
+            owners,
+            pwd.getpwnam("mitm-proxy").pw_gid,
+            ca,
+            ca_store,
         )
         return
     client = http_client()
@@ -608,7 +699,7 @@ async def run(
     try:
         if args.operation == "serve":
             await serve(
-                state, port, read_credentials(state, owners), authorization, owners
+                ca_store, port, read_credentials(state, owners), authorization, owners
             )
             return
         owner = next((owner for owner in owners if owner.name == args.user), None)

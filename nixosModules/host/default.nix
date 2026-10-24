@@ -72,9 +72,8 @@
         (lib.optionalString (config.services.drv-run.mitm-proxy.owners != {}) ''
           case $(id -un) in
             ${lib.concatStringsSep "|" (builtins.attrNames config.services.drv-run.mitm-proxy.owners)})
-              install -d -m 0700 "$staging/mitm-proxy"
-              install -m 0600 "/run/mitm-proxy/$(id -un)/placeholder" "$staging/mitm-proxy/placeholder"
-              install -m 0600 "/run/mitm-proxy/$(id -un)/ca.pem" "$staging/mitm-proxy/ca.pem"
+              install -d -m 0700 "$staging/mitm-proxy" "$staging/mitm-proxy/gh"
+              install -m 0600 "/run/mitm-proxy/$(id -un)/"{config,hosts}.yml "$staging/mitm-proxy/gh/"
               ;;
           esac
         '')

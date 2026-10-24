@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import ssl
 import tempfile
@@ -11,12 +12,12 @@ from unittest.mock import patch
 from urllib.parse import parse_qs
 
 from auth import Account, Authorization, GitHub
-from main import HOST, Policy, create_master
+from main import HOST, Owner, Policy, create_master, prepare
 from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.tools.dump import DumpMaster
 from tornado.httpclient import HTTPRequest, HTTPResponse
 
-from .fixture import Fixture, certificate
+from .fixture import Fixture, certificate, certificate_authority
 from .oauth import Clock, OAuth, enroll, github
 from .proxy_test import ALICE, BOB, basic
 
@@ -34,6 +35,19 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
     async def proxy(
         self, root: Path, authorization: Authorization, fixture: Fixture
     ) -> AsyncGenerator[tuple[DumpMaster, int]]:
+        ca = certificate_authority(root / "ca-source")
+        (root / "state").mkdir(exist_ok=True)
+        for name, placeholder in [("alice", ALICE), ("bob", BOB)]:
+            _ = (root / "state" / ("placeholder-" + name)).write_text(placeholder)
+        with patch("main.os.chown"):
+            prepare(
+                root / "state",
+                root / "public",
+                [Owner("alice", 1000, 1), Owner("bob", 1001, 2)],
+                999,
+                ca,
+                root / "proxy",
+            )
         upstream = await asyncio.start_server(
             fixture.handle, "127.0.0.1", 0, ssl=certificate(root / "tls")
         )
@@ -92,7 +106,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
             await writer.drain()
             _ = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
             context = ssl.create_default_context(
-                cafile=str(root / "proxy/mitmproxy-ca-cert.pem")
+                cafile=str(root / "ca-source/fixture-ca-cert.pem")
             )
             await writer.start_tls(context, server_hostname=HOST)
             writer.write(
@@ -251,8 +265,15 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                 environment = {
                     **os.environ,
                     "HOME": str(root / "home"),
-                    "GH_TOKEN": ALICE,
+                    "GH_CONFIG_DIR": str(root / "public/alice"),
+                    "GH_TOKEN": "must-not-override-seeded-config",
+                    "GITHUB_TOKEN": "must-not-override-seeded-config",
                     "GH_TELEMETRY": "false",
+                    "GH_NO_UPDATE_NOTIFIER": "1",
+                    "HTTPS_PROXY": f"http://127.0.0.1:{port}",
+                    "SSL_CERT_FILE": str(root / "ca-source/fixture-ca-cert.pem"),
+                    "NO_PROXY": "",
+                    "no_proxy": "",
                     "GIT_TERMINAL_PROMPT": "0",
                     "GIT_CONFIG_NOSYSTEM": "1",
                     "GIT_CONFIG_GLOBAL": str(root / "gitconfig"),
@@ -265,9 +286,9 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                 _ = (root / "gitconfig").write_text(
                     '[http "https://github.com/"]\n'
                     + f"proxy = http://127.0.0.1:{port}\n"
-                    + f"sslCAInfo = {root}/proxy/mitmproxy-ca-cert.pem\n"
+                    + f"sslCAInfo = {root}/ca-source/fixture-ca-cert.pem\n"
                     + '[credential "https://github.com"]\n'
-                    + "helper = !gh auth git-credential\n"
+                    + "helper = !env -u GH_TOKEN -u GITHUB_TOKEN gh auth git-credential\n"
                 )
 
                 async def git(*arguments: str, succeeds: bool = True) -> None:
@@ -358,7 +379,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                 await git(
                     "ls-remote", "https://github.com/bob/repo.git", succeeds=False
                 )
-                environment["GH_TOKEN"] = BOB
+                environment["GH_CONFIG_DIR"] = str(root / "public/bob")
                 await git("ls-remote", "https://github.com/bob/repo.git")
                 await git("ls-remote", "https://github.com/readonly/repo.git")
                 await git(
@@ -370,13 +391,20 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                     succeeds=False,
                 )
                 self.assertFalse((root / "readonly/repo.git/refs/heads/main").exists())
-                environment["GH_TOKEN"] = "unknown"
+                (root / "unknown").mkdir()
+                _ = (root / "unknown/config.yml").write_bytes(
+                    (root / "public/alice/config.yml").read_bytes()
+                )
+                _ = (root / "unknown/hosts.yml").write_text(
+                    json.dumps({"github.com": {"oauth_token": "unknown"}})
+                )
+                environment["GH_CONFIG_DIR"] = str(root / "unknown")
                 count = len(fixture.requests)
                 await git(
                     "ls-remote", "https://github.com/alice/repo.git", succeeds=False
                 )
                 self.assertEqual(len(fixture.requests), count)
-                environment["GH_TOKEN"] = ALICE
+                environment["GH_CONFIG_DIR"] = str(root / "public/alice")
                 await git(
                     "ls-remote",
                     "https://github.com/alice/redirect.git",
@@ -392,7 +420,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                 await writer.drain()
                 _ = await reader.readuntil(b"\r\n\r\n")
                 context = ssl.create_default_context(
-                    cafile=str(root / "proxy/mitmproxy-ca-cert.pem")
+                    cafile=str(root / "ca-source/fixture-ca-cert.pem")
                 )
                 await writer.start_tls(context, server_hostname=HOST)
                 fixture.received.clear()

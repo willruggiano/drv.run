@@ -10,11 +10,20 @@ from urllib.parse import urlsplit
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
+from main import CertificateAuthority
 from mitmproxy.certs import CertStore
 from tornado.httpclient import HTTPRequest
 from tornado.httputil import HTTPHeaders
 
 from .oauth import OAuth
+
+
+def certificate_authority(directory: Path) -> CertificateAuthority:
+    _ = CertStore.from_store(directory, "fixture", 2048)
+    return CertificateAuthority(
+        (directory / "fixture-ca-cert.pem").read_text(),
+        directory / "fixture-ca.pem",
+    )
 
 
 def certificate(directory: Path) -> ssl.SSLContext:

@@ -3,17 +3,22 @@
   pkgs,
   ...
 }: {
-  environment.systemPackages = [pkgs.gh];
+  environment = {
+    systemPackages = [pkgs.gh];
+    sessionVariables.GH_CONFIG_DIR = "/run/drv-run-seed/mitm-proxy/gh";
+  };
   programs.git = {
     enable = true;
-    config.include.path = "/run/mitm-proxy/gitconfig";
+    config = {
+      include.path = "/run/mitm-proxy/gitconfig";
+      credential."https://github.com".helper = [
+        ""
+        # Select the seed at invocation, after nix develop/shellHook. Environment
+        # tokens must not override the owner capability.
+        "!${lib.getExe' pkgs.coreutils "env"} -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR=/run/drv-run-seed/mitm-proxy/gh ${lib.getExe pkgs.gh} auth git-credential"
+      ];
+    };
   };
-  programs.bash.interactiveShellInit = ''
-    if [[ -f /run/drv-run-seed/mitm-proxy/placeholder ]]; then
-      GH_TOKEN=$(< /run/drv-run-seed/mitm-proxy/placeholder)
-      export GH_TOKEN
-    fi
-  '';
   # Sockets must start before basic.target; proxy setup is a normal service
   # ordered after it. Gate SSH sessions, not the listening socket.
   systemd.services."sshd@" = {
@@ -21,13 +26,13 @@
     after = ["mitm-proxy.service"];
   };
   systemd.services.mitm-proxy = {
-    description = "Configure Git credential proxy access";
+    description = "Configure GitHub credential proxy access";
     wantedBy = ["multi-user.target"];
     wants = ["network-online.target"];
     after = ["network-online.target"];
     unitConfig = {
       RequiresMountsFor = "/run/drv-run-seed";
-      ConditionPathExists = "/run/drv-run-seed/mitm-proxy/placeholder";
+      ConditionPathExists = "/run/drv-run-seed/mitm-proxy/gh/hosts.yml";
     };
     serviceConfig = {
       Type = "oneshot";
@@ -40,11 +45,6 @@
     script = ''
       gateway=$(ip -j -4 route show default | jq -er 'if length == 1 then .[0].gateway else error("expected one default gateway") end')
       git config --file /run/mitm-proxy/gitconfig http.https://github.com/.proxy "http://$gateway:${toString port}"
-      git config --file /run/mitm-proxy/gitconfig http.https://github.com/.sslCAInfo /run/drv-run-seed/mitm-proxy/ca.pem
-      git config --file /run/mitm-proxy/gitconfig credential.https://github.com.helper ""
-      # Read the capability at helper invocation, after nix develop/shellHook.
-      # gh still implements the credential protocol; no custom helper protocol.
-      git config --file /run/mitm-proxy/gitconfig --add credential.https://github.com.helper '!GH_TOKEN=$(cat /run/drv-run-seed/mitm-proxy/placeholder) ${lib.getExe pkgs.gh} auth git-credential'
     '';
   };
 }

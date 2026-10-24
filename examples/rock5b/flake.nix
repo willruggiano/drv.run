@@ -201,9 +201,18 @@
         pkgs,
         ...
       }: {
-        imports = [
-          drv-run.nixosModules.host
-          drv-run.nixosModules.pi
+        imports =
+          [
+            drv-run.nixosModules.host
+            drv-run.nixosModules.pi
+          ]
+          ++ lib.optional (builtins.pathExists ./mitm-proxy-ca.nix) ./mitm-proxy-ca.nix;
+
+        assertions = [
+          {
+            assertion = builtins.pathExists ./mitm-proxy-ca.nix;
+            message = "Run scripts/setup-mitm-proxy.sh before deploying the credential proxy.";
+          }
         ];
 
         sops.secrets.tailscale-auth-key = {

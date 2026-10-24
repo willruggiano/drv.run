@@ -1,6 +1,9 @@
 {pkgs, ...}: let
   python = pkgs.python3.withPackages (ps: [ps.mitmproxy ps.tornado]);
   source = ../../packages/mitm-proxy;
+  # Public test-only CA/key pair from nixpkgs, never used by deployed systems.
+  testCA = pkgs.path + "/nixos/tests/common/acme/server";
+  caCertificate = builtins.readFile (testCA + "/ca.cert.pem");
   # A login must have an initiating terminal. The fixture approves the device
   # without a browser; test success through Git, never by inspecting the prompt.
   login = pkgs.writeText "github-login.py" ''
@@ -92,7 +95,14 @@ in {
       services.drv-run.mitm-proxy = {
         clientId = "test-app";
         owners.alice.githubUserId = 1;
+        inherit caCertificate;
+        caPrivateKeyFile = "/run/test-ca-key";
       };
+      security.pki.certificates = [caCertificate];
+      system.activationScripts.test-ca = lib.stringAfter ["specialfs"] ''
+        install -m 0400 ${testCA + "/ca.key.pem"} /run/test-ca-key
+      '';
+      system.activationScripts.mitm-proxy.deps = ["test-ca"];
       systemd.services.fixture = {
         wantedBy = ["multi-user.target"];
         after = ["network-addresses-lo.service"];
@@ -128,17 +138,18 @@ in {
         return "su -s /bin/sh alice -c " + shlex.quote(command)
 
     with subtest("service starts without enrollment; only the capability is published"):
-        machine.succeed(as_alice("test -r /run/mitm-proxy/alice/placeholder; test -r /run/mitm-proxy/alice/ca.pem"))
-        machine.fail(as_alice("test -r /var/lib/mitm-proxy/mitmproxy-ca.pem"))
+        machine.succeed(as_alice("test -r /run/mitm-proxy/alice/hosts.yml; test ! -e /run/mitm-proxy/alice/ca.pem"))
+        machine.fail("su -s /bin/sh bob -c 'test -r /run/mitm-proxy/alice/hosts.yml'")
+        machine.fail(as_alice("test -r /run/mitm-proxy-ca/mitmproxy-ca.pem"))
+        machine.fail(as_alice("test -r /run/test-ca-key"))
         machine.fail(as_alice("test -r /var/lib/mitm-proxy-auth"))
         machine.fail(as_alice("mitm-proxy logout --user alice"))
-        machine.fail("su -s /bin/sh mitm-proxy -c 'test -w /var/lib/mitm-proxy/mitmproxy-ca.pem'")
+        machine.fail("su -s /bin/sh mitm-proxy -c 'test -w /run/mitm-proxy-ca/mitmproxy-ca.pem'")
 
     # Exercise the same Git-facing configuration as a guest, without nesting VMs.
     machine.succeed(as_alice("git config --global http.https://github.com/.proxy http://127.0.0.1:3128; "
-                            "git config --global http.https://github.com/.sslCAInfo /run/mitm-proxy/alice/ca.pem; "
                             "git config --global credential.https://github.com.helper " +
-                            shlex.quote("!GH_TOKEN=$(cat /run/mitm-proxy/alice/placeholder) gh auth git-credential")))
+                            shlex.quote("!env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR=/run/mitm-proxy/alice gh auth git-credential")))
     git = as_alice("GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/alice/repo.git")
     machine.fail(git)
 
@@ -158,12 +169,12 @@ in {
         machine.fail(as_alice("test -r /var/lib/mitm-proxy-auth/alice.json"))
 
     with subtest("service restart preserves authorization and the guest capability"):
-        machine.succeed("cp /run/mitm-proxy/alice/placeholder /run/saved-placeholder; "
-                        "cp /run/mitm-proxy/alice/ca.pem /run/saved-ca; "
+        machine.succeed("cp /run/mitm-proxy/alice/hosts.yml /run/saved-hosts.yml; "
+                        "cp /run/mitm-proxy-ca/mitmproxy-ca.pem /run/saved-ca; "
                         "systemctl restart mitm-proxy.service")
         machine.wait_for_open_port(3128)
-        machine.succeed("cmp /run/saved-placeholder /run/mitm-proxy/alice/placeholder; "
-                        "cmp /run/saved-ca /run/mitm-proxy/alice/ca.pem")
+        machine.succeed("cmp /run/saved-hosts.yml /run/mitm-proxy/alice/hosts.yml; "
+                        "cmp /run/saved-ca /run/mitm-proxy-ca/mitmproxy-ca.pem")
         machine.succeed(git)
 
     with subtest("logout denies new Git requests without restarting guests or service"):

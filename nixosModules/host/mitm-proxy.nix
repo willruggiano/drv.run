@@ -9,7 +9,7 @@
   enabled = cfg.owners != {};
   package = pkgs.callPackage ../../packages/mitm-proxy {};
   settings = pkgs.writeText "mitm-proxy.json" (builtins.toJSON {
-    inherit (cfg) port clientId;
+    inherit (cfg) port clientId caCertificate caPrivateKeyFile;
     owners =
       lib.mapAttrs (name: owner: {
         inherit (owner) githubUserId;
@@ -30,6 +30,16 @@ in {
       type = lib.types.str;
       default = "";
       description = "GitHub App client ID, with device flow and expiring user tokens enabled.";
+    };
+    caCertificate = lib.mkOption {
+      type = lib.types.lines;
+      default = "";
+      description = "Public proxy CA certificate in PEM format, added to the guest trust store.";
+    };
+    caPrivateKeyFile = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = "Absolute runtime path to the CA private key. Provision it before the mitm-proxy activation script; never put the key in the Nix store.";
     };
     owners = lib.mkOption {
       default = {};
@@ -67,6 +77,14 @@ in {
         {
           assertion = builtins.match "[A-Za-z0-9_.-]+" cfg.clientId != null;
           message = "mitm-proxy requires a GitHub App clientId.";
+        }
+        {
+          assertion = lib.hasInfix "-----BEGIN CERTIFICATE-----" cfg.caCertificate && !(lib.hasInfix "PRIVATE KEY" cfg.caCertificate);
+          message = "mitm-proxy requires a public PEM caCertificate, without a private key.";
+        }
+        {
+          assertion = lib.hasPrefix "/" cfg.caPrivateKeyFile && !(lib.hasPrefix "/nix/store/" cfg.caPrivateKeyFile);
+          message = "mitm-proxy requires a runtime caPrivateKeyFile outside the Nix store.";
         }
       ];
 
@@ -144,8 +162,12 @@ in {
     systemd.tmpfiles.rules = [
       "d /var/lib/mitm-proxy 0750 root mitm-proxy -"
       "d /run/mitm-proxy 0755 root root -"
+      "d /run/mitm-proxy-ca 0750 root mitm-proxy -"
       "d /var/lib/mitm-proxy-auth 0700 mitm-proxy mitm-proxy -"
     ];
-    services.drv-run.guest.extraModules = [(import ../guest/mitm-proxy.nix {inherit (cfg) port;})];
+    services.drv-run.guest.extraModules = [
+      (import ../guest/mitm-proxy.nix {inherit (cfg) port;})
+      {security.pki.certificates = [cfg.caCertificate];}
+    ];
   };
 }
