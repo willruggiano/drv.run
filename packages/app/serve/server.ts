@@ -1,4 +1,5 @@
 import { FormError } from "./forms.ts";
+import { Notifications } from "./notifications.ts";
 import { elmFrontend } from "./elm/frontend.ts";
 import { html as h } from "./html.ts";
 import { ProxyAuthorization } from "./auth.ts";
@@ -219,6 +220,7 @@ export function httpServer(
   settings?: GlobalSettingsStore,
   externalOrigin?: string,
   authorization = new ProxyAuthorization(),
+  notifications?: Notifications,
 ) {
   const configuredOrigin = externalOrigin === undefined ? undefined : new URL(externalOrigin);
   if (configuredOrigin) {
@@ -277,6 +279,7 @@ export function httpServer(
           "/htmx/sse.js",
           "/htmx/morph.js",
           "/highlight.js",
+          "/activity-client.js",
           "/styles.css",
           "/design-system.html",
           "/icon.svg",
@@ -294,6 +297,7 @@ export function httpServer(
           "htmx/sse.js": "text/javascript; charset=utf-8",
           "htmx/morph.js": "text/javascript; charset=utf-8",
           "highlight.js": "text/javascript; charset=utf-8",
+          "activity-client.js": "text/javascript; charset=utf-8",
           "styles.css": "text/css; charset=utf-8",
           "design-system.html": "text/html; charset=utf-8",
           "icon.svg": "image/svg+xml",
@@ -312,12 +316,22 @@ export function httpServer(
         response.setHeader("Content-Type", types[file]);
         return response.end(data);
       }
+      if (notifications && (url.pathname === "/activity" || url.pathname.startsWith("/activity/")))
+        return await notifications.route(request, response, url);
       if (url.pathname === "/auth" || url.pathname.startsWith("/auth/"))
         return await authPage(request, response, url, authorization, controller.signal);
       if (url.pathname === "/elm" || url.pathname.startsWith("/elm/"))
         return await elmFrontend(request, response, url, sessions, context);
       if (url.pathname === "/sessions" || url.pathname.startsWith("/sessions/"))
-        return await hypermedia(request, response, url, sessions, context, settings);
+        return await hypermedia(
+          request,
+          response,
+          url,
+          sessions,
+          context,
+          settings,
+          notifications !== undefined,
+        );
       if (url.pathname === "/") {
         if (request.method !== "GET") throw new RequestError(405, "Method not allowed.");
         response.writeHead(303, { Location: "/sessions" });
@@ -385,18 +399,30 @@ export async function main(): Promise<void> {
   const settings = new GlobalSettingsStore(
     SettingsManager.create(homedir(), getAgentDir(), { projectTrusted: false }),
   );
+  const drvRun = ownerOptions();
+  const notifications = process.env.NOTIFICATIONS_CONFIG
+    ? await Notifications.open(
+        join(stateDirectory(), "drv-run-notifications"),
+        process.env.NOTIFICATIONS_CONFIG,
+      )
+    : undefined;
   const sessions = await openApplication(
     settings.bind({
       directory: join(stateDirectory(), "pi-durable"),
       models,
-      drvRun: ownerOptions(),
+      drvRun,
       onReport: (error) => console.error("serve session", error),
+      onSession: (session) => notifications?.attach(session),
     }),
-  );
+  ).catch(async (error: unknown) => {
+    await notifications?.close();
+    throw error;
+  });
   const origin = process.env.ORIGIN;
   let server: ReturnType<typeof httpServer>;
   try {
-    server = httpServer(sessions, host, undefined, settings, origin);
+    if (notifications) await sessions.catalog();
+    server = httpServer(sessions, host, undefined, settings, origin, undefined, notifications);
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(port, host, () => {
@@ -405,7 +431,11 @@ export async function main(): Promise<void> {
       });
     });
   } catch (error) {
-    await sessions.close();
+    try {
+      await sessions.close();
+    } finally {
+      await notifications?.close();
+    }
     throw error;
   }
   console.error(
@@ -418,16 +448,19 @@ export async function main(): Promise<void> {
     server.close();
     server.closeAllConnections();
     const timeout = setTimeout(() => process.exit(1), 15_000);
-    void sessions.close().then(
-      () => {
-        clearTimeout(timeout);
-      },
-      (error) => {
-        console.error(error);
-        process.exitCode = 1;
-        clearTimeout(timeout);
-      },
-    );
+    void sessions
+      .close()
+      .finally(() => notifications?.close())
+      .then(
+        () => {
+          clearTimeout(timeout);
+        },
+        (error) => {
+          console.error(error);
+          process.exitCode = 1;
+          clearTimeout(timeout);
+        },
+      );
   };
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);

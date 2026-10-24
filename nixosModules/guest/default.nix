@@ -15,6 +15,7 @@
     impermanence.nixosModules.impermanence
     ./cloud-hypervisor.nix
     ./environment.nix
+    ./notifications.nix
     ../nix.nix
   ];
 
@@ -172,7 +173,14 @@
         pkgs.writeShellApplication {
           name = "ssh-guest";
           runtimeInputs = [config.nix.package pkgs.coreutils];
-          text = lib.replaceStrings ["@command@"] [(lib.getExe command)] (builtins.readFile ./guest.sh);
+          text = lib.replaceStrings ["@command@" "@notifications-stream@"] [
+            (lib.getExe command)
+            (
+              if config.services.drv-run.notifications.enable
+              then "exec ${pkgs.app}/bin/notify-stream /run/user/0/drv-run-notifications/events.sock"
+              else "exit 1"
+            )
+          ] (builtins.readFile ./guest.sh);
         });
     };
   };

@@ -90,6 +90,7 @@ cp "$STATE_DIRECTORY/host-key" "$staging/host-key"
 printf '%s\n' "$environment" >"$staging/environment"
 chmod 0600 "$staging/"*
 @mitm-proxy-seed@
+@notification-seed@
 truncate -s 8M "$RUNTIME_DIRECTORY/seed.img"
 mke2fs -q -t ext4 -L drv-run-seed -E root_owner=0:0,root_perms=0700 \
   -d "$staging" "$RUNTIME_DIRECTORY/seed.img"

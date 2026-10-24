@@ -95,3 +95,19 @@ esac
     }
   });
 }
+
+await test("notification streaming does not require a prepared environment", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "notification-dispatch-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const guest = readFileSync(new URL("../../nixosModules/guest/guest.sh", import.meta.url), "utf8")
+    .replace("ready=/run/drv-run-environment/ready", 'ready="$FIXTURE/ready"')
+    .replace("@notifications-stream@", 'touch "$FIXTURE/stream-opened"; exit 0');
+  const result = spawnSync("bash", ["-c", guest], {
+    env: { ...process.env, FIXTURE: directory, SSH_ORIGINAL_COMMAND: "notifications-stream" },
+    stdio: "ignore",
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0);
+  assert.equal(existsSync(join(directory, "stream-opened")), true);
+  assert.equal(existsSync(join(directory, "ready")), false);
+});

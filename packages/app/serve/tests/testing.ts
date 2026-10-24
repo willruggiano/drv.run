@@ -15,6 +15,7 @@ import { SessionError, Environment, type SessionOptions, type Sessions } from ".
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { fixture } from "./sessions-testing.ts";
 import { httpServer, type GlobalSettingsStore } from "../server.ts";
+import type { Notifications } from "../notifications.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -43,8 +44,9 @@ export async function serve(
   settings?: GlobalSettingsStore,
   origin?: string,
   authorization?: ProxyAuthorization,
+  notifications?: Notifications,
 ) {
-  const server = httpServer(sessions, host, assets, settings, origin, authorization);
+  const server = httpServer(sessions, host, assets, settings, origin, authorization, notifications);
   await new Promise<void>((resolve) => server.listen(0, host, resolve));
   t.after(async () => {
     server.closeAllConnections();

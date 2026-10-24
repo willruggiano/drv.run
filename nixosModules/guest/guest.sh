@@ -3,6 +3,10 @@ set -euo pipefail
 
 profile=/nix/var/nix/profiles/project
 ready=/run/drv-run-environment/ready
+if [[ ${SSH_ORIGINAL_COMMAND:-} == notifications-stream ]]; then
+  @notifications-stream@
+fi
+
 test -f "$ready"
 
 case ${SSH_ORIGINAL_COMMAND:-} in

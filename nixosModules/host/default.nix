@@ -78,7 +78,7 @@
     ];
     text =
       lib.replaceStrings
-      ["@proxy@" "@runner@" "@create-volumes@" "@mitm-proxy-seed@" "@image-expression@" "@timing@"]
+      ["@proxy@" "@runner@" "@create-volumes@" "@mitm-proxy-seed@" "@image-expression@" "@timing@" "@notification-seed@"]
       [
         "${config.systemd.package}/lib/systemd/systemd-ssh-proxy"
         (toString guest.config.microvm.declaredRunner)
@@ -93,6 +93,12 @@
         '')
         (toString imageExpression)
         (builtins.readFile ../timing.sh)
+        (lib.optionalString config.services.drv-run.notifications.enable ''
+          if [[ $(id -un) == ${lib.escapeShellArg config.services.pi.user} ]]; then
+            cat /proc/sys/kernel/random/uuid > "$RUNTIME_DIRECTORY/notification-incarnation"
+            cp "$RUNTIME_DIRECTORY/notification-incarnation" "$staging/notification-incarnation"
+          fi
+        '')
       ]
       (builtins.readFile ./pre.sh);
   };
@@ -114,7 +120,9 @@
     text = lib.replaceStrings ["@timing@"] [(builtins.readFile ../timing.sh)] (builtins.readFile ./command.sh);
   };
 in {
-  imports = [../nix.nix ./network.nix ./mitm-proxy.nix];
+  imports = [../nix.nix ./network.nix ./mitm-proxy.nix self.nixosModules.pi];
+
+  options.services.drv-run.notifications.enable = lib.mkEnableOption "instance-bound guest D-Bus notifications for services.pi.user";
 
   options.services.drv-run.guest.extraModules = lib.mkOption {
     type = lib.types.listOf lib.types.deferredModule;
@@ -136,7 +144,25 @@ in {
   };
 
   config = {
+    services.drv-run.guest.extraModules = lib.mkIf config.services.drv-run.notifications.enable [
+      {
+        services.drv-run.notifications.enable = true;
+        services.drv-run.notifications.active = lib.mkDefault config.services.pi.notifications.limits.records;
+      }
+    ];
+    services.pi.notifications.guests = lib.mkIf config.services.drv-run.notifications.enable {
+      enable = true;
+      sshConfigFile = toString serviceSSH;
+    };
     assertions = [
+      {
+        assertion = !config.services.drv-run.notifications.enable || (config.services.pi.enable && config.services.pi.notifications.enable);
+        message = "Guest notifications require services.pi.enable and services.pi.notifications.enable; services.pi.user selects their owner.";
+      }
+      {
+        assertion = !config.services.drv-run.notifications.enable || (guest.config.services.drv-run.notifications.enable && guest.config.services.drv-run.notifications.active <= config.services.pi.notifications.limits.records);
+        message = "Guest notifications must be enabled in the guest closure and fit the host's active-record quota.";
+      }
       {
         # systemd 261.2 create_tap() calls userns_get_base_uid(..., &uid, NULL).
         # NULL omits the separate GID output and makes the helper reject unequal

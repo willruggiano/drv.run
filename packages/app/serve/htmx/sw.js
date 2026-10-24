@@ -24,3 +24,19 @@ self.addEventListener("fetch", event => {
     return cached ?? Response.error();
   }));
 });
+self.addEventListener("push", event => {
+  let activity;
+  try { activity = event.data?.json()?.activity; } catch { return; }
+  if (!Number.isSafeInteger(activity) || activity < 1) return;
+  event.waitUntil(self.registration.showNotification("drv.run activity", {
+    body: "An application has an update. Open your activity inbox.",
+    icon: "/icon-192.png", tag: `drv-run-${activity}`, data: { activity },
+  }));
+});
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const activity = event.notification.data?.activity;
+  if (!Number.isSafeInteger(activity) || activity < 1) return;
+  // Fixed same-origin route: no URL or approval action comes from the producer.
+  event.waitUntil(self.clients.openWindow(`/activity#activity-${activity}`));
+});

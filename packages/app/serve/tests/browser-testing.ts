@@ -8,11 +8,13 @@ import type { ProxyAuthorization } from "../auth.ts";
 import type { Sessions } from "../sessions.ts";
 import { chromiumExecutable, serve } from "./testing.ts";
 import { buildAssets } from "../build.ts";
+import type { Notifications } from "../notifications.ts";
 
 export async function browserFixture(
   t: TestContext,
   sessions: Sessions,
   authorization?: ProxyAuthorization,
+  notifications?: Notifications,
 ) {
   const assets = await mkdtemp(join(tmpdir(), "serve-assets-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
@@ -22,7 +24,16 @@ export async function browserFixture(
   // Match the production package context; Elm must remain a working classic script.
   await writeFile(join(assets, "package.json"), JSON.stringify({ type: "module" }));
   await buildAssets(source, assets);
-  const base = await serve(t, sessions, assets, "127.0.0.1", undefined, undefined, authorization);
+  const base = await serve(
+    t,
+    sessions,
+    assets,
+    "127.0.0.1",
+    undefined,
+    undefined,
+    authorization,
+    notifications,
+  );
   const browser = await chromium.launch({
     executablePath: chromiumExecutable(),
     // Exercise the site's scrollbar styles, not Playwright's blanket suppression.

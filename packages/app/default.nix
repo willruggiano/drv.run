@@ -3,6 +3,8 @@
   buildNpmPackage,
   callPackage,
   chromium,
+  dbus,
+  libnotify,
   elmPackages,
   esbuild,
   git,
@@ -88,6 +90,7 @@ in
     '';
     buildInputs = [stdenv.cc.cc.lib libxcb];
 
+    nativeCheckInputs = [dbus libnotify];
     doCheck = true;
     checkPhase = ''
       runHook preCheck
@@ -114,6 +117,11 @@ in
       makeWrapper ${nodejs}/bin/node "$out/bin/serve" \
         --add-flags "$out/lib/app/serve/dist/server.js" \
         --suffix PATH : ${lib.makeBinPath [openssh systemd]}
+      makeWrapper ${nodejs}/bin/node "$out/bin/notify-guest" \
+        --add-flags "$out/lib/app/serve/dist/notification-guest.js" \
+        --suffix PATH : ${lib.makeBinPath [systemd]}
+      makeWrapper ${nodejs}/bin/node "$out/bin/notify-stream" \
+        --add-flags "$out/lib/app/serve/dist/notification-guest.js stream"
       runHook postInstall
     '';
 

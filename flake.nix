@@ -87,6 +87,18 @@
       nixos-environment-image = environmentImage.integration;
       app-tape = pkgs.app.tape;
       app-tests = pkgs.app;
+      notifications-options = import ./tests/notifications.nix {
+        inherit pkgs;
+        inherit (inputs) nixpkgs;
+        module = self.nixosModules.pi;
+        hostModule = self.nixosModules.host;
+        guestModule = self.nixosModules.guest;
+      };
+      nixos-notifications = import ./tests/nixos/notifications.nix {
+        inherit pkgs;
+        piModule = self.nixosModules.pi;
+        inherit (inputs) impermanence;
+      };
       bench-tests = pkgs.bench;
       llms-snapshot = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
       mitm-proxy-tests = pkgs.mitm-proxy;
@@ -240,6 +252,7 @@
           coreutils
           chromium
           curl
+          dbus
           diffutils
           esbuild
           elmPackages.elm

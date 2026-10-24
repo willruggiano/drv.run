@@ -112,6 +112,7 @@ export type SessionOptions = {
   };
   settings?: Parameters<typeof openHarness>[1]["settings"];
   onReport?: (error: unknown) => void;
+  onSession?: (session: Session) => void | Promise<void>;
 };
 
 export const Metadata = defineDoc<{ created: number; name?: string }>({
@@ -447,7 +448,16 @@ async function openSession(owner: Sessions, id: string, create?: InitialSession)
         : undefined,
     );
     const metadata = await harness.snapshot(Metadata, root.id, context);
-    return { owner, id, harness, root, created: metadata?.created ?? 0, inspections: new Map() };
+    const session = {
+      owner,
+      id,
+      harness,
+      root,
+      created: metadata?.created ?? 0,
+      inspections: new Map(),
+    };
+    await owner.options.onSession?.(session);
+    return session;
   } catch (error) {
     await harness.close(context);
     throw error;
