@@ -31,6 +31,9 @@
       ];
     }).config;
   accepted = config: lib.all (assertion: assertion.assertion) config.assertions;
+  valid = config:
+    lib.assertMsg (accepted config)
+    (lib.concatMapStringsSep "\n" (assertion: assertion.message) (lib.filter (assertion: !assertion.assertion) config.assertions));
   guest =
     (nixpkgs.lib.nixosSystem {
       inherit (pkgs.stdenv.hostPlatform) system;
@@ -43,6 +46,7 @@
         hostModule
         module
         {
+          nix.settings.experimental-features = ["nix-command" "flakes"];
           users.groups.alice.gid = 1000;
           users.users.alice = {
             isNormalUser = true;
@@ -54,7 +58,13 @@
             user = "alice";
             notifications.enable = true;
           };
-          services.drv-run.notifications.enable = true;
+          services.drv-run = {
+            notifications.enable = true;
+            network = {
+              uplink = "eth0";
+              dnsServers = ["1.1.1.1"];
+            };
+          };
           fileSystems."/" = {
             device = "none";
             fsType = "tmpfs";
@@ -76,9 +86,9 @@
     inherit push;
   };
 in
-  assert accepted inbox;
-  assert accepted guest;
-  assert accepted host;
+  assert valid inbox;
+  assert valid guest;
+  assert valid host;
   assert guest.services.dbus.enable;
   assert guest.users.users.root.linger;
   assert guest.systemd.user.services.drv-run-notifications.unitConfig.ConditionUser == "root";
@@ -89,7 +99,7 @@ in
   assert host.services.pi.notifications.guests.enable;
   assert host.services.pi.notifications.guests.sshConfigFile != "";
   assert !(inbox.services.pi.notifications.guests.enable);
-  assert accepted delivery;
+  assert valid delivery;
   assert inbox.users.users.alice.linger;
   assert inbox.systemd.user.services.pi.unitConfig.ConditionUser == "alice";
   assert inbox.systemd.user.services.pi.environment ? NOTIFICATIONS_CONFIG;

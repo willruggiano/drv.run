@@ -23,8 +23,8 @@ in
     name = "notifications";
     nodes.machine = {
       imports = [piModule impermanence.nixosModules.impermanence ../../nixosModules/guest/notifications.nix];
-      nixpkgs.overlays = [(_: _: {inherit app;})];
       virtualisation.memorySize = 1024;
+      virtualisation.cores = 2;
       virtualisation.graphics = false;
       users.groups.alice.gid = 1000;
       users.users.alice = {

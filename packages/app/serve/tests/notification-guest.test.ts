@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { once } from "node:events";
 import { mkdtemp, rm, mkdir, writeFile, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -121,9 +120,27 @@ async function fixture(t: TestContext) {
   // Own a session bus: no desktop, network, login session or test-output parsing.
   const dir = await mkdtemp(join(tmpdir(), "notification-bus-"));
   const address = `unix:path=${dir}/bus`;
-  const daemon = spawn("dbus-daemon", ["--session", "--nofork", `--address=${address}`], {
-    stdio: "ignore",
+  // Nix's dbus-daemon expects /etc configuration, absent in a build sandbox.
+  // This private bus needs no host configuration or activatable services.
+  const config = join(dir, "bus.conf");
+  await writeFile(
+    config,
+    `<busconfig>
+    <type>session</type>
+    <listen>${address.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</listen>
+    <auth>EXTERNAL</auth>
+    <policy context="default">
+      <allow user="*"/>
+      <allow own="*"/>
+      <allow send_destination="*"/>
+      <allow receive_sender="*"/>
+    </policy>
+  </busconfig>`,
+  );
+  const daemon = spawn("dbus-daemon", [`--config-file=${config}`, "--nofork"], {
+    stdio: ["ignore", "ignore", "inherit"],
   });
+  const closed = new Promise<void>((resolve) => daemon.once("close", () => resolve()));
   const errors: unknown[] = [];
   daemon.on("error", (error) => errors.push(error));
   const vm = randomUUID();
@@ -136,13 +153,14 @@ async function fixture(t: TestContext) {
     activity?.close();
     bus?.disconnect();
     await service?.close();
-    const exit = once(daemon, "exit");
     daemon.kill();
-    await exit;
+    await closed;
     await rm(dir, { recursive: true, force: true });
   });
   await until(async () => {
     if (errors.length) throw errors[0];
+    assert.equal(daemon.exitCode, null, "D-Bus fixture exited before readiness.");
+    assert.equal(daemon.signalCode, null, "D-Bus fixture was killed before readiness.");
     try {
       return (await stat(join(dir, "bus"))).isSocket();
     } catch {
