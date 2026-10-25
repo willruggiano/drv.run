@@ -41,6 +41,7 @@
       ../tests/environment-metadata.test.ts
       ../tests/provision.test.ts
       ../../nixosModules/guest/environment-metadata.jq
+      ../../nixosModules/guest/guest.sh
       ../../nixosModules/host/post.sh
       ../../nixosModules/timing.sh
     ];
