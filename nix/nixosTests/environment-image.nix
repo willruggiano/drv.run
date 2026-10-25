@@ -68,7 +68,7 @@
     runtimeInputs = [pkgs.nixVersions.nix_2_35 pkgs.coreutils pkgs.jq pkgs.e2fsprogs pkgs.openssh];
     text =
       lib.replaceStrings
-      ["@runner@" "@image-expression@" "@proxy@" "@create-volumes@" "@mitm-proxy-seed@" "@timing@"]
+      ["@runner@" "@image-expression@" "@proxy@" "@create-volumes@" "@mitm-proxy-seed@" "@timing@" "@notification-seed@"]
       [
         (toString runner)
         (toString imageExpression)
@@ -79,6 +79,7 @@
         ''
         ""
         (builtins.readFile ../../nixosModules/timing.sh)
+        ""
       ]
       (builtins.readFile ../../nixosModules/host/pre.sh);
   };
