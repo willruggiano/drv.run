@@ -128,6 +128,8 @@ in {
       nix key convert-secret-to-public < secret > public
       nix store sign --store "$sourceStore" --key-file secret --recursive ${image} ${environment}
       nix copy --from "$sourceStore" --to "file://$PWD/cache" ${image} ${environment}
+      # Initialize SQLite before racing realizations, not database creation.
+      nix-store --store "$destinationStore" --init
       mkdir first second
       pids=()
       for instance in first second; do
