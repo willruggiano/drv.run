@@ -97,9 +97,33 @@
       sshUser = "root";
     };
 
-    checks = eachSystem (
-      pkgs: deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy
-    );
+    checks = eachSystem (pkgs:
+      (deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy)
+      // {
+        notifications = let
+          host = self.nixosConfigurations.rock5b.config;
+          guest =
+            (drv-run.inputs.nixpkgs.lib.nixosSystem {
+              system = "aarch64-linux";
+              modules = [drv-run.nixosModules.guest] ++ host.services.drv-run.guest.extraModules;
+            }).config;
+          secret = host.sops.secrets.notifications-vapid;
+        in
+          assert builtins.all (entry: entry.assertion) host.assertions;
+          assert builtins.all (entry: entry.assertion) guest.assertions;
+          assert host.services.drv-run.notifications.enable;
+          assert host.services.pi.notifications.enable;
+          assert host.services.pi.notifications.guests.enable;
+          assert host.services.pi.notifications.push.enable;
+          assert host.services.pi.notifications.push.privateKeyFile == secret.path;
+          assert secret.owner == host.services.pi.user;
+          assert secret.mode == "0400";
+          assert guest.services.drv-run.notifications.enable;
+          assert guest.systemd.user.services.drv-run-notifications.unitConfig.ConditionPathExists == "/run/drv-run-seed/notification-incarnation";
+            pkgs.runCommand "rock5b-notifications" {} ''
+              touch "$out"
+            '';
+      });
 
     nixosConfigurations.rock5b = nixpkgs.lib.nixosSystem {
       modules = [
@@ -129,6 +153,7 @@
         # (some lines down) an assistant (pi) over private https that executes
         # tools and runs code in a nixos microvm!
         services.drv-run = {
+          notifications.enable = true;
           guest.extraModules = [
             {
               microvm.vcpu = 4;
@@ -173,11 +198,29 @@
         # tailscale dns. Access it on your phone from anywhere!
         services.pi = {
           enable = true;
+          notifications = {
+            enable = true;
+            push = {
+              enable = true;
+              subject = "https://github.com/willruggiano";
+              privateKeyFile = config.sops.secrets.notifications-vapid.path;
+              origins = [
+                "https://fcm.googleapis.com"
+                "https://web.push.apple.com"
+              ];
+            };
+          };
           env = {
             ORIGIN = "https://rock5b.tailc7072.ts.net";
             PARALLEL_API_KEY_FILE = config.sops.secrets.parallel-api-key.path;
           };
           user = "me";
+        };
+        sops.secrets.notifications-vapid = {
+          sopsFile = ./secrets/notifications-vapid;
+          format = "binary";
+          owner = config.services.pi.user;
+          mode = "0400";
         };
         sops.secrets.parallel-api-key = {
           sopsFile = ./secrets/parallel-api-key;
