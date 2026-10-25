@@ -404,13 +404,20 @@ export async function elmFrontend(
     return;
   }
   const match =
-    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|export|directories))?$/.exec(
+    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|export|directories|archive))?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
+  const operation = match[3];
+  if (operation === "archive") {
+    if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
+    await form(request);
+    await sessions.archive(match[1]);
+    json(response, { archived: true });
+    return;
+  }
   const session = await sessions.get(match[1]);
   const conversation = await getConversation(session, Number(match[2]), context);
-  const operation = match[3];
   if (
     request.method === "GET" &&
     (!operation || ["settings", "context", "branches", "tree"].includes(operation))

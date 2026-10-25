@@ -264,6 +264,39 @@ tests =
                         Main.update (Main.SettingsSaved base.epoch { initial | name = "First" } (Ok True)) newer |> Tuple.first
                 in
                 Expect.equal ( Just "Second", Just "First", Just "Second" ) ( Maybe.map .name acknowledged.settings, Maybe.map .name acknowledged.savedSettings, Maybe.map .name acknowledged.saving )
+        , test "archive waits for success, retains failed rows and ignores stale acknowledgements" <|
+            \_ ->
+                let
+                    base =
+                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
+
+                    row =
+                        ( base.path, "Session" )
+
+                    other =
+                        ( "/elm/sessions/other/conversations/1", "Other" )
+
+                    loaded =
+                        { base | catalog = Just [ row, other ] }
+
+                    pending =
+                        Main.update (Main.ArchiveSession base.path) loaded |> Tuple.first
+
+                    failed =
+                        Main.update (Main.SessionArchived base.epoch base.path (Err Http.NetworkError)) pending |> Tuple.first
+
+                    saved =
+                        Main.update (Main.SessionArchived base.epoch base.path (Ok ())) pending |> Tuple.first
+                in
+                Expect.all
+                    [ \_ -> Expect.equal loaded.catalog pending.catalog
+                    , \_ -> Expect.equal [ base.path ] pending.archiving
+                    , \_ -> Expect.equal pending (Main.update (Main.ArchiveSession base.path) pending |> Tuple.first)
+                    , \_ -> Expect.equal ( loaded.catalog, [], False ) ( failed.catalog, failed.archiving, String.isEmpty failed.error )
+                    , \_ -> Expect.equal ( Just [ other ], [], base.path ) ( saved.catalog, saved.archiving, saved.path )
+                    , \_ -> Expect.equal pending (Main.update (Main.SessionArchived (base.epoch - 1) base.path (Ok ())) pending |> Tuple.first)
+                    ]
+                    ()
         , test "late panel loads and saves cannot replace another route's state" <|
             \_ ->
                 let

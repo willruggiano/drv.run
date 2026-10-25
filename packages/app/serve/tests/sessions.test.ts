@@ -33,6 +33,71 @@ await test("creation is read-only and validates persistence identities and model
   );
 });
 
+await test("archiving moves a closed database without opening it and preserves its history", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const other = await f.create();
+  await runtime.rename(session, "Keep this history");
+  await session.root.commit(
+    (tx) => tx.appendEntry(session.root.id, { kind: "marker", data: { retained: true } }),
+    context,
+  );
+  const history = await readHistory(session.root);
+  const before = await runtime.sessionInfo(session);
+  await f.reopen();
+  const name = `${session.id}.sqlite`;
+  const database = await readFile(join(f.directory, name));
+  await f.sessions.archive(session.id);
+  assert.equal(f.sessions.opened.size, 0);
+  assert.equal(await exists(join(f.directory, name)), false);
+  assert.deepEqual(await readFile(join(f.directory, "archive", name)), database);
+  assert.deepEqual(
+    (await f.sessions.catalog()).sessions.map((item) => item.id),
+    [other.id],
+  );
+  await f.reopen();
+  assert.deepEqual(
+    (await f.sessions.catalog()).sessions.map((item) => item.id),
+    [other.id],
+  );
+  await assert.rejects(f.sessions.get(session.id), code("not_found"));
+  const archived = await Sessions.open({ ...f.options, directory: join(f.directory, "archive") });
+  try {
+    const restored = await archived.get(session.id);
+    assert.deepEqual(await runtime.sessionInfo(restored), before);
+    assert.deepEqual(await readHistory(restored.root), history);
+  } finally {
+    await archived.close();
+  }
+  assert.equal(f.faux.state.callCount, 0);
+});
+
+await test("archiving moves existing WAL/SHM files, tolerates absent sidecars and validates IDs", async (t) => {
+  const f = await fixture(t);
+  for (const suffixes of [[""], ["", "-wal"], ["", "-shm"], ["", "-wal", "-shm"]]) {
+    const id = randomUUID();
+    for (const suffix of suffixes)
+      await writeFile(
+        join(f.directory, `${id}.sqlite${suffix}`),
+        Buffer.from([0, suffix.length, 255]),
+      );
+    await f.sessions.archive(id);
+    for (const suffix of suffixes) {
+      const name = `${id}.sqlite${suffix}`;
+      assert.equal(await exists(join(f.directory, name)), false);
+      assert.deepEqual(
+        await readFile(join(f.directory, "archive", name)),
+        Buffer.from([0, suffix.length, 255]),
+      );
+    }
+    await assert.rejects(f.sessions.archive(id), code("not_found"));
+  }
+  assert.equal(f.sessions.opened.size, 0);
+  assert.deepEqual((await f.sessions.catalog()).sessions, []);
+  await assert.rejects(f.sessions.archive("../escape"), code("not_found"));
+  await assert.rejects(f.sessions.archive(randomUUID()), code("not_found"));
+});
+
 await test("catalog uses one fresh target discovery for every session row", async (t) => {
   const f = await fixture(t);
   for (let i = 0; i < 3; i++) await f.create();

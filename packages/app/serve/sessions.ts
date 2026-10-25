@@ -1,4 +1,4 @@
-import { mkdir, readdir, stat } from "node:fs/promises";
+import { mkdir, readdir, rename as move, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, posix } from "node:path";
 import {
@@ -310,6 +310,25 @@ export class Sessions {
         this.options.defaults?.thinkingLevel ??
         DEFAULT_THINKING_LEVEL,
     );
+  }
+
+  async archive(id: string): Promise<void> {
+    if (!uuid.test(id)) throw new SessionError("not_found", "Session not found.");
+    const directory = join(this.options.directory, "archive");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    // Intentionally move files without coordinating with open harnesses.
+    for (const suffix of ["", "-wal", "-shm"]) {
+      const name = `${id}.sqlite${suffix}`;
+      try {
+        await move(join(this.options.directory, name), join(directory, name));
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+          if (suffix) continue;
+          throw new SessionError("not_found", "Session not found.");
+        }
+        throw error;
+      }
+    }
   }
 
   async get(id: string): Promise<Session> {

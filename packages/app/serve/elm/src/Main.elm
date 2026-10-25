@@ -157,6 +157,7 @@ type alias Model =
     , search : Maybe String
     , searchIndex : Int
     , catalog : Maybe (List ( String, String ))
+    , archiving : List String
     , reset : Maybe String
     , pane : Pane
     , settings : Maybe Panel.Settings
@@ -199,6 +200,8 @@ type Msg
     | SearchMove Int
     | OpenSessions
     | Catalog Int (Result Http.Error (List ( String, String )))
+    | ArchiveSession String
+    | SessionArchived Int String (Result Http.Error ())
     | ResetArgument String
     | ConfirmReset
     | Response String Pending (Result Http.Error ( String, String, Maybe String ))
@@ -238,6 +241,7 @@ initModel path nonce =
     , search = Nothing
     , searchIndex = 0
     , catalog = Nothing
+    , archiving = []
     , reset = Nothing
     , pane = Tuple.second (route path)
     , settings = Nothing
@@ -465,6 +469,7 @@ update msg model =
                         , connection = Connecting
                         , error = ""
                         , catalog = Nothing
+                        , archiving = []
                         , search = Nothing
                         , reset = Nothing
                         , composing = False
@@ -982,6 +987,31 @@ update msg model =
 
             else
                 ( { model | catalog = Just (Result.withDefault [] result) }, Cmd.none )
+
+        ArchiveSession path ->
+            if List.member path model.archiving then
+                ( model, Cmd.none )
+
+            else
+                ( { model | archiving = path :: model.archiving, error = "" }
+                , Http.post { url = path ++ "/archive", body = Http.stringBody "application/x-www-form-urlencoded" "", expect = Http.expectWhatever (SessionArchived model.epoch path) }
+                )
+
+        SessionArchived epoch path result ->
+            if epoch /= model.epoch then
+                ( model, Cmd.none )
+
+            else
+                let
+                    updated =
+                        { model | archiving = List.filter ((/=) path) model.archiving }
+                in
+                case result of
+                    Ok () ->
+                        ( { updated | catalog = Maybe.map (List.filter (\( itemPath, _ ) -> itemPath /= path)) model.catalog }, Cmd.none )
+
+                    Err error ->
+                        ( { updated | error = "Could not confirm archive. Retry archiving. " ++ httpError error }, Cmd.none )
 
         ResetArgument str ->
             ( { model | reset = Just str }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
@@ -1545,7 +1575,23 @@ view model =
         body =
             case model.catalog of
                 Just items ->
-                    [ section [ class "pane", id "session-list" ] (List.map (\( path, title ) -> a [ class "session", href path ] [ span [ class "session-heading" ] [ Html.strong [] [ text title ] ] ]) items) ]
+                    [ section [ class "pane", id "session-list" ]
+                        (List.map
+                            (\( path, title ) ->
+                                div [ class "session-row" ]
+                                    [ a [ class "session", href path ] [ span [ class "session-heading" ] [ Html.strong [] [ text title ] ] ]
+                                    , button [ class "icon session-archive", A.type_ "button", attribute "aria-label" "Archive session", A.title "Archive session", A.disabled (List.member path model.archiving), onClick (ArchiveSession path) ] [ Transcript.icon "close" ]
+                                    ]
+                            )
+                            items
+                            ++ (if List.isEmpty items then
+                                    [ p [ id "sessions-empty" ] [ text "No sessions" ] ]
+
+                                else
+                                    []
+                               )
+                        )
+                    ]
 
                 Nothing ->
                     [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy6 viewTranscript opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]

@@ -76,7 +76,7 @@ import {
   type SessionInfo,
 } from "../sessions.ts";
 
-function sessionRow(item: Catalog["sessions"][number], back?: string): SafeHtml {
+function sessionRow(item: Catalog["sessions"][number], search: string, back?: string): SafeHtml {
   const context = item.context;
   const percent =
     context.window && context.lastResponse
@@ -86,7 +86,7 @@ function sessionRow(item: Catalog["sessions"][number], back?: string): SafeHtml 
   const environment = h`<span class="session-environment">${item.binding ? `${item.binding.provider === "local" ? "local" : item.binding.target} · ${item.cwd}` : "No execution environment"}</span>`;
   const model = h`<span class="model-summary"><span class="model-name">${item.model?.modelId ?? "No model"}</span><span class="footer-dot" aria-hidden="true"></span><span class="model-effort">${item.thinkingLevel}</span></span>`;
   const usage = h`<span class="context-usage">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${context.window ? compactTokens(context.window) : "?"}${context.autoCompact ? " (auto)" : ""}</span>`;
-  return h`<a class="session" href="/sessions/${item.id}" aria-current="${back?.startsWith(`/sessions/${item.id}/`) ?? false}">${heading}<span class="session-detail">${environment}<span class="footer-dot" aria-hidden="true"></span>${model}<span class="footer-dot" aria-hidden="true"></span>${usage}</span></a>`;
+  return h`<div class="session-row"><a class="session" href="/sessions/${item.id}" aria-current="${back?.startsWith(`/sessions/${item.id}/`) ?? false}">${heading}<span class="session-detail">${environment}<span class="footer-dot" aria-hidden="true"></span>${model}<span class="footer-dot" aria-hidden="true"></span>${usage}</span></a><form method="post" action="/sessions/${item.id}/archive${search}"><button class="icon session-archive" type="submit" aria-label="Archive session" title="Archive session">${icon("close")}</button></form></div>`;
 }
 
 function returnPath(value: string | null): string | undefined {
@@ -567,7 +567,7 @@ export async function hypermedia(
       const list = catalog.sessions.filter((item) =>
         `${item.name} ${item.binding?.target} ${item.id}`.toLocaleLowerCase().includes(query),
       );
-      const rows = h`${(picker ? list : list.slice(0, 5)).map((item) => sessionRow(item, back))}`;
+      const rows = h`${(picker ? list : list.slice(0, 5)).map((item) => sessionRow(item, url.search, back))}`;
       html(
         response,
         h`<main id="main-area"><section id="${picker ? "picker" : "landing"}" class="pane"><div>${!picker && rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main><form id="session-filter-form" method="get" action="/sessions" hidden>${back ? hidden("return", back) : hidden("view", "sessions")}</form>${createForm(catalog, randomUUID(), picker, query, metadata)}`,
@@ -738,6 +738,14 @@ export async function hypermedia(
       sessions,
     );
     saved(request, response, settingsPath);
+    return;
+  }
+  const archiveMatch = /^\/sessions\/([^/]+)\/archive$/.exec(url.pathname);
+  if (archiveMatch) {
+    if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
+    await form(request);
+    await sessions.archive(archiveMatch[1]);
+    redirect(request, response, `/sessions${url.search}`);
     return;
   }
   const match =

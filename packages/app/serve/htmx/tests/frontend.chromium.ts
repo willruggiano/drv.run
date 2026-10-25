@@ -547,11 +547,11 @@ await test("ordinary forms and direct URLs work without JavaScript; GET actions 
   await openSessions(page);
   await page.locator("#session-filter").fill("no matching session");
   await page.getByRole("button", { name: "Filter", exact: true }).click();
-  assert.equal(await page.locator("#session-list > .session").count(), 0);
+  assert.equal(await page.locator("#session-list > .session-row > .session").count(), 0);
   await page.locator("#session-filter").fill(info.id);
   await page.getByRole("button", { name: "Filter", exact: true }).click();
-  assert.equal(await page.locator("#session-list > .session").count(), 1);
-  await page.locator("#session-list > .session").click();
+  assert.equal(await page.locator("#session-list > .session-row > .session").count(), 1);
+  await page.locator("#session-list > .session-row > .session").click();
   const initial = await readHistory(session.root);
   for (const operation of ["submit", "review", "end-review", "abort", "resume"]) {
     const response = await fetch(`${page.url()}/${operation}`);

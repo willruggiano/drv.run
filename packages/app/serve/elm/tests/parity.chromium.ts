@@ -12,6 +12,66 @@ import { rename, sessionInfo, inspectContext } from "../../sessions.ts";
 
 const context = BACKGROUND_CONTEXT;
 
+await test(
+  "session archive buttons move databases out of the list",
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t);
+    const { page, base, errors, browser } = await browserFixture(t, f.sessions);
+    page.setDefaultTimeout(10000);
+    for (const frontend of ["htmx", "elm", "native"]) {
+      const session = await f.create();
+      const other = await f.create();
+      const path = (frontend === "elm" ? "/elm" : "") + conversationURL(session);
+      const native =
+        frontend === "native" ? await browser.newContext({ javaScriptEnabled: false }) : undefined;
+      const tab = native ? await native.newPage() : page;
+      await tab.goto(base + path);
+      await tab
+        .locator(
+          (await tab.locator("#conversation-title").isVisible())
+            ? "#conversation-title"
+            : "#footer-sessions",
+        )
+        .click();
+      const row = tab
+        .locator(".session-row")
+        .filter({ has: tab.locator(`a[href*="${session.id}"]`) });
+      const button = row.getByRole("button", { name: "Archive session", exact: true });
+      await button.waitFor();
+      const listURL = tab.url();
+      const linkBounds = await row.locator("a").boundingBox();
+      const buttonBounds = await button.boundingBox();
+      assert(linkBounds && buttonBounds);
+      assert(buttonBounds.x >= linkBounds.x + linkBounds.width);
+      await button.click();
+      await row.waitFor({ state: "detached" });
+      assert.equal(tab.url(), listURL);
+      assert.equal(await tab.locator(".session-row").count(), 1);
+      assert.deepEqual(
+        (await f.sessions.catalog()).sessions.map((item) => item.id),
+        [other.id],
+      );
+      await tab.reload();
+      if (frontend === "elm")
+        await tab
+          .locator(
+            (await tab.locator("#conversation-title").isVisible())
+              ? "#conversation-title"
+              : "#footer-sessions",
+          )
+          .click();
+      await tab.locator(".session-row").waitFor();
+      assert.equal(await tab.locator(`.session-row a[href*="${session.id}"]`).count(), 0);
+      await tab.getByRole("button", { name: "Archive session", exact: true }).click();
+      await tab.locator("#sessions-empty").waitFor();
+      assert.deepEqual((await f.sessions.catalog()).sessions, []);
+      await native?.close();
+    }
+    assert.deepEqual(errors, []);
+  },
+);
+
 await test("rename completes and updates the session title in both frontends", async (t) => {
   const f = await fixture(t);
   const session = await f.create();

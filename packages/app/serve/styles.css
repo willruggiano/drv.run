@@ -454,6 +454,12 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 .pane > h1 { display: none; }
 .enhanced [data-autosave]:not([data-failed=true]) > button { display: none; }
 #session-list { display: grid; gap: 4px; }
+.session-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.session-row > .session { flex: 1; }
+.session-row > form { flex: none; margin: 0; }
+.session-archive { color: var(--muted); flex: none; opacity: .6; }
+.session-archive:hover, .session-archive:focus-visible { color: var(--fg); opacity: 1; }
+.session-archive .glyph { width: 14px; height: 14px; }
 .session { display: block; border: 1px solid transparent; border-radius: 6px; color: inherit; }
 .session:hover { background: var(--hover); }
 #new-options { padding: 0; overflow: visible; }

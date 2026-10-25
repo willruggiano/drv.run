@@ -17,6 +17,55 @@ import { serve } from "../../tests/testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 
+await test("archive endpoints require same-origin POSTs and hide sessions from the catalog", async (t) => {
+  const f = await fixture(t);
+  const base = await serve(t, f.sessions);
+  for (const frontend of ["htmx", "elm"]) {
+    const session = await f.create();
+    const path =
+      frontend === "elm"
+        ? `/elm${conversationURL(session)}/archive`
+        : `/sessions/${session.id}/archive?view=sessions&q=keep`;
+    assert.equal((await fetch(base + path)).status, 405);
+    const rejectedHeaders: Record<string, string>[] = [{}, { Origin: "http://evil.test" }];
+    for (const headers of rejectedHeaders) {
+      const response = await fetch(base + path, {
+        method: "POST",
+        headers,
+        body: new URLSearchParams(),
+        redirect: "manual",
+      });
+      assert.equal(response.status, 403);
+    }
+    assert.deepEqual(
+      (await f.sessions.catalog()).sessions.map((item) => item.id),
+      [session.id],
+    );
+    const response = await fetch(base + path, {
+      method: "POST",
+      headers: { Origin: base },
+      body: new URLSearchParams(),
+      redirect: "manual",
+    });
+    assert.equal(response.status, frontend === "elm" ? 200 : 303);
+    if (frontend === "elm") assert.deepEqual(await response.json(), { archived: true });
+    else assert.equal(response.headers.get("location"), "/sessions?view=sessions&q=keep");
+    assert.deepEqual((await f.sessions.catalog()).sessions, []);
+    assert.deepEqual(await (await fetch(base + "/elm/catalog")).json(), []);
+    const missing = path.replace(session.id, randomUUID());
+    assert.equal(
+      (
+        await fetch(base + missing, {
+          method: "POST",
+          headers: { Origin: base },
+          body: new URLSearchParams(),
+        })
+      ).status,
+      404,
+    );
+  }
+});
+
 await test("HTML submission retries reuse Durable request IDs and review transitions are idempotent", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
