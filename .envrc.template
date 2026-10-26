@@ -1,9 +1,0 @@
-# Automatically reload when Nix files changes
-shopt -s globstar
-watch_file ./**/*.nix
-
-# Load `nix develop`
-use flake .#jail
-
-# Extend the environment with per-user overrides
-source_env_if_exists .envrc.local
