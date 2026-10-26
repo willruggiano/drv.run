@@ -28,6 +28,7 @@ await test("public API opens a native, paused harness with the fixed extensions"
     history: "latest",
     fork: "current",
     initial: () => ({ created: false }),
+    checkpointWhen: () => true,
   });
   let resolutions = 0;
   const harness = await api.openHarness(

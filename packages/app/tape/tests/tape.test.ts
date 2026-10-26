@@ -139,6 +139,7 @@ await test("recorder filters bookkeeping and surfaces invalid observations", asy
     version: 1,
     scope: "session",
     initial: () => ({ frames: 0 }),
+    checkpointWhen: () => true,
   });
   await state.session.root.commit(async (tx) => {
     (await tx.doc(Bookkeeping)).frames++;

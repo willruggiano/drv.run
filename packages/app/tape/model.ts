@@ -15,6 +15,7 @@ export const PresentationDoc = defineDocFamily<Presentation, null>({
   scope: "session",
   family: true,
   initial: () => ({ panel: "conversation", draft: "" }),
+  checkpointWhen: () => true,
 });
 export const viewer = "showcase";
 export type Change =

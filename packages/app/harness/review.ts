@@ -27,6 +27,7 @@ export const Review = defineDoc<{
   history: "latest",
   fork: "initial",
   initial: () => ({}),
+  checkpointWhen: () => true,
 });
 
 const INSTRUCTION =

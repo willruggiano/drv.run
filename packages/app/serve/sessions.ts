@@ -119,6 +119,7 @@ export const Metadata = defineDoc<{ created: number; name?: string }>({
   history: "latest",
   fork: "current",
   initial: () => ({ created: 0 }),
+  checkpointWhen: () => true,
 });
 export const Environment = defineDoc<{ provider?: string; target?: string }>({
   kind: "app.environment",
@@ -127,6 +128,7 @@ export const Environment = defineDoc<{ provider?: string; target?: string }>({
   history: "rewindable",
   fork: "asOf",
   initial: () => ({}),
+  checkpointWhen: () => true,
 });
 type InitialSession = {
   binding?: ExecutionBinding;
