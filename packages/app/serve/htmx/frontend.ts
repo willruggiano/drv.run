@@ -92,17 +92,20 @@ export function htmlPage(
   title = "Sessions",
   conversation = false,
   branches = h``,
+  sessionName?: string,
 ): string {
   const sessionsPath = "/htmx/";
-  const heading = conversation
-    ? h`<a id="conversation-title" class="header-title" href="${sessionsPath}" aria-label="Sessions" title="Sessions" data-command="sessions">${title}</a>`
+  const sessionHeader = conversation || sessionName !== undefined;
+  const requestError = h`<p id="request-error" role="alert"></p>`;
+  const heading = sessionHeader
+    ? h`<a id="conversation-title" class="header-title" href="${sessionsPath}" aria-label="Sessions" title="Sessions" data-command="sessions">${sessionName ?? title}</a>`
     : h`<span class="header-title">${title}</span>`;
   // htmx must see readyState=loading so initialization waits for DOMContentLoaded,
   // after the deferred extensions and module have registered their handlers.
   const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/htmx/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
-  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/htmx/"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}<p id="request-error" role="alert"></p></header>`;
+  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!sessionHeader && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/htmx/"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}${sessionName === undefined ? requestError : ""}</header>`;
   return renderHTML(
-    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${(!conversation && title === "Sessions") || title === "Session settings" || title === "Conversation tree" || title === "Session tree" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
+    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${sessionName === undefined && ((!conversation && title === "Sessions") || title === "Session settings" || title === "Conversation tree" || title === "Session tree") ? requestError : header}${sessionName !== undefined ? requestError : ""}${content}</main></body></html>`,
   );
 }
 export function html(
@@ -113,11 +116,12 @@ export function html(
   title?: string,
   conversation = false,
   branches = h``,
+  sessionName?: string,
 ): void {
   // Native form POSTs must retain a same-origin Origin, not null.
   response.setHeader("Referrer-Policy", "same-origin");
   response.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
-  response.end(htmlPage(content, back, title, conversation, branches));
+  response.end(htmlPage(content, back, title, conversation, branches, sessionName));
 }
 function redirect(request: IncomingMessage, response: ServerResponse, path: string): void {
   if (request.headers["hx-request"] === "true") {
@@ -502,19 +506,22 @@ async function events(
           for (const [entry, ms] of durations)
             fragment = h`${fragment}${partial(`duration-${entry}`, timing(entry, ms))}`;
         }
-        if (!inspection && !exploring && metadata) {
+        if (!inspection && metadata) {
           metadata = false;
-          fragment = h`${fragment}${partial("session-meta", await metadataHTML(session, conversation, current, settings, context, true))}`;
+          if (exploring) {
+            const info = await sessionInfo(session, conversation, undefined, context);
+            fragment = h`${fragment}${partial("conversation-title", h`${info.name || "Untitled session"}`, "innerMorph")}`;
+          } else
+            fragment = h`${fragment}${partial("session-meta", await metadataHTML(session, conversation, current, settings, context, true))}`;
         }
         if (exploring && (sessionTree ? treeDirty : branchesDirty)) {
           treeDirty = false;
-          branchesDirty = false;
           const data: TreeData = sessionTree
             ? { kind: "entries", path, nodes: await sessionTree.read(conversation.id, context) }
             : conversationTree(session, conversation.id, await branches.read(context), "htmx");
-          fragment = partial("tree-explorer", explorerHTML(data));
+          fragment = h`${fragment}${partial("tree-explorer", explorerHTML(data))}`;
         }
-        if (!inspection && !exploring && branchesDirty) {
+        if (!inspection && branchesDirty) {
           branchesDirty = false;
           fragment = h`${fragment}${partial("branch-tree", branchRows(session, id, await branches.read(context)), "innerMorph")}`;
         }
@@ -679,7 +686,8 @@ export async function hypermedia(
     title = titles[operation ?? ""] ?? "Conversation",
     conversationPage = false,
     branches = h``,
-  ) => html(response, content, 200, path, title, conversationPage, branches);
+    sessionName?: string,
+  ) => html(response, content, 200, path, title, conversationPage, branches, sessionName);
   if (request.method === "GET" && operation === "settings") {
     const catalog = await sessions.catalog(context);
     const info = await sessionInfo(session, conversation, catalog.targets, context);
@@ -695,6 +703,8 @@ export async function hypermedia(
     return;
   }
   if (request.method === "GET" && (operation === "tree" || operation === "branches")) {
+    const branches = await new BranchTree(session).read(context);
+    const info = await sessionInfo(session, conversation, undefined, context);
     const data: TreeData =
       operation === "tree"
         ? {
@@ -702,14 +712,13 @@ export async function hypermedia(
             path,
             nodes: await new SessionTree(session).read(conversation.id, context),
           }
-        : conversationTree(
-            session,
-            conversation.id,
-            await new BranchTree(session).read(context),
-            "htmx",
-          );
+        : conversationTree(session, conversation.id, branches, "htmx");
     page(
       h`<section class="conversation-layout" ${streamAttributes(`${path}/events?pane=${operation}`)}>${explorerHTML(data, true)}</section>`,
+      titles[operation],
+      false,
+      branchHeader(session, conversation.id, branches),
+      info.name || "Untitled session",
     );
     return;
   }

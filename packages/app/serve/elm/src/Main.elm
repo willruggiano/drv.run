@@ -1642,6 +1642,51 @@ view model =
                     ]
                 ]
             ]
+
+        exploring =
+            model.pane == Tree || model.pane == Branches
+
+        requestError =
+            p [ id "request-error", attribute "role" "alert" ]
+                [ text model.error
+                , case model.connection of
+                    Broken _ ->
+                        button [ onClick Retry ] [ text "Reconnect" ]
+
+                    _ ->
+                        text ""
+                ]
+
+        pageHeader =
+            header [ id "app-header" ]
+                [ div [ class "bar", hidden (model.pane == Preferences) ]
+                    [ h1 []
+                        [ if model.pane == Context then
+                            span [ class "header-title" ] [ text "Context" ]
+
+                          else
+                            a [ id "conversation-title", class "header-title", href "/elm", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
+                                [ text
+                                    state.metadata.title
+                                ]
+                        ]
+                    , if model.pane == Context then
+                        a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
+
+                      else
+                        a [ id "menu-toggle", class "icon", href "/elm/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
+                    ]
+                , if model.pane == Conversation || exploring then
+                    branchHeader model.path state.metadata.branches
+
+                  else
+                    text ""
+                , if exploring then
+                    text ""
+
+                  else
+                    requestError
+                ]
     in
     { title =
         case model.pane of
@@ -1671,77 +1716,38 @@ view model =
                     "panel"
                 )
             ]
-            (if model.pane == Tree || model.pane == Branches then
-                [ Html.node "pi-tree"
-                    [ id "tree-explorer"
-                    , attribute "value"
-                        (E.encode 0
-                            (Maybe.withDefault
-                                (E.object
-                                    [ ( "kind"
-                                      , E.string
-                                            (if model.pane == Tree then
-                                                "entries"
+            (pageHeader
+                :: (if exploring then
+                        [ Html.node "pi-tree"
+                            [ id "tree-explorer"
+                            , attribute "value"
+                                (E.encode 0
+                                    (Maybe.withDefault
+                                        (E.object
+                                            [ ( "kind"
+                                              , E.string
+                                                    (if model.pane == Tree then
+                                                        "entries"
 
-                                             else
-                                                "branches"
-                                            )
-                                      )
-                                    , ( "path", E.string model.path )
-                                    , ( "nodes", E.list identity [] )
-                                    ]
+                                                     else
+                                                        "branches"
+                                                    )
+                                              )
+                                            , ( "path", E.string model.path )
+                                            , ( "nodes", E.list identity [] )
+                                            ]
+                                        )
+                                        state.metadata.explorer
+                                    )
                                 )
-                                state.metadata.explorer
-                            )
-                        )
-                    ]
-                    []
-                , p [ id "request-error", attribute "role" "alert" ]
-                    [ text model.error
-                    , case model.connection of
-                        Broken _ ->
-                            button [ onClick Retry ] [ text "Reconnect" ]
-
-                        _ ->
-                            text ""
-                    ]
-                ]
-
-             else
-                header [ id "app-header" ]
-                    [ div [ class "bar", hidden (model.pane == Preferences) ]
-                        [ h1 []
-                            [ if model.pane == Context then
-                                span [ class "header-title" ] [ text "Context" ]
-
-                              else
-                                a [ id "conversation-title", class "header-title", href "/elm", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
-                                    [ text
-                                        state.metadata.title
-                                    ]
                             ]
-                        , if model.pane == Context then
-                            a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
-
-                          else
-                            a [ id "menu-toggle", class "icon", href "/elm/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
+                            []
+                        , requestError
                         ]
-                    , if model.pane == Conversation then
-                        branchHeader model.path state.metadata.branches
 
-                      else
-                        text ""
-                    , p [ id "request-error", attribute "role" "alert" ]
-                        [ text model.error
-                        , case model.connection of
-                            Broken _ ->
-                                button [ onClick Retry ] [ text "Reconnect" ]
-
-                            _ ->
-                                text ""
-                        ]
-                    ]
-                    :: (body ++ [ Maybe.map (\src -> Html.node "dialog" [ id "image-dialog", preventDefaultOn "cancel" (D.succeed ( CloseImage, True )) ] [ Html.img [ A.src src, A.alt "Attachment" ] [], button [ onClick CloseImage ] [ text "Close image" ] ]) model.image |> Maybe.withDefault (text "") ])
+                    else
+                        body ++ [ Maybe.map (\src -> Html.node "dialog" [ id "image-dialog", preventDefaultOn "cancel" (D.succeed ( CloseImage, True )) ] [ Html.img [ A.src src, A.alt "Attachment" ] [], button [ onClick CloseImage ] [ text "Close image" ] ]) model.image |> Maybe.withDefault (text "") ]
+                   )
             )
         ]
     }

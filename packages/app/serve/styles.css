@@ -530,8 +530,9 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 .creation-options { border: 0; padding: 0; margin: 0; min-width: 0; }
 .activity-body { white-space: pre-wrap; }
 
-/* Conversation and session-entry explorers share one headerless main view and composer. */
+/* Explorer panes replace the main view and composer, not the desktop navigation. */
 pi-tree { display: contents; }
+@media (max-width: 1199px) { #page:has(pi-tree) > #app-header { display: none; } }
 .stacked-layout #page:has(pi-tree) { grid-template-rows: minmax(0, 1fr) auto auto; }
 .stacked-layout pi-tree #main-area { grid-row: 1; }
 .stacked-layout pi-tree #app-footer { grid-row: 2; }

@@ -8,11 +8,13 @@ import { Review } from "harness";
 import { browserFixture } from "./browser-testing.ts";
 import { fixture, waitFor } from "./sessions-testing.ts";
 import { conversationURL } from "../presentation.ts";
+import { rename } from "../sessions.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 async function assertCanonicalGrid(page: Page) {
   const width = page.viewportSize()!.width;
+  assert.equal(await page.locator("#app-header").isVisible(), width >= 1200);
   if (width < 1200) return;
   const main = await page.locator("#main-area").boundingBox();
   const composer = await page.locator("#app-footer .compose-box").boundingBox();
@@ -21,6 +23,15 @@ async function assertCanonicalGrid(page: Page) {
   assert.equal(main.x, (width - 820) / 2);
   assert.equal(main.x, composer.x);
   assert.equal(main.width, composer.width);
+  const title = await page.locator("#conversation-title").boundingBox();
+  const branch = await page.locator("#branch-disclosure > summary").boundingBox();
+  const settings = await page.locator("#menu-toggle").boundingBox();
+  assert.ok(title && branch && settings);
+  assert.ok(title.x < main.x && title.x + title.width <= main.x);
+  assert.ok(branch.y >= title.y + title.height && branch.x < main.x);
+  assert.ok(settings.x >= main.x + main.width && settings.y <= 24);
+  assert.equal(await page.locator("#menu-toggle svg").count(), 1);
+  assert.equal(await page.locator("#menu-toggle").textContent(), "");
 }
 
 async function assertCompactTree(tree: Locator) {
@@ -284,7 +295,8 @@ await test(
       const rows = page.locator("#tree-rows");
       await rows.locator(`[data-id="${branch.id}"]`).waitFor();
       await assertCompactTree(rows);
-      assert.equal(await page.locator("#app-header, #queue, #preview, #send").count(), 0);
+      assert.equal(await page.locator("#queue, #preview, #send").count(), 0);
+      assert.equal(await page.locator("#app-header").isVisible(), false);
       assert.equal(await page.locator("#tree-close svg").count(), 1);
       assert.equal(await page.locator("#tree-filter").isVisible(), false);
       assert.equal(await page.locator("#prompt").inputValue(), "");
@@ -299,6 +311,17 @@ await test(
         context,
       );
       await rows.locator('.tool-status[data-state="failed"]').waitFor();
+      await waitFor(
+        async () =>
+          (await page
+            .locator(`#branch-${branch.id} > .branch-row .tool-status`)
+            .getAttribute("data-state")) === "failed",
+      );
+      await rename(session, "Explorer session");
+      await waitFor(
+        async () =>
+          (await page.locator("#conversation-title").textContent()) === "Explorer session",
+      );
       assert.equal(await page.locator("#prompt").inputValue(), `branch ${branch.id}`);
       assert.equal(
         await page.locator("#prompt").evaluate((node) => node === document.activeElement),
@@ -309,6 +332,11 @@ await test(
         await page.setViewportSize({ width, height: 844 });
         await assertCompactTree(rows);
         await assertCanonicalGrid(page);
+        if (width >= 1200) {
+          await page.locator("#branch-disclosure > summary").click();
+          await assertCompactTree(page.locator("#branch-tree"));
+          assert.equal(await rows.isVisible(), true);
+        }
         if (b.screenshots)
           await page.screenshot({ path: join(b.screenshots, `fork-${frontend}-${width}.png`) });
       }
@@ -360,6 +388,17 @@ await test(
         context,
       );
       await rows.locator(`[data-id="${appended.id}"]`).waitFor();
+      await waitFor(
+        async () =>
+          (await page
+            .locator(`#branch-${branch.id} > .branch-row .tool-status`)
+            .getAttribute("data-state")) === "completed",
+      );
+      await rename(session, "Updated explorer session");
+      await waitFor(
+        async () =>
+          (await page.locator("#conversation-title").textContent()) === "Updated explorer session",
+      );
       assert.equal(await page.locator("#prompt").inputValue(), "alternative");
       await page.locator("#prompt").press("ArrowDown");
       assert.equal(
@@ -377,9 +416,15 @@ await test(
         await rows.locator('[aria-current="true"]').getAttribute("data-id"),
         String(more.at(-1)!.id),
       );
-      for (const width of [320, 390, 650, 1440, 1920]) {
+      for (const width of [320, 390, 650, 1199, 1200, 1440, 1920]) {
         await page.setViewportSize({ width, height: 844 });
         await assertCanonicalGrid(page);
+        if (width >= 1200) {
+          const disclosure = page.locator("#branch-disclosure");
+          if (!(await disclosure.evaluate((node: HTMLDetailsElement) => node.open)))
+            await disclosure.locator("summary").click();
+          await assertCompactTree(page.locator("#branch-tree"));
+        }
         const bounds = await pane.boundingBox();
         const footer = await page.locator("#app-footer").boundingBox();
         const tree = await rows.boundingBox();
@@ -421,6 +466,14 @@ await test(
       await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
       assert.equal(await explorerDocument.evaluate((doc) => doc === document), true);
       await explorerDocument.dispose();
+      await page.setViewportSize({ width: 1440, height: 844 });
+      await page.goto(b.base + path + "/tree");
+      await page.locator("#branch-disclosure > summary").click();
+      await page.locator(`#branch-${branch.id} > .branch-row a`).click();
+      await page.waitForURL(b.base + conversationURL(session, branch.id, frontend));
+      await page.goto(b.base + path + "/branches");
+      await page.locator("#menu-toggle").click();
+      await page.waitForURL(b.base + `/${frontend}/settings`);
       assert.equal(f.faux.state.callCount, 0);
       await page.setViewportSize({ width: 390, height: 844 });
       await documentHandle.dispose();
