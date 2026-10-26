@@ -21,10 +21,6 @@
 
   assertions = [
     {
-      assertion = config.boot.initrd.systemd.enable;
-      message = "drv.run persistence requires systemd initrd mount ordering.";
-    }
-    {
       assertion = config.microvm.storeOnDisk && config.microvm.registerClosure && config.nix.enable && config.microvm.writableStoreOverlay != null;
       message = "drv.run environment images require a registered generic store and a private writable overlay.";
     }
@@ -32,7 +28,6 @@
 
   boot = {
     initrd.systemd = {
-      enable = true;
       # Persistence and store overlays exceed systemd's five mount events/s.
       managerEnvironment.SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_BURST = "64";
     };

@@ -196,7 +196,6 @@ in {
           builtins.removeAttrs module ["fileSystems"]
           // {virtualisation.fileSystems = module.fileSystems;})
       ];
-      boot.initrd.systemd.enable = true;
       virtualisation = {
         memorySize = 768;
         cores = 2;
