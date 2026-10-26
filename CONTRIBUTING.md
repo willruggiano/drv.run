@@ -45,9 +45,6 @@ user's explicit approval. -->
 - `just check` runs the Nix-free formatters, linters and type checks.
 - `just test` runs Node tests and Nix evaluation; `just pre-commit` also runs
   full Nix validation. See `justfile` for the commands.
-- In the coding jail, run `just check` and `node --test "**/*.test.ts"`
-  directly. Leave Nix-dependent recipes and validation to the operator outside
-  the jail.
 - Fix failures caused by the change. If execution is blocked, report the exact
   deferred command and reason; distinguish checks passed from verification
   pending. Do not attempt a known-unavailable tool just to obtain an error.

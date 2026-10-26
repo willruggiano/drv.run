@@ -90,7 +90,5 @@ Persistence:
   /nix/store/HASH-source/README.org
 Deployment:
   /nix/store/HASH-source/README.md
-Coding jail:
-  /nix/store/HASH-source/README.md
 Secrets:
   /nix/store/HASH-source/README.md

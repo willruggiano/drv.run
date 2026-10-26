@@ -52,7 +52,6 @@
     deploy-rs -> ${inputs.deploy-rs.outPath}
     drv.run -> ${inputs.self.outPath}
     impermanence -> ${inputs.impermanence.outPath}
-    jail.nix -> ${inputs.jail.outPath}
     microvm.nix -> ${inputs.microvm.outPath}
     nix -> ${pkgs.nix.doc}
     nixpkgs -> ${inputs.nixpkgs.outPath}

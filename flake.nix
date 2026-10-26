@@ -23,7 +23,6 @@
         nixpkgs.follows = "nixpkgs";
       };
     };
-    jail.url = "sourcehut:~alexdavid/jail.nix";
     microvm = {
       url = "path:microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -73,26 +72,19 @@
     checks = eachSystem (pkgs: let
       environmentImage = import ./nix/nixosTests/environment-image.nix {inherit pkgs;};
     in {
-      environment-image = environmentImage.artifact;
-      nixos-environment-image = environmentImage.integration;
       app-tape = pkgs.app.tape;
       app-tests = pkgs.app;
-      notifications-options = import ./tests/notifications.nix {
-        inherit pkgs;
-        inherit (inputs) nixpkgs;
-        module = self.nixosModules.pi;
-        hostModule = self.nixosModules.host;
-        guestModule = self.nixosModules.guest;
-      };
+      bench-tests = pkgs.bench;
+      environment-image = environmentImage.artifact;
+      llms-snapshot = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
+      mitm-proxy-tests = pkgs.mitm-proxy;
+      nixos-environment-image = environmentImage.integration;
+      nixos-mitm-proxy-tests = pkgs.mitm-proxy.tests;
       nixos-notifications = import ./tests/nixos/notifications.nix {
         inherit pkgs;
         piModule = self.nixosModules.pi;
         inherit (inputs) impermanence;
       };
-      bench-tests = pkgs.bench;
-      llms-snapshot = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
-      mitm-proxy-tests = pkgs.mitm-proxy;
-      nixos-mitm-proxy-tests = pkgs.mitm-proxy.tests;
     });
 
     devShells = eachSystem (pkgs: let
@@ -194,8 +186,6 @@
             ${inputs.impermanence}/README.org
           Deployment:
             ${inputs.deploy-rs}/README.md
-          Coding jail:
-            ${inputs.jail}/README.md
           Secrets:
             ${inputs.sops-nix}/README.md
         '';
@@ -211,7 +201,7 @@
         inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
       };
-      jail = pkgs.mkShell {
+      local = pkgs.mkShell {
         inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
         packages = [pkgs'.treefmt-wrapped];
