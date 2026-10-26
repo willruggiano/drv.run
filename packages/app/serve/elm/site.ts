@@ -23,7 +23,6 @@ declare const Elm: {
   Site: {
     init(options: {
       flags: {
-        offline: boolean;
         text: string;
         creation: string;
         missingFiles: boolean;
@@ -76,7 +75,7 @@ try {
   /* In-memory drafts remain usable. */
 }
 const app = Elm.Site.init({
-  flags: { ...draft, offline: document.documentElement.dataset.offline === "true" },
+  flags: draft,
 });
 document.body.classList.add("stacked-layout", "bottom-align");
 installPwa();

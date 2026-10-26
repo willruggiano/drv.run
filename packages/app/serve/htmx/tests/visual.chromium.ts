@@ -330,7 +330,7 @@ await test("panel headers respect safe areas, stay above scrolling content and c
     }
     await page.goto(b.base + "/htmx/");
     await page.locator("#landing").waitFor();
-    assert.equal(await page.locator("#app-header > .bar").isVisible(), true);
+    assert.equal(await page.locator("#app-header").count(), 0);
   }
   await page.goto(b.base + "/htmx/settings");
   assert.equal(await page.locator("#app-footer").isVisible(), false);
@@ -1009,7 +1009,6 @@ await test("scrollbars stay hidden site-wide while both axes retain native scrol
       `${path}/context`,
       "/htmx/settings",
       "/htmx/auth",
-      "/htmx/offline",
       "/design-system.html",
     ]) {
       await page.goto(b.base + route);

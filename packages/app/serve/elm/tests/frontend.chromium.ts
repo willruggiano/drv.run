@@ -516,7 +516,7 @@ await test(
 );
 
 await test(
-  "Elm compaction uses committed history and duration; reset asks for confirmation",
+  "Elm context commands ask for confirmation and retain committed history and duration",
   { timeout: 45000 },
   async (t) => {
     const f = await fixture(t);
@@ -541,6 +541,9 @@ await test(
     f.faux.setResponses([fauxAssistantMessage("Summary of the completed work")]);
     await page.locator("#prompt").fill("/compact Keep the key decisions");
     await page.locator("#send").click();
+    await page.getByRole("button", { name: "Confirm compaction" }).waitFor();
+    assert.deepEqual(await readHistory(session.root), records);
+    await page.getByRole("button", { name: "Confirm compaction" }).click();
     await page.locator('[data-context="pi.compaction"]').waitFor();
     await page.locator("[data-duration-ms]").waitFor({ state: "attached" });
     assert.equal(

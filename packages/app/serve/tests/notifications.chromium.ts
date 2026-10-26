@@ -13,8 +13,7 @@ for (const frontend of ["elm", "htmx"] as const) {
     t.after(() => notifications.close());
     const b = await browserFixture(t, f.sessions, undefined, notifications);
     const source = { instance: "guest", incarnation: "boot", terminal: "build" };
-    await b.page.goto(`${b.base}/${frontend}/`);
-    await b.page.getByRole("link", { name: "Activity inbox", exact: true }).click();
+    await b.page.goto(`${b.base}/${frontend}/activity`);
     await b.page.waitForURL(`${b.base}/${frontend}/activity`);
     activity.accept(source, 1, {
       type: "status",

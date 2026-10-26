@@ -17,6 +17,8 @@ import Protocol exposing (State)
 import Task
 import Transcript
 import Url exposing (Url)
+import Url.Parser as Parser
+import Url.Parser.Query as Query
 
 
 port stream : { path : String, epoch : Int, pane : String } -> Cmd msg
@@ -139,6 +141,43 @@ navigate path model =
     ( model, Maybe.map (\key -> Nav.pushUrl key path) model.key |> Maybe.withDefault Cmd.none )
 
 
+type ContextAction
+    = Reset
+    | Compact
+
+
+type alias Confirmation =
+    { action : ContextAction, argument : String }
+
+
+contextCommand : ContextAction -> String
+contextCommand action =
+    case action of
+        Reset ->
+            "reset"
+
+        Compact ->
+            "compact"
+
+
+confirmationFor : String -> Maybe Confirmation
+confirmationFor path =
+    if String.endsWith "/reset" path then
+        Just { action = Reset, argument = "" }
+
+    else if String.endsWith "/compact" path then
+        Just { action = Compact, argument = "" }
+
+    else
+        Nothing
+
+
+confirmationFromUrl : Url -> Maybe Confirmation
+confirmationFromUrl url =
+    confirmationFor url.path
+        |> Maybe.map (\confirmation -> { confirmation | argument = Parser.parse (Parser.query (Query.string "argument")) { url | path = "/" } |> Maybe.andThen identity |> Maybe.withDefault "" })
+
+
 type alias Model =
     { key : Maybe Nav.Key
     , path : String
@@ -156,7 +195,7 @@ type alias Model =
     , completionRequest : Int
     , search : Maybe String
     , searchIndex : Int
-    , reset : Maybe String
+    , confirmation : Maybe Confirmation
     , pane : Pane
     , settings : Maybe Panel.Settings
     , savedSettings : Maybe Panel.Settings
@@ -197,8 +236,8 @@ type Msg
     | Search String
     | SearchMove Int
     | OpenSessions
-    | ResetArgument String
-    | ConfirmReset
+    | EditConfirmation String
+    | ConfirmContext
     | Response String Pending (Result Http.Error ( String, String, Maybe String ))
     | SettingsLoaded Int (Result Http.Error Panel.Settings)
     | EditSetting Panel.Field String
@@ -235,12 +274,7 @@ initModel path nonce =
     , completionRequest = 0
     , search = Nothing
     , searchIndex = 0
-    , reset =
-        if String.endsWith "/reset" path then
-            Just ""
-
-        else
-            Nothing
+    , confirmation = confirmationFor path
     , pane = Tuple.second (route path)
     , settings = Nothing
     , savedSettings = Nothing
@@ -271,7 +305,7 @@ main =
                         D.decodeValue (D.field "drafts" (D.dict draftDecoder)) flags |> Result.withDefault Dict.empty
 
                     model =
-                        { base | key = Just key, drafts = drafts, opened = D.decodeValue (D.field "opened" (D.dict (D.dict D.bool))) flags |> Result.withDefault Dict.empty }
+                        { base | key = Just key, confirmation = confirmationFromUrl url, drafts = drafts, opened = D.decodeValue (D.field "opened" (D.dict (D.dict D.bool))) flags |> Result.withDefault Dict.empty }
                 in
                 ( model, Cmd.batch [ connect model, loadPanel model ] )
         , view = view
@@ -423,6 +457,16 @@ httpError error =
             "Request acknowledgement unavailable. Your draft is retained."
 
 
+openConfirmation : ContextAction -> String -> Model -> ( Model, Cmd Msg )
+openConfirmation action argument model =
+    ( { model | confirmation = Just { action = action, argument = argument }, completions = Nothing }
+    , Cmd.batch
+        [ browser (E.object [ ( "kind", E.string "resize" ) ])
+        , browser (E.object [ ( "kind", E.string "focus" ), ( "id", E.string "prompt" ) ])
+        ]
+    )
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
@@ -438,9 +482,6 @@ update msg model =
 
                         else if String.endsWith "/export" url.path then
                             ( model, browser (E.object [ ( "kind", E.string "download" ), ( "url", E.string url.path ) ]) )
-
-                        else if List.any (\suffix -> String.endsWith suffix url.path) [ "/history", "/repository", "/compact" ] then
-                            ( model, Nav.load (Url.toString url) )
 
                         else if String.startsWith "/elm/sessions/" url.path then
                             ( model, Maybe.map (\key -> Nav.pushUrl key (url.path ++ (Maybe.map ((++) "?") url.query |> Maybe.withDefault "") ++ (Maybe.map ((++) "#") url.fragment |> Maybe.withDefault ""))) model.key |> Maybe.withDefault Cmd.none )
@@ -470,7 +511,7 @@ update msg model =
                         , connection = Connecting
                         , error = ""
                         , search = Nothing
-                        , reset = Nothing
+                        , confirmation = confirmationFromUrl url
                         , composing = False
                         , completions = Nothing
                         , completionRequest = model.completionRequest + 1
@@ -647,15 +688,10 @@ update msg model =
                         submit "endreview" "" mode True model
 
                     "/reset" ->
-                        ( { model | reset = Just argument, completions = Nothing }
-                        , Cmd.batch
-                            [ browser (E.object [ ( "kind", E.string "resize" ) ])
-                            , browser (E.object [ ( "kind", E.string "focus" ), ( "id", E.string "prompt" ) ])
-                            ]
-                        )
+                        openConfirmation Reset argument model
 
                     "/compact" ->
-                        submit "compact" argument mode True model
+                        openConfirmation Compact argument model
 
                     "/stop" ->
                         submit "abort" "" mode True model
@@ -733,12 +769,12 @@ update msg model =
 
                             else
                                 model.error
-                        , reset =
+                        , confirmation =
                             if valid && path == model.path then
                                 Nothing
 
                             else
-                                model.reset
+                                model.confirmation
                     }
             in
             if Maybe.map .identity draft.pending /= Just pending.identity then
@@ -963,7 +999,7 @@ update msg model =
         Dismiss ->
             let
                 updated =
-                    { model | completions = Nothing, completionRequest = model.completionRequest + 1, search = Nothing, reset = Nothing }
+                    { model | completions = Nothing, completionRequest = model.completionRequest + 1, search = Nothing, confirmation = Nothing }
             in
             ( updated, Cmd.batch [ browser (E.object [ ( "kind", E.string "cancel-completions" ) ]), browser (E.object [ ( "kind", E.string "resize" ) ]), highlight updated ] )
 
@@ -994,15 +1030,20 @@ update msg model =
         OpenSessions ->
             ( model, Nav.load "/elm" )
 
-        ResetArgument str ->
-            ( { model | reset = Just str }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
+        EditConfirmation str ->
+            ( { model | confirmation = Maybe.map (\confirmation -> { confirmation | argument = str }) model.confirmation }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
 
-        ConfirmReset ->
+        ConfirmContext ->
             if model.composing then
                 ( model, Cmd.none )
 
             else
-                submit "reset" (Maybe.withDefault "" model.reset) "reject" True model
+                case model.confirmation of
+                    Just confirmation ->
+                        submit (contextCommand confirmation.action) confirmation.argument "reject" True model
+
+                    Nothing ->
+                        ( model, Cmd.none )
 
         SettingsLoaded epoch result ->
             if epoch /= model.epoch || model.pane /= Preferences then
@@ -1136,8 +1177,8 @@ keyDown model =
                     , True
                     )
 
-                else if key == "Enter" && (ctrl || meta) && model.reset /= Nothing then
-                    ( ConfirmReset, True )
+                else if key == "Enter" && (ctrl || meta) && model.confirmation /= Nothing then
+                    ( ConfirmContext, True )
 
                 else if key == "Enter" && (ctrl || meta) then
                     ( Send
@@ -1451,10 +1492,25 @@ view model =
                     ]
                 ]
 
-        resetComposer argument =
-            form [ class "compose-box", onSubmit ConfirmReset ]
-                [ textarea [ id "prompt", A.rows 2, A.placeholder "Handoff instructions…", A.maxlength 100000, A.tabindex 1, attribute "aria-label" "Handoff instructions", value argument, onInput ResetArgument, keyDown model, on "compositionstart" (D.succeed (Composition True)), on "compositionend" (D.succeed (Composition False)) ] []
-                , div [ class "actions" ] [ a [ class "icon", href model.path, attribute "aria-label" "Cancel reset", A.title "Cancel reset", preventDefaultOn "click" (D.succeed ( Dismiss, True )) ] [ Transcript.icon "close" ], span [ class "spacer" ] [], button [ id "send", class "icon", attribute "aria-label" "Confirm reset", A.disabled (draft.pending /= Nothing) ] [ Transcript.icon "check" ] ]
+        confirmationComposer confirmation =
+            let
+                label =
+                    if confirmation.action == Reset then
+                        "reset"
+
+                    else
+                        "compaction"
+
+                instructions =
+                    if confirmation.action == Reset then
+                        "Handoff instructions"
+
+                    else
+                        "Compaction instructions"
+            in
+            form [ class "compose-box", onSubmit ConfirmContext ]
+                [ textarea [ id "prompt", A.rows 2, A.placeholder (instructions ++ "…"), A.maxlength 100000, A.tabindex 1, attribute "aria-label" instructions, A.name "argument", value confirmation.argument, onInput EditConfirmation, keyDown model, on "compositionstart" (D.succeed (Composition True)), on "compositionend" (D.succeed (Composition False)) ] []
+                , div [ class "actions" ] [ a [ class "icon", href model.path, attribute "aria-label" ("Cancel " ++ label), A.title ("Cancel " ++ label), preventDefaultOn "click" (D.succeed ( Dismiss, True )) ] [ Transcript.icon "close" ], span [ class "spacer" ] [], button [ id "send", class "icon", attribute "aria-label" ("Confirm " ++ label), A.disabled (draft.pending /= Nothing) ] [ Transcript.icon "check" ] ]
                 ]
 
         metadata =
@@ -1559,7 +1615,7 @@ view model =
             , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
                 [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
                 , div [ id "composer-shell", class "composer-shell" ]
-                    [ Maybe.map resetComposer model.reset |> Maybe.withDefault composer
+                    [ Maybe.map confirmationComposer model.confirmation |> Maybe.withDefault composer
                     , pendingError
                     , if draft.missingFiles then
                         p [ class "notice" ] [ text "Images cannot be restored after reload. Check history before resubmitting an uncertain image request. Reselect images or ", button [ onClick DiscardMissingFiles ] [ text "Discard missing attachments" ] ]

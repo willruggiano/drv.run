@@ -13,7 +13,7 @@ for (const frontend of ["elm", "htmx"] as const)
       const control = await authorizationFixture(t);
       const { page, base, errors } = await browserFixture(t, f.sessions, control.authorization);
       await page.goto(`${base}/${frontend}/`);
-      assert.equal(await page.locator(`a[href="/${frontend}/auth"]`).count(), 1);
+      assert.equal(await page.locator(`a[href="/${frontend}/auth"]`).count(), 0);
       await page.goto(`${base}/${frontend}/auth`);
       await page.locator('#github-authorization [data-state="not-enrolled"]').waitFor();
       assert.equal(new URL(page.url()).pathname, `/${frontend}/auth`);
@@ -26,7 +26,7 @@ for (const frontend of ["elm", "htmx"] as const)
       // Leaving the page does not cancel the host's enrollment.
       await page.getByRole("link", { name: "Sessions", exact: true }).click();
       await page.locator("#landing").waitFor();
-      assert.equal(await page.locator(`a[href="/${frontend}/auth"]`).count(), 1);
+      assert.equal(await page.locator(`a[href="/${frontend}/auth"]`).count(), 0);
       await page.goto(`${base}/${frontend}/auth`);
       await page.locator('#github-authorization [data-state="authorizing"]').waitFor();
       control.approve();

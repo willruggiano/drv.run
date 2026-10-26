@@ -79,9 +79,6 @@ export type ContextStatus = {
   /** Last completed response in the current context/model; not a live token estimate. */
   lastResponse: { tokens: number; cacheHit: number | null; entry: number } | null;
 };
-export type RepositoryStatus =
-  | { state: "repository"; branch: string | null; revision: string | null }
-  | { state: "none" | "unavailable" };
 export type Catalog = {
   targets: ExecutionTarget[];
   sessions: (SessionInfo & { context: ContextStatus })[];
@@ -553,47 +550,6 @@ export async function completeWorkingDirectories(
     throw new SessionError("invalid", "Invalid directory.");
   const env = await environment(session, conversation, context);
   return listPaths(env, query, true, context);
-}
-
-export async function repository(
-  session: Session,
-  conversation = session.root,
-  context = BACKGROUND_CONTEXT,
-): Promise<RepositoryStatus> {
-  try {
-    const env = await environment(session, conversation, context);
-    let output = "";
-    const result = await env.exec(
-      `if ! command -v git >/dev/null 2>&1; then
-printf 'unavailable\n'
-elif ! git rev-parse --git-dir >/dev/null 2>&1; then
-printf 'none\n'
-else
-printf 'repository\n'
-git symbolic-ref --quiet --short HEAD || printf '\n'
-git rev-parse --verify --short HEAD 2>/dev/null || true
-fi`,
-      {
-        cwd: env.cwd,
-        timeout: 3,
-        env: { GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
-        onOutput(text, _context, info) {
-          if (info.stream === "stdout") output = (output + text).slice(0, 8192);
-        },
-      },
-      context,
-    );
-    context.abortSignal?.throwIfAborted();
-    if (!result.ok || result.value.exitCode !== 0) return { state: "unavailable" };
-    const [state, branch, revision] = output.split("\n");
-    if (state === "none") return { state };
-    if (state !== "repository") return { state: "unavailable" };
-    return { state, branch: branch || null, revision: revision || null };
-  } catch {
-    context.abortSignal?.throwIfAborted();
-    // A disconnected guest must not break the transcript or fall back to host Git.
-    return { state: "unavailable" };
-  }
 }
 
 /** Capture at the supplied watch boundary, including its agent configuration.

@@ -1,7 +1,7 @@
-// Cache only public assets and a static offline page, never session HTML or SSE.
+// Cache only public assets, never pages or SSE.
 const ROOT = new URL(self.registration.scope).pathname.replace(/\/$/, "");
-const CACHE = `pi-${ROOT.slice(1)}-shell-v6`;
-const SHELL = [`${ROOT}/offline`, `${ROOT}/manifest.webmanifest`, "/styles.css", "/icon-192.png", "/icon-512.png", "/highlight.js", ...(ROOT === "/elm" ? ["/elm/main.js", "/elm/site.js", "/elm/client.js"] : ["/htmx/client.js", "/htmx/vendor.js", "/htmx/morph.js", "/htmx/sse.js"])];
+const CACHE = `pi-${ROOT.slice(1)}-shell-v7`;
+const SHELL = [`${ROOT}/manifest.webmanifest`, "/styles.css", "/icon-192.png", "/icon-512.png", "/highlight.js", ...(ROOT === "/elm" ? ["/elm/main.js", "/elm/site.js", "/elm/client.js"] : ["/htmx/client.js", "/htmx/vendor.js", "/htmx/morph.js", "/htmx/sse.js"])];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));
 });
@@ -18,10 +18,9 @@ self.addEventListener("message", event => {
 self.addEventListener("fetch", event => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.origin !== self.location.origin) return;
-  const navigation = event.request.mode === "navigate" && (url.pathname === ROOT || url.pathname.startsWith(ROOT + "/"));
-  if (!navigation && !SHELL.includes(url.pathname)) return;
+  if (!SHELL.includes(url.pathname)) return;
   event.respondWith(fetch(event.request).catch(async () => {
-    const cached = await caches.match(navigation ? `${ROOT}/offline` : url.pathname);
+    const cached = await caches.match(url.pathname);
     return cached ?? Response.error();
   }));
 });

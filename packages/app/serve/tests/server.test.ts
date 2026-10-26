@@ -768,21 +768,10 @@ await test(
         },
       },
     });
-    const exec = env.exec.bind(env);
-    t.mock.method(env, "exec", async (...args: Parameters<typeof exec>) => {
-      const context = args[2];
-      entered.resolve(context);
-      try {
-        await awaitWithContext(release.promise, context);
-        return await exec(...args);
-      } finally {
-        finished.resolve(context);
-      }
-    });
     await f.reopen({ ...f.execution, env: () => env, directoryEnv: () => env });
     const session = await f.sessions.create(randomUUID(), f.binding, model);
     const base = await serve(t, f.sessions);
-    for (const operation of ["directories", "completions", "repository"]) {
+    for (const operation of ["directories", "completions"]) {
       entered = Promise.withResolvers<Context>();
       finished = Promise.withResolvers<Context>();
       release = Promise.withResolvers<void>();
@@ -792,8 +781,7 @@ await test(
         operation === "directories"
           ? "/htmx/directories?" +
             new URLSearchParams({ target: targetKey(f.binding), baseDirectory: "" })
-          : conversationURL(session) +
-            (operation === "completions" ? "/completions?kind=path" : "/repository");
+          : conversationURL(session) + "/completions?kind=path";
       const pending = fetch(base + resource, { signal: controller.signal });
       const rejected = assert.rejects(pending, { name: "AbortError" });
       const running = await entered.promise;
@@ -802,7 +790,7 @@ await test(
       await rejected;
       const completed = await finished.promise;
       assert.equal(running.abortSignal.aborted, true);
-      if (operation !== "repository") assert.equal(completed.abortSignal, undefined);
+      assert.equal(completed.abortSignal, undefined);
       assert.equal(cleanup.mock.callCount(), 0);
       release.resolve();
     }

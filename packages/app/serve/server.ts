@@ -376,15 +376,7 @@ export function httpServer(
         return await elmFrontend(request, response, url, sessions, context, settings);
       }
       if (url.pathname === "/htmx" || url.pathname.startsWith("/htmx/"))
-        return await hypermedia(
-          request,
-          response,
-          url,
-          sessions,
-          context,
-          settings,
-          notifications !== undefined,
-        );
+        return await hypermedia(request, response, url, sessions, context, settings);
       if (url.pathname === "/") {
         if (request.method !== "GET") throw new RequestError(405, "Method not allowed.");
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });

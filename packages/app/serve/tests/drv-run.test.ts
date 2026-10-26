@@ -147,20 +147,6 @@ await test("transport failure reports tool errors without touching local files",
   assert.equal(f.faux.state.callCount, 2);
 });
 
-await test("repository inspection uses the guest environment and fails closed when stopped", async (t) => {
-  const f = await remoteFixture(t);
-  const session = await f.sessions.create(randomUUID(), f.binding, model);
-  const exec = t.mock.method(RemoteExecutionEnv.prototype, "exec");
-  await runtime.repository(session);
-  assert.equal(exec.mock.callCount(), 1);
-  assert.equal(exec.mock.calls[0].arguments[1]?.cwd, "/workspace");
-  assert.equal(f.connections.length, 1);
-  assert.equal(f.faux.state.callCount, 0);
-  await writeFile(f.states, JSON.stringify({ test1: "inactive" }));
-  assert.deepEqual(await runtime.repository(session), { state: "unavailable" });
-  assert.equal(exec.mock.callCount(), 1);
-});
-
 await test(
   "canceling inventory discovery terminates its systemctl process",
   { timeout: 10000 },
@@ -326,9 +312,6 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
   assert.deepEqual(await runtime.completePaths(session, "root"), ["root.txt"]);
   assert.deepEqual(await runtime.completePaths(session, "branch", fork), ["branch.txt"]);
   assert.equal(f.connections.length, before + 1, "each cwd environment owns its connection");
-  const exec = t.mock.method(RemoteExecutionEnv.prototype, "exec");
-  await runtime.repository(session, fork);
-  assert.equal(exec.mock.calls[0].arguments[1]?.cwd, join(f.workspace, "two"));
   await f.reopen({ targets: f.targets });
   const restored = await f.sessions.get(session.id);
   assert.equal((await runtime.sessionInfo(restored)).cwd, join(f.workspace, "one"));

@@ -397,10 +397,10 @@ function json(response: ServerResponse, value: unknown) {
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify(value));
 }
-export function elmDocument(response: ServerResponse, site = false, offline = false): void {
+export function elmDocument(response: ServerResponse, site = false): void {
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   response.end(
-    `<!doctype html><html lang="en" class="enhanced" data-offline="${offline}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>Pi</title><link rel="icon" href="/icon.svg"><link rel="manifest" href="/elm/manifest.webmanifest"><link rel="stylesheet" href="/styles.css"><script src="/elm/main.js" defer></script><script src="/elm/${site ? "site" : "client"}.js" type="module"></script></head><body class="stacked-layout bottom-align"><div id="elm"></div></body></html>`,
+    `<!doctype html><html lang="en" class="enhanced"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>Pi</title><link rel="icon" href="/icon.svg"><link rel="manifest" href="/elm/manifest.webmanifest"><link rel="stylesheet" href="/styles.css"><script src="/elm/main.js" defer></script><script src="/elm/${site ? "site" : "client"}.js" type="module"></script></head><body class="stacked-layout bottom-align"><div id="elm"></div></body></html>`,
   );
 }
 export async function elmFrontend(
@@ -420,7 +420,7 @@ export async function elmFrontend(
     return;
   }
   const match =
-    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|reset|export|directories|archive))?$/.exec(
+    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|reset|compact|export|directories|archive))?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -436,7 +436,8 @@ export async function elmFrontend(
   const conversation = await getConversation(session, Number(match[2]), context);
   if (
     request.method === "GET" &&
-    (!operation || ["settings", "context", "branches", "tree", "reset"].includes(operation))
+    (!operation ||
+      ["settings", "context", "branches", "tree", "reset", "compact"].includes(operation))
   ) {
     elmDocument(response);
     return;

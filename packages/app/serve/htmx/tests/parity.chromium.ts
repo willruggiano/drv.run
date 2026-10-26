@@ -520,7 +520,7 @@ await test("HTML rich transcript has paired tools, local search, images and boun
   assert.deepEqual(b.errors, []);
 });
 
-await test("HTML draft reload and offline shell never persist conversation representations", async (t) => {
+await test("HTML draft reload and asset cache never persist conversation representations", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   const b = await browserFixture(t, f.sessions);
@@ -545,16 +545,15 @@ await test("HTML draft reload and offline shell never persist conversation repre
       )
     ).flat(),
   );
-  assert(cached.includes("/htmx/offline"));
+  assert(cached.includes("/htmx/client.js"));
+  assert.equal(cached.includes("/htmx/offline"), false);
   assert.equal(
     cached.some((path) => path.includes(session.id)),
     false,
   );
   assert.equal(cached.includes("/htmx/"), false);
   await b.browserContext.setOffline(true);
-  await page.reload();
-  assert.equal(await page.locator("[data-events]").count(), 0);
-  assert.equal(await page.getByRole("link", { name: "Reconnect", exact: true }).isVisible(), true);
+  await assert.rejects(page.reload());
   await b.browserContext.setOffline(false);
   await page.goto(b.base + conversationURL(session));
   assert.equal(
@@ -586,8 +585,6 @@ await test("HTML compaction shares tool progress styling and records completion 
   await page.waitForFunction(
     () => document.querySelector("#connection")?.textContent === "Connected",
   );
-  const first = await page.locator(`#entry-${records[0].id}`).elementHandle();
-  assert(first);
   f.faux.setResponses([
     async () => {
       await release.promise;
@@ -596,6 +593,12 @@ await test("HTML compaction shares tool progress styling and records completion 
   ]);
   await page.locator('#composer [name="content"]').fill("/compact Keep the key decisions.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm compaction" }).waitFor();
+  assert.deepEqual(await readHistory(session.root), records);
+  await page.getByRole("button", { name: "Confirm compaction" }).click();
+  await page.waitForURL(b.base + conversationURL(session));
+  const first = await page.locator(`#entry-${records[0].id}`).elementHandle();
+  assert(first);
   const pending = page.locator('#live .context-event[data-state="running"]');
   await pending.waitFor();
   const progress = await session.harness.snapshot(LiveDoc, session.root.id, context);
@@ -1018,7 +1021,7 @@ await test("HTML landing lists the newest five sessions even when execution is u
   assert.deepEqual(errors, []);
 });
 
-await test("HTML footer environment is plain text; repository inspection requires a direct URL", async (t) => {
+await test("HTML footer environment is plain text and never executes repository inspection", async (t) => {
   const f = await fixture(t);
   const env = t.mock.fn(f.options.env.bind(f.options));
   await f.reopen({ env });
@@ -1044,9 +1047,9 @@ await test("HTML footer environment is plain text; repository inspection require
     await instance.click();
     assert.equal(new URL(page.url()).pathname, path);
     assert.equal(env.mock.callCount(), before);
-    await page.goto(b.base + path + "/repository");
-    await page.getByRole("heading", { name: "Repository", exact: true }).waitFor();
-    assert.equal(env.mock.callCount(), before + 1);
+    const removed = await page.goto(b.base + path + "/repository");
+    assert.equal(removed?.status(), 404);
+    assert.equal(env.mock.callCount(), before);
   }
   assert.equal(f.faux.state.callCount, 0);
   assert.deepEqual(b.errors, []);

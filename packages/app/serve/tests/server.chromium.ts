@@ -38,33 +38,55 @@ await test("both frontends use only the shared stylesheet", async (t) => {
   assert.deepEqual(b.errors, []);
 });
 
-await test("both frontends confirm /reset with two keyboard submissions without losing input focus", async (t) => {
+await test("both frontends confirm context commands with two keyboard submissions without losing input focus", async (t) => {
   const f = await fixture(t);
+  await f.reopen({ settings: { compaction: { keepRecentTokens: 1 } } });
   const b = await browserFixture(t, f.sessions);
   b.page.setDefaultTimeout(10000);
   for (const prefix of ["", "/elm"])
-    for (const shortcut of ["Control+Enter", "Meta+Enter"])
-      for (const handoff of ["", "Preserve the handoff."])
-        await t.test(`${prefix || "htmx"}: ${shortcut}, handoff=${Boolean(handoff)}`, async () => {
-          const session = await f.create();
-          await b.page.goto(
-            b.base + conversationURL(session, undefined, prefix === "/elm" ? "elm" : "htmx"),
+    for (const command of ["reset", "compact"] as const)
+      for (const shortcut of ["Control+Enter", "Meta+Enter"])
+        for (const handoff of ["", "Preserve the handoff."])
+          await t.test(
+            `${prefix || "htmx"}: ${command}, ${shortcut}, argument=${Boolean(handoff)}`,
+            async () => {
+              const session = await f.create();
+              if (command === "compact") {
+                f.faux.setResponses([
+                  fauxAssistantMessage("First response"),
+                  fauxAssistantMessage("Second response"),
+                ]);
+                for (const content of ["First ".repeat(1000), "Second ".repeat(1000)])
+                  await (
+                    await session.root.submit({ type: "input", content }, BACKGROUND_CONTEXT)
+                  ).wait(BACKGROUND_CONTEXT);
+                f.faux.setResponses([fauxAssistantMessage("Summary of the completed work")]);
+              }
+              await b.page.goto(
+                b.base + conversationURL(session, undefined, prefix === "/elm" ? "elm" : "htmx"),
+              );
+              const prompt = b.page.locator("#prompt");
+              await prompt.fill(`/${command}${handoff ? ` ${handoff}` : ""}`);
+              if (!handoff) await b.page.locator('#completions [role="option"]').waitFor();
+              const before = await readHistory(session.root);
+              await b.page.keyboard.press(shortcut);
+              await b.page
+                .getByRole("button", {
+                  name: command === "reset" ? "Confirm reset" : "Confirm compaction",
+                })
+                .waitFor();
+              await b.page.waitForFunction(() => document.activeElement?.id === "prompt");
+              assert.equal(await prompt.inputValue(), handoff);
+              assert.deepEqual(await readHistory(session.root), before);
+              await b.page.keyboard.press(shortcut);
+              await b.page
+                .locator(`[data-context="${command === "reset" ? "pi.reset" : "pi.compaction"}"]`)
+                .waitFor();
+              const after = await readHistory(session.root);
+              assert.equal(after.length, before.length + 1);
+              assert.equal(after.at(-1)?.kind, command === "reset" ? "pi.reset" : "pi.compaction");
+            },
           );
-          const prompt = b.page.locator("#prompt");
-          await prompt.fill(handoff ? `/reset ${handoff}` : "/reset");
-          if (!handoff) await b.page.locator('#completions [role="option"]').waitFor();
-          const before = await readHistory(session.root);
-          await b.page.keyboard.press(shortcut);
-          await b.page.getByRole("button", { name: "Confirm reset" }).waitFor();
-          await b.page.waitForFunction(() => document.activeElement?.id === "prompt");
-          assert.equal(await prompt.inputValue(), handoff);
-          assert.deepEqual(await readHistory(session.root), before);
-          await b.page.keyboard.press(shortcut);
-          await b.page.locator('[data-context="pi.reset"]').waitFor();
-          const after = await readHistory(session.root);
-          assert.equal(after.length, before.length + 1);
-          assert.equal(after.at(-1)?.kind, "pi.reset");
-        });
   assert.deepEqual(b.errors, []);
 });
 
@@ -107,6 +129,23 @@ await test("frontend landings create, reopen and archive sessions without crossi
         catalog.sessions.slice(0, 5).map((item) => item.id),
       );
       assert.equal(await page.locator("#session-filter, #picker").count(), 0);
+      assert.equal(await page.locator("#app-header, #landing nav").count(), 0);
+      for (const route of ["settings", "auth", "activity"])
+        assert.equal(await page.locator(`a[href="/${frontend}/${route}"]`).count(), 0);
+      for (const route of ["repository", "history"])
+        assert.equal(
+          (
+            await fetch(
+              b.base +
+                conversationURL(await f.sessions.get(catalog.sessions[0].id), undefined, frontend) +
+                "/" +
+                route,
+            )
+          ).status,
+          404,
+        );
+      assert.equal((await fetch(`${b.base}/${frontend}/offline`)).status, 404);
+
       f.faux.setResponses([fauxAssistantMessage("Created from the landing.")]);
       await page.locator("#prompt").fill("Initial prompt");
       await page.keyboard.press("Control+Enter");
@@ -120,37 +159,27 @@ await test("frontend landings create, reopen and archive sessions without crossi
       );
       await page.goto(b.base + landing);
       await page.locator(`#session-list a[href="/${frontend}/sessions/${id}"]`).waitFor();
-      await page.locator("#menu-toggle").click();
+      await page.goto(`${b.base}/${frontend}/settings`);
       await page.locator('#global-settings select[name="hideThinkingBlock"]').selectOption("true");
       await waitFor(async () => settings.read().values.hideThinkingBlock === true);
       await page.getByRole("link", { name: "Sessions", exact: true }).click();
       await page.locator("#landing").waitFor();
-      await page.getByRole("link", { name: "Auth", exact: true }).click();
+      await page.goto(`${b.base}/${frontend}/auth`);
       await page.locator('#github-authorization [data-state="unconfigured"]').waitFor();
       await page.goto(b.base + landing);
       await page.locator(`#session-list a[href="/${frontend}/sessions/${id}"]`).click();
       await page.waitForURL(b.base + conversationURL(session, undefined, frontend));
       await page.goto(b.base + landing);
       await page.locator("#prompt").fill("Unsent new-session draft");
-      for (const operation of ["repository", "history", "compact", "reset"]) {
+      for (const operation of ["compact", "reset"]) {
         await page.goto(b.base + conversationURL(session, undefined, frontend) + "/" + operation);
-        if (operation === "reset")
-          await page.getByRole("button", { name: "Confirm reset" }).waitFor();
-        else
-          await page
-            .getByRole("heading", {
-              name: { repository: "Repository", history: "History", compact: "Compact context" }[
-                operation
-              ],
-              exact: true,
-              includeHidden: true,
-            })
-            .last()
-            .waitFor({ state: "attached" });
-        if (operation === "compact") {
-          assert.equal(await page.locator('textarea[name="argument"]').inputValue(), "");
-          await page.locator('textarea[name="argument"]').fill("Retain the important context");
-        }
+        await page
+          .getByRole("button", {
+            name: operation === "reset" ? "Confirm reset" : "Confirm compaction",
+          })
+          .waitFor();
+        assert.equal(await page.locator("#prompt").inputValue(), "");
+        await page.locator("#prompt").fill("Retain the important context");
       }
       await page.goto(b.base + landing);
       await page.waitForFunction(
@@ -468,5 +497,42 @@ await test("Elm default model reselection preserves saved thinking overrides", a
     () => document.querySelector(".save-status")?.textContent === "Saved",
   );
   assert.equal(settings.read().modelThinkingLevels[key], "high");
+  assert.deepEqual(b.errors, []);
+});
+
+await test("context confirmations retain drafts on cancel and accept instructions through direct routes", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const before = await readHistory(session.root);
+  for (const frontend of ["elm", "htmx"] as const) {
+    const path = conversationURL(session, undefined, frontend);
+    for (const command of ["reset", "compact"] as const) {
+      const label = command === "reset" ? "reset" : "compaction";
+      await b.page.goto(b.base + path);
+      await b.page.locator("#prompt").fill(`/${command} Retain the important context`);
+      await b.page.keyboard.press("Control+Enter");
+      await b.page.getByRole("button", { name: `Confirm ${label}` }).waitFor();
+      assert.equal(await b.page.locator("#conversation-scroll").isVisible(), true);
+      assert.equal(
+        await b.page.locator("#composer-shell form #prompt").inputValue(),
+        "Retain the important context",
+      );
+      await b.page.getByRole("link", { name: `Cancel ${label}` }).click();
+      await b.page.waitForFunction(
+        (expected) => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === expected,
+        `/${command} Retain the important context`,
+      );
+      await b.page.goto(
+        `${b.base}${path}/${command}?argument=${encodeURIComponent("Explicit instructions & details")}`,
+      );
+      await b.page.getByRole("button", { name: `Confirm ${label}` }).waitFor();
+      assert.equal(await b.page.locator("#prompt").inputValue(), "Explicit instructions & details");
+      await b.page.reload();
+      await b.page.getByRole("button", { name: `Confirm ${label}` }).waitFor();
+      assert.equal(await b.page.locator("#prompt").inputValue(), "Explicit instructions & details");
+      assert.deepEqual(await readHistory(session.root), before);
+    }
+  }
   assert.deepEqual(b.errors, []);
 });

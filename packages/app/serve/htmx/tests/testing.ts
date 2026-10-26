@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import type { Page } from "playwright";
 
 export async function openSessions(page: Page): Promise<void> {
@@ -13,15 +12,9 @@ export async function returnToConversation(page: Page): Promise<void> {
   else await page.keyboard.press("Escape");
 }
 
-// Global settings have no mobile entry point. Open them at a desktop width
-// before testing their responsive form; do not activate a hidden control.
 export async function openGlobalSettings(page: Page): Promise<void> {
-  const viewport = page.viewportSize();
-  assert(viewport);
-  if (viewport.width <= 650) await page.setViewportSize({ ...viewport, width: 820 });
-  await page.locator("#menu-toggle").click();
+  await page.goto(new URL("/htmx/settings", page.url()).href);
   await page.locator("#global-preferences").waitFor();
-  if (viewport.width <= 650) await page.setViewportSize(viewport);
 }
 
 export async function submitCommand(page: Page, command: string): Promise<void> {

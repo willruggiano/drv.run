@@ -45,12 +45,12 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
     ["t", "targets"],
     ["m", "models"],
   ]) {
-    await page.focus("#menu-toggle");
+    await page.focus("#input-toggle");
     await page.keyboard.press(key);
     await focused(page, id);
     assert.equal(await page.locator(`#${id}`).getAttribute("data-opened"), "true");
   }
-  await page.focus("#menu-toggle");
+  await page.focus("#input-toggle");
   await page.keyboard.press("n");
   assert.equal(await page.locator("#create").getAttribute("data-clicks"), "1");
   await page.locator("#create").evaluate((node) => {
@@ -66,14 +66,14 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
     await page.keyboard.press("n");
     await focused(page, id);
   }
-  await page.focus("#menu-toggle");
+  await page.focus("#input-toggle");
   for (const key of ["Control+t", "Alt+m", "Shift+N", "Meta+n"]) {
     await page.keyboard.press(key);
-    await focused(page, "menu-toggle");
+    await focused(page, "input-toggle");
   }
   assert.equal(
     await page.evaluate(() => {
-      const button = document.getElementById("menu-toggle")!;
+      const button = document.getElementById("input-toggle")!;
       return [{ repeat: true }, { isComposing: true }].every((extra) =>
         button.dispatchEvent(
           new KeyboardEvent("keydown", { key: "t", bubbles: true, cancelable: true, ...extra }),

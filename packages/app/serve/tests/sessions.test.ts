@@ -405,51 +405,6 @@ await test("session names persist without changing bindings or starting work", a
   assert.equal((await runtime.sessionInfo(restored)).name, "");
 });
 
-await test("footer repository inspection follows the bound directory without running the agent", async (t) => {
-  const f = await fixture(t);
-  const session = await f.create();
-  assert.deepEqual(await runtime.repository(session), { state: "none" });
-  const env = new NodeExecutionEnv({ cwd: f.workspace });
-  t.after(() => env.cleanup(context));
-  const git = async (...args: string[]) => {
-    const result = await env.exec(["git", ...args], { timeout: 3 }, context);
-    assert(result.ok);
-    assert.equal(result.value.exitCode, 0);
-  };
-  await git("init", "--initial-branch=footer-test");
-  assert.deepEqual(await runtime.repository(session), {
-    state: "repository",
-    branch: "footer-test",
-    revision: null,
-  });
-  await git(
-    "-c",
-    "user.name=Pi",
-    "-c",
-    "user.email=pi@example.invalid",
-    "commit",
-    "--no-gpg-sign",
-    "--allow-empty",
-    "-m",
-    "Initial",
-  );
-  const committed = await runtime.repository(session);
-  assert.equal(committed.state, "repository");
-  assert(committed.state === "repository" && committed.revision);
-  await git("checkout", "--detach");
-  assert.deepEqual(await runtime.repository(session), {
-    state: "repository",
-    branch: null,
-    revision: committed.revision,
-  });
-  assert.equal(f.faux.state.callCount, 0);
-  assert.equal((await session.harness.inspect(context)).scheduling, "paused");
-  await f.reopen({ env: undefined, targets: async () => [] });
-  assert.deepEqual(await runtime.repository(await f.sessions.get(session.id)), {
-    state: "unavailable",
-  });
-});
-
 await test("footer context uses the selected model and active context, not lifetime spend", async (t) => {
   const f = await fixture(t);
   const session = await f.create();

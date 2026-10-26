@@ -139,7 +139,7 @@ tests =
                                 Main.update Main.DismissPending submitted |> Tuple.first |> Main.update (Main.Edit "second") |> Tuple.first |> Main.update (Main.Send "reject") |> Tuple.first
 
                             failed =
-                                { newer | error = "New operation error", reset = Just "new reset" }
+                                { newer | error = "New operation error", confirmation = (Main.initModel (base.path ++ "/reset") "nonce").confirmation }
                         in
                         Expect.all [ \_ -> Expect.equal failed (Main.update (Main.Acknowledged base.path pending (Ok ( pending.identity, pending.revision ))) failed |> Tuple.first), \_ -> Expect.equal failed (Main.update (Main.Acknowledged base.path pending (Err Http.NetworkError)) failed |> Tuple.first) ] ()
         , test "navigation ends composition and invalidates completion callbacks" <|

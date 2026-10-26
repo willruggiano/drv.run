@@ -59,7 +59,6 @@ import { endReview, startReview } from "../review.ts";
 import {
   getConversation,
   sessionInfo,
-  repository as repositoryInfo,
   completePaths,
   completeWorkingDirectories,
   changeDirectory,
@@ -103,7 +102,7 @@ export function htmlPage(
   const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/htmx/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
   const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/htmx/"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}<p id="request-error" role="alert"></p></header>`;
   return renderHTML(
-    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${title === "Session settings" || title === "Conversation tree" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
+    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${(!conversation && title === "Sessions") || title === "Session settings" || title === "Conversation tree" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
   );
 }
 export function html(
@@ -153,10 +152,13 @@ function composerHTML(
   view: ConversationView,
   review: ReviewState,
   metadata: SafeHtml,
-  reset?: { requestId: string; handoff: string },
+  confirmation?: { command: "reset" | "compact"; requestId: string; argument: string },
 ): SafeHtml {
-  const input = reset
-    ? h`<form class="compose-box" method="post" action="${path}/reset" data-command="reset" hx-sync="this:drop">${hidden("requestId", reset.requestId)}<textarea id="prompt" tabindex="1" name="argument" aria-label="Handoff instructions" data-command-argument rows="2" maxlength="100000" placeholder="Handoff instructions…">${reset.handoff}</textarea><div class="actions"><a class="icon" href="${path}" data-return aria-label="Cancel reset" title="Cancel reset">${icon("close")}</a><span class="spacer"></span><button id="send" class="icon" aria-label="Confirm reset" title="Confirm reset">${icon("check")}</button></div></form>`
+  const label = confirmation?.command === "reset" ? "reset" : "compaction";
+  const instructions =
+    confirmation?.command === "reset" ? "Handoff instructions" : "Compaction instructions";
+  const input = confirmation
+    ? h`<form class="compose-box" method="post" action="${path}/${confirmation.command}" data-command="${confirmation.command}" hx-sync="this:drop">${hidden("requestId", confirmation.requestId)}<textarea id="prompt" tabindex="1" name="argument" aria-label="${instructions}" data-command-argument rows="2" maxlength="100000" placeholder="${instructions}…">${confirmation.argument}</textarea><div class="actions"><a class="icon" href="${path}" data-return aria-label="Cancel ${label}" title="Cancel ${label}">${icon("close")}</a><span class="spacer"></span><button id="send" class="icon" aria-label="Confirm ${label}" title="Confirm ${label}">${icon("check")}</button></div></form>`
     : h`<div class="compose-box"><form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop">${hidden("requestId", randomUUID())}<textarea id="prompt" tabindex="1" name="content" aria-label="Message" data-completions hx-get="${path}/completions" hx-trigger="input changed delay:120ms, compositionend delay:120ms" hx-target="#completions" hx-select="#completions" hx-swap="outerHTML" hx-sync="this:replace" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>${controls(path, view, review)}</div>`;
   return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div id="composer-shell" class="composer-shell">${input}</div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
 }
@@ -530,7 +532,6 @@ export async function hypermedia(
   sessions: Sessions,
   context: Context,
   settings?: GlobalSettingsStore,
-  activity = false,
 ): Promise<void> {
   // htmx 4 boosts forms into history even when HX-Reswap is none. Only the
   // explicit HX-Location redirect may navigate after a mutation.
@@ -541,7 +542,7 @@ export async function hypermedia(
       const rows = h`${catalog.sessions.slice(0, 5).map((item) => sessionRow(item))}`;
       html(
         response,
-        h`<main id="main-area"><section id="landing" class="pane"><nav>${activity ? h`<a href="/htmx/activity" hx-boost="false">Activity inbox</a>` : ""}<a href="/htmx/auth">Auth</a></nav><div>${rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main>${createForm(catalog, randomUUID())}`,
+        h`<main id="main-area"><section id="landing" class="pane"><div>${rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main>${createForm(catalog, randomUUID())}`,
         200,
         undefined,
         "Sessions",
@@ -565,16 +566,6 @@ export async function hypermedia(
       return;
     }
     throw new FormError(405, "Method not allowed.");
-  }
-  if (url.pathname === "/htmx/offline" && request.method === "GET") {
-    html(
-      response,
-      h`<h1>Offline</h1><p>Conversation history is not cached in this browser.</p><p><a href="/htmx/">Reconnect</a></p>`,
-      200,
-      undefined,
-      "Offline",
-    );
-    return;
   }
   if (url.pathname === "/htmx/completions" && request.method === "GET") {
     const query = url.searchParams.get("query") ?? "";
@@ -643,7 +634,7 @@ export async function hypermedia(
     return;
   }
   const match =
-    /^\/htmx\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|tree|fork|cd|rename|compact|reset|cancel|context|export|completions|repository))?)?$/.exec(
+    /^\/htmx\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|settings|branches|tree|fork|cd|rename|compact|reset|cancel|context|export|completions))?)?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -660,8 +651,6 @@ export async function hypermedia(
     branches: "Branches",
     tree: "Conversation tree",
     context: "Context",
-    history: "History",
-    repository: "Repository",
     compact: "Compact context",
     reset: "Reset context",
   };
@@ -728,22 +717,6 @@ export async function hypermedia(
     );
     return;
   }
-  if (request.method === "GET" && operation === "repository") {
-    const [info, repository] = await Promise.all([
-      sessionInfo(session, conversation, undefined, context),
-      repositoryInfo(session, conversation, context),
-    ]);
-    const title =
-      repository.state === "repository"
-        ? (repository.branch ?? repository.revision ?? "unborn")
-        : repository.state === "none"
-          ? "no repository"
-          : "repository unavailable";
-    page(
-      h`<main id="main-area"><section class="pane"><h1>Repository</h1>${instanceHTML(info)}<p>${title}</p></section></main>`,
-    );
-    return;
-  }
   if (request.method === "GET" && operation === "export") {
     response.setHeader("Content-Type", "application/json");
     response.setHeader(
@@ -769,12 +742,6 @@ export async function hypermedia(
           : (await completePaths(session, query, conversation, context)).map(pathCompletion);
     page(
       h`<div id="completions" role="listbox">${h`${completions.map((item) => h`<button type="button" role="option" data-completion="${item.value}">${item.label}</button>`)}`}</div>`,
-    );
-    return;
-  }
-  if (request.method === "GET" && operation === "compact") {
-    page(
-      h`${navigation(path)}<main id="main-area"><section class="pane"><h1>Compact context</h1><p>History is preserved.</p><form method="post" action="${path}/compact" data-command="compact">${hidden("requestId", url.searchParams.get("requestId") ?? "")}<label>Instructions<textarea name="argument" data-command-argument maxlength="100000">${url.searchParams.get("argument") ?? ""}</textarea></label><button>Compact</button></form></section></main>`,
     );
     return;
   }
@@ -808,22 +775,8 @@ export async function hypermedia(
       );
       return;
     }
-    if (operation === "history") {
-      let cursor: Cursor | undefined;
-      try {
-        cursor = url.searchParams.has("cursor")
-          ? (JSON.parse(url.searchParams.get("cursor")!) as Cursor)
-          : undefined;
-      } catch {
-        throw new FormError(400, "Invalid history cursor.");
-      }
-      const history = await conversation.entries({ order: "descending" }, 100, cursor, context);
-      page(
-        h`<main id="main-area"><section class="pane"><h1>History</h1>${h`${history.items.toReversed().map((record) => entry(record))}`}${history.next ? link(`${path}/history?cursor=${encodeURIComponent(JSON.stringify(history.next))}`, "Older history") : ""}</section></main>`,
-      );
-      return;
-    }
-    if (operation && operation !== "reset") throw new FormError(405, "Method not allowed.");
+    if (operation && operation !== "reset" && operation !== "compact")
+      throw new FormError(405, "Method not allowed.");
     const watch = await conversation.watch(context);
     try {
       const review = (await session.harness.snapshot(Review, conversation.id, context)) ?? {};
@@ -832,7 +785,7 @@ export async function hypermedia(
       const renderer = new ConversationFragments(path, records);
       renderer.render(watch.value, review);
       page(
-        h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events?head=${renderer.head}`)}><main id="main-area"><div class="scrollport pane" id="conversation-scroll" tabindex="0" aria-label="Conversation"><div id="transcript">${renderer.transcript(records.some((record) => record.kind === "pi.compaction") ? await compactionTimes(session, context) : undefined)}</div>${renderer.live(watch.value)}</div></main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context), operation === "reset" ? { requestId: url.searchParams.get("requestId") ?? "", handoff: url.searchParams.get("argument") ?? "" } : undefined)}</section>`,
+        h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events?head=${renderer.head}`)}><main id="main-area"><div class="scrollport pane" id="conversation-scroll" tabindex="0" aria-label="Conversation"><div id="transcript">${renderer.transcript(records.some((record) => record.kind === "pi.compaction") ? await compactionTimes(session, context) : undefined)}</div>${renderer.live(watch.value)}</div></main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context), operation === "reset" || operation === "compact" ? { command: operation, requestId: url.searchParams.get("requestId") ?? "", argument: url.searchParams.get("argument") ?? "" } : undefined)}</section>`,
         info.name || "Untitled session",
         true,
         branchHeader(session, conversation.id, await new BranchTree(session).read(context)),
@@ -955,7 +908,7 @@ function saved(request: IncomingMessage, response: ServerResponse, path: string)
   } else redirect(request, response, path);
 }
 function navigation(path: string): SafeHtml {
-  const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/tree`, "Conversation tree", h`data-command="tree"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/rename`, "Rename session", "rename", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/compact`, "Compact", "compact", h`<input type="hidden" name="argument" data-command-argument>`)}<form method="get" action="${path}/reset" data-command="reset" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>Reset</button></form></div>`;
+  const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/tree`, "Conversation tree", h`data-command="tree"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/rename`, "Rename session", "rename", h`<input type="hidden" name="argument" data-command-argument>`)}${h`${["compact", "reset"].map((command) => h`<form method="get" action="${path}/${command}" data-command="${command}" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>${command}</button></form>`)}`}</div>`;
   const search = h`<div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
   return h`${commands}${search}`;
 }

@@ -1,19 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@earendil-works/chord/context";
-import type { Cursor } from "@earendil-works/pi-durable";
 import type { ProxyAuthorization } from "../auth.ts";
 import type { GlobalSettingsStore } from "../server.ts";
 import type { Notifications } from "../notifications.ts";
-import {
-  type Sessions,
-  getConversation,
-  repository as repositoryInfo,
-  sessionInfo,
-} from "../sessions.ts";
-import { form, field, FormError, createSession, saveGlobalSettings } from "../forms.ts";
+import type { Sessions } from "../sessions.ts";
+import { form, FormError, createSession, saveGlobalSettings } from "../forms.ts";
 import { conversationURL, compactTokens } from "../presentation.ts";
 import { settingFields, thinkingLevels } from "../settings.ts";
-import { ElmProjection, metadata, elmDocument } from "./frontend.ts";
+import { elmDocument } from "./frontend.ts";
 
 function json(response: ServerResponse, value: unknown) {
   response.writeHead(200, { "Content-Type": "application/json" });
@@ -61,14 +55,7 @@ export async function pages(
     json(response, { saved: true });
     return true;
   }
-  const extra =
-    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)\/(history|repository|compact)$/.exec(path);
-  if (
-    !landing &&
-    !["/elm/settings", "/elm/auth", "/elm/activity", "/elm/offline"].includes(path) &&
-    !extra
-  )
-    return false;
+  if (!landing && !["/elm/settings", "/elm/auth", "/elm/activity"].includes(path)) return false;
   if (path === "/elm/activity" && !notifications) throw new FormError(404, "Not found.");
   if (request.method === "POST") {
     const data = await form(request, 8 * 1024 * 1024);
@@ -79,17 +66,12 @@ export async function pages(
       if (!settings) throw new FormError(503, "Shared settings are not configured.");
       await saveGlobalSettings(data, sessions, settings, context);
       json(response, { saved: true });
-    } else if (extra?.[3] === "compact") {
-      const session = await sessions.get(extra[1]);
-      const conversation = await getConversation(session, Number(extra[2]), context);
-      await conversation.compact(field(data, "argument") || undefined, context);
-      json(response, { path: conversationURL(session, conversation.id, "elm") });
     } else throw new FormError(405, "Method not allowed.");
     return true;
   }
   if (request.method !== "GET") throw new FormError(405, "Method not allowed.");
   if (!url.searchParams.has("data")) {
-    elmDocument(response, true, path === "/elm/offline");
+    elmDocument(response, true);
     return true;
   }
   if (landing || path === "/elm/settings") {
@@ -99,7 +81,6 @@ export async function pages(
     const preferences = settings?.read();
     json(response, {
       kind: landing ? "landing" : "settings",
-      activity: !!notifications,
       models: catalog.models.map((item) => ({
         key: key(item),
         label: `${item.provider} / ${item.name}`,
@@ -161,60 +142,6 @@ export async function pages(
           }
         : null,
     });
-  } else if (extra) {
-    const session = await sessions.get(extra[1]);
-    const conversation = await getConversation(session, Number(extra[2]), context);
-    const back = conversationURL(session, conversation.id, "elm");
-    if (extra[3] === "repository") {
-      const [info, repo] = await Promise.all([
-        sessionInfo(session, conversation, undefined, context),
-        repositoryInfo(session, conversation, context),
-      ]);
-      json(response, {
-        kind: "repository",
-        back,
-        environment: info.binding
-          ? `${info.binding.provider === "local" ? "local" : info.binding.target} · ${info.cwd}`
-          : "No execution environment",
-        title:
-          repo.state === "repository"
-            ? (repo.branch ?? repo.revision ?? "unborn")
-            : repo.state === "none"
-              ? "no repository"
-              : "repository unavailable",
-      });
-    } else if (extra[3] === "history") {
-      let cursor: Cursor | undefined;
-      try {
-        cursor = url.searchParams.has("cursor")
-          ? (JSON.parse(url.searchParams.get("cursor")!) as Cursor)
-          : undefined;
-      } catch {
-        throw new FormError(400, "Invalid history cursor.");
-      }
-      const entries = await conversation.entries({ order: "descending" }, 100, cursor, context);
-      const projector = new ElmProjection(entries.items.toReversed());
-      const watch = await conversation.watch(context);
-      try {
-        json(response, {
-          kind: "history",
-          back,
-          frame: {
-            ...projector.project(
-              { ...watch.value, entries: entries.items.toReversed() },
-              await metadata(session, conversation, watch.value, context, settings),
-            ),
-            subscription: "history",
-          },
-          next: entries.next
-            ? `${path}?cursor=${encodeURIComponent(JSON.stringify(entries.next))}`
-            : "",
-        });
-      } finally {
-        await watch.stop();
-      }
-    } else
-      json(response, { kind: "compact", back, argument: url.searchParams.get("argument") ?? "" });
   } else json(response, { kind: path.split("/").at(-1) });
   return true;
 }

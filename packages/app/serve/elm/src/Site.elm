@@ -13,7 +13,6 @@ import Json.Decode as D
 import Json.Encode as E
 import Panel
 import Process
-import Protocol
 import Task
 import Transcript
 import Url
@@ -34,7 +33,7 @@ type alias Field =
 
 
 type alias Catalog =
-    { options : Panel.Settings, rows : List Row, activity : Bool, fields : List Field, configured : Bool, defaultModel : String, overrides : Dict String String, levels : List String }
+    { options : Panel.Settings, rows : List Row, fields : List Field, configured : Bool, defaultModel : String, overrides : Dict String String, levels : List String }
 
 
 type alias Auth =
@@ -47,10 +46,6 @@ type Page
     | Defaults Catalog
     | Authorization Auth
     | Activity
-    | Offline
-    | Repository String String String
-    | History String String Protocol.State
-    | Compact String String
 
 
 type alias Item =
@@ -77,7 +72,6 @@ type alias Model =
     , items : List Item
     , sources : List { title : String, lines : List String }
     , connected : Bool
-    , opened : Dict String Bool
     , completions : Bool
     , completionIndex : Int
     }
@@ -105,7 +99,6 @@ type Msg
     | Incoming D.Value
     | Read Int
     | Push Bool
-    | Toggle String Bool
     | CompletionMove Int
     | Complete
     | ChooseCompletion Int
@@ -129,7 +122,6 @@ catalogDecoder =
                 (D.field "targets" (D.list (D.map4 (\key label disabled root -> { key = key, label = label, disabled = disabled, root = root }) (D.field "key" D.string) (D.field "label" D.string) (D.field "disabled" D.bool) (D.field "root" D.string))))
             )
         |> andMap (D.field "sessions" (D.list (D.map7 Row (D.field "path" D.string) (D.field "title" D.string) (D.field "date" D.string) (D.field "environment" D.string) (D.field "model" D.string) (D.field "thinking" D.string) (D.field "usage" D.string))))
-        |> andMap (D.field "activity" D.bool)
         |> andMap (D.field "fields" (D.list (D.map6 Field (D.field "key" D.string) (D.field "label" D.string) (D.field "group" D.string) (D.field "readonly" D.bool) (D.field "value" D.string) (D.field "choices" (D.list D.string)))))
         |> andMap (D.field "configured" D.bool)
         |> andMap (D.field "defaultModel" D.string)
@@ -155,31 +147,6 @@ pageDecoder =
                     "activity" ->
                         D.succeed Activity
 
-                    "offline" ->
-                        D.succeed Offline
-
-                    "repository" ->
-                        D.map3 Repository (D.field "back" D.string) (D.field "environment" D.string) (D.field "title" D.string)
-
-                    "history" ->
-                        D.map3 History
-                            (D.field "back" D.string)
-                            (D.field "next" D.string)
-                            (D.field "frame" Protocol.frameDecoder
-                                |> D.andThen
-                                    (\frame ->
-                                        case Protocol.apply frame.conversation frame Protocol.empty of
-                                            Ok state ->
-                                                D.succeed state
-
-                                            Err reason ->
-                                                D.fail reason
-                                    )
-                            )
-
-                    "compact" ->
-                        D.map2 Compact (D.field "back" D.string) (D.field "argument" D.string)
-
                     _ ->
                         D.fail "Unknown page"
             )
@@ -196,12 +163,7 @@ main =
 
                     model =
                         { path = url.path ++ (Maybe.map ((++) "?") url.query |> Maybe.withDefault "")
-                        , page =
-                            if field "offline" D.bool False then
-                                Offline
-
-                            else
-                                Loading
+                        , page = Loading
                         , error = ""
                         , text =
                             if List.member url.path [ "/elm", "/elm/" ] then
@@ -224,18 +186,11 @@ main =
                         , items = []
                         , sources = []
                         , connected = False
-                        , opened = Dict.empty
                         , completions = False
                         , completionIndex = 0
                         }
                 in
-                ( model
-                , if model.page == Offline then
-                    Cmd.none
-
-                  else
-                    load model
-                )
+                ( model, load model )
         , update = update
         , view = view
         , subscriptions = \_ -> siteIncoming Incoming
@@ -371,13 +326,6 @@ update msg model =
                                 , values = values
                                 , saved = values
                                 , error = ""
-                                , text =
-                                    case page of
-                                        Compact _ argument ->
-                                            argument
-
-                                        _ ->
-                                            model.text
                             }
                     in
                     ( updated
@@ -549,9 +497,6 @@ update msg model =
                         in
                         ( { model | busy = True, pending = Just body, completions = False, error = "" }, Cmd.batch [ persist model, Http.post { url = "/elm", body = Http.multipartBody body, expect = Http.expectJson Created (D.field "path" D.string) } ] )
 
-                    Compact _ _ ->
-                        ( { model | busy = True }, Http.post { url = model.path, body = Http.multipartBody [ Http.stringPart "argument" model.text ], expect = Http.expectJson Created (D.field "path" D.string) } )
-
                     _ ->
                         ( model, Cmd.none )
 
@@ -713,9 +658,6 @@ update msg model =
         Push enabled ->
             ( model, siteBrowser (E.object [ ( "kind", E.string "push" ), ( "enabled", E.bool enabled ) ]) )
 
-        Toggle key expanded ->
-            ( { model | opened = Dict.insert key expanded model.opened }, Cmd.none )
-
         CompletionMove delta ->
             ( { model | completionIndex = modBy (max 1 (List.length (completions model))) (model.completionIndex + delta) }, Cmd.none )
 
@@ -817,34 +759,8 @@ view model =
                 Activity ->
                     "Activity"
 
-                Offline ->
-                    "Offline"
-
-                Repository _ _ _ ->
-                    "Repository"
-
-                History _ _ _ ->
-                    "History"
-
-                Compact _ _ ->
-                    "Compact context"
-
                 Loading ->
                     "Pi"
-
-        back =
-            case model.page of
-                Repository path _ _ ->
-                    path
-
-                History path _ _ ->
-                    path
-
-                Compact path _ ->
-                    path
-
-                _ ->
-                    "/elm"
 
         dot =
             span [ class "footer-dot", attribute "aria-hidden" "true" ] []
@@ -866,15 +782,7 @@ view model =
                 Landing catalog ->
                     [ main_ [ id "main-area" ]
                         [ section [ id "landing", class "pane" ]
-                            [ Html.nav []
-                                [ if catalog.activity then
-                                    link "/elm/activity" "Activity inbox"
-
-                                  else
-                                    text ""
-                                , link "/elm/auth" "Auth"
-                                ]
-                            , div []
+                            [ div []
                                 [ if List.isEmpty catalog.rows then
                                     text ""
 
@@ -992,72 +900,50 @@ view model =
                             ]
                         ]
                     ]
-
-                Offline ->
-                    [ h1 [] [ text "Offline" ], p [] [ text "Conversation history is not cached in this browser." ], p [] [ link "/elm" "Reconnect" ] ]
-
-                Repository _ environment name ->
-                    [ main_ [ id "main-area" ] [ section [ class "pane" ] [ h1 [] [ text "Repository" ], span [ id "footer-instance" ] [ text environment ], p [] [ text name ] ] ] ]
-
-                History _ next state ->
-                    [ main_ [ id "main-area" ]
-                        [ section [ class "pane" ]
-                            [ h1 [] [ text "History" ]
-                            , Transcript.transcript Toggle model.opened "" Nothing state.entries state.tools state.metadata.durations
-                            , if next /= "" then
-                                link next "Older history"
-
-                              else
-                                text ""
-                            ]
-                        ]
-                    ]
-
-                Compact _ _ ->
-                    [ main_ [ id "main-area" ] [ section [ class "pane" ] [ h1 [] [ text "Compact context" ], p [] [ text "History is preserved." ], form [ onSubmit Create ] [ label [] [ text "Instructions", textarea [ A.name "argument", value model.text, onInput Edit, A.maxlength 100000 ] [] ], button [ A.disabled model.busy ] [ text "Compact" ] ] ] ] ]
     in
     { title = title
     , body =
         [ main_ [ id "page", attribute "data-view" "panel" ]
-            (header [ id "app-header" ]
-                [ div [ class "bar" ]
-                    [ h1 [] [ span [ class "header-title" ] [ text title ] ]
-                    , case model.page of
-                        Landing _ ->
-                            a [ id "menu-toggle", class "icon", href "/elm/settings", attribute "aria-label" "Global settings", A.title "Global settings" ] [ Transcript.icon "settings" ]
+            ((case model.page of
+                Landing _ ->
+                    []
 
-                        _ ->
-                            icon "close"
-                                (if back == "/elm" then
-                                    "Sessions"
+                Loading ->
+                    []
 
-                                 else
-                                    "Conversation"
-                                )
-                                back
-                    ]
-                , p [ id "request-error", attribute "role" "alert" ]
-                    [ text model.error
-                    , if model.error /= "" then
-                        button
-                            [ onClick
-                                (if model.pending /= Nothing then
-                                    Create
-
-                                 else if model.values /= model.saved then
-                                    Save
-
-                                 else
-                                    Refresh
-                                )
+                _ ->
+                    [ header [ id "app-header" ]
+                        [ div [ class "bar" ]
+                            [ h1 [] [ span [ class "header-title" ] [ text title ] ]
+                            , icon "close"
+                                "Sessions"
+                                "/elm"
                             ]
-                            [ text "Retry" ]
-
-                      else
-                        text ""
+                        ]
                     ]
-                ]
-                :: content
+             )
+                ++ [ p [ id "request-error", attribute "role" "alert" ]
+                        [ text model.error
+                        , if model.error /= "" then
+                            button
+                                [ onClick
+                                    (if model.pending /= Nothing then
+                                        Create
+
+                                     else if model.values /= model.saved then
+                                        Save
+
+                                     else
+                                        Refresh
+                                    )
+                                ]
+                                [ text "Retry" ]
+
+                          else
+                            text ""
+                        ]
+                   ]
+                ++ content
             )
         ]
     }
