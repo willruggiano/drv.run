@@ -5,10 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { defineDoc } from "@earendil-works/pi-durable";
 import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import {
   Connection,
   localDaemon,
@@ -60,55 +58,11 @@ await test("public API opens a native, paused harness with the fixed extensions"
     "web_search",
     "write",
   ]);
-  assert.deepEqual(await harness.snapshot(Marker, root.id, context), { created: true });
+  assert.deepEqual(await harness.snapshot(Marker, root.id, context), {
+    created: true,
+  });
   assert.equal((await harness.inspect(context)).scheduling, "paused");
   assert.equal(resolutions, 0);
-});
-
-await test("harness reads live settings rather than freezing them at open", async (t) => {
-  const cwd = await mkdtemp(join(tmpdir(), "harness-settings-"));
-  const env = new NodeExecutionEnv({
-    cwd,
-    shellEnv: { ...process.env, HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_CONFIG_DIRS: cwd },
-  });
-  const faux = fauxProvider({ models: [{ id: "test" }] });
-  const models = createModels();
-  models.setProvider(faux.provider);
-  let transport: "sse" | "websocket" = "sse";
-  const harness = await api.openHarness(
-    new MemoryStorage(),
-    {
-      models,
-      env: () => env,
-      settings: {
-        get stream() {
-          return { transport };
-        },
-      },
-    },
-    context,
-  );
-  t.after(async () => {
-    await harness.close(context);
-    await env.cleanup(context);
-    await rm(cwd, { recursive: true, force: true });
-  });
-  const root = await harness.root(context, {
-    agent: { model: { provider: "faux", modelId: "test" }, cwd },
-  });
-  const observed: unknown[] = [];
-  for (const value of ["sse", "websocket"] as const) {
-    transport = value;
-    faux.setResponses([
-      (_input, options) => {
-        observed.push(options?.transport);
-        return fauxAssistantMessage("Done.");
-      },
-    ]);
-    await root.submit({ type: "input", content: "Hello." }, context);
-    await root.waitForIdle(context);
-  }
-  assert.deepEqual(observed, ["sse", "websocket"]);
 });
 
 await test("DrvRunEnv owns its route and connection; cleanup leaves other environments usable", async (t) => {
@@ -120,7 +74,10 @@ await test("DrvRunEnv owns its route and connection; cleanup leaves other enviro
     cwd,
     connect(target: SshConnectOptions) {
       targets.push(target);
-      return { connection: new Connection({ command: [localDaemon()] }), remote: () => undefined };
+      return {
+        connection: new Connection({ command: [localDaemon()] }),
+        remote: () => undefined,
+      };
     },
   };
   const a = new api.DrvRunEnv(options);

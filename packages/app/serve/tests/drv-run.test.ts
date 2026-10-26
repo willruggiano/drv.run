@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { Connection, RemoteExecutionEnv } from "@earendil-works/pi-env";
+import { Connection } from "@earendil-works/pi-env";
 import { resolveBaseDirectory } from "../sessions.ts";
 import { readHistory, code, exists, model, waitFor } from "./sessions-testing.ts";
 import { listInstances } from "../instances.ts";
@@ -42,7 +42,10 @@ await test("inventory excludes invalid and incomplete instances; readiness requi
   );
   assert.equal((await f.targets()).filter((target) => target.available).length, 1);
   assert.deepEqual(
-    await listInstances({ ...f.options, stateDirectory: join(f.directory, "missing") }),
+    await listInstances({
+      ...f.options,
+      stateDirectory: join(f.directory, "missing"),
+    }),
     [],
   );
   await assert.rejects(listInstances({ ...f.options, systemctl: join(f.directory, "missing") }));
@@ -79,13 +82,19 @@ await test("faux turns use the daemon for read/write/edit; instance removal pres
     fauxAssistantMessage(fauxToolCall("edit", { path: file, oldText: "1", newText: "2" }), {
       stopReason: "toolUse",
     }),
-    fauxAssistantMessage(fauxToolCall("read", { path: file }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("read", { path: file }), {
+      stopReason: "toolUse",
+    }),
     fauxAssistantMessage("Done."),
   ]);
   const session = await f.sessions.create(randomUUID(), f.binding, model, undefined, "");
   assert.equal((await runtime.sessionInfo(session)).binding?.provider, "drv.run");
   await session.root.submit(
-    { type: "input", content: "Use the remote filesystem.", requestId: randomUUID() },
+    {
+      type: "input",
+      content: "Use the remote filesystem.",
+      requestId: randomUUID(),
+    },
     context,
   );
   await session.root.waitForIdle(context);
@@ -123,7 +132,9 @@ await test("transport failure reports tool errors without touching local files",
   const broken = {
     ...f.options,
     connect: () => ({
-      connection: new Connection({ command: [join(f.directory, "missing-ssh")] }),
+      connection: new Connection({
+        command: [join(f.directory, "missing-ssh")],
+      }),
       remote: () => undefined,
     }),
   };
@@ -279,7 +290,11 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
     fauxAssistantMessage("Done."),
   ]);
   await session.root.submit(
-    { type: "input", content: "Write relative to the base directory.", requestId: randomUUID() },
+    {
+      type: "input",
+      content: "Write relative to the base directory.",
+      requestId: randomUUID(),
+    },
     context,
   );
   await session.root.waitForIdle(context);
@@ -304,7 +319,12 @@ await test("native Durable cwd drives remote tools, forks, completions and resta
   ]);
   const before = f.connections.length;
   await fork.submit(
-    { type: "input", content: "Write in the fork.", requestId: randomUUID(), whenBusy: "reject" },
+    {
+      type: "input",
+      content: "Write in the fork.",
+      requestId: randomUUID(),
+      whenBusy: "reject",
+    },
     context,
   );
   await fork.waitForIdle(context);
