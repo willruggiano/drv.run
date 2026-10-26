@@ -158,7 +158,7 @@ tests =
                                 Main.update (Main.UrlChanged url) { base | composing = True } |> Tuple.first
 
                             late =
-                                Main.update (Main.Completed base.completionRequest base.path (Ok { start = 0, end = 1, items = [ { label = "stale", value = "stale" } ] })) next |> Tuple.first
+                                Main.update (Main.Completed base.completionRequest base.path (Ok { start = 0, end = 1, items = [ { label = "stale", value = "stale", description = Nothing } ] })) next |> Tuple.first
                         in
                         Expect.equal ( False, Nothing ) ( late.composing, late.completions )
         , test "duplicate, stale and out-of-order frames preserve the previous state" <|
@@ -199,7 +199,7 @@ tests =
                         Main.update Main.Dismiss requested |> Tuple.first
 
                     completed =
-                        Main.update (Main.Completed requested.completionRequest requested.path (Ok { start = 0, end = 0, items = [ { label = "late", value = "late" } ] })) dismissed |> Tuple.first
+                        Main.update (Main.Completed requested.completionRequest requested.path (Ok { start = 0, end = 0, items = [ { label = "late", value = "late", description = Nothing } ] })) dismissed |> Tuple.first
                 in
                 Expect.equal dismissed completed
         , test "previously persisted text submissions retain their retry identity" <|

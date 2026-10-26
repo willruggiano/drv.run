@@ -605,7 +605,7 @@ export async function hypermedia(
         : [];
     html(
       response,
-      h`<div id="completions" role="listbox">${h`${items.map((item) => h`<button type="button" role="option" data-completion="/${item.name} ">/${item.name} · ${item.description}</button>`)}`}</div>`,
+      h`<div id="completions" role="listbox">${h`${items.map((item) => h`<button type="button" role="option" data-completion="/${item.name} "><span>/${item.name}</span><span class="completion-description">${item.description}</span></button>`)}`}</div>`,
     );
     return;
   }
@@ -736,17 +736,14 @@ export async function hypermedia(
     const review = await session.harness.snapshot(Review, conversation.id, context);
     const completions =
       url.searchParams.get("kind") === "command"
-        ? commandCompletions(query, review?.original !== undefined).map((item) => ({
-            ...item,
-            label: `${item.label} · ${item.description}`,
-          }))
+        ? commandCompletions(query, review?.original !== undefined)
         : url.searchParams.get("kind") === "directory"
           ? (await completeWorkingDirectories(session, query, conversation, context)).map(
               directoryCompletion,
             )
           : (await completePaths(session, query, conversation, context)).map(pathCompletion);
     page(
-      h`<div id="completions" role="listbox">${h`${completions.map((item) => h`<button type="button" role="option" data-completion="${item.value}">${item.label}</button>`)}`}</div>`,
+      h`<div id="completions" role="listbox">${h`${completions.map((item) => h`<button type="button" role="option" data-completion="${item.value}"><span>${item.label}</span>${item.description ? h`<span class="completion-description">${item.description}</span>` : ""}</button>`)}`}</div>`,
     );
     return;
   }

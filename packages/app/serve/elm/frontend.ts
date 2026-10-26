@@ -566,10 +566,7 @@ export async function elmFrontend(
     json(response, {
       start: token?.start ?? caret,
       end: token?.end ?? caret,
-      items: items.map((item) => ({
-        ...item,
-        label: item.description ? `${item.label} · ${item.description}` : item.label,
-      })),
+      items,
     });
     return;
   }

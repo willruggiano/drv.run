@@ -74,6 +74,15 @@ await test("completion tokens respect boundaries, quoting and cursor position", 
   assert.deepEqual(commandCompletions("help"), []);
 });
 
+await test("command completions stay alphabetical when filtered and during review", () => {
+  for (const isReview of [false, true]) {
+    for (const query of ["", "re"]) {
+      const values = commandCompletions(query, isReview).map((item) => item.value);
+      assert.deepEqual(values, values.toSorted());
+    }
+  }
+});
+
 await test("HTTP path completion uses the session workspace and validates paths", async (t) => {
   const f = await fixture(t);
   await mkdir(join(f.workspace, "src"));

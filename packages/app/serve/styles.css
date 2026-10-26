@@ -245,9 +245,9 @@ a { color: var(--link); } [hidden] { display: none !important; }
 #completions { position: absolute; z-index: 3; bottom: calc(100% + 6px); left: 0; right: 0; max-height: min(280px, 35dvh); overflow: auto; padding: 4px; border: 1px solid var(--border-overlay); border-radius: 9px; background: var(--popover-bg); box-shadow: 0 8px 36px var(--shadow); }
 #completions button { display: block; width: 100%; min-height: 44px; padding: 8px 10px; border: none; text-align: left; background: transparent; overflow-wrap: anywhere; }
 #completions button[aria-selected=true] { background: var(--selected); }
-#completions strong, #completions small { display: block; }
-#completions strong { font-weight: 500; }
-#completions small, #completions [role=status] { color: var(--muted); font-size: 12px; }
+#completions button:has(.completion-description) { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: 12px; align-items: baseline; }
+#completions .completion-description { color: var(--muted); }
+#completions [role=status] { color: var(--muted); font-size: 12px; }
 #completions [role=status] { padding: 10px; }
 
 .hide-thinking { --thinking-display: none; }

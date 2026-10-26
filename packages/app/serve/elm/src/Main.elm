@@ -58,7 +58,7 @@ type Connection
 
 
 type alias Completion =
-    { label : String, value : String }
+    { label : String, value : String, description : Maybe String }
 
 
 type alias Completions =
@@ -943,7 +943,7 @@ update msg model =
                         model.path ++ "/completions?text=" ++ Url.percentEncode (draftFor model).text ++ "&caret=" ++ String.fromInt caret
 
                     decoder =
-                        D.map3 Completions (D.field "start" D.int) (D.field "end" D.int) (D.field "items" (D.list (D.map2 Completion (D.field "label" D.string) (D.field "value" D.string))))
+                        D.map3 Completions (D.field "start" D.int) (D.field "end" D.int) (D.field "items" (D.list (D.map3 Completion (D.field "label" D.string) (D.field "value" D.string) (D.maybe (D.field "description" D.string)))))
                 in
                 ( { model | completionRequest = revision }, Http.get { url = url, expect = Http.expectJson (Completed revision model.path) decoder } )
 
@@ -1412,7 +1412,11 @@ view model =
                                             )
                                         , onClick (ChooseCompletion index)
                                         ]
-                                        [ text item.label ]
+                                        [ span [] [ text item.label ]
+                                        , item.description
+                                            |> Maybe.map (\description -> span [ class "completion-description" ] [ text description ])
+                                            |> Maybe.withDefault (text "")
+                                        ]
                                 )
                         )
                     |> Maybe.withDefault []

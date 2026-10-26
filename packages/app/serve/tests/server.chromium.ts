@@ -38,6 +38,53 @@ await test("both frontends use only the shared stylesheet", async (t) => {
   assert.deepEqual(b.errors, []);
 });
 
+await test("command completions align descriptions and use the muted color in both frontends", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(t, f.sessions);
+  for (const width of [390, 1000]) {
+    await b.page.setViewportSize({ width, height: 844 });
+    for (const frontend of ["htmx", "elm"] as const) {
+      for (const path of [`/${frontend}/`, conversationURL(session, undefined, frontend)]) {
+        await b.page.goto(b.base + path);
+        await b.page.locator("#prompt").fill("/");
+        await b.page.locator('#completions [role="option"]').first().waitFor();
+        const rows = await b.page.locator('#completions [role="option"]').evaluateAll((options) => {
+          const probe = document.createElement("span");
+          probe.style.color = "var(--muted)";
+          document.body.append(probe);
+          const muted = getComputedStyle(probe).color;
+          probe.remove();
+          return options.map((option) => {
+            const label = option.firstElementChild!;
+            const description = option.querySelector(".completion-description")!;
+            const labelBounds = label.getBoundingClientRect();
+            const descriptionBounds = description.getBoundingClientRect();
+            return {
+              labelX: labelBounds.x,
+              labelRight: labelBounds.right,
+              descriptionX: descriptionBounds.x,
+              fits: descriptionBounds.right <= option.getBoundingClientRect().right,
+              muted: getComputedStyle(description).color === muted,
+              normal: getComputedStyle(label).color === getComputedStyle(option).color,
+            };
+          });
+        });
+        assert.ok(rows.length > 1);
+        for (const row of rows) {
+          assert.equal(row.labelX, rows[0].labelX);
+          assert.equal(row.descriptionX, rows[0].descriptionX);
+          assert.ok(row.labelRight < row.descriptionX);
+          assert.ok(row.fits);
+          assert.ok(row.muted);
+          assert.ok(row.normal);
+        }
+      }
+    }
+  }
+  assert.deepEqual(b.errors, []);
+});
+
 await test("both frontends confirm context commands with two keyboard submissions without losing input focus", async (t) => {
   const f = await fixture(t);
   await f.reopen({ settings: { compaction: { keepRecentTokens: 1 } } });

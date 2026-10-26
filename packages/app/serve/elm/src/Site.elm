@@ -817,16 +817,16 @@ view model =
                                                     )
                                                 , onClick (ChooseCompletion index)
                                                 ]
-                                                [ text
-                                                    ("/"
-                                                        ++ name
-                                                        ++ (if name == "new" then
-                                                                " · Create a session"
+                                                [ span [] [ text ("/" ++ name) ]
+                                                , span [ class "completion-description" ]
+                                                    [ text
+                                                        (if name == "new" then
+                                                            "Start a new session with the same settings"
 
-                                                            else
-                                                                " · Open sessions"
-                                                           )
-                                                    )
+                                                         else
+                                                            "Open sessions"
+                                                        )
+                                                    ]
                                                 ]
                                         )
                                         (completions model)
