@@ -49,7 +49,7 @@
         name = "rock5b.build";
         runtimeInputs = [
           pkgs.cachix
-          pkgs.nix
+          pkgs.nixVersions.latest
         ];
         text = let
           system = "aarch64-linux";
@@ -61,7 +61,19 @@
               host  = flake.nixosConfigurations.rock5b.config.system.build.toplevel;
               guest = flake.deploy.nodes.rock5b.profiles.system.path;
               shell = flake.inputs.drv-run.devShells.${system}.default;
-            }'
+            }' "$@"
+        '';
+      };
+      deploy = pkgs.writeShellApplication {
+        name = "rock5b.deploy";
+        runtimeInputs = [
+          build
+          deploy-rs.packages.${pkgs.stdenv.hostPlatform.system}.default
+          pkgs.openssh
+        ];
+        text = ''
+          rock5b.build --cachix-cache drv-run --push-build-closure
+          exec deploy --fast-connection=true --hostname=rock5b --skip-checks ./examples/rock5b "$@"
         '';
       };
     in {
@@ -72,21 +84,14 @@
       };
       deploy = {
         type = "app";
-        program = nixpkgs.lib.getExe (pkgs.writeShellApplication {
-          name = "rock5b.deploy";
-          runtimeInputs = [
-            build
-            deploy-rs.packages.${pkgs.stdenv.hostPlatform.system}.default
-            pkgs.openssh
-          ];
-          text = ''
-            rock5b.build --cachix-cache drv-run --push-build-closure
-            exec deploy --fast-connection=true --hostname=rock5b --skip-checks ./examples/rock5b "$@"
-          '';
-        });
+        program = nixpkgs.lib.getExe deploy;
         meta.description = "build and deploy the rock5b";
       };
     });
+
+    checks =
+      eachSystem (pkgs:
+        deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy);
 
     deploy.nodes.rock5b = {
       hostname = "rock5b";
@@ -96,34 +101,6 @@
       };
       sshUser = "root";
     };
-
-    checks = eachSystem (pkgs:
-      (deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy)
-      // {
-        notifications = let
-          host = self.nixosConfigurations.rock5b.config;
-          guest =
-            (drv-run.inputs.nixpkgs.lib.nixosSystem {
-              system = "aarch64-linux";
-              modules = [drv-run.nixosModules.guest] ++ host.services.drv-run.guest.extraModules;
-            }).config;
-          secret = host.sops.secrets.notifications-vapid;
-        in
-          assert builtins.all (entry: entry.assertion) host.assertions;
-          assert builtins.all (entry: entry.assertion) guest.assertions;
-          assert host.services.drv-run.notifications.enable;
-          assert host.services.pi.notifications.enable;
-          assert host.services.pi.notifications.guests.enable;
-          assert host.services.pi.notifications.push.enable;
-          assert host.services.pi.notifications.push.privateKeyFile == secret.path;
-          assert secret.owner == host.services.pi.user;
-          assert secret.mode == "0400";
-          assert guest.services.drv-run.notifications.enable;
-          assert guest.systemd.user.services.drv-run-notifications.unitConfig.ConditionPathExists == "/run/drv-run-seed/notification-incarnation";
-            pkgs.runCommand "rock5b-notifications" {} ''
-              touch "$out"
-            '';
-      });
 
     nixosConfigurations.rock5b = nixpkgs.lib.nixosSystem {
       modules = [

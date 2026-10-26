@@ -108,7 +108,7 @@
     devShells = eachSystem (pkgs: let
       inherit (self.devShells.${pkgs.stdenv.hostPlatform.system}) toolchain;
       pkgs' = pkgs.extend self.overlays.dev;
-      nix = pkgs.nixVersions.nix_2_35;
+      nix = pkgs.nixVersions.latest;
       llms = pkgs.writeTextFile {
         name = "llms.txt";
         destination = "/llms.txt";

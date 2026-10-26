@@ -1,26 +1,27 @@
 {pkgs}: {environment}: let
   # Keep Nix responsible for traversal and the registration wire format. The
   # additional JSON is only for comparing immutable-layer metadata in the guest.
-  closure = (pkgs.closureInfo {rootPaths = [environment];}).overrideAttrs (old: {
-    nativeBuildInputs = old.nativeBuildInputs ++ [pkgs.nixVersions.nix_2_35 pkgs.findutils];
-    buildCommand =
-      old.buildCommand
-      + ''
-        jq -r '.closure[].narHash' "$NIX_ATTRS_JSON_FILE" |
-          xargs -r nix-hash --type sha256 --to-base64 > hashes
-        jq --rawfile hashes hashes '
-          ($hashes | split("\n") | map(select(length > 0))) as $hashes |
-          .closure | to_entries | map({
-            key: .value.path,
-            value: {
-              narHash: ("sha256-" + $hashes[.key]),
-              narSize: .value.narSize,
-              references: (.value.references | sort)
-            }
-          }) | from_entries
-        ' "$NIX_ATTRS_JSON_FILE" > "$out/path-info.json"
-      '';
-  });
+  closure = with pkgs;
+    (closureInfo {rootPaths = [environment];}).overrideAttrs (old: {
+      nativeBuildInputs = old.nativeBuildInputs ++ [findutils nixVersions.latest];
+      buildCommand =
+        old.buildCommand
+        + ''
+          jq -r '.closure[].narHash' "$NIX_ATTRS_JSON_FILE" |
+            xargs -r nix-hash --type sha256 --to-base64 > hashes
+          jq --rawfile hashes hashes '
+            ($hashes | split("\n") | map(select(length > 0))) as $hashes |
+            .closure | to_entries | map({
+              key: .value.path,
+              value: {
+                narHash: ("sha256-" + $hashes[.key]),
+                narSize: .value.narSize,
+                references: (.value.references | sort)
+              }
+            }) | from_entries
+          ' "$NIX_ATTRS_JSON_FILE" > "$out/path-info.json"
+        '';
+    });
 in
   pkgs.stdenvNoCC.mkDerivation {
     name = "drv-run-environment-image";

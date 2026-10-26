@@ -65,7 +65,13 @@
   '';
   worker = pkgs.writeShellApplication {
     name = "image-worker";
-    runtimeInputs = [pkgs.nixVersions.nix_2_35 pkgs.coreutils pkgs.jq pkgs.e2fsprogs pkgs.openssh];
+    runtimeInputs = with pkgs; [
+      coreutils
+      e2fsprogs
+      jq
+      nixVersions.latest
+      openssh
+    ];
     text =
       lib.replaceStrings
       ["@runner@" "@image-expression@" "@proxy@" "@create-volumes@" "@mitm-proxy-seed@" "@timing@" "@notification-seed@"]
@@ -98,7 +104,12 @@ in {
   assert image.drvPath != changed.drvPath;
   assert image.drvPath != builderChanged.drvPath;
     pkgs.runCommand "environment-image-check" {
-      nativeBuildInputs = [pkgs.erofs-utils pkgs.nixVersions.nix_2_35 pkgs.jq pkgs.nodejs];
+      nativeBuildInputs = with pkgs; [
+        erofs-utils
+        jq
+        nixVersions.latest
+        nodejs
+      ];
     } ''
       export NIX_CONFIG=$'experimental-features = nix-command flakes\nbuild-users-group ='
       export HOME="$TMPDIR/home"
@@ -220,7 +231,7 @@ in {
       };
       # This job is queued during first boot, not just after provisioning.
       systemd.services.nix-gc.wantedBy = ["multi-user.target"];
-      environment.systemPackages = [pkgs.python3 pkgs.jq pkgs.sqlite];
+      environment.systemPackages = with pkgs; [jq python3 sqlite];
       nix.settings = {
         experimental-features = ["nix-command" "flakes"];
         substituters = lib.mkForce [];
