@@ -59,10 +59,10 @@
                `-- docs -> /doc
                `-- nixos manual -> /nixos/doc/manual
     openssh -> use `man` (${pkgs.openssh.man})
-    pi -> ${inputs.pi.outPath}
-          `-- durable -> /packages/durable/{docs/,test/examples/,README.md}
-          `-- env -> /packages/pi-env/{docs/,README.md}
-          `-- telemetry -> /packages/telemetry/
+    pi -> ${pkgs.app}/lib/app/node_modules/@earendil-works
+          `-- durable -> /pi-durable/{dist/,README.md}
+          `-- env -> /pi-env/{docs/,README.md}
+          `-- telemetry -> /pi-telemetry/
     sops-nix -> ${inputs.sops-nix.outPath}
     systemd -> use `man` (${pkgs.systemd.man})
   '';

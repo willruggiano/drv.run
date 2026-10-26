@@ -1,5 +1,4 @@
 {
-  autoPatchelfHook,
   buildNpmPackage,
   callPackage,
   chromium,
@@ -7,20 +6,47 @@
   libnotify,
   elmPackages,
   esbuild,
+  fetchNpmDeps,
   git,
-  importNpmLock,
   lib,
-  libxcb,
   makeWrapper,
   nodejs,
   openssh,
-  pi-src,
   runCommand,
-  stdenv,
   systemd,
   typescript,
   writeShellApplication,
 }: let
+  fs = lib.fileset;
+  manifest = lib.importJSON ./package.json;
+  workspaces = lib.concatStringsSep " " manifest.workspaces;
+  manifests = fs.toSource {
+    root = ./.;
+    fileset = fs.unions ([./package.json ./package-lock.json] ++ map (workspace: ./. + "/${workspace}/package.json") manifest.workspaces);
+  };
+  npmDeps = fetchNpmDeps {
+    name = "app-npm-deps";
+    src = manifests;
+    fetcherVersion = 2;
+    hash = "sha256-eSBh7AF/yTXw5uvhMOrAcVkkEr4QEgZEWqvXuCtrc8A=";
+  };
+  nodeModules = buildNpmPackage {
+    pname = "app-node-modules";
+    inherit (manifest) version;
+    src = manifests;
+    inherit npmDeps;
+    npmDepsFetcherVersion = 2;
+    npmRebuildFlags = ["--ignore-scripts"];
+    dontNpmBuild = true;
+    installPhase = ''
+      runHook preInstall
+      # Workspace links belong to the checkout, not the dependency output.
+      rm ${lib.concatMapStringsSep " " (workspace: "node_modules/${workspace}") manifest.workspaces}
+      mkdir -p "$out"
+      mv node_modules "$out/"
+      runHook postInstall
+    '';
+  };
   elmHome = runCommand "app-elm-home" {} ((elmPackages.fetchElmDeps {
       elmVersion = elmPackages.elm.version;
       elmPackages = lib.importJSON ./serve/elm/deps.json;
@@ -29,67 +55,31 @@
     + ''
       cp -R .elm $out
     '');
-  manifest = lib.importJSON ./package.json;
-  lock = lib.importJSON ./package-lock.json;
-  pi = callPackage ./pi.nix {src = pi-src;};
-  piPackages = lib.listToAttrs (map (package: lib.nameValuePair package.name package) pi.packages);
-  # Include nested entries too: every Pi module must come from this source pin.
-  piLocks = lib.filterAttrs (path: _: builtins.match ".*node_modules/@earendil-works/[^/]+" path != null) lock.packages;
-  packageSourceOverrides = lib.mapAttrs (path: locked: let
-    name = "@earendil-works/${builtins.baseNameOf path}";
-    package = piPackages.${name};
-  in
-    assert lib.assertMsg (locked.version == package.version && (locked.dependencies or {}) == (package.dependencies or {}))
-    "${name}: refresh packages/app/package-lock.json to match the pinned Pi source";
-      pi + "/${package.directory}.tgz")
-  piLocks;
-
-  fs = lib.fileset;
 in
   buildNpmPackage (finalAttrs: {
     pname = "app";
     inherit (manifest) version;
     src = fs.toSource {
       root = ./.;
-      # TODO: use a gitignore filter on the harness and serve subdirs
       fileset =
         fs.difference
-        (fs.unions [./package.json ./package-lock.json ./harness ./serve])
-        (fs.unions [
-          (fs.maybeMissing ./harness/dist)
-          (fs.maybeMissing ./serve/dist)
-          (fs.maybeMissing ./harness/node_modules)
-          (fs.maybeMissing ./serve/node_modules)
-          (fs.maybeMissing ./serve/elm/elm-stuff)
-        ]);
+        (fs.unions [./package.json ./package-lock.json ./harness ./serve ./tape])
+        (fs.unions (lib.concatMap (workspace: [
+            (fs.maybeMissing (./. + "/${workspace}/dist"))
+            (fs.maybeMissing (./. + "/${workspace}/node_modules"))
+          ])
+          manifest.workspaces
+          ++ [(fs.maybeMissing ./serve/elm/elm-stuff)]));
     };
-
-    inherit (importNpmLock) npmConfigHook;
-    npmDeps = importNpmLock {
-      npmRoot = ./.;
-      inherit packageSourceOverrides;
-      # Registry hashes describe different bytes. The overridden artifacts are
-      # built by Nix; retain integrity checks for every other dependency.
-      packageLock =
-        lock
-        // {
-          packages = lib.mapAttrs (path: entry:
-            if builtins.hasAttr path packageSourceOverrides
-            then builtins.removeAttrs entry ["integrity"]
-            else entry)
-          lock.packages;
-        };
-    };
+    inherit npmDeps;
+    npmDepsFetcherVersion = 2;
     npmRebuildFlags = ["--ignore-scripts"];
-
-    nativeBuildInputs = [autoPatchelfHook esbuild git makeWrapper typescript elmPackages.elm elmPackages.elm-format elmPackages.elm-test];
+    nativeBuildInputs = [esbuild git makeWrapper typescript elmPackages.elm elmPackages.elm-format elmPackages.elm-test];
     preBuild = ''
       export ELM_HOME="$TMPDIR/elm-home"
       cp -R ${elmHome} "$ELM_HOME"
       chmod -R u+w "$ELM_HOME"
     '';
-    buildInputs = [stdenv.cc.cc.lib libxcb];
-
     nativeCheckInputs = [dbus libnotify];
     doCheck = true;
     checkPhase = ''
@@ -98,22 +88,23 @@ in
       runHook postCheck
     '';
 
+    # dev contains compiled tooling with development dependencies, not a shell environment.
     outputs = ["out" "dev"];
     installPhase = ''
       runHook preInstall
-
-      mkdir -p "$dev" "$out/lib/app" "$out/bin"
-      cp -R node_modules harness serve package.json package-lock.json "$dev/"
-      rm -rf "$dev/node_modules/.bin"
-
-      npm prune --omit=dev --ignore-scripts --offline --no-audit --no-fund
-      cp -R node_modules package.json "$out/lib/app/"
-      for workspace in harness serve; do
-        mkdir -p "$out/lib/app/$workspace"
-        tarball="$(npm pack --workspace="$workspace" --ignore-scripts --silent --pack-destination "$TMPDIR")"
-        tar -xzf "$TMPDIR/$tarball" -C "$out/lib/app/$workspace" --strip-components=1
+      for output in "$out" "$dev"; do
+        mkdir -p "$output/lib/app"
+        cp package.json "$output/lib/app/"
+        for workspace in ${workspaces}; do
+          mkdir -p "$output/lib/app/$workspace"
+          cp -R "$workspace/package.json" "$workspace/dist" "$output/lib/app/$workspace/"
+        done
       done
+      cp -R node_modules "$dev/lib/app/"
+      npm prune --omit=dev --ignore-scripts --offline --no-audit --no-fund
+      cp -R node_modules "$out/lib/app/"
 
+      mkdir -p "$out/bin"
       makeWrapper ${nodejs}/bin/node "$out/bin/serve" \
         --add-flags "$out/lib/app/serve/dist/server.js" \
         --suffix PATH : ${lib.makeBinPath [openssh systemd]}
@@ -124,22 +115,17 @@ in
         --add-flags "$out/lib/app/serve/dist/notification-guest.js stream"
       runHook postInstall
     '';
-
     passthru = {
+      inherit elmHome nodeModules;
       bench.render = writeShellApplication {
         name = "serve-bench-render";
         runtimeInputs = [chromium esbuild];
         text = ''
-          exec ${lib.getExe nodejs} ${finalAttrs.finalPackage.dev}/serve/dist/benchmark.js "$@"
+          exec ${lib.getExe nodejs} ${finalAttrs.finalPackage.dev}/lib/app/serve/dist/benchmark.js "$@"
         '';
       };
-      elmHome = elmHome;
-      tape = callPackage ./tape {
-        app = finalAttrs.finalPackage;
-        piRevision = pi-src.rev or "unknown";
-      };
+      tape = callPackage ./tape {app = finalAttrs.finalPackage;};
     };
-
     meta = {
       description = "Coding harness and web frontend for drv.run";
       mainProgram = "serve";

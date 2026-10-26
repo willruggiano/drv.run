@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
   fauxAssistantMessage,
   fauxToolCall,
@@ -241,9 +240,7 @@ await test("HTML shared defaults persist and do not change existing conversation
   await f.sessions.close();
   const plain = fauxProvider({ provider: "plain", models: [{ id: "plain", reasoning: false }] });
   f.options.models.setProvider(plain.provider);
-  const store = new GlobalSettingsStore(
-    SettingsManager.inMemory({ defaultProvider: model.provider, defaultModel: model.modelId }),
-  );
+  const store = new GlobalSettingsStore({ model });
   const sessions = await Sessions.open(store.bind(f.options));
   t.after(() => sessions.close());
   const session = await sessions.create(crypto.randomUUID(), f.binding, model);

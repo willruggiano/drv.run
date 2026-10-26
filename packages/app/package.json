@@ -5,12 +5,13 @@
   "type": "module",
   "workspaces": [
     "harness",
-    "serve"
+    "serve",
+    "tape"
   ],
   "scripts": {
-    "build": "npm run build --workspace=harness && npm run build --workspace=serve",
+    "build": "npm run build --workspaces",
     "check": "npm run check --workspaces",
-    "test": "npm run test:elm --workspace=serve && NODE_OPTIONS=--conditions=development node --test 'harness/tests/*.test.ts' 'serve/**/tests/*.test.ts'",
+    "test": "npm run test:elm --workspace=serve && NODE_OPTIONS=--conditions=development node --test 'harness/tests/*.test.ts' 'serve/**/tests/*.test.ts' 'tape/tests/*.test.ts'",
     "test:browser": "NODE_OPTIONS=--conditions=development node --test 'serve/**/tests/*.chromium.ts' 'tape/tests/*.chromium.ts'"
   },
   "devDependencies": {

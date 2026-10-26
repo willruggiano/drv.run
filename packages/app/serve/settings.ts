@@ -12,7 +12,6 @@ export const thinkingLevels: readonly ModelThinkingLevel[] = [
 ];
 
 // Only settings with an implemented web/Durable equivalent belong here.
-// Paths are Pi's settings.json keys, not a second preference store.
 export const settingFields = [
   {
     key: "defaultThinkingLevel",
@@ -90,7 +89,15 @@ export const settingFields = [
 ] as const;
 
 export type SettingKey = (typeof settingFields)[number]["key"];
-export type SettingValues = Record<SettingKey, string | number | boolean>;
+export type SettingValues = {
+  [Field in (typeof settingFields)[number] as Field["key"]]: Field extends {
+    choices: readonly (infer Choice)[];
+  }
+    ? Choice
+    : Field extends { type: "boolean" }
+      ? boolean
+      : number;
+};
 export type GlobalSettings = {
   values: SettingValues;
   model: ModelRef | null;

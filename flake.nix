@@ -29,13 +29,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
-    pi = {
-      url = "github:earendil-works/pi/stable";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        nixpkgs-darwin-x64.follows = "";
-      };
-    };
     sops-nix = {
       url = "github:Mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -170,17 +163,17 @@
           ## Pinned dependency references
 
           Harness, conversations and extensions:
-            ${inputs.pi}/packages/durable/README.md
-          Durable usage examples:
-            ${inputs.pi}/packages/durable/test/examples/
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-durable/README.md
+          Durable API:
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-durable/dist/index.d.ts
           Remote execution semantics:
-            ${inputs.pi}/packages/env/docs/semantics.md
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-env/docs/semantics.md
           Remote execution protocol:
-            ${inputs.pi}/packages/env/docs/protocol.md
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-env/docs/protocol.md
           Cancellation and context propagation:
-            ${inputs.pi}/packages/chord/src/context/index.ts
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/chord/dist/context/index.js
           Telemetry contracts:
-            ${inputs.pi}/packages/telemetry/README.md
+            ${pkgs.app.nodeModules}/node_modules/@earendil-works/pi-telemetry/README.md
 
           Nix command and language reference:
             ${pkgs.nixVersions.latest.doc}/share/doc/nix/manual/
@@ -228,6 +221,9 @@
         shellHook = ''
           export XDG_CONFIG_DIRS="${llms}:''${XDG_CONFIG_DIRS:-/etc/xdg}"
           linkNodeModulesHook
+          for workspace in ${lib.concatStringsSep " " (lib.importJSON ./packages/app/package.json).workspaces}; do
+            ln -sfn "../$workspace" "$npmRoot/node_modules/$workspace"
+          done
           export ELM_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/drv-run-${builtins.baseNameOf pkgs.app.elmHome}"
           if [ ! -d "$ELM_HOME" ]; then
             mkdir -p "$ELM_HOME"
@@ -236,8 +232,7 @@
           fi
         '';
         nativeBuildInputs = [pkgs.systemd.dev pkgs.importNpmLock.hooks.linkNodeModulesHook];
-        # workspace support: https://github.com/NixOS/nixpkgs/pull/522939
-        npmDeps = pkgs.app.dev;
+        npmDeps = pkgs.app.nodeModules;
         npmRoot = "packages/app";
         packages = with pkgs; (map lib.getBin [
           ast-grep

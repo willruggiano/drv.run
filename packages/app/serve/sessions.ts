@@ -29,7 +29,6 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { openHarness, Review } from "harness";
 import { describeContext, type ContextInspection } from "./inspection.ts";
 export type { ContextInspection } from "./inspection.ts";
-// pi-coding-agent/core/defaults is not exported by Pi's public API.
 export const DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "medium";
 
 const context = BACKGROUND_CONTEXT;

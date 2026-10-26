@@ -22,7 +22,6 @@ import { modelKey, targetKey } from "../htmx/forms.ts";
 import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
 import { buildAssets } from "../build.ts";
 
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Catalog } from "../sessions.ts";
 import { settingFields } from "../settings.ts";
 
@@ -802,34 +801,15 @@ await test(
   },
 );
 
-await test("global settings persist through Pi, preserve unrelated keys, and drive live Durable policy", async (t) => {
+await test("app settings persist and drive live Durable policy", async (t) => {
   const f = await fixture(t);
   await f.sessions.close();
-  const agentDir = join(f.workspace, "agent");
-  const path = join(agentDir, "settings.json");
-  await mkdir(agentDir);
-  await mkdir(join(f.workspace, ".pi"));
-  await writeFile(
-    join(f.workspace, ".pi", "settings.json"),
-    JSON.stringify({ defaultThinkingLevel: "off", shellPath: "/untrusted" }),
-  );
-  await writeFile(
-    path,
-    JSON.stringify({
-      defaultProvider: model.provider,
-      defaultModel: model.modelId,
-      theme: "light",
-      shellPath: "/trusted",
-      compaction: {
-        reserveTokens: 12345,
-        modelOverrides: { "faux/faux-1": { reserveTokens: 1 } },
-      },
-      retry: { maxRetries: 7, provider: { maxRetries: 0 } },
-    }),
-  );
-  const store = new GlobalSettingsStore(
-    SettingsManager.create(f.workspace, agentDir, { projectTrusted: false }),
-  );
+  const path = join(f.workspace, "settings.json");
+  const initial = new GlobalSettingsStore({ model }).read();
+  initial.values["compaction.reserveTokens"] = 12345;
+  initial.values["retry.maxRetries"] = 7;
+  await writeFile(path, JSON.stringify(initial));
+  const store = await GlobalSettingsStore.open(path);
   const options = store.bind(f.options);
   const sessions = await Sessions.open(options);
   assert.equal(sessions.options.defaults, options.defaults);
@@ -838,7 +818,6 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   const current = await sessions.create(randomUUID(), f.binding, model);
   assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "medium");
   assert.equal(options.settings?.compaction?.reserveTokens, 12345);
-  assert.equal(options.settings?.stream?.maxRetries, 0);
   const get = () => store.read();
   const globalForm = () =>
     Object.fromEntries(
@@ -888,21 +867,10 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
     "terminal.showImages": "false",
   });
   assert.equal(result.status, 303);
-  const persisted = SettingsManager.create(f.workspace, agentDir, {
-    projectTrusted: false,
-  });
-  assert.equal(persisted.getDefaultThinkingLevel(), "low");
-  assert.equal(persisted.getModelThinkingLevel(model.provider, model.modelId), "high");
-  assert.equal(persisted.getTheme(), "light");
-  assert.equal(persisted.getShellPath(), "/trusted");
-  assert.equal(persisted.getCompactionReserveTokens(), 12345);
-  assert.equal(
-    persisted.getCompactionReserveTokens({
-      provider: model.provider,
-      id: model.modelId,
-    }),
-    1,
-  );
+  const persisted = (await GlobalSettingsStore.open(path)).read();
+  assert.equal(persisted.values.defaultThinkingLevel, "low");
+  assert.equal(persisted.modelThinkingLevels[`${model.provider}/${model.modelId}`], "high");
+  assert.equal(persisted.values["compaction.reserveTokens"], 12345);
   assert.equal(options.settings?.retry?.enabled, false);
   assert.equal(options.settings?.retry?.maxRetries, 7);
   assert.equal(options.settings?.steeringMode, "all");
@@ -963,7 +931,6 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   f.faux.setResponses([
     (_context, stream) => {
       assert.equal(stream?.transport, "sse");
-      assert.equal(stream?.maxRetries, 0);
       return fauxAssistantMessage("Configured.");
     },
   ]);
@@ -975,22 +942,40 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   assert.equal(f.faux.state.callCount, 1);
 });
 
-await test("settings persistence failures are reported and never silently acknowledged", async (t) => {
+await test("settings publish only successful writes and serialize concurrent updates", async (t) => {
   const f = await fixture(t);
-  let raw = "{}";
-  const manager = SettingsManager.fromStorage(
-    {
-      withLock(scope, change) {
-        const next = change(scope === "global" ? raw : undefined);
-        if (next !== undefined) throw new Error("Read-only settings");
-      },
-    },
-    { projectTrusted: false },
-  );
-  const store = new GlobalSettingsStore(manager);
+  const path = join(f.workspace, "settings.json");
+  const store = await GlobalSettingsStore.open(path);
+  const before = store.read();
+  let notifications = 0;
+  const unwatch = store.watch(() => {
+    notifications++;
+  });
+  // Replacing a directory must fail even when the test runs as root.
+  await mkdir(path);
   await assert.rejects(store.update({ values: { hideThinkingBlock: true } }, f.sessions));
-  assert.equal(store.read().values.hideThinkingBlock, false);
-  assert.deepEqual(JSON.parse(raw), {});
+  assert.deepEqual(store.read(), before);
+  assert.equal(notifications, 0);
+  await rm(path, { recursive: true });
+  await Promise.all([
+    store.update({ values: { hideThinkingBlock: true } }, f.sessions),
+    store.update({ values: { "terminal.showImages": false } }, f.sessions),
+  ]);
+  assert.equal(notifications, 2);
+  unwatch();
+  const persisted = (await GlobalSettingsStore.open(path)).read();
+  assert.equal(persisted.values.hideThinkingBlock, true);
+  assert.equal(persisted.values["terminal.showImages"], false);
+  const snapshot = store.read();
+  snapshot.values.hideThinkingBlock = false;
+  assert.equal(store.read().values.hideThinkingBlock, true);
+});
+
+await test("invalid persisted settings fail startup instead of silently resetting", async (t) => {
+  const f = await fixture(t);
+  const path = join(f.workspace, "settings.json");
+  await writeFile(path, JSON.stringify({ values: { transport: "invalid" } }));
+  await assert.rejects(GlobalSettingsStore.open(path));
 });
 
 await test("queued compaction duration resolves its submission, including after reset and fork", async (t) => {

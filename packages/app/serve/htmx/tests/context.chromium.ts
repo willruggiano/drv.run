@@ -6,7 +6,6 @@ import { Sessions, inspectContext } from "../../sessions.ts";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { GlobalSettingsStore } from "../../server.ts";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,7 +32,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
   const faux = fauxProvider({ models: [{ id: "faux-1", contextWindow: 200000 }] });
   f.options.models.setProvider(faux.provider);
   let opens = 0;
-  const store = new GlobalSettingsStore(SettingsManager.inMemory());
+  const store = new GlobalSettingsStore();
   const sessions = await Sessions.open(
     store.bind({
       ...f.options,

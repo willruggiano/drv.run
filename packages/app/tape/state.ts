@@ -9,7 +9,7 @@ import {
   type CommitPublication,
   type LiveState,
 } from "@earendil-works/pi-durable";
-import { Sessions, Metadata, type Session } from "../serve/sessions.ts";
+import { Sessions, Metadata, type Session } from "serve/sessions";
 import {
   PresentationDoc,
   viewer,

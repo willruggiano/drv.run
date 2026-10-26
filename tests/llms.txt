@@ -59,17 +59,17 @@ man -M /nix/store/HASH-openssh-10.6p1-man/share/man sshd_config
 ## Pinned dependency references
 
 Harness, conversations and extensions:
-  /nix/store/HASH-source/packages/durable/README.md
-Durable usage examples:
-  /nix/store/HASH-source/packages/durable/test/examples/
+  /nix/store/HASH-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/README.md
+Durable API:
+  /nix/store/HASH-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/index.d.ts
 Remote execution semantics:
-  /nix/store/HASH-source/packages/env/docs/semantics.md
+  /nix/store/HASH-app-node-modules-0.1.0/node_modules/@earendil-works/pi-env/docs/semantics.md
 Remote execution protocol:
-  /nix/store/HASH-source/packages/env/docs/protocol.md
+  /nix/store/HASH-app-node-modules-0.1.0/node_modules/@earendil-works/pi-env/docs/protocol.md
 Cancellation and context propagation:
-  /nix/store/HASH-source/packages/chord/src/context/index.ts
+  /nix/store/HASH-app-node-modules-0.1.0/node_modules/@earendil-works/chord/dist/context/index.js
 Telemetry contracts:
-  /nix/store/HASH-source/packages/telemetry/README.md
+  /nix/store/HASH-app-node-modules-0.1.0/node_modules/@earendil-works/pi-telemetry/README.md
 
 Nix command and language reference:
   /nix/store/HASH-nix-2.35.3-doc/share/doc/nix/manual/

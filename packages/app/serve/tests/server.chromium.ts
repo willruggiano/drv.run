@@ -14,7 +14,6 @@ import { benchmark, benchmarkOptions } from "../benchmark.ts";
 import { conversationURL } from "../presentation.ts";
 import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
 import { rename, sessionInfo } from "../sessions.ts";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { GlobalSettingsStore } from "../server.ts";
 import { browserFixture } from "./browser-testing.ts";
@@ -139,9 +138,7 @@ await test("both frontends confirm context commands with two keyboard submission
 
 await test("frontend landings create, reopen and archive sessions without crossing frontend routes", async (t) => {
   const f = await fixture(t);
-  const settings = new GlobalSettingsStore(
-    SettingsManager.inMemory({ defaultProvider: model.provider, defaultModel: model.modelId }),
-  );
+  const settings = new GlobalSettingsStore({ model });
   const b = await browserFixture(t, f.sessions, undefined, undefined, settings);
   b.page.setDefaultTimeout(10000);
   const root = await b.page.goto(b.base);
@@ -406,7 +403,7 @@ await test("mobile browser page profiling saves separate per-phase CPU and timel
   assert.deepEqual(JSON.parse(JSON.stringify(report)), report);
 });
 
-await test("server reads HOST/PORT and starts with no local execution target", async (t) => {
+await test("server registers built-in models from environment credentials without a local execution target", async (t) => {
   for (const host of [undefined, "127.0.0.2"]) {
     await t.test(host ?? "default host", async (t) => {
       const directory = await mkdtemp(join(tmpdir(), "serve-startup-"));
@@ -435,8 +432,7 @@ await test("server reads HOST/PORT and starts with no local execution target", a
             HOME: directory,
             XDG_STATE_HOME: join(directory, "state"),
             PATH: "",
-            PI_OFFLINE: "1",
-            PI_CODING_AGENT_DIR: join(directory, "agent"),
+            ANTHROPIC_API_KEY: "test-only-api-key",
           },
           stdio: ["ignore", "ignore", "pipe"],
         },
@@ -451,6 +447,14 @@ await test("server reads HOST/PORT and starts with no local execution target", a
           assert.equal(await page.locator("#session-list a").count(), 0);
           assert.equal(await page.locator("#targets").count(), 1);
           assert.equal(await page.locator("#targets option").count(), 0);
+          const models = await page
+            .locator("#models option")
+            .evaluateAll((options) =>
+              options.map(
+                (option) => JSON.parse((option as HTMLOptionElement).value) as [string, string],
+              ),
+            );
+          assert(models.some(([provider]) => provider === "anthropic"));
           assert.equal(await page.locator("#create").isDisabled(), true);
         },
       );
@@ -505,9 +509,7 @@ await test("Elm default model reselection preserves saved thinking overrides", a
     fauxProvider({ provider: plain.provider, models: [{ id: plain.modelId, reasoning: false }] })
       .provider,
   );
-  const settings = new GlobalSettingsStore(
-    SettingsManager.inMemory({ defaultProvider: model.provider, defaultModel: model.modelId }),
-  );
+  const settings = new GlobalSettingsStore({ model });
   const b = await browserFixture(t, f.sessions, undefined, undefined, settings);
   b.page.setDefaultTimeout(10000);
   await b.page.goto(b.base + "/elm/settings");

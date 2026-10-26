@@ -8,16 +8,21 @@ import { authPage } from "./htmx/auth.ts";
 import { hypermedia, errorPage, activityPage } from "./htmx/frontend.ts";
 import { openApplication } from "./application.ts";
 import { ownerOptions } from "./instances.ts";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { ConversationBusy, StorageRequestError } from "@earendil-works/pi-durable";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import {
+  DEFAULT_COMPACTION_POLICY,
+  DEFAULT_RETRY_POLICY,
+  ConversationBusy,
+  StorageRequestError,
+} from "@earendil-works/pi-durable";
 import {
   DEFAULT_THINKING_LEVEL,
   stateDirectory,
@@ -27,10 +32,71 @@ import {
 } from "./sessions.ts";
 import { settingFields, thinkingLevels, type GlobalSettings } from "./settings.ts";
 
+function parseSettings(value: unknown): GlobalSettings {
+  const data = object(value);
+  const values = object(data.values);
+  for (const field of settingFields) {
+    const value = values[field.key];
+    const valid =
+      "choices" in field
+        ? field.choices.some((choice) => choice === value)
+        : field.type === "boolean"
+          ? typeof value === "boolean"
+          : typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+    if (!valid) throw new RequestError(400, `Invalid setting: ${field.key}`);
+  }
+  const model = data.model === null ? null : object(data.model);
+  const modelThinkingLevels = object(data.modelThinkingLevels);
+  for (const level of Object.values(modelThinkingLevels))
+    if (!isThinkingLevel(level)) throw new RequestError(400, "Invalid model thinking level.");
+  return {
+    values: values as GlobalSettings["values"],
+    model: model
+      ? { provider: string(model.provider, 200), modelId: string(model.modelId, 300) }
+      : null,
+    modelThinkingLevels: modelThinkingLevels as GlobalSettings["modelThinkingLevels"],
+  };
+}
+
 export class GlobalSettingsStore {
-  readonly manager: SettingsManager;
+  private value: GlobalSettings;
+  private path?: string;
   private writes: Promise<void> = Promise.resolve();
   private readonly observers = new Set<() => void>();
+
+  constructor(initial: Partial<GlobalSettings> = {}) {
+    this.value = parseSettings({
+      values: {
+        defaultThinkingLevel: DEFAULT_THINKING_LEVEL,
+        transport: "auto",
+        steeringMode: "one-at-a-time",
+        followUpMode: "one-at-a-time",
+        "compaction.enabled": DEFAULT_COMPACTION_POLICY.enabled,
+        "compaction.reserveTokens": DEFAULT_COMPACTION_POLICY.reserveTokens,
+        "compaction.keepRecentTokens": DEFAULT_COMPACTION_POLICY.keepRecentTokens,
+        "retry.enabled": DEFAULT_RETRY_POLICY.enabled,
+        "retry.maxRetries": DEFAULT_RETRY_POLICY.maxRetries,
+        "retry.baseDelayMs": DEFAULT_RETRY_POLICY.baseDelayMs,
+        "retry.maxAgentDelayMs": DEFAULT_RETRY_POLICY.maxAgentDelayMs ?? 60000,
+        hideThinkingBlock: false,
+        "terminal.showImages": true,
+      },
+      model: null,
+      modelThinkingLevels: {},
+      ...structuredClone(initial),
+    });
+  }
+
+  static async open(path: string): Promise<GlobalSettingsStore> {
+    const store = new GlobalSettingsStore();
+    try {
+      store.value = parseSettings(JSON.parse(await readFile(path, "utf8")));
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    store.path = path;
+    return store;
+  }
 
   watch(observer: () => void): () => void {
     this.observers.add(observer);
@@ -39,77 +105,52 @@ export class GlobalSettingsStore {
     };
   }
 
-  constructor(manager: SettingsManager) {
-    this.manager = manager;
-    const errors = manager.drainErrors();
-    if (errors.length) throw errors[0].error;
-  }
-
   read(): GlobalSettings {
-    const s = this.manager;
-    const compaction = s.getCompactionSettings();
-    const retry = s.getRetrySettings();
-    const provider = s.getDefaultProvider(),
-      modelId = s.getDefaultModel();
-    return {
-      model: provider && modelId ? { provider, modelId } : null,
-      modelThinkingLevels: s.getAllModelThinkingLevels(),
-      values: {
-        defaultThinkingLevel: s.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
-        transport: s.getTransport(),
-        steeringMode: s.getSteeringMode(),
-        followUpMode: s.getFollowUpMode(),
-        "compaction.enabled": compaction.enabled,
-        "compaction.reserveTokens": compaction.reserveTokens,
-        "compaction.keepRecentTokens": compaction.keepRecentTokens,
-        "retry.enabled": retry.enabled,
-        "retry.maxRetries": retry.maxRetries,
-        "retry.baseDelayMs": retry.baseDelayMs,
-        "retry.maxAgentDelayMs": retry.maxAgentDelayMs,
-        hideThinkingBlock: s.getHideThinkingBlock(),
-        "terminal.showImages": s.getShowImages(),
-      },
-    };
+    return structuredClone(this.value);
   }
 
-  // Getters are intentional: Durable resolves host policy on every run. Agent
-  // model/thinking remain persisted in the conversation, not changed by defaults.
+  // Durable resolves host policy on every run; conversation settings remain persisted separately.
   bind<T extends SessionOptions>(options: T): T & Pick<SessionOptions, "settings" | "defaults"> {
-    const manager = this.manager;
+    const current = () => this.value;
     return {
       ...options,
       defaults: {
         get model() {
-          const provider = manager.getDefaultProvider(),
-            modelId = manager.getDefaultModel();
-          return provider && modelId ? { provider, modelId } : undefined;
+          return current().model ?? undefined;
         },
         get thinkingLevel() {
-          return manager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
+          return current().values.defaultThinkingLevel;
         },
         get modelThinkingLevels() {
-          return manager.getAllModelThinkingLevels();
+          return { ...current().modelThinkingLevels };
         },
       },
       settings: {
         get stream() {
-          return {
-            transport: manager.getTransport(),
-            ...manager.getProviderRetrySettings(),
-          };
+          return { transport: current().values.transport };
         },
         get retry() {
-          return manager.getRetrySettings();
+          const v = current().values;
+          return {
+            enabled: v["retry.enabled"],
+            maxRetries: v["retry.maxRetries"],
+            baseDelayMs: v["retry.baseDelayMs"],
+            maxAgentDelayMs: v["retry.maxAgentDelayMs"],
+          };
         },
         get compaction() {
-          // Durable has harness-wide thresholds, not per-conversation/model overrides.
-          return manager.getCompactionSettings();
+          const v = current().values;
+          return {
+            enabled: v["compaction.enabled"],
+            reserveTokens: v["compaction.reserveTokens"],
+            keepRecentTokens: v["compaction.keepRecentTokens"],
+          };
         },
         get steeringMode() {
-          return manager.getSteeringMode();
+          return current().values.steeringMode;
         },
         get followUpMode() {
-          return manager.getFollowUpMode();
+          return current().values.followUpMode;
         },
       },
     };
@@ -129,17 +170,12 @@ export class GlobalSettingsStore {
       if (!["values", "model", "modelThinkingLevel"].includes(key))
         throw new RequestError(400, "Unknown settings field.");
     const values = data.values === undefined ? {} : object(data.values);
-    for (const [key, value] of Object.entries(values)) {
+    for (const key of Object.keys(values)) {
       const field = settingFields.find((field) => field.key === key);
       if (!field || ("readonly" in field && field.readonly))
         throw new RequestError(400, `Unsupported setting: ${key}`);
-      const valid =
-        "choices" in field
-          ? field.choices.some((choice) => choice === value)
-          : typeof value === "boolean";
-      if (!valid) throw new RequestError(400, `Invalid setting: ${key}`);
     }
-    let model: { provider: string; modelId: string } | undefined;
+    let model = this.value.model;
     if (data.model !== undefined) {
       const ref = object(data.model);
       model = { provider: string(ref.provider, 200), modelId: string(ref.modelId, 300) };
@@ -148,45 +184,35 @@ export class GlobalSettingsStore {
         throw new RequestError(400, "Model is unavailable.");
     }
     const level = data.modelThinkingLevel;
-    if (level !== undefined && (!model || (level !== null && !isThinkingLevel(level))))
+    if (
+      level !== undefined &&
+      (data.model === undefined || (level !== null && !isThinkingLevel(level)))
+    )
       throw new RequestError(400, "Invalid per-model thinking preference.");
-    // Validate the entire request before scheduling any of Pi's locked writes.
-    // Use public setters: applyOverrides() is not persistent.
-    const s = this.manager;
-    for (const [key, value] of Object.entries(values)) {
-      if (key === "defaultThinkingLevel" && isThinkingLevel(value))
-        s.setDefaultThinkingLevel(value);
-      else if (
-        key === "transport" &&
-        (value === "auto" ||
-          value === "sse" ||
-          value === "websocket" ||
-          value === "websocket-cached")
-      )
-        s.setTransport(value);
-      else if (key === "steeringMode" && (value === "all" || value === "one-at-a-time"))
-        s.setSteeringMode(value);
-      else if (key === "followUpMode" && (value === "all" || value === "one-at-a-time"))
-        s.setFollowUpMode(value);
-      else if (key === "compaction.enabled" && typeof value === "boolean")
-        s.setCompactionEnabled(value);
-      else if (key === "retry.enabled" && typeof value === "boolean") s.setRetryEnabled(value);
-      else if (key === "hideThinkingBlock" && typeof value === "boolean")
-        s.setHideThinkingBlock(value);
-      else if (key === "terminal.showImages" && typeof value === "boolean") s.setShowImages(value);
+    const modelThinkingLevels = { ...this.value.modelThinkingLevels };
+    if (model && level !== undefined) {
+      const key = `${model.provider}/${model.modelId}`;
+      if (level === null) delete modelThinkingLevels[key];
+      else if (isThinkingLevel(level)) modelThinkingLevels[key] = level;
     }
-    if (model) {
-      s.setDefaultModelAndProvider(model.provider, model.modelId);
-      if (level === null) s.removeModelThinkingLevel(model.provider, model.modelId);
-      else if (isThinkingLevel(level))
-        s.setModelThinkingLevel(model.provider, model.modelId, level);
+    const next = parseSettings({
+      values: { ...this.value.values, ...values },
+      model,
+      modelThinkingLevels,
+    });
+    // One server owns this file. Publish state and notify observers only after atomic replacement.
+    if (this.path) {
+      await mkdir(dirname(this.path), { recursive: true });
+      const temporary = await mkdtemp(join(dirname(this.path), ".settings-"));
+      try {
+        const file = join(temporary, "settings.json");
+        await writeFile(file, JSON.stringify(next), { mode: 0o600 });
+        await rename(file, this.path);
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
     }
-    await s.flush();
-    const errors = s.drainErrors();
-    if (errors.length) {
-      await s.reload();
-      throw errors[0].error;
-    }
+    this.value = next;
     for (const observer of this.observers) observer();
     return this.read();
   }
@@ -454,9 +480,10 @@ export async function main(): Promise<void> {
     throw new Error("HOST must be an IP address; IPv6 wildcard binding is not supported.");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT.");
   process.umask(0o077);
-  const models = await ModelRuntime.create();
-  const settings = new GlobalSettingsStore(
-    SettingsManager.create(homedir(), getAgentDir(), { projectTrusted: false }),
+  const models = createModels();
+  for (const provider of builtinProviders()) models.setProvider(provider);
+  const settings = await GlobalSettingsStore.open(
+    join(stateDirectory(), "drv-run", "settings.json"),
   );
   const drvRun = ownerOptions();
   const notifications = process.env.NOTIFICATIONS_CONFIG

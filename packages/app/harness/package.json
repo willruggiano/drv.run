@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json"
   },
-  "peerDependencies": {
+  "dependencies": {
     "@earendil-works/chord": "1.4.0",
     "@earendil-works/pi-ai": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",

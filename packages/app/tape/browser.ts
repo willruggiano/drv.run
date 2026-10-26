@@ -3,13 +3,12 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { LiveState } from "@earendil-works/pi-durable";
-import { httpServer, GlobalSettingsStore } from "../serve/server.ts";
-import { conversationURL } from "../serve/presentation.ts";
-import { message } from "../serve/htmx/render.ts";
-import { renderHTML } from "../serve/html.ts";
+import { httpServer, GlobalSettingsStore } from "serve/server";
+import { conversationURL } from "serve/presentation";
+import { message } from "serve/htmx/render";
+import { renderHTML } from "serve/html";
 import { Page, launch, record } from "./cdp.ts";
 import { apply, openState } from "./state.ts";
 import { digest, PresentationDoc, viewer, type Tape, type Presentation } from "./model.ts";
@@ -283,7 +282,7 @@ export async function replay(
   try {
     const state = await openState(directory, tape.initial);
     try {
-      const settings = new GlobalSettingsStore(SettingsManager.inMemory());
+      const settings = new GlobalSettingsStore();
       const server = httpServer(state.sessions, "127.0.0.1", assets, settings);
       const [handler] = server.listeners("request");
       assert(handler && server.listeners("request").length === 1);

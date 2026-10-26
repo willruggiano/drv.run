@@ -5,7 +5,8 @@
     "noEmit": false,
     "rewriteRelativeImportExtensions": true,
     "rootDir": ".",
-    "outDir": "dist"
+    "outDir": "dist",
+    "declaration": true
   },
   "include": ["*.ts", "htmx/*.ts", "elm/*.ts"]
 }

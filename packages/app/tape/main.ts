@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile, mkdir, mkdtemp, rm, readdir, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readFile, writeFile, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { buildAssets } from "../serve/build.ts";
+import { buildAssets } from "serve/build";
 import { decode, digest, maxBytes, type Tape } from "./model.ts";
 import { record, scenes } from "./state.ts";
 import { replay, profiles, type Profile } from "./browser.ts";
@@ -64,22 +64,6 @@ export function selected(pattern: string) {
   assert(result.length, `No scenes match: ${pattern}`);
   return result;
 }
-async function fingerprint(directory: string): Promise<string> {
-  const parts: string[] = [];
-  async function walk(root: string) {
-    for (const entry of (await readdir(root, { withFileTypes: true })).sort((a, b) =>
-      a.name.localeCompare(b.name, "en-US"),
-    )) {
-      if (["node_modules", "dist", ".jj", ".git"].includes(entry.name)) continue;
-      const path = join(root, entry.name);
-      if (entry.isDirectory()) await walk(path);
-      else if (/\.(ts|js|json|css|html|nix)$/.test(entry.name))
-        parts.push(`${path.slice(directory.length)}:${digest(await readFile(path))}`);
-    }
-  }
-  await walk(directory);
-  return digest(parts.join("\n"));
-}
 export async function run(args: string[], signal: AbortSignal) {
   signal.throwIfAborted();
   const config = options(args);
@@ -100,14 +84,10 @@ export async function run(args: string[], signal: AbortSignal) {
   signal.throwIfAborted();
   await mkdir(config.output, { recursive: true });
   const output = await mkdtemp(join(config.output, "run-"));
-  const source = resolve(fileURLToPath(new URL("../serve/", import.meta.url)));
-  const provenance = process.env.TAPE_BUILD_INFO
-    ? (JSON.parse(await readFile(process.env.TAPE_BUILD_INFO, "utf8")) as unknown)
-    : { sourceHash: await fingerprint(resolve(source, "..")), mode: "source" };
+  const source = dirname(fileURLToPath(import.meta.resolve("serve/server")));
   const manifest = {
     version: 1,
     complete: false,
-    provenance,
     recordings: [] as {
       scene: string;
       sha256: string;
