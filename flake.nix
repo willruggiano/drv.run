@@ -73,8 +73,6 @@
       dev = final: prev: {
         inherit
           (self.packages.${prev.stdenv.hostPlatform.system})
-          pi-jailed
-          pi-unwrapped
           treefmt-wrapped
           ;
       };
@@ -108,7 +106,6 @@
     devShells = eachSystem (pkgs: let
       inherit (self.devShells.${pkgs.stdenv.hostPlatform.system}) toolchain;
       pkgs' = pkgs.extend self.overlays.dev;
-      nix = pkgs.nixVersions.latest;
       llms = pkgs.writeTextFile {
         name = "llms.txt";
         destination = "/llms.txt";
@@ -187,7 +184,7 @@
             ${inputs.pi}/packages/telemetry/README.md
 
           Nix command and language reference:
-            ${nix.doc}/share/doc/nix/manual/
+            ${pkgs.nixVersions.latest.doc}/share/doc/nix/manual/
           Nix shell applications and trivial builders:
             ${inputs.nixpkgs}/pkgs/build-support/trivial-builders/default.nix
           Nix build phases:
@@ -212,7 +209,6 @@
         '';
         checkPhase = ''
           runHook preCheck
-          # Hashes vary across systems and source snapshots; retain names and suffixes.
           ${lib.getExe pkgs.gnused} -E 's@/nix/store/[0-9a-z]{32}-@/nix/store/HASH-@g' "$target" > actual.txt
           ${lib.getExe' pkgs.diffutils "diff"} -u ${./tests/llms.txt} actual.txt
           runHook postCheck
@@ -223,10 +219,10 @@
         inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
       };
-      jail = pkgs'.mkShell {
+      jail = pkgs.mkShell {
         inherit (toolchain) npmDeps npmRoot;
         inputsFrom = [toolchain];
-        packages = [pkgs'.pi-jailed pkgs'.treefmt-wrapped];
+        packages = [pkgs'.treefmt-wrapped];
       };
       toolchain = pkgs.mkShell {
         passthru = {inherit llms;};

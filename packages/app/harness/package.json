@@ -16,9 +16,9 @@
     "check": "tsc -p tsconfig.json"
   },
   "peerDependencies": {
-    "@earendil-works/chord": "*",
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-durable": "*",
-    "@earendil-works/pi-env": "*"
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/pi-env": "1.4.0"
   }
 }

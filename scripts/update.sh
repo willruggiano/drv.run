@@ -8,7 +8,6 @@ fi
 
 old_head=$(jj log -r @- --no-graph -T commit_id)
 
-nix-update cloud-hypervisor --commit --flake
 nix-update subtrace --commit --flake
 
 new_head=$(jj log -r @- --no-graph -T commit_id)
