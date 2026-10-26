@@ -115,7 +115,7 @@ export function programStatus(value: unknown): ProgramStatus {
     result.app = app;
   }
   if (data.title !== undefined) result.title = text(data.title, 192);
-  if (data.msg !== undefined) result.msg = text(data.msg, 2048);
+  if (data.msg !== undefined) result.msg = text(data.msg, 2048, true);
   if (state === "blocked" && data.kind !== undefined) {
     if (data.kind !== "permission" && data.kind !== "question" && data.kind !== "auth")
       throw new TypeError("Invalid blocked kind.");

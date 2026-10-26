@@ -26,6 +26,24 @@ import {
   vapidPublic,
 } from "../push.ts";
 
+import { pushMessage, encodePushMessage } from "../push-message.ts";
+
+const message = pushMessage({
+  id: 123,
+  source: {
+    instance: "host-pi",
+    incarnation: "12345678-1234-1234-1234-123456789abc",
+    terminal: "api",
+  },
+  record: "1",
+  event: {
+    type: "status",
+    record: { id: "1", state: "done", title: "My conversation", msg: "Original message" },
+  },
+  received: 1000,
+  read: false,
+  delivery: "pending",
+});
 const origins = ["https://push.example"];
 await test("push endpoints reject untrusted schemes, origins, credentials and fragments", () => {
   for (const endpoint of [
@@ -86,7 +104,7 @@ await test("all DNS answers are checked and each attempt resolves afresh", async
   );
   await assert.rejects(pushTarget("https://[::ffff:127.0.0.1]/", ["https://[::ffff:7f00:1]"]));
 });
-await test("RFC 8291 payload decrypts with the subscriber key and contains only an activity ID", () => {
+await test("RFC 8291 payload decrypts with the subscriber key and contains the original message and conversation destination", () => {
   const ua = createECDH("prime256v1");
   const peer = ua.generateKeys();
   const auth = randomBytes(16);
@@ -97,7 +115,7 @@ await test("RFC 8291 payload decrypts with the subscriber key and contains only 
     },
     origins,
   );
-  const body = encryptedPush(sub, 123);
+  const body = encryptedPush(sub, message);
   const salt = body.subarray(0, 16),
     sender = body.subarray(21, 86);
   assert.equal(body.readUInt32BE(16), 4096);
@@ -120,7 +138,7 @@ await test("RFC 8291 payload decrypts with the subscriber key and contains only 
   decipher.setAuthTag(body.subarray(-16));
   const plain = Buffer.concat([decipher.update(body.subarray(86, -16)), decipher.final()]);
   assert.equal(plain.at(-1), 2);
-  assert.deepEqual(JSON.parse(plain.subarray(0, -1).toString()), { activity: 123 });
+  assert.deepEqual(JSON.parse(plain.subarray(0, -1).toString()), message);
 });
 await test("VAPID signs an audience-bound expiring token with the sops-provided key", () => {
   const ec = createECDH("prime256v1"),
@@ -214,7 +232,7 @@ await test("delivery pins the checked IP and TLS name, never follows redirects, 
     transport.mock.restore();
     syncBuiltinESMExports();
   });
-  assert.equal(await sendPush(subscription, 1, policy, key), 302);
+  assert.equal(await sendPush(subscription, message, policy, key), 302);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].hostname, "8.8.8.8");
   assert.equal(requests[0].servername, "push.example");
@@ -225,11 +243,75 @@ await test("delivery pins the checked IP and TLS name, never follows redirects, 
   assert.notEqual(requests[0].rejectUnauthorized, false);
   assert.equal(payloads.length, 1);
   address = "127.0.0.1";
-  await assert.rejects(sendPush(subscription, 1, policy, key), TypeError);
+  await assert.rejects(sendPush(subscription, message, policy, key), TypeError);
   assert.equal(requests.length, 1);
   address = "8.8.8.8";
   status = 201;
-  assert.equal(await sendPush(subscription, 2, policy, key), 201);
+  assert.equal(await sendPush(subscription, message, policy, key), 201);
   assert.equal(requests.length, 2);
   assert.equal(resolutions, 3);
+});
+
+await test("guest previews preserve original text, urgency and replacement identity without trusting URLs", () => {
+  const item = {
+    id: 17,
+    source: { instance: "drv.run.guest", incarnation: "vm", terminal: "dbus-root/server" },
+    record: "notification/1",
+    received: 1234,
+    delivery: "pending",
+    read: false,
+    event: {
+      type: "notify",
+      notification: {
+        id: 1,
+        app: "build",
+        summary: "Build failed",
+        body: "Original error\nSecond line",
+        urgency: 2,
+        expires: 0,
+      },
+    },
+  } as const;
+  const preview = pushMessage(item);
+  assert.equal(preview.title, "Build failed");
+  assert.equal(preview.body, "Original error\nSecond line");
+  assert.equal(preview.url, "/sessions");
+  assert.equal(preview.timestamp, 1234);
+  assert.equal(preview.requireInteraction, true);
+  assert.equal(preview.silent, false);
+  assert.equal(preview.tag, pushMessage({ ...item, id: 18 }).tag);
+  assert.notEqual(preview.tag, pushMessage({ ...item, record: "notification/2" }).tag);
+  const fallback = pushMessage({
+    ...item,
+    event: {
+      type: "notify",
+      notification: { ...item.event.notification, summary: "", body: "", urgency: 0 },
+    },
+  });
+  assert.equal(fallback.title, "build");
+  assert.equal(fallback.body, "build has an update.");
+  assert.equal(fallback.silent, true);
+  assert.equal(fallback.requireInteraction, false);
+});
+
+await test("rich push encoding fits a single 4096-byte encrypted message even with escaped Unicode", () => {
+  const ec = createECDH("prime256v1");
+  const subscription = {
+    endpoint: "https://push.example/id",
+    keys: {
+      p256dh: ec.generateKeys().toString("base64url"),
+      auth: randomBytes(16).toString("base64url"),
+    },
+  };
+  for (const body of ["\n".repeat(2048), '"'.repeat(2048), "🙂".repeat(1024), "x".repeat(10000)]) {
+    const payload = { ...message, body };
+    const encoded = encodePushMessage(payload);
+    assert(encoded.length <= 3993);
+    assert(encryptedPush(subscription, payload).length <= 4096);
+    const decoded = JSON.parse(encoded.toString());
+    assert.equal(decoded.url, message.url);
+    assert.equal(decoded.title, message.title);
+    assert.equal(decoded.body.isWellFormed(), true);
+  }
+  assert.throws(() => encodePushMessage({ ...message, title: "x".repeat(5000) }));
 });

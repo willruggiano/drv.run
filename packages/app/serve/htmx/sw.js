@@ -1,5 +1,5 @@
 // Cache only public assets and a static offline page, never session HTML or SSE.
-const CACHE = "pi-hypermedia-shell-v4";
+const CACHE = "pi-hypermedia-shell-v5";
 const SHELL = ["/sessions/offline", "/sessions/manifest.webmanifest", "/styles.css", "/htmx/client.js", "/htmx/vendor.js", "/htmx/sse.js", "/htmx/morph.js", "/highlight.js", "/icon.svg", "/icon-192.png", "/icon-512.png"];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));
@@ -24,19 +24,43 @@ self.addEventListener("fetch", event => {
     return cached ?? Response.error();
   }));
 });
+// Destinations are host-generated identities, not links supplied by message text.
+function destination(value) {
+  return typeof value === "string" && /^\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/conversations\/[1-9][0-9]*$/.test(value)
+    ? value : "/sessions";
+}
+function text(value, fallback, limit) {
+  return typeof value === "string" && value.trim() ? value.slice(0, limit) : fallback;
+}
+function icon(value) {
+  return typeof value === "string" && /^\/icon(?:-(?:192|512)\.png|\.svg)$/.test(value) ? value : "/icon-192.png";
+}
 self.addEventListener("push", event => {
-  let activity;
-  try { activity = event.data?.json()?.activity; } catch { return; }
-  if (!Number.isSafeInteger(activity) || activity < 1) return;
-  event.waitUntil(self.registration.showNotification("drv.run activity", {
-    body: "An application has an update. Open your activity inbox.",
-    icon: "/icon-192.png", tag: `drv-run-${activity}`, data: { activity },
+  let message;
+  try { message = event.data?.json(); } catch { return; }
+  if (!message || !Number.isSafeInteger(message.activity) || message.activity < 1) return;
+  const url = destination(message.url);
+  event.waitUntil(self.registration.showNotification(text(message.title, "drv.run activity", 256), {
+    body: text(message.body, "An application has an update. Open drv.run to view it.", 4096),
+    icon: icon(message.icon), badge: icon(message.badge),
+    tag: text(message.tag, `drv-run-${message.activity}`, 256),
+    timestamp: Number.isSafeInteger(message.timestamp) && message.timestamp >= 0 ? message.timestamp : Date.now(),
+    dir: ["auto", "ltr", "rtl"].includes(message.dir) ? message.dir : "auto",
+    lang: text(message.lang, "", 64),
+    silent: message.silent === true,
+    renotify: message.renotify === true,
+    requireInteraction: message.requireInteraction === true,
+    actions: [{ action: "open", title: text(message.action, url === "/sessions" ? "Open sessions" : "Open conversation", 128) }],
+    data: { activity: message.activity, url },
   }));
 });
 self.addEventListener("notificationclick", event => {
   event.notification.close();
-  const activity = event.notification.data?.activity;
-  if (!Number.isSafeInteger(activity) || activity < 1) return;
-  // Fixed same-origin route: no URL or approval action comes from the producer.
-  event.waitUntil(self.clients.openWindow(`/activity#activity-${activity}`));
+  const url = destination(event.notification.data?.url);
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const existing = windows.find(client => client.url === new URL(url, self.location.origin).href);
+    if (existing) await existing.focus();
+    else await self.clients.openWindow(url);
+  })());
 });

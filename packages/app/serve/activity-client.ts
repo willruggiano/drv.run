@@ -96,7 +96,7 @@ events.onmessage = (event: MessageEvent<string>) => {
       if (
         item.source.instance === "host-pi" &&
         /^[0-9a-f-]{36}$/.test(item.source.incarnation) &&
-        /^\d+\/\d+$/.test(item.record)
+        /^[1-9][0-9]*(?:\/[1-9][0-9]*)?$/.test(item.record)
       ) {
         const link = element("a", "Open conversation");
         link.href = `/sessions/${item.source.incarnation}/conversations/${item.record.split("/")[0]}`;

@@ -7,8 +7,13 @@ Status: partially implemented. The requirements below remain the target design.
 - `packages/app/serve/activity.ts`: durable owner-local registry, activity
   history, transition policy, replay deduplication, quotas, and pending
   delivery.
-- `packages/app/serve/notifications.ts`: native Pi task observation and the live
-  `/activity` inbox. This adapter does not collect prompts or model output.
+- `packages/app/serve/notifications.ts`: native Pi run-settlement observation
+  and the live `/activity` inbox. It observes ownerless conversations through
+  Durable `watchEvents`: `run_end` alerts only when no successor run or queued
+  input remains. Generation/turn ends, compaction ends and task-owned helper
+  conversations do not alert. Snapshots are baselines, not historical alerts.
+  Completion previews use the final assistant text (never reasoning, tool
+  arguments or prompts); failures use their error message.
 - `packages/app/serve/push.ts`: Web Push encryption, VAPID, and destination
   checks. Browser subscriptions are opt-in; failed delivery does not delete
   activity.
@@ -17,10 +22,11 @@ Status: partially implemented. The requirements below remain the target design.
   by `services.pi.user`. It contains a P-256 private JWK. The VAPID key stays on
   the host; it must not enter the guest seed image.
 
-Not implemented: the persistent PTY observer, guest relay and seed attribution,
-D-Bus server, and terminal reconnect links. Native Pi observation is not a
-substitute for detached terminal coverage. No guest notification ingress is
-exposed by the current implementation.
+Guest D-Bus forwarding and instance-bound SSH collection are implemented in
+`notification-guest.ts`, `notification-relay.ts` and the guest/host NixOS
+modules. The persistent PTY observer and terminal reconnect links remain
+unimplemented. Native Pi observation is not a substitute for detached terminal
+coverage.
 
 ## Decision
 
@@ -304,10 +310,28 @@ instead of attaching to a newly created session with the same name.
 
 The PWA provides a live cross-VM status view and durable activity inbox,
 including source availability and delivery failures. Web Push is opt-in and
-replaceable. Use a privacy-preserving default payload without guest message text
-on the lock screen. Keep subscriptions and delivery credentials on the host,
-outside guests. Push failure, expiry, or lack of browser support must not remove
-inbox activity.
+replaceable. Encrypted push payloads include message previews: the conversation
+name and final assistant text for native Pi events, or the original summary and
+body for guest notifications. **These previews may appear on the lock screen.**
+Only text content is included; reasoning and tool arguments are excluded. Titles
+and bodies are bounded UTF-8 plain text with fallbacks, and the complete
+encrypted message stays within the 4096-byte Web Push limit (long previews are
+truncated).
+
+Native pushes open `/sessions/<session UUID>/conversations/<conversation ID>`
+directly. The host derives this path from its own identities, never message
+text. Guest D-Bus events have no conversation identity, so their fallback is
+`/sessions`, not an invented conversation or `/activity` link. The worker
+validates destinations again and focuses an existing exact-match window when
+possible. Older ID-only pushes also fall back to `/sessions`.
+
+Replacement tags are scoped to the source and conversation/notification record;
+timestamps come from receipt time. Guest urgency controls silent and persistent
+presentation where supported by the browser, but cannot bypass delivery quotas.
+Only bundled same-origin icons are used; missing presentation fields have safe
+fallbacks. Keep subscriptions and delivery credentials on the host, outside
+guests. Push failure, expiry, or lack of browser support must not remove inbox
+activity.
 
 ## Rollout and acceptance
 

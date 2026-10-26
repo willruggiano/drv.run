@@ -66,3 +66,28 @@ await test("D-Bus inbox keeps text inert and read state separate from notificati
   assert.equal(activity.sources()[0].notifications.length, 0);
   assert.deepEqual(b.errors, []);
 });
+
+await test("settled Pi inbox entries link directly to the conversation", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const activity = new Activity(":memory:");
+  const notifications = new Notifications(activity, { activity: activityDefaults, push: null });
+  t.after(() => notifications.close());
+  const b = await browserFixture(t, f.sessions, undefined, notifications);
+  activity.accept({ instance: "host-pi", incarnation: session.id, terminal: "api" }, 1, {
+    type: "status",
+    record: {
+      id: String(session.root.id),
+      state: "done",
+      title: "My conversation",
+      msg: "Original response",
+    },
+  });
+  await b.page.goto(b.base + "/activity");
+  const link = b.page.getByRole("link", { name: "Open conversation", exact: true });
+  const path = `/sessions/${session.id}/conversations/${session.root.id}`;
+  assert.equal(await link.getAttribute("href"), path);
+  await link.click();
+  await b.page.waitForURL(b.base + path);
+  assert.deepEqual(b.errors, []);
+});

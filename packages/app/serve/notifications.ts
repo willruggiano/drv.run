@@ -3,13 +3,7 @@ import { readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonWebKey } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import {
-  Activity,
-  object,
-  type ActivityOptions,
-  type ActivitySource,
-  type ProgramStatus,
-} from "./activity.ts";
+import { Activity, object, type ActivityOptions } from "./activity.ts";
 import { FormError } from "./forms.ts";
 import { html as h, renderHTML } from "./html.ts";
 import {
@@ -21,9 +15,8 @@ import {
   type PushPolicy,
 } from "./push.ts";
 import type { Session } from "./sessions.ts";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { CommitPublication, TaskRecord } from "@earendil-works/pi-durable";
-import type { JsonValue } from "@earendil-works/chord";
+import { attachPiNotifications } from "./pi-notifications.ts";
+import { pushMessage } from "./push-message.ts";
 
 export type NotificationConfig = {
   activity: ActivityOptions;
@@ -37,7 +30,7 @@ export class Notifications {
   private timer?: ReturnType<typeof setTimeout>;
   private stopping = false;
   private delivery?: Promise<void>;
-  private readonly releases = new Set<() => void>();
+  private readonly releases = new Set<() => Promise<void>>();
   private readonly send: typeof sendPush;
   private readonly relay?: NotificationRelay;
   constructor(activity: Activity, config: NotificationConfig, key?: JsonWebKey, send = sendPush) {
@@ -115,7 +108,8 @@ export class Notifications {
   async close(): Promise<void> {
     this.stopping = true;
     clearTimeout(this.timer);
-    for (const release of this.releases) release();
+    await Promise.all([...this.releases].map((release) => release()));
+    this.releases.clear();
     await this.relay?.close();
     await this.delivery;
     this.activity.close();
@@ -125,7 +119,8 @@ export class Notifications {
     const id = this.activity.takePending();
     if (id === undefined) return;
     const item = this.activity.history(1, id).find((entry) => entry.id === id);
-    if (item?.source.instance.startsWith("drv.run.") && !this.relay?.current(item.source)) {
+    if (!item) return;
+    if (item.source.instance.startsWith("drv.run.") && !this.relay?.current(item.source)) {
       this.activity.delivered(id, "disabled");
       this.activity.unavailable(item.source);
       return;
@@ -159,7 +154,7 @@ export class Notifications {
     await Promise.all(
       subscriptions.map(async (subscription) => {
         try {
-          const status = await this.send(subscription, id, push, key);
+          const status = await this.send(subscription, pushMessage(item), push, key);
           if (status === 404 || status === 410) this.activity.unsubscribe(subscription.endpoint);
           else if (status < 200 || status >= 300) failed = true;
           else succeeded = true;
@@ -171,91 +166,14 @@ export class Notifications {
     if (failed && attempts < 3) return;
     this.activity.delivered(id, failed ? "failed" : succeeded ? "sent" : "disabled");
   }
-  /** Native Durable task events: no terminal, OSC, transcript or model text. */
+  /** Pi run settlement, not individual generation or compaction completion. */
   async attach(session: Session): Promise<void> {
-    const source: ActivitySource = {
-      instance: "host-pi",
-      incarnation: session.id,
-      terminal: "api",
-    };
-    let sequence = this.activity.sequence(source);
-    let ready = false,
-      lost = false,
-      ended = false;
-    const queue: CommitPublication[] = [];
-    const drain = () => {
-      if (!ready || this.stopping || ended) return;
-      try {
-        for (const publication of queue.splice(0)) {
-          for (const change of publication.changes) {
-            if (change.type !== "task" || !observedTask(change.value)) continue;
-            this.activity.accept(source, ++sequence, {
-              type: "status",
-              record: taskStatus(change.value),
-            });
-          }
-        }
-        if (lost) this.activity.gap(source);
-      } catch (error) {
-        this.activity.unavailable(source);
-        session.owner.options.onReport?.(error);
-      }
-    };
-    const stop = session.harness.subscribeCommits((publication) => {
-      if (
-        !publication.changes.some((change) => change.type === "task" && observedTask(change.value))
-      )
-        return;
-      // Do not perform I/O inside Durable's commit observer.
-      if (queue.length >= 1024) {
-        lost = true;
-        return;
-      }
-      queue.push(publication);
-      queueMicrotask(drain);
-    });
-    const close = session.harness.subscribeClose(() => {
-      stop();
-      this.releases.delete(release);
-      queueMicrotask(() => {
-        drain();
-        ended = true;
-        if (!this.stopping) this.activity.unavailable(source);
-      });
-    });
-    const release = () => {
-      ended = true;
-      stop();
-      close();
-    };
-    this.releases.add(release);
-    try {
-      const paused = (await session.harness.inspect(BACKGROUND_CONTEXT)).scheduling === "paused";
-      const tasks = await session.harness.commit(async (tx) => {
-        const generation = await tx.scanTasks(
-          { kind: "pi.generation", order: "descending" },
-          this.config.activity.records,
-        );
-        const compaction = await tx.scanTasks(
-          { kind: "pi.compaction", order: "descending" },
-          this.config.activity.records,
-        );
-        return [...generation.items, ...compaction.items]
-          .sort((a, b) => b.id - a.id)
-          .slice(0, this.config.activity.records);
-      }, BACKGROUND_CONTEXT);
-      this.activity.accept(source, ++sequence, {
-        type: "snapshot",
-        records: tasks.map((task) => taskStatus(task, paused)),
-      });
-      ready = true;
-      drain();
-    } catch (error) {
-      release();
-      this.releases.delete(release);
-      throw error;
-    }
+    const observer = await attachPiNotifications(session, this.activity);
+    this.releases.add(observer.close);
+    void observer.closed.then(() => this.releases.delete(observer.close));
+    if (this.stopping) await observer.close();
   }
+
   async route(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
     if (request.method === "GET" && url.pathname === "/activity") {
       response.writeHead(200, {
@@ -341,24 +259,4 @@ function numeric(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value))
     throw new TypeError("Invalid configuration number.");
   return value;
-}
-function observedTask(task: TaskRecord<JsonValue, JsonValue, JsonValue>): boolean {
-  return task.kind === "pi.generation" || task.kind === "pi.compaction";
-}
-function taskStatus(
-  task: TaskRecord<JsonValue, JsonValue, JsonValue>,
-  paused = false,
-): ProgramStatus {
-  const state =
-    task.state.status !== "terminal"
-      ? "working"
-      : task.state.outcome.status === "completed"
-        ? "done"
-        : task.state.outcome.status === "aborted"
-          ? "idle"
-          : "error";
-  const record: ProgramStatus = { id: `${task.conversationId}/${task.id}`, state, app: "pi" };
-  return paused && state === "working"
-    ? { ...record, state: "blocked", kind: "question", msg: "Resume required" }
-    : record;
 }

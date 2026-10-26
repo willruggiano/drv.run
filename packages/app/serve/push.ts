@@ -13,6 +13,7 @@ import { BlockList, isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import { checkServerIdentity } from "node:tls";
 import { object } from "./activity.ts";
+import { encodePushMessage, type PushMessage } from "./push-message.ts";
 
 export type PushSubscription = { endpoint: string; keys: { p256dh: string; auth: string } };
 export type PushPolicy = { origins: string[]; subject: string; privateKeyFile: string };
@@ -139,10 +140,10 @@ export function vapidPublic(key: JsonWebKey): string {
     "base64url",
   );
 }
-/** One aes128gcm record, containing only an opaque host activity ID.
+/** One bounded aes128gcm record with the message preview and a host-generated destination.
  * https://www.rfc-editor.org/rfc/rfc8291.html#section-3
  */
-export function encryptedPush(subscription: PushSubscription, activity: number): Buffer {
+export function encryptedPush(subscription: PushSubscription, message: PushMessage): Buffer {
   const peer = bytes(subscription.keys.p256dh, 65),
     auth = bytes(subscription.keys.auth, 16);
   const ecdh = createECDH("prime256v1");
@@ -163,7 +164,7 @@ export function encryptedPush(subscription: PushSubscription, activity: number):
     hkdfSync("sha256", Buffer.from(ikm), salt, Buffer.from("Content-Encoding: nonce\0"), 12),
   );
   const cipher = createCipheriv("aes-128-gcm", cek, nonce);
-  const plain = Buffer.concat([Buffer.from(JSON.stringify({ activity })), Buffer.from([2])]);
+  const plain = Buffer.concat([encodePushMessage(message), Buffer.from([2])]);
   const header = Buffer.alloc(21);
   salt.copy(header);
   header.writeUInt32BE(4096, 16);
@@ -199,14 +200,14 @@ export function vapidAuthorization(
 }
 export async function sendPush(
   subscription: PushSubscription,
-  activity: number,
+  message: PushMessage,
   policy: PushPolicy,
   key: JsonWebKey,
 ): Promise<number> {
   // Validate DNS for *each* attempt, then connect directly to that address. Node's
   // https client does not follow redirects, use proxies, or process Alt-Svc.
   const target = await pushTarget(subscription.endpoint, policy.origins);
-  const body = encryptedPush(subscription, activity);
+  const body = encryptedPush(subscription, message);
   return await new Promise<number>((resolve, reject) => {
     const call = request(
       {
