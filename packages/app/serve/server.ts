@@ -1,10 +1,11 @@
 import { FormError } from "./forms.ts";
 import { Notifications } from "./notifications.ts";
+import { pages } from "./elm/pages.ts";
 import { elmFrontend } from "./elm/frontend.ts";
-import { html as h } from "./html.ts";
+import { html as h, renderHTML } from "./html.ts";
 import { ProxyAuthorization } from "./auth.ts";
 import { authPage } from "./htmx/auth.ts";
-import { hypermedia, html } from "./htmx/frontend.ts";
+import { hypermedia, errorPage, activityPage } from "./htmx/frontend.ts";
 import { openApplication } from "./application.ts";
 import { ownerOptions } from "./instances.ts";
 import { readFile } from "node:fs/promises";
@@ -274,12 +275,14 @@ export function httpServer(
         [
           "/elm/client.js",
           "/elm/main.js",
+          "/elm/site.js",
+          "/elm/sw.js",
           "/htmx/client.js",
           "/htmx/vendor.js",
           "/htmx/sse.js",
           "/htmx/morph.js",
           "/highlight.js",
-          "/activity-client.js",
+          "/htmx/activity.js",
           "/styles.css",
           "/design-system.html",
           "/icon.svg",
@@ -292,12 +295,14 @@ export function httpServer(
         const types: Record<string, string> = {
           "elm/client.js": "text/javascript; charset=utf-8",
           "elm/main.js": "text/javascript; charset=utf-8",
+          "elm/site.js": "text/javascript; charset=utf-8",
+          "elm/sw.js": "text/javascript; charset=utf-8",
           "htmx/client.js": "text/javascript; charset=utf-8",
           "htmx/vendor.js": "text/javascript; charset=utf-8",
           "htmx/sse.js": "text/javascript; charset=utf-8",
           "htmx/morph.js": "text/javascript; charset=utf-8",
           "highlight.js": "text/javascript; charset=utf-8",
-          "activity-client.js": "text/javascript; charset=utf-8",
+          "htmx/activity.js": "text/javascript; charset=utf-8",
           "styles.css": "text/css; charset=utf-8",
           "design-system.html": "text/html; charset=utf-8",
           "icon.svg": "image/svg+xml",
@@ -311,18 +316,66 @@ export function httpServer(
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" rx="28" fill="#101217"/><text x="64" y="90" text-anchor="middle" font-size="92" fill="#9dd5ae">π</text></svg>',
           );
         }
-        if (file === "htmx/sw.js") response.setHeader("Service-Worker-Allowed", "/");
+        if (file.endsWith("/sw.js"))
+          response.setHeader("Service-Worker-Allowed", "/" + file.split("/")[0]);
         const data = await readFile(join(assets, file));
         response.setHeader("Content-Type", types[file]);
         return response.end(data);
       }
-      if (notifications && (url.pathname === "/activity" || url.pathname.startsWith("/activity/")))
-        return await notifications.route(request, response, url);
-      if (url.pathname === "/auth" || url.pathname.startsWith("/auth/"))
+      const frontend = /^\/(elm|htmx)(?:\/|$)/.exec(url.pathname)?.[1];
+      if (
+        frontend &&
+        url.pathname === `/${frontend}/manifest.webmanifest` &&
+        request.method === "GET"
+      ) {
+        response.writeHead(200, { "Content-Type": "application/manifest+json" });
+        response.end(
+          JSON.stringify({
+            id: `/${frontend}`,
+            scope: `/${frontend}`,
+            name: "Pi",
+            short_name: "Pi",
+            start_url: frontend === "elm" ? "/elm" : "/htmx/",
+            display: "standalone",
+            background_color: "#151719",
+            theme_color: "#151719",
+            icons: [192, 512].map((size) => ({
+              src: `/icon-${size}.png`,
+              sizes: `${size}x${size}`,
+              type: "image/png",
+            })),
+          }),
+        );
+        return;
+      }
+      if (frontend && url.pathname.startsWith(`/${frontend}/activity/`) && notifications) {
+        const api = new URL(url);
+        api.pathname = url.pathname.slice(frontend.length + 1);
+        return await notifications.route(request, response, api);
+      }
+      if (url.pathname === "/htmx/activity" && notifications && request.method === "GET") {
+        return activityPage(response);
+      }
+      if (url.pathname === "/htmx/auth" || url.pathname.startsWith("/htmx/auth/"))
         return await authPage(request, response, url, authorization, controller.signal);
-      if (url.pathname === "/elm" || url.pathname.startsWith("/elm/"))
-        return await elmFrontend(request, response, url, sessions, context);
-      if (url.pathname === "/sessions" || url.pathname.startsWith("/sessions/"))
+      if (url.pathname === "/elm" || url.pathname.startsWith("/elm/")) {
+        if (
+          await pages(
+            request,
+            response,
+            url,
+            sessions,
+            context,
+            authorization,
+            controller.signal,
+            settings,
+            notifications,
+          )
+        )
+          return;
+        return await elmFrontend(request, response, url, sessions, context, settings);
+      }
+      if (url.pathname === "/htmx" || url.pathname.startsWith("/htmx/"))
         return await hypermedia(
           request,
           response,
@@ -334,8 +387,12 @@ export function httpServer(
         );
       if (url.pathname === "/") {
         if (request.method !== "GET") throw new RequestError(405, "Method not allowed.");
-        response.writeHead(303, { Location: "/sessions" });
-        response.end();
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(
+          renderHTML(
+            h`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>drv.run</title><link rel="stylesheet" href="/styles.css"></head><body><main class="frontend-chooser"><a href="/elm">elm &gt;</a><a href="/htmx/">htmx &gt;</a></main></body></html>`,
+          ),
+        );
         return;
       }
       throw new RequestError(404, "Not found.");
@@ -358,7 +415,12 @@ export function httpServer(
                   ]
                 : 500;
       if (status === 500) console.error(error);
-      if (request.url?.startsWith("/elm/")) {
+      if (
+        request.url?.startsWith("/elm") &&
+        (request.method !== "GET" ||
+          new URL(request.url, "http://localhost").searchParams.has("data") ||
+          /\/(events|command|panel|receipt|completions|directories)(?:[?]|$)/.test(request.url))
+      ) {
         response.writeHead(status, { "Content-Type": "application/json" });
         response.end(
           JSON.stringify({
@@ -372,15 +434,20 @@ export function httpServer(
         );
         return;
       }
-      if (request.headers["hx-request"] === "true") {
-        response.setHeader("HX-Retarget", "#request-error");
-        response.setHeader("HX-Reselect", "#form-error");
-        response.setHeader("HX-Reswap", "innerHTML");
+      if (!request.url?.startsWith("/htmx")) {
+        response.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(
+          renderHTML(
+            h`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Request failed</title><link rel="stylesheet" href="/styles.css"></head><body><main><h1>Request failed</h1><p>${status === 500 ? "Internal server error." : error instanceof Error ? error.message : "Request failed."}</p><a href="${request.url?.startsWith("/elm") ? "/elm" : "/"}">Back</a></main></body></html>`,
+          ),
+        );
+        return;
       }
-      return html(
+      return errorPage(
+        request,
         response,
-        h`<h1>Request failed</h1><p id="form-error">${error instanceof Error ? error.message : "Internal server error."}</p><p><a href="/sessions">Sessions</a></p>`,
         status,
+        error instanceof Error ? error.message : "Internal server error.",
       );
     });
   });

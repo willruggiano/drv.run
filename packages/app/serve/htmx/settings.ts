@@ -1,12 +1,10 @@
 import type { Htmx, HtmxRequestCtx } from "htmx.org";
 declare const htmx: Htmx;
 
-export const localPreferences = {
-  "wrap-code": { key: "pi.html.wrap-code", fallback: false },
-  "bottom-align": { key: "pi.bottomAlign", fallback: true },
-} as const;
+import { installPreferences } from "../pwa.ts";
 
 export function installSettings() {
+  installPreferences();
   // Serialize autosaves and drain them before following a navigation link.
   const saves = new WeakMap<HTMLFormElement, Promise<boolean>>();
   const refreshedForms = new WeakMap<HtmxRequestCtx, HTMLFormElement>();
@@ -58,15 +56,6 @@ export function installSettings() {
   document.addEventListener("change", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLSelectElement)) return;
-    const preference = target.dataset.preference;
-    if (preference === "wrap-code" || preference === "bottom-align") {
-      document.body.classList.toggle(preference, target.value === "true");
-      try {
-        localStorage.setItem(localPreferences[preference].key, target.value);
-      } catch {
-        /* Optional local preference. */
-      }
-    }
     const form = target.closest<HTMLFormElement>("form[data-autosave]");
     if (form) {
       form.dataset.dirty = "true";
@@ -110,12 +99,4 @@ export function installSettings() {
     },
     true,
   );
-  try {
-    for (const [name, { key, fallback }] of Object.entries(localPreferences)) {
-      const stored = localStorage.getItem(key);
-      document.body.classList.toggle(name, stored === null ? fallback : stored === "true");
-    }
-  } catch {
-    /* Optional local preference. */
-  }
 }

@@ -311,7 +311,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
   // a new transcript entry (including updates from another browser).
   assert.equal(
     (
-      await post(`${base}/sessions/settings`, {
+      await post(`${base}/htmx/settings`, {
         ...Object.fromEntries(
           settingFields
             .filter((field) => !("readonly" in field))

@@ -88,16 +88,16 @@ await test("/auth is unauthenticated but mutations require same-origin POSTs and
     undefined,
     control.authorization,
   );
-  const page = await fetch(base + "/auth");
+  const page = await fetch(base + "/htmx/auth");
   assert.equal(page.status, 200);
   assert.equal(page.headers.get("cache-control"), "no-store");
   await page.body?.cancel();
   for (const [path, options, code] of [
-    ["/auth/login", { method: "GET" }, 404],
-    ["/auth/login", { method: "POST" }, 403],
-    ["/auth/login", { method: "POST", headers: { Origin: "http://attacker.invalid" } }, 403],
-    ["/auth/logout", { method: "POST", headers: { Origin: "null" } }, 403],
-    ["/auth", { method: "DELETE", headers: { Origin: base } }, 405],
+    ["/htmx/auth/login", { method: "GET" }, 404],
+    ["/htmx/auth/login", { method: "POST" }, 403],
+    ["/htmx/auth/login", { method: "POST", headers: { Origin: "http://attacker.invalid" } }, 403],
+    ["/htmx/auth/logout", { method: "POST", headers: { Origin: "null" } }, 403],
+    ["/htmx/auth", { method: "DELETE", headers: { Origin: base } }, 405],
   ] as const) {
     const response = await fetch(base + path, options);
     assert.equal(response.status, code);
@@ -106,7 +106,7 @@ await test("/auth is unauthenticated but mutations require same-origin POSTs and
   }
   const rebound = await new Promise<number | undefined>((resolve, reject) => {
     const call = request(
-      base + "/auth/login",
+      base + "/htmx/auth/login",
       { method: "POST", headers: { Origin: base, Host: "attacker.invalid" } },
       (response) => {
         response.resume();
@@ -118,13 +118,13 @@ await test("/auth is unauthenticated but mutations require same-origin POSTs and
   });
   assert.equal(rebound, 403);
   assert.equal((await control.authorization.status()).state, "not-enrolled");
-  const enrolled = await post(base + "/auth/login?user=bob", { user: "bob" });
+  const enrolled = await post(base + "/htmx/auth/login?user=bob", { user: "bob" });
   assert.equal(enrolled.status, 303);
-  assert.equal(enrolled.headers.get("location"), "/auth");
+  assert.equal(enrolled.headers.get("location"), "/htmx/auth");
   assert.equal((await control.authorization.status()).userId, 1);
   assert.equal((await control.authorization.status()).state, "authorizing");
   control.approve();
-  const removed = await post(base + "/auth/logout", {});
+  const removed = await post(base + "/htmx/auth/logout", {});
   assert.equal(removed.status, 303);
   assert.equal((await control.authorization.status()).state, "not-enrolled");
 });

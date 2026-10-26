@@ -2,7 +2,13 @@ import type { HtmxRequestCtx } from "htmx.org";
 import { composer, controls, resizePrompt, updateSend, report } from "./dom.ts";
 import { previews } from "./attachments.ts";
 import { closeCompletions } from "./completions.ts";
-type Draft = { text: string; files: File[]; requestId: string; creationId?: string };
+type Draft = {
+  text: string;
+  files: File[];
+  requestId: string;
+  creationId?: string;
+  options?: Record<string, string>;
+};
 const drafts = new Map<string, Draft>();
 const requestPages = new WeakMap<HtmxRequestCtx, number>();
 let pageRevision = 0;
@@ -17,19 +23,28 @@ function saveDraft() {
     files: Array.from(files.files ?? []),
     requestId: request.value,
     creationId: form.querySelector<HTMLInputElement>('[name="id"]')?.value,
+    options: form.classList.contains("new-composer")
+      ? Object.fromEntries(
+          Array.from(
+            form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("#new-options [name]"),
+            (field) => [field.name, field.value],
+          ),
+        )
+      : undefined,
   };
   storeDraft(form.action, draft);
 }
 function storeDraft(key: string, draft: Draft) {
   drafts.set(key, draft);
   try {
-    if (draft.text)
+    if (draft.text || draft.creationId)
       sessionStorage.setItem(
         `pi.html.draft:${key}`,
         JSON.stringify({
           text: draft.text,
           requestId: draft.requestId,
           creationId: draft.creationId,
+          options: draft.options,
         }),
       );
     else sessionStorage.removeItem(`pi.html.draft:${key}`);
@@ -64,6 +79,14 @@ export function restoreDraft(form: HTMLFormElement) {
           text: saved.text,
           requestId: saved.requestId,
           files: [],
+          options:
+            "options" in saved && saved.options && typeof saved.options === "object"
+              ? Object.fromEntries(
+                  Object.entries(saved.options).filter(
+                    (entry): entry is [string, string] => typeof entry[1] === "string",
+                  ),
+                )
+              : undefined,
           creationId:
             "creationId" in saved && typeof saved.creationId === "string"
               ? saved.creationId
@@ -79,7 +102,14 @@ export function restoreDraft(form: HTMLFormElement) {
     text.value = draft.text;
     request.value = draft.requestId;
     const id = form.querySelector<HTMLInputElement>('[name="id"]');
-    if (id && draft.creationId && (draft.text || draft.files.length)) id.value = draft.creationId;
+    if (id && draft.creationId) id.value = draft.creationId;
+    if (draft.options)
+      for (const field of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+        "#new-options [name]",
+      )) {
+        const value = draft.options[field.name];
+        if (value !== undefined) field.value = value;
+      }
     const transfer = new DataTransfer();
     draft.files.forEach((file) => transfer.items.add(file));
     files.files = transfer.files;

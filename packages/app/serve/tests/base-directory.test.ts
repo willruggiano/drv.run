@@ -33,7 +33,7 @@ await test("HTML base directory is stored in Durable cwd, validates input, and d
   const create = async (baseDirectory?: string) => {
     const id = randomUUID();
     const response = await post(
-      "/sessions",
+      "/htmx/",
       new URLSearchParams({
         id,
         target: targetKey(f.binding),
@@ -58,7 +58,7 @@ await test("HTML base directory is stored in Durable cwd, validates input, and d
   malformed.set("target", targetKey(f.binding));
   malformed.set("model", modelKey(model));
   malformed.set("baseDirectory", new Blob(["not a text field"]), "path.txt");
-  assert.equal((await post("/sessions", malformed)).status, 400);
+  assert.equal((await post("/htmx/", malformed)).status, 400);
   const { id } = await create("one");
   const session = await f.sessions.get(id);
   const configure = (baseDirectory: string) =>
@@ -82,7 +82,7 @@ await test("HTML base directory is stored in Durable cwd, validates input, and d
   const directories = (query: string) =>
     fetch(
       base +
-        "/sessions/directories?" +
+        "/htmx/directories?" +
         new URLSearchParams({
           target: targetKey(f.binding),
           baseDirectory: query,

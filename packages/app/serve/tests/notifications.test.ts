@@ -84,10 +84,10 @@ await test("inbox and subscriptions retain the existing same-origin boundary", a
   const address = server.address();
   assert(address && typeof address === "object");
   const base = `http://127.0.0.1:${address.port}`;
-  assert.equal((await fetch(base + "/activity")).status, 200);
+  assert.equal((await fetch(base + "/htmx/activity")).status, 200);
   const id = activity.history()[0].id;
   const write = (origin?: string) =>
-    fetch(base + "/activity/read", {
+    fetch(base + "/htmx/activity/read", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) },
       body: JSON.stringify({ id }),
@@ -98,7 +98,7 @@ await test("inbox and subscriptions retain the existing same-origin boundary", a
   assert.equal((await write(base)).status, 204);
   assert.equal(activity.history()[0].read, true);
   assert.equal(activity.sources()[0].records[0].state, "blocked");
-  const response = await fetch(base + "/activity/subscribe", {
+  const response = await fetch(base + "/htmx/activity/subscribe", {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: base },
     body: "{}",

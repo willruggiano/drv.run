@@ -149,12 +149,14 @@ await test("message alignment is a persistent browser preference shared across s
       true,
     );
     await returnToConversation(page);
+    await page.locator(`#session-list a[href="/htmx/sessions/${path.split("/")[3]}"]`).click();
     await aligned(bottom);
     await page.reload();
     await aligned(bottom);
     await openGlobalSettings(page);
     assert.equal(await page.locator("#bottom-align").inputValue(), String(bottom));
     await returnToConversation(page);
+    await page.locator(`#session-list a[href="/htmx/sessions/${path.split("/")[3]}"]`).click();
   }
   await page.goto(b.base + paths[0]);
   await aligned(true);
@@ -174,6 +176,7 @@ await test("message alignment is a persistent browser preference shared across s
     assert.equal(await page.locator("#bottom-align").inputValue(), "true");
     await page.locator("#bottom-align").selectOption("false");
     await returnToConversation(page);
+    await page.locator(`#session-list a[href="/htmx/sessions/${path.split("/")[3]}"]`).click();
     await aligned(false);
     await page.reload();
     await aligned(true);
@@ -277,10 +280,10 @@ await test("panel headers respect safe areas, stay above scrolling content and c
   });
   const panels = [
     {
-      url: `/sessions/settings?return=${encodeURIComponent(path)}`,
-      title: "Default preferences",
+      url: "/htmx/settings",
+      title: "Global settings",
       pane: "#global-preferences",
-      composer: true,
+      composer: false,
     },
     { url: `${path}/context`, title: "Context", pane: "#context-view", composer: false },
   ];
@@ -320,18 +323,19 @@ await test("panel headers respect safe areas, stay above scrolling content and c
       assert.deepEqual(await bar.boundingBox(), header);
       assert.deepEqual(await close.boundingBox(), button);
       await close.click();
-      await page.waitForURL(b.base + path);
-      await page.locator("#conversation-scroll").waitFor();
+      await page.waitForURL(b.base + (panel.pane === "#global-preferences" ? "/htmx/" : path));
+      await page
+        .locator(panel.pane === "#global-preferences" ? "#landing" : "#conversation-scroll")
+        .waitFor();
     }
-    await page.goto(b.base + "/sessions");
+    await page.goto(b.base + "/htmx/");
     await page.locator("#landing").waitFor();
-    assert.equal(await page.locator("#app-header > .bar").isVisible(), false);
-    assert.equal((await page.locator("#main-area").boundingBox())?.y, 47);
+    assert.equal(await page.locator("#app-header > .bar").isVisible(), true);
   }
-  await page.goto(b.base + "/sessions/settings");
+  await page.goto(b.base + "/htmx/settings");
   assert.equal(await page.locator("#app-footer").isVisible(), false);
   await page.locator("#close-view").click();
-  await page.waitForURL(b.base + "/sessions");
+  await page.waitForURL(b.base + "/htmx/");
   await page.locator("#landing").waitFor();
   assert.deepEqual(b.errors, []);
 });
@@ -342,7 +346,7 @@ await test("session settings center above the composer without a header or save 
   const b = await browserFixture(t, f.sessions);
   const page = b.page;
   const path = conversationURL(session);
-  await page.goto(b.base + "/sessions");
+  await page.goto(b.base + "/htmx/");
   const fallback = await page.locator(".session-heading strong").textContent();
   assert.equal(fallback, "Untitled session");
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -419,7 +423,7 @@ await test("recent sessions and session settings share a compact, horizontally a
   for (const page of [b.page, await b.browser.newPage()]) {
     for (const width of [320, 390, 650, 651, 1199, 1200, 1440, 1920]) {
       await page.setViewportSize({ width, height: 900 });
-      await page.goto(b.base + "/sessions");
+      await page.goto(b.base + "/htmx/");
       assert.equal(await page.locator("#session-list a").count(), 5);
       const landing = await page.locator("#landing > div").boundingBox();
       const title = await page
@@ -643,7 +647,7 @@ await test("attachment thumbnails remove only the selected file by pointer or ke
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6Z9kAAAAASUVORK5CYII=",
     "base64",
   );
-  for (const path of ["/sessions", conversationURL(session)]) {
+  for (const path of ["/htmx/", conversationURL(session)]) {
     await page.goto(b.base + path);
     await page
       .locator("#images")
@@ -692,7 +696,7 @@ await test("attachment thumbnails remove only the selected file by pointer or ke
     await page.keyboard.press("Space");
     assert.deepEqual(await files(), []);
     assert.equal(await page.locator("#previews").isVisible(), false);
-    if (path !== "/sessions") assert.equal(await page.locator("#send").isDisabled(), true);
+    if (path !== "/htmx/") assert.equal(await page.locator("#send").isDisabled(), true);
     assert.equal(new URL(page.url()).pathname, path);
   }
   assert.equal((await f.sessions.catalog(context)).sessions.length, 1);
@@ -841,7 +845,7 @@ await test("image attachments have no baseline gap and use compact bottom spacin
 await test("tool status icons keep the completed icon dimensions without shifting the label", async (t) => {
   const f = await fixture(t);
   const { page, base } = await browserFixture(t, f.sessions);
-  await page.goto(base + "/sessions");
+  await page.goto(base + "/htmx/");
   await page.setContent(
     renderHTML(
       html`<link rel="stylesheet" href="${base}/styles.css" />
@@ -920,7 +924,7 @@ await test("transcripts have no action controls, session indicator, or reserved 
           () => document.querySelector("#connection")?.textContent === "Connected",
         );
       const absent =
-        '#status, .session-status, .status-menu, .entry-actions, .message-actions, .action-menu, #message-menu, #transcript button, #live button, [data-copy-source], a[href="/auth"]';
+        '#status, .session-status, .status-menu, .entry-actions, .message-actions, .action-menu, #message-menu, #transcript button, #live button, [data-copy-source], a[href="/htmx/auth"]';
       assert.equal(await page.locator(absent).count(), 0);
       const message = page.locator('#transcript article[data-role="user"]');
       assert.equal(
@@ -953,7 +957,7 @@ await test("transcripts have no action controls, session indicator, or reserved 
       await page.locator(".tool-call > summary").click();
       assert.equal(await page.locator(".tool-result").isVisible(), true);
       assert.equal(await page.locator(absent).count(), 0);
-      for (const path of [conversationURL(session), "/sessions?view=sessions"]) {
+      for (const path of [conversationURL(session), "/htmx/"]) {
         await page.goto(b.base + path);
         const geometry = await page.evaluate(() => {
           const main = document.querySelector("#main-area")!;
@@ -1000,12 +1004,12 @@ await test("scrollbars stay hidden site-wide while both axes retain native scrol
     page.on("pageerror", (error) => b.errors.push(error));
     for (const route of [
       path,
-      "/sessions?view=sessions",
+      "/htmx/",
       `${path}/settings`,
       `${path}/context`,
-      "/sessions/settings",
-      "/auth",
-      "/sessions/offline",
+      "/htmx/settings",
+      "/htmx/auth",
+      "/htmx/offline",
       "/design-system.html",
     ]) {
       await page.goto(b.base + route);
@@ -1231,10 +1235,10 @@ await test("mobile footer navigates sessions and collapses without losing drafts
   await page.keyboard.press("Space");
   assert.equal(await page.locator("#composer-shell").isVisible(), false);
   await page.getByRole("link", { name: "Sessions", exact: true }).tap();
-  await page.locator("#picker").waitFor();
-  assert.equal(new URL(page.url()).searchParams.get("return"), path);
+  await page.locator("#landing").waitFor();
+  assert.equal(new URL(page.url()).pathname, "/htmx/");
   assert.equal(await page.locator("#footer-collapse").count(), 0);
-  await page.locator('#session-list a[aria-current="true"]').click();
+  await page.locator(`#session-list a[href="/htmx/sessions/${session.id}"]`).click();
   await page.locator("#conversation-scroll").waitFor();
   assert.equal(await page.locator("#footer-collapse").getAttribute("aria-expanded"), "true");
   assert.equal(
@@ -1257,8 +1261,8 @@ await test("mobile footer navigates sessions and collapses without losing drafts
   assert.equal(await plain.locator("#footer-collapse").isVisible(), false);
   assert.equal(await plain.locator("#composer-shell").isVisible(), true);
   await plain.getByRole("link", { name: "Sessions", exact: true }).click();
-  await plain.locator("#picker").waitFor();
-  assert.equal(new URL(plain.url()).searchParams.get("return"), path);
+  await plain.locator("#landing").waitFor();
+  assert.equal(new URL(plain.url()).pathname, "/htmx/");
   assert.deepEqual(b.errors, []);
   await prompt.dispose();
 });

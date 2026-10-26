@@ -1,5 +1,13 @@
 import { BranchTree, type Branch } from "../branches.ts";
-import { FormError, form, field, inputContent, saveSessionSettings } from "../forms.ts";
+import {
+  FormError,
+  form,
+  field,
+  inputContent,
+  saveSessionSettings,
+  createSession,
+  saveGlobalSettings,
+} from "../forms.ts";
 import {
   conversationURL,
   history,
@@ -15,7 +23,6 @@ import type { Context } from "@earendil-works/chord/context";
 import type { EntryId, SubmissionId, Conversation } from "@earendil-works/pi-durable";
 import type { ContextInspection } from "../inspection.ts";
 import type { GlobalSettingsStore } from "../server.ts";
-import { settingFields } from "../settings.ts";
 import {
   commands,
   commandCompletions,
@@ -35,15 +42,7 @@ import {
   timing,
   contextHTML,
 } from "./render.ts";
-import {
-  createForm,
-  options,
-  sessionForm,
-  globalForm,
-  thinking,
-  modelKey,
-  targetKey,
-} from "./forms.ts";
+import { createForm, options, sessionForm, globalForm, modelKey, targetKey } from "./forms.ts";
 import {
   InboxDoc,
   LiveDoc,
@@ -69,14 +68,13 @@ import {
   contextStatus,
   Environment,
   Metadata,
-  SessionError,
   type Sessions,
   type Catalog,
   type Session,
   type SessionInfo,
 } from "../sessions.ts";
 
-function sessionRow(item: Catalog["sessions"][number], search: string, back?: string): SafeHtml {
+function sessionRow(item: Catalog["sessions"][number]): SafeHtml {
   const context = item.context;
   const percent =
     context.window && context.lastResponse
@@ -86,12 +84,9 @@ function sessionRow(item: Catalog["sessions"][number], search: string, back?: st
   const environment = h`<span class="session-environment">${item.binding ? `${item.binding.provider === "local" ? "local" : item.binding.target} · ${item.cwd}` : "No execution environment"}</span>`;
   const model = h`<span class="model-summary"><span class="model-name">${item.model?.modelId ?? "No model"}</span><span class="footer-dot" aria-hidden="true"></span><span class="model-effort">${item.thinkingLevel}</span></span>`;
   const usage = h`<span class="context-usage">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${context.window ? compactTokens(context.window) : "?"}${context.autoCompact ? " (auto)" : ""}</span>`;
-  return h`<div class="session-row"><a class="session" href="/sessions/${item.id}" aria-current="${back?.startsWith(`/sessions/${item.id}/`) ?? false}">${heading}<span class="session-detail">${environment}<span class="footer-dot" aria-hidden="true"></span>${model}<span class="footer-dot" aria-hidden="true"></span>${usage}</span></a><form method="post" action="/sessions/${item.id}/archive${search}"><button class="icon session-archive" type="submit" aria-label="Archive session" title="Archive session">${icon("close")}</button></form></div>`;
+  return h`<div class="session-row"><a class="session" href="/htmx/sessions/${item.id}">${heading}<span class="session-detail">${environment}<span class="footer-dot" aria-hidden="true"></span>${model}<span class="footer-dot" aria-hidden="true"></span>${usage}</span></a><form method="post" action="/htmx/sessions/${item.id}/archive"><button class="icon session-archive" type="submit" aria-label="Archive session" title="Archive session">${icon("close")}</button></form></div>`;
 }
 
-function returnPath(value: string | null): string | undefined {
-  return value && /^\/sessions\/[0-9a-f-]+\/conversations\/\d+$/.test(value) ? value : undefined;
-}
 export function htmlPage(
   content: SafeHtml,
   back?: string,
@@ -99,14 +94,14 @@ export function htmlPage(
   conversation = false,
   branches = h``,
 ): string {
-  const sessionsPath = `/sessions${back ? `?return=${encodeURIComponent(back)}` : "?view=sessions"}`;
+  const sessionsPath = "/htmx/";
   const heading = conversation
     ? h`<a id="conversation-title" class="header-title" href="${sessionsPath}" aria-label="Sessions" title="Sessions" data-command="sessions">${title}</a>`
     : h`<span class="header-title">${title}</span>`;
   // htmx must see readyState=loading so initialization waits for DOMContentLoaded,
   // after the deferred extensions and module have registered their handlers.
-  const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/sessions/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
-  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/sessions"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}<p id="request-error" role="alert"></p></header>`;
+  const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/htmx/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
+  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/htmx/"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}<p id="request-error" role="alert"></p></header>`;
   return renderHTML(
     h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${title === "Session settings" || title === "Conversation tree" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
   );
@@ -540,84 +535,23 @@ export async function hypermedia(
   // htmx 4 boosts forms into history even when HX-Reswap is none. Only the
   // explicit HX-Location redirect may navigate after a mutation.
   if (request.method !== "GET") response.setHeader("HX-Push-Url", "false");
-  if (url.pathname === "/sessions") {
+  if (url.pathname === "/htmx/" || url.pathname === "/htmx") {
     if (request.method === "GET") {
       const catalog = await sessions.catalog(context);
-      const query = url.searchParams.get("q")?.toLocaleLowerCase() ?? "";
-      const back = returnPath(url.searchParams.get("return"));
-      const picker = !!back || url.searchParams.get("view") === "sessions";
-      let metadata = h``;
-      if (back) {
-        const parts = back.split("/");
-        const session = await sessions.get(parts[2]);
-        const conversation = await getConversation(session, Number(parts[4]), context);
-        const watch = await conversation.watch(context);
-        try {
-          metadata = await metadataHTML(
-            session,
-            conversation,
-            watch.value,
-            settings,
-            context,
-            false,
-          );
-        } finally {
-          await watch.stop();
-        }
-      }
-      const list = catalog.sessions.filter((item) =>
-        `${item.name} ${item.binding?.target} ${item.id}`.toLocaleLowerCase().includes(query),
-      );
-      const rows = h`${(picker ? list : list.slice(0, 5)).map((item) => sessionRow(item, url.search, back))}`;
+      const rows = h`${catalog.sessions.slice(0, 5).map((item) => sessionRow(item))}`;
       html(
         response,
-        h`<main id="main-area"><section id="${picker ? "picker" : "landing"}" class="pane">${activity ? h`<nav><a href="/activity" hx-boost="false">Activity inbox</a></nav>` : ""}<div>${!picker && rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main><form id="session-filter-form" method="get" action="/sessions" hidden>${back ? hidden("return", back) : hidden("view", "sessions")}</form>${createForm(catalog, randomUUID(), picker, query, metadata)}`,
+        h`<main id="main-area"><section id="landing" class="pane"><nav>${activity ? h`<a href="/htmx/activity" hx-boost="false">Activity inbox</a>` : ""}<a href="/htmx/auth">Auth</a></nav><div>${rows.length ? h`<h2 id="recent-title">Recent sessions</h2>` : ""}<div id="session-list">${rows}</div>${rows.length ? "" : h`<p id="sessions-empty">No sessions</p>`}</div></section></main>${createForm(catalog, randomUUID())}`,
         200,
-        picker ? (back ?? "/sessions") : undefined,
-        picker ? "Sessions" : "No session",
-        !picker,
+        undefined,
+        "Sessions",
       );
 
       return;
     }
     if (request.method === "POST") {
       const data = await form(request, 8 * 1024 * 1024);
-      const catalog = await sessions.catalog(context);
-      const target = catalog.targets.find(
-        (target) =>
-          JSON.stringify([target.provider, target.target]) === field(data, "target", 8192) &&
-          target.available,
-      );
-      const model = catalog.models.find(
-        (model) => JSON.stringify([model.provider, model.modelId]) === field(data, "model", 1024),
-      );
-      if (!target || !model)
-        throw new SessionError("unavailable", "Target or model is unavailable.");
-      const level = optional(data, "thinkingLevel");
-      if (level && !thinking(level)) throw new FormError(400, "Invalid thinking level.");
-      let content = await inputContent(data);
-      if (data.has("command")) {
-        if (
-          field(data, "command", 20) !== "new" ||
-          typeof content !== "string" ||
-          content.trim() !== "/new"
-        )
-          throw new FormError(400, "Invalid creation command.");
-        content = undefined;
-      }
-      const requestId = content === undefined ? undefined : field(data, "requestId", 200);
-      if (requestId !== undefined && !requestId.trim())
-        throw new FormError(400, "Missing request ID.");
-      const baseDirectory = optional(data, "baseDirectory");
-      const session = await sessions.create(
-        field(data, "id", 36),
-        target,
-        { provider: model.provider, modelId: model.modelId },
-        thinking(level),
-        target.directoryRoot ? baseDirectory : baseDirectory || undefined,
-      );
-      if (content !== undefined)
-        await session.root.submit({ type: "input", content, requestId }, context);
+      const session = await createSession(data, sessions, context);
       response.setHeader(
         "HX-Trigger",
         JSON.stringify({
@@ -632,35 +566,17 @@ export async function hypermedia(
     }
     throw new FormError(405, "Method not allowed.");
   }
-  if (url.pathname === "/sessions/offline" && request.method === "GET") {
+  if (url.pathname === "/htmx/offline" && request.method === "GET") {
     html(
       response,
-      h`<h1>Offline</h1><p>Conversation history is not cached in this browser.</p><p><a href="/sessions">Reconnect</a></p>`,
+      h`<h1>Offline</h1><p>Conversation history is not cached in this browser.</p><p><a href="/htmx/">Reconnect</a></p>`,
+      200,
+      undefined,
+      "Offline",
     );
     return;
   }
-  if (url.pathname === "/sessions/manifest.webmanifest" && request.method === "GET") {
-    response.setHeader("Content-Type", "application/manifest+json");
-    response.end(
-      JSON.stringify({
-        id: "/sessions",
-        scope: "/",
-        name: "Pi · Hypermedia",
-        short_name: "Pi",
-        start_url: "/sessions",
-        display: "standalone",
-        background_color: "#151719",
-        theme_color: "#151719",
-        icons: [192, 512].map((size) => ({
-          src: `/icon-${size}.png`,
-          sizes: `${size}x${size}`,
-          type: "image/png",
-        })),
-      }),
-    );
-    return;
-  }
-  if (url.pathname === "/sessions/completions" && request.method === "GET") {
+  if (url.pathname === "/htmx/completions" && request.method === "GET") {
     const query = url.searchParams.get("query") ?? "";
     const items =
       url.searchParams.get("kind") === "command"
@@ -675,14 +591,14 @@ export async function hypermedia(
     );
     return;
   }
-  if (url.pathname === "/sessions/options" && request.method === "GET") {
+  if (url.pathname === "/htmx/options" && request.method === "GET") {
     const values = new URLSearchParams(url.searchParams);
     if (request.headers["hx-source"] === "select#models") values.delete("thinkingLevel");
     if (request.headers["hx-source"] === "select#targets") values.set("baseDirectory", "");
     html(response, options(await sessions.catalog(context), values));
     return;
   }
-  if (url.pathname === "/sessions/directories" && request.method === "GET") {
+  if (url.pathname === "/htmx/directories" && request.method === "GET") {
     const targets = (await sessions.options.targets?.(context)) ?? [];
     const target = targets.find(
       (item) => targetKey(item) === url.searchParams.get("target") && item.available,
@@ -699,58 +615,35 @@ export async function hypermedia(
     );
     return;
   }
-  if (url.pathname === "/sessions/settings") {
-    const back = returnPath(url.searchParams.get("return"));
-    const settingsPath = `/sessions/settings${back ? `?return=${encodeURIComponent(back)}` : ""}`;
+  if (url.pathname === "/htmx/settings") {
+    const settingsPath = "/htmx/settings";
     if (request.method === "GET") {
-      const content = h`<section id="global-preferences" class="pane">${globalForm(await sessions.catalog(context), settings?.read(), url.searchParams.get("model") ?? undefined, settingsPath)}</section>`;
-      let frame = h`<main id="main-area">${content}</main>`;
-      if (back) {
-        const parts = back.split("/");
-        const session = await sessions.get(parts[2]);
-        const conversation = await getConversation(session, Number(parts[4]), context);
-        frame = await panelFrame(session, conversation, settings, context, content);
-      }
-      html(response, frame, 200, back, "Default preferences");
+      html(
+        response,
+        h`<main id="main-area"><section id="global-preferences" class="pane">${globalForm(await sessions.catalog(context), settings?.read(), url.searchParams.get("model") ?? undefined, settingsPath)}</section></main>`,
+        200,
+        undefined,
+        "Global settings",
+      );
       return;
     }
     if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
     if (!settings) throw new FormError(503, "Shared settings are not configured.");
     const data = await form(request);
-    const values: Record<string, unknown> = {};
-    for (const item of settingFields) {
-      if ("readonly" in item) continue;
-      const value = field(data, item.key, 100);
-      if ("type" in item && item.type === "boolean" && value !== "true" && value !== "false")
-        throw new FormError(400, "Invalid boolean setting.");
-      values[item.key] = "choices" in item ? value : value === "true";
-    }
-    const model = (await sessions.catalog(context)).models.find(
-      (model) => modelKey(model) === optional(data, "model"),
-    );
-    if (optional(data, "model") && !model) throw new FormError(400, "Model is unavailable.");
-    await settings.update(
-      {
-        values,
-        ...(model
-          ? { model, modelThinkingLevel: optional(data, "modelThinkingLevel") || null }
-          : {}),
-      },
-      sessions,
-    );
+    await saveGlobalSettings(data, sessions, settings, context);
     saved(request, response, settingsPath);
     return;
   }
-  const archiveMatch = /^\/sessions\/([^/]+)\/archive$/.exec(url.pathname);
+  const archiveMatch = /^\/htmx\/sessions\/([^/]+)\/archive$/.exec(url.pathname);
   if (archiveMatch) {
     if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
     await form(request);
     await sessions.archive(archiveMatch[1]);
-    redirect(request, response, `/sessions${url.search}`);
+    redirect(request, response, "/htmx/");
     return;
   }
   const match =
-    /^\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|tree|fork|cd|rename|compact|reset|cancel|context|export|completions|repository))?)?$/.exec(
+    /^\/htmx\/sessions\/([^/]+)(?:\/conversations\/(\d+)(?:\/(events|submit|review|end-review|abort|resume|history|settings|branches|tree|fork|cd|rename|compact|reset|cancel|context|export|completions|repository))?)?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -768,6 +661,7 @@ export async function hypermedia(
     tree: "Conversation tree",
     context: "Context",
     history: "History",
+    repository: "Repository",
     compact: "Compact context",
     reset: "Reset context",
   };
@@ -845,7 +739,9 @@ export async function hypermedia(
         : repository.state === "none"
           ? "no repository"
           : "repository unavailable";
-    page(h`<h1>Repository</h1>${instanceHTML(info)}<p>${title}</p>`);
+    page(
+      h`<main id="main-area"><section class="pane"><h1>Repository</h1>${instanceHTML(info)}<p>${title}</p></section></main>`,
+    );
     return;
   }
   if (request.method === "GET" && operation === "export") {
@@ -1104,12 +1000,40 @@ async function metadataHTML(
   const sessionsLink = withControls
     ? tree
       ? h`<a id="footer-sessions" class="icon footer-chevron" href="${path}" data-return aria-label="Conversation" title="Return to conversation">${icon("chevron-left")}</a>`
-      : h`<a id="footer-sessions" class="icon footer-chevron" href="/sessions?return=${encodeURIComponent(path)}" aria-label="Sessions" title="Sessions">${icon("chevron-left")}</a>`
+      : h`<a id="footer-sessions" class="icon footer-chevron" href="/htmx/" aria-label="Sessions" title="Sessions">${icon("chevron-left")}</a>`
     : h``;
   // The browser owns collapse state; metadata updates must not reset the toggle.
   const collapse = withControls
     ? h`<button id="footer-collapse" class="icon footer-chevron" type="button" aria-controls="composer-shell" aria-expanded="true" aria-label="Collapse composer" title="Collapse composer" hx-morph-skip>${icon("chevron-down")}</button>`
     : h``;
-  const newSession = h`${info.binding && info.model ? h`<form method="post" action="/sessions" data-command="new"><input type="hidden" name="id" value="${id}" data-command-request><input type="hidden" name="requestId" value="${id}" data-command-request>${hidden("target", targetKey(info.binding))}${hidden("model", modelKey(info.model))}${hidden("thinkingLevel", info.thinkingLevel)}${hidden("baseDirectory", info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/") ? info.cwd.slice(info.directoryRoot.length + 1) : "")}<button>New session</button></form>` : ""}`;
+  const newSession = h`${info.binding && info.model ? h`<form method="post" action="/htmx/" data-command="new"><input type="hidden" name="id" value="${id}" data-command-request><input type="hidden" name="requestId" value="${id}" data-command-request>${hidden("target", targetKey(info.binding))}${hidden("model", modelKey(info.model))}${hidden("thinkingLevel", info.thinkingLevel)}${hidden("baseDirectory", info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/") ? info.cwd.slice(info.directoryRoot.length + 1) : "")}<button>New session</button></form>` : ""}`;
   return h`<section id="session-meta" data-name="${info.name || "Untitled session"}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}"><div id="bottom-line" aria-label="Conversation statistics"><div class="footer-row">${sessionsLink}${instance}${statistics}<div class="footer-model-context">${model}${dot}${contextUsage}</div>${collapse}</div></div>${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${newSession}</section>`;
+}
+
+export function activityPage(response: ServerResponse): void {
+  html(
+    response,
+    h`<main id="main-area"><section class="pane"><h1>Activity</h1><p id="connection">Connecting…</p><button id="enable-push" type="button">Enable push on this device</button><button id="disable-push" type="button">Disable push on this device</button><p id="push-status" role="status"></p><h2>Current status</h2><div id="sources"></div><h2>Inbox</h2><div id="inbox"></div><script type="module" src="/htmx/activity.js"></script></section></main>`,
+    200,
+    undefined,
+    "Activity",
+  );
+}
+
+export function errorPage(
+  request: IncomingMessage,
+  response: ServerResponse,
+  status: number,
+  message: string,
+): void {
+  if (request.headers["hx-request"] === "true") {
+    response.setHeader("HX-Retarget", "#request-error");
+    response.setHeader("HX-Reselect", "#form-error");
+    response.setHeader("HX-Reswap", "innerHTML");
+  }
+  html(
+    response,
+    h`<h1>Request failed</h1><p id="form-error">${message}</p><p><a href="/htmx/">Sessions</a></p>`,
+    status,
+  );
 }

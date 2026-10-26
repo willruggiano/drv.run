@@ -1,4 +1,4 @@
-import { installSelectKeyMappings, navigationDirection, moveFocus } from "./key-mappings.ts";
+import { installSelectKeyMappings, navigationDirection, moveFocus } from "../key-mappings.ts";
 import {
   closeCompletions,
   completionItems,
@@ -112,7 +112,7 @@ export function installKeys() {
     )
       return;
     if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
-    const id = { t: "targets", m: "models", n: "create", "/": "session-filter" }[event.key];
+    const id = { t: "targets", m: "models", n: "create" }[event.key];
     const control = id && document.getElementById(id);
     if (control && !control.matches(":disabled")) {
       event.preventDefault();

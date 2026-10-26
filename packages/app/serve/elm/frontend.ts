@@ -1,3 +1,4 @@
+import type { GlobalSettingsStore } from "../server.ts";
 import { BranchTree, type Branch } from "../branches.ts";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -29,7 +30,14 @@ import {
   type Sessions,
   type Session,
 } from "../sessions.ts";
-import { form, field, inputContent, FormError, saveSessionSettings } from "../forms.ts";
+import {
+  form,
+  field,
+  inputContent,
+  FormError,
+  saveSessionSettings,
+  createSession,
+} from "../forms.ts";
 import {
   conversationURL,
   history,
@@ -69,6 +77,7 @@ export type DisplayTool = {
 };
 const commands = new Set([
   "sessions",
+  "new",
   "search",
   "compact",
   "reset",
@@ -335,12 +344,15 @@ type Metadata = {
   context: string;
   level: string;
   resume: boolean;
+  hideThinking?: boolean;
+  hideImages?: boolean;
 };
-async function metadata(
+export async function metadata(
   session: Session,
   conversation: Conversation,
   view: ConversationView,
   context: Context,
+  settings?: GlobalSettingsStore,
 ): Promise<Metadata> {
   const info = await sessionInfo(session, conversation, undefined, context);
   const status = contextStatus(session, view);
@@ -353,6 +365,8 @@ async function metadata(
       ? (status.lastResponse.tokens / status.window) * 100
       : undefined;
   return {
+    hideThinking: settings?.read().values.hideThinkingBlock === true,
+    hideImages: settings?.read().values["terminal.showImages"] === false,
     branches: [],
     durations: {},
     resume: info.needsResume,
@@ -383,28 +397,30 @@ function json(response: ServerResponse, value: unknown) {
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify(value));
 }
+export function elmDocument(response: ServerResponse, site = false, offline = false): void {
+  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  response.end(
+    `<!doctype html><html lang="en" class="enhanced" data-offline="${offline}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>Pi</title><link rel="icon" href="/icon.svg"><link rel="manifest" href="/elm/manifest.webmanifest"><link rel="stylesheet" href="/styles.css"><script src="/elm/main.js" defer></script><script src="/elm/${site ? "site" : "client"}.js" type="module"></script></head><body class="stacked-layout bottom-align"><div id="elm"></div></body></html>`,
+  );
+}
 export async function elmFrontend(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
   sessions: Sessions,
   context: Context,
+  settings?: GlobalSettingsStore,
 ): Promise<void> {
-  if (request.method === "GET" && url.pathname === "/elm/catalog") {
-    const catalog = await sessions.catalog(context);
-    json(
-      response,
-      await Promise.all(
-        catalog.sessions.map(async (item) => ({
-          path: `/elm${conversationURL(await sessions.get(item.id))}`,
-          title: item.name || "Untitled session",
-        })),
-      ),
-    );
+  const root = /^\/elm\/sessions\/([^/]+)$/.exec(url.pathname);
+  if (root && request.method === "GET") {
+    response.writeHead(303, {
+      Location: conversationURL(await sessions.get(root[1]), undefined, "elm"),
+    });
+    response.end();
     return;
   }
   const match =
-    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|export|directories|archive))?$/.exec(
+    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|reset|export|directories|archive))?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -420,12 +436,9 @@ export async function elmFrontend(
   const conversation = await getConversation(session, Number(match[2]), context);
   if (
     request.method === "GET" &&
-    (!operation || ["settings", "context", "branches", "tree"].includes(operation))
+    (!operation || ["settings", "context", "branches", "tree", "reset"].includes(operation))
   ) {
-    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    response.end(
-      '<!doctype html><html lang="en" class="enhanced"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Conversation</title><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/elm/main.js" defer></script><script src="/elm/client.js" type="module"></script></head><body class="stacked-layout bottom-align"><div id="elm"></div></body></html>',
-    );
+    elmDocument(response);
     return;
   }
   if (request.method === "GET" && operation === "panel") {
@@ -490,7 +503,7 @@ export async function elmFrontend(
         response,
         (await new BranchTree(session).read(context)).map((branch) => ({
           ...branch,
-          path: `/elm${conversationURL(session, branch.id)}`,
+          path: `${conversationURL(session, branch.id, "elm")}`,
         })),
       );
     } else throw new FormError(400, "Unknown panel.");
@@ -616,7 +629,12 @@ export async function elmFrontend(
         if (ready) void send();
       }
     });
+    const stopSettings = settings?.watch(() => {
+      dirty = true;
+      if (ready) void send();
+    });
     const stop = () => {
+      stopSettings?.();
       stopCommits();
       void watch.stop();
     };
@@ -634,7 +652,7 @@ export async function elmFrontend(
     try {
       projector = new ElmProjection(await history(conversation, context));
     } catch (error) {
-      stopCommits();
+      stop();
       await watch.stop();
       throw error;
     }
@@ -652,7 +670,7 @@ export async function elmFrontend(
             durations = Object.fromEntries(await compactionTimes(session, context));
           }
           const current = view;
-          const info = await metadata(session, conversation, current, context);
+          const info = await metadata(session, conversation, current, context, settings);
           if (view !== current) {
             dirty = true;
             continue;
@@ -672,7 +690,7 @@ export async function elmFrontend(
           }
           const tree = (await branches.read(context)).map((branch) => ({
             ...branch,
-            path: `/elm${conversationURL(session, branch.id)}`,
+            path: `${conversationURL(session, branch.id, "elm")}`,
           }));
           const frame = projector.project(
             current,
@@ -695,6 +713,7 @@ export async function elmFrontend(
     }, 15_000);
     response.once("close", () => clearInterval(heartbeat));
     void watch.closed.then(() => {
+      stopSettings?.();
       stopCommits();
       clearInterval(heartbeat);
       if (!response.destroyed) response.end();
@@ -742,6 +761,24 @@ export async function elmFrontend(
     if (mode !== "reject" && mode !== "steer" && mode !== "followUp")
       throw new FormError(400, "Invalid submission mode.");
     await conversation.submit({ type: "input", requestId, content, whenBusy: mode }, context);
+  } else if (command === "new") {
+    const info = await sessionInfo(session, conversation, undefined, context);
+    if (!info.binding || !info.model) throw new FormError(409, "Target or model is unavailable.");
+    const creation = new FormData();
+    for (const [key, value] of Object.entries({
+      id: randomUUID(),
+      target: JSON.stringify([info.binding.provider, info.binding.target]),
+      model: JSON.stringify([info.model.provider, info.model.modelId]),
+      thinkingLevel: info.thinkingLevel,
+      baseDirectory:
+        info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/")
+          ? info.cwd.slice(info.directoryRoot.length + 1)
+          : "",
+    }))
+      creation.set(key, value);
+    const created = await createSession(creation, sessions, context);
+    json(response, { requestId, revision, path: conversationURL(created, undefined, "elm") });
+    return;
   } else if (command === "abort") await conversation.abort(context);
   else if (command === "resume") session.harness.resume();
   else if (command === "compact") await conversation.compact(argument || undefined, context);
@@ -766,7 +803,7 @@ export async function elmFrontend(
       command === "review"
         ? await startReview(session, conversation, context, argument || undefined)
         : await endReview(session, conversation, context);
-    json(response, { requestId, revision, path: `/elm${conversationURL(session, result.id)}` });
+    json(response, { requestId, revision, path: `${conversationURL(session, result.id, "elm")}` });
     return;
   } else throw new FormError(400, "Unsupported command.");
   json(response, { requestId, revision });

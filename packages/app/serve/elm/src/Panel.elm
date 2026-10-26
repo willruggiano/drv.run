@@ -1,4 +1,4 @@
-module Panel exposing (Branch, Context, Field(..), Settings, branchesDecoder, contextDecoder, contextView, edit, settingsBody, settingsDecoder, settingsView)
+module Panel exposing (Branch, Context, Field(..), Settings, branchesDecoder, contextDecoder, contextView, edit, optionsView, settingsBody, settingsDecoder, settingsView)
 
 import Dict
 import Html exposing (Html, div, form, input, label, li, ol, option, section, select, span, text, ul)
@@ -73,6 +73,14 @@ settingsBody settings =
 
 settingsView : (Field -> String -> msg) -> msg -> List String -> Settings -> Html msg
 settingsView change save directories settings =
+    form [ id "session-settings", onSubmit save ]
+        [ label [] [ span [] [ text "Session" ], input [ A.name "name", A.maxlength 120, A.placeholder "Untitled session", value settings.name, onInput (change Name), onBlur save ] [] ]
+        , optionsView change save directories settings
+        ]
+
+
+optionsView : (Field -> String -> msg) -> msg -> List String -> Settings -> Html msg
+optionsView change save directories settings =
     let
         model =
             List.filter (.key >> (==) settings.model) settings.models |> List.head
@@ -89,26 +97,23 @@ settingsView change save directories settings =
         field title control =
             label [] [ span [] [ text title ], control ]
     in
-    form [ id "session-settings", onSubmit save ]
-        [ field "Session" (input [ A.name "name", A.maxlength 120, A.placeholder "Untitled session", value settings.name, onInput (change Name), onBlur save ] [])
-        , div [ id "options" ]
-            [ field "Environment" (select [ id "targets", A.name "target", value settings.target, onInput (change Target) ] (List.map (\item -> choice settings.target item.key item.label item.disabled) settings.targets))
-            , field "Model" (select [ id "models", A.name "model", value settings.model, onInput (change Model) ] (List.map (\item -> choice settings.model item.key item.label False) settings.models))
-            , field "Thinking"
-                (select [ id "thinking", A.name "thinkingLevel", value settings.thinking, onInput (change Thinking) ]
-                    (choice settings.thinking "" ("Default (" ++ (Maybe.map .default model |> Maybe.withDefault "off") ++ ")") False
-                        :: List.map (\level -> choice settings.thinking level level False) levels
-                        ++ (if settings.thinking /= "" && not (List.member settings.thinking levels) then
-                                [ choice settings.thinking settings.thinking (settings.thinking ++ " (clamped by model)") False ]
+    div [ id "options" ]
+        [ field "Environment" (select [ id "targets", A.name "target", value settings.target, onInput (change Target) ] (List.map (\item -> choice settings.target item.key item.label item.disabled) settings.targets))
+        , field "Model" (select [ id "models", A.name "model", value settings.model, onInput (change Model) ] (List.map (\item -> choice settings.model item.key item.label False) settings.models))
+        , field "Thinking"
+            (select [ id "thinking", A.name "thinkingLevel", value settings.thinking, onInput (change Thinking) ]
+                (choice settings.thinking "" ("Default (" ++ (Maybe.map .default model |> Maybe.withDefault "off") ++ ")") False
+                    :: List.map (\level -> choice settings.thinking level level False) levels
+                    ++ (if settings.thinking /= "" && not (List.member settings.thinking levels) then
+                            [ choice settings.thinking settings.thinking (settings.thinking ++ " (clamped by model)") False ]
 
-                            else
-                                []
-                           )
-                    )
+                        else
+                            []
+                       )
                 )
-            , label [ A.hidden (root == "") ] [ span [] [ text "Base directory" ], input [ id "base-directory", A.name "baseDirectory", A.maxlength 4096, A.placeholder (root ++ " (default)"), A.list "directories", value settings.directory, onInput (change Directory), onBlur save ] [] ]
-            , Html.datalist [ id "directories" ] (List.map (\path -> option [ value path ] []) directories)
-            ]
+            )
+        , label [ A.hidden (root == "") ] [ span [] [ text "Base directory" ], input [ id "base-directory", A.name "baseDirectory", A.maxlength 4096, A.placeholder (root ++ " (default)"), A.list "directories", value settings.directory, onInput (change Directory), onBlur save ] [] ]
+        , Html.datalist [ id "directories" ] (List.map (\path -> option [ value path ] []) directories)
         ]
 
 

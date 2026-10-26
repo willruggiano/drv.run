@@ -201,7 +201,7 @@ await test("HTTP disconnect does not abort work; reconnect includes history and 
   const base = await serve(t, f.sessions);
   const id = randomUUID();
   assert.equal(
-    (await post(base + "/sessions", { id, target: targetKey(f.binding), model: modelKey(model) }))
+    (await post(base + "/htmx/", { id, target: targetKey(f.binding), model: modelKey(model) }))
       .status,
     303,
   );
@@ -274,36 +274,32 @@ await test("HTML HTTP validates origins, IDs, methods, malformed forms and reque
   const base = await serve(t, f.sessions);
   assert.equal(
     (
-      await fetch(base + "/sessions", {
+      await fetch(base + "/htmx/", {
         headers: { Origin: "https://untrusted.example" },
       })
     ).status,
     403,
   );
   const rebinding = await new Promise<number | undefined>((resolve, reject) => {
-    const req = request(
-      base + "/sessions",
-      { headers: { Host: "untrusted.example" } },
-      (response) => {
-        response.resume();
-        resolve(response.statusCode);
-      },
-    );
+    const req = request(base + "/htmx/", { headers: { Host: "untrusted.example" } }, (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
     req.once("error", reject);
     req.end();
   });
   assert.equal(rebinding, 403);
   assert.equal(
     (
-      await fetch(base + "/sessions", {
+      await fetch(base + "/htmx/", {
         headers: { "Sec-Fetch-Site": "cross-site" },
       })
     ).status,
     403,
   );
-  assert.equal((await fetch(base + "/sessions")).status, 200);
-  assert.equal((await fetch(base + "/sessions/" + randomUUID())).status, 404);
-  const malformed = await fetch(base + "/sessions", {
+  assert.equal((await fetch(base + "/htmx/")).status, 200);
+  assert.equal((await fetch(base + "/htmx/sessions/" + randomUUID())).status, 404);
+  const malformed = await fetch(base + "/htmx/", {
     method: "POST",
     headers: { Origin: base, "Content-Type": "multipart/form-data" },
     body: "missing boundary",
@@ -322,7 +318,7 @@ await test("HTML HTTP validates origins, IDs, methods, malformed forms and reque
   assert.equal((await send("{}", "application/json")).status, 415);
   assert.equal((await send(new URLSearchParams({ name: "a".repeat(129 * 1024) }))).status, 413);
   assert.equal((await fetch(base + conversationURL(session) + "/abort")).status, 405);
-  assert.equal((await fetch(base + "/sessions/manifest.webmanifest")).status, 200);
+  assert.equal((await fetch(base + "/htmx/manifest.webmanifest")).status, 200);
   const icon = await fetch(base + "/icon.svg");
   assert.equal(icon.status, 200);
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
@@ -333,7 +329,7 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
   const base = await serve(t, f.sessions, undefined, "0.0.0.0");
   const port = new URL(base).port;
   for (const address of ["127.0.0.1", "127.0.0.2"]) {
-    const url = `http://${address}:${port}/sessions`;
+    const url = `http://${address}:${port}/htmx/`;
     assert.equal(
       (await fetch(url, { headers: { Origin: `http://${address}:${port}` } })).status,
       200,
@@ -361,7 +357,7 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
       assert.equal(code, 403);
     }
   }
-  assert.equal((await fetch(`http://localhost:${port}/sessions`)).status, 200);
+  assert.equal((await fetch(`http://localhost:${port}/htmx/`)).status, 200);
 });
 
 await test("built browser assets preserve module formats and selected highlight languages", async (t) => {
@@ -405,6 +401,8 @@ await test("built browser assets preserve module formats and selected highlight 
   for (const file of [
     "elm/main.js",
     "elm/client.js",
+    "elm/site.js",
+    "elm/sw.js",
     "htmx/client.js",
     "htmx/morph.js",
     "htmx/vendor.js",
@@ -414,7 +412,10 @@ await test("built browser assets preserve module formats and selected highlight 
     const asset = await fetch(`${base}/${file}`);
     assert.equal(asset.status, 200);
     assert.equal(asset.headers.get("content-type"), "text/javascript; charset=utf-8");
-    assert.equal(asset.headers.get("service-worker-allowed"), file === "htmx/sw.js" ? "/" : null);
+    assert.equal(
+      asset.headers.get("service-worker-allowed"),
+      file.endsWith("/sw.js") ? "/" + file.split("/")[0] : null,
+    );
     assert.deepEqual(Buffer.from(await asset.arrayBuffer()), await readFile(join(assets, file)));
   }
   const response = await fetch(`${base}/highlight.js`);
@@ -534,7 +535,7 @@ await test("rename commands update session metadata from a branch without model 
       const submit = (fields: Record<string, string>) =>
         frontend === "htmx"
           ? post(base + path + "/rename", fields)
-          : post(base + "/elm" + path + "/command", {
+          : post(base + path.replace("/htmx", "/elm") + "/command", {
               command: "rename",
               requestId: randomUUID(),
               revision: randomUUID(),
@@ -604,8 +605,14 @@ await test("conversation controls validate input and keep forks scoped to their 
   assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
   assert.equal((await f.sessions.catalog()).sessions[0].name, "Counter cleanup");
   assert.deepEqual(await readHistory(session.root), history);
-  assert.equal((await fetch(base + `/sessions/${session.id}/conversations/not-an-id`)).status, 404);
-  assert.equal((await fetch(base + `/sessions/${session.id}/conversations/9999999`)).status, 404);
+  assert.equal(
+    (await fetch(base + `/htmx/sessions/${session.id}/conversations/not-an-id`)).status,
+    404,
+  );
+  assert.equal(
+    (await fetch(base + `/htmx/sessions/${session.id}/conversations/9999999`)).status,
+    404,
+  );
   const forkResponse = await post(`${url}/fork`, { at: String(history.at(-1)!.id) });
   assert.equal(forkResponse.status, 303);
   const forkPath = forkResponse.headers.get("location");
@@ -624,7 +631,7 @@ await test("conversation controls validate input and keep forks scoped to their 
   assert.equal((await post(base + forkPath + "/compact", {})).status, 303);
   await session.harness.waitForIdle(context);
   assert.equal((await session.harness.inspect(context)).tasks.length, 0);
-  const manifest = await (await fetch(base + "/sessions/manifest.webmanifest")).json();
+  const manifest = await (await fetch(base + "/htmx/manifest.webmanifest")).json();
   assert.equal(manifest.display, "standalone");
   assert.deepEqual(
     manifest.icons.map((icon: { sizes: string }) => icon.sizes),
@@ -717,7 +724,7 @@ await test("forwarded headers cannot bypass origin checks", async (t) => {
   const base = await serve(t, f.sessions);
   const status = (headers: Record<string, string>) =>
     new Promise<number | undefined>((resolve, reject) => {
-      const req = request(base + "/sessions", { headers }, (response) => {
+      const req = request(base + "/htmx/", { headers }, (response) => {
         response.resume();
         resolve(response.statusCode);
       });
@@ -783,7 +790,7 @@ await test(
       t.after(() => controller.abort());
       const resource =
         operation === "directories"
-          ? "/sessions/directories?" +
+          ? "/htmx/directories?" +
             new URLSearchParams({ target: targetKey(f.binding), baseDirectory: "" })
           : conversationURL(session) +
             (operation === "completions" ? "/completions?kind=path" : "/repository");
@@ -874,12 +881,12 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
     ["model", "missing"],
   ]) {
     assert.equal(
-      (await post(base + "/sessions/settings", { ...globalForm(), [key]: value })).status,
+      (await post(base + "/htmx/settings", { ...globalForm(), [key]: value })).status,
       400,
     );
     assert.deepEqual(get(), before);
   }
-  const result = await post(base + "/sessions/settings", {
+  const result = await post(base + "/htmx/settings", {
     ...globalForm(),
     model: modelKey(model),
     modelThinkingLevel: "high",
@@ -927,7 +934,7 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "medium");
   const create = async (thinkingLevel?: string) => {
     const id = randomUUID();
-    const response = await post(base + "/sessions", {
+    const response = await post(base + "/htmx/", {
       id,
       target: targetKey(f.binding),
       model: modelKey(model),
@@ -955,7 +962,7 @@ await test("global settings persist through Pi, preserve unrelated keys, and dri
   assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "high");
   assert.equal(
     (
-      await post(base + "/sessions/settings", {
+      await post(base + "/htmx/settings", {
         ...globalForm(),
         model: modelKey(model),
         modelThinkingLevel: "",

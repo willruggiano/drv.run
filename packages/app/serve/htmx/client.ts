@@ -5,7 +5,7 @@ import { installCompletions } from "./completions.ts";
 import { installSearch } from "./search.ts";
 import { installKeys } from "./keys.ts";
 import { installSettings } from "./settings.ts";
-import { installPwa } from "./pwa.ts";
+import { installPwa } from "../pwa.ts";
 import { installStream } from "./stream.ts";
 
 installDrafts();

@@ -156,8 +156,6 @@ type alias Model =
     , completionRequest : Int
     , search : Maybe String
     , searchIndex : Int
-    , catalog : Maybe (List ( String, String ))
-    , archiving : List String
     , reset : Maybe String
     , pane : Pane
     , settings : Maybe Panel.Settings
@@ -199,9 +197,6 @@ type Msg
     | Search String
     | SearchMove Int
     | OpenSessions
-    | Catalog Int (Result Http.Error (List ( String, String )))
-    | ArchiveSession String
-    | SessionArchived Int String (Result Http.Error ())
     | ResetArgument String
     | ConfirmReset
     | Response String Pending (Result Http.Error ( String, String, Maybe String ))
@@ -240,9 +235,12 @@ initModel path nonce =
     , completionRequest = 0
     , search = Nothing
     , searchIndex = 0
-    , catalog = Nothing
-    , archiving = []
-    , reset = Nothing
+    , reset =
+        if String.endsWith "/reset" path then
+            Just ""
+
+        else
+            Nothing
     , pane = Tuple.second (route path)
     , settings = Nothing
     , savedSettings = Nothing
@@ -273,7 +271,7 @@ main =
                         D.decodeValue (D.field "drafts" (D.dict draftDecoder)) flags |> Result.withDefault Dict.empty
 
                     model =
-                        { base | key = Just key, drafts = drafts }
+                        { base | key = Just key, drafts = drafts, opened = D.decodeValue (D.field "opened" (D.dict (D.dict D.bool))) flags |> Result.withDefault Dict.empty }
                 in
                 ( model, Cmd.batch [ connect model, loadPanel model ] )
         , view = view
@@ -435,11 +433,14 @@ update msg model =
             else
                 case requestUrl of
                     Browser.Internal url ->
-                        if url.path == "/elm/catalog" then
+                        if url.path == "/elm" || url.path == "/elm/" then
                             update OpenSessions model
 
                         else if String.endsWith "/export" url.path then
                             ( model, browser (E.object [ ( "kind", E.string "download" ), ( "url", E.string url.path ) ]) )
+
+                        else if List.any (\suffix -> String.endsWith suffix url.path) [ "/history", "/repository", "/compact" ] then
+                            ( model, Nav.load (Url.toString url) )
 
                         else if String.startsWith "/elm/sessions/" url.path then
                             ( model, Maybe.map (\key -> Nav.pushUrl key (url.path ++ (Maybe.map ((++) "?") url.query |> Maybe.withDefault "") ++ (Maybe.map ((++) "#") url.fragment |> Maybe.withDefault ""))) model.key |> Maybe.withDefault Cmd.none )
@@ -468,8 +469,6 @@ update msg model =
                                 Protocol.empty
                         , connection = Connecting
                         , error = ""
-                        , catalog = Nothing
-                        , archiving = []
                         , search = Nothing
                         , reset = Nothing
                         , composing = False
@@ -571,6 +570,9 @@ update msg model =
                                     Err _ ->
                                         ( model, Cmd.none )
 
+                            "sessions" ->
+                                update OpenSessions model
+
                             "dismiss" ->
                                 if model.pane /= Conversation then
                                     case Url.fromString ("http://localhost" ++ model.path) of
@@ -613,6 +615,9 @@ update msg model =
 
                     "/sessions" ->
                         update OpenSessions model
+
+                    "/new" ->
+                        submit "new" "" mode True model
 
                     "/settings" ->
                         navigate (model.path ++ "/settings") { model | completions = Nothing }
@@ -872,8 +877,11 @@ update msg model =
             let
                 opened =
                     Dict.get model.path model.opened |> Maybe.withDefault Dict.empty
+
+                updated =
+                    Dict.insert model.path (Dict.insert key expanded opened) model.opened
             in
-            ( { model | opened = Dict.insert model.path (Dict.insert key expanded opened) model.opened }, Cmd.none )
+            ( { model | opened = updated }, browser (E.object [ ( "kind", E.string "opened" ), ( "value", E.dict identity (E.dict identity E.bool) updated ) ]) )
 
         Composition active ->
             ( { model | composing = active, completions = Nothing, completionRequest = model.completionRequest + 1 }, Cmd.none )
@@ -955,7 +963,7 @@ update msg model =
         Dismiss ->
             let
                 updated =
-                    { model | completions = Nothing, completionRequest = model.completionRequest + 1, search = Nothing, catalog = Nothing, reset = Nothing }
+                    { model | completions = Nothing, completionRequest = model.completionRequest + 1, search = Nothing, reset = Nothing }
             in
             ( updated, Cmd.batch [ browser (E.object [ ( "kind", E.string "cancel-completions" ) ]), browser (E.object [ ( "kind", E.string "resize" ) ]), highlight updated ] )
 
@@ -984,39 +992,7 @@ update msg model =
             ( { model | searchIndex = index }, highlight { model | searchIndex = index } )
 
         OpenSessions ->
-            ( { model | catalog = Just [] }, Http.get { url = "/elm/catalog", expect = Http.expectJson (Catalog model.epoch) (D.list (D.map2 Tuple.pair (D.field "path" D.string) (D.field "title" D.string))) } )
-
-        Catalog epoch result ->
-            if epoch /= model.epoch || model.catalog == Nothing then
-                ( model, Cmd.none )
-
-            else
-                ( { model | catalog = Just (Result.withDefault [] result) }, Cmd.none )
-
-        ArchiveSession path ->
-            if List.member path model.archiving then
-                ( model, Cmd.none )
-
-            else
-                ( { model | archiving = path :: model.archiving, error = "" }
-                , Http.post { url = path ++ "/archive", body = Http.stringBody "application/x-www-form-urlencoded" "", expect = Http.expectWhatever (SessionArchived model.epoch path) }
-                )
-
-        SessionArchived epoch path result ->
-            if epoch /= model.epoch then
-                ( model, Cmd.none )
-
-            else
-                let
-                    updated =
-                        { model | archiving = List.filter ((/=) path) model.archiving }
-                in
-                case result of
-                    Ok () ->
-                        ( { updated | catalog = Maybe.map (List.filter (\( itemPath, _ ) -> itemPath /= path)) model.catalog }, Cmd.none )
-
-                    Err error ->
-                        ( { updated | error = "Could not confirm archive. Retry archiving. " ++ httpError error }, Cmd.none )
+            ( model, Nav.load "/elm" )
 
         ResetArgument str ->
             ( { model | reset = Just str }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
@@ -1489,7 +1465,7 @@ view model =
                             a [ id "footer-sessions", class "icon footer-chevron", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "chevron-left" ]
 
                           else
-                            a [ id "footer-sessions", class "icon footer-chevron", href "/elm/catalog", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ]
+                            a [ id "footer-sessions", class "icon footer-chevron", href "/elm", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ]
                         , span [ id "footer-instance" ] [ text state.metadata.instance ]
                         , a [ id "footer-stats", href (model.path ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ])
                         , div [ class "footer-model-context" ]
@@ -1578,111 +1554,87 @@ view model =
                     text ""
 
         body =
-            case model.catalog of
-                Just items ->
-                    [ section [ class "pane", id "session-list" ]
-                        (List.map
-                            (\( path, title ) ->
-                                div [ class "session-row" ]
-                                    [ a [ class "session", href path ] [ span [ class "session-heading" ] [ Html.strong [] [ text title ] ] ]
-                                    , button [ class "icon session-archive", A.type_ "button", attribute "aria-label" "Archive session", A.title "Archive session", A.disabled (List.member path model.archiving), onClick (ArchiveSession path) ] [ Transcript.icon "close" ]
-                                    ]
-                            )
-                            items
-                            ++ (if List.isEmpty items then
-                                    [ p [ id "sessions-empty" ] [ text "No sessions" ] ]
+            [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy6 viewTranscript opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
+            , queue
+            , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
+                [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
+                , div [ id "composer-shell", class "composer-shell" ]
+                    [ Maybe.map resetComposer model.reset |> Maybe.withDefault composer
+                    , pendingError
+                    , if draft.missingFiles then
+                        p [ class "notice" ] [ text "Images cannot be restored after reload. Check history before resubmitting an uncertain image request. Reselect images or ", button [ onClick DiscardMissingFiles ] [ text "Discard missing attachments" ] ]
 
-                                else
-                                    []
-                               )
-                        )
+                      else
+                        text ""
                     ]
+                , metadata
+                , if state.metadata.resume then
+                    button [ onClick (Command "resume" "") ] [ text "Resume interrupted execution" ]
 
-                Nothing ->
-                    [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy6 viewTranscript opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
-                    , queue
-                    , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
-                        [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
-                        , div [ id "composer-shell", class "composer-shell" ]
-                            [ Maybe.map resetComposer model.reset |> Maybe.withDefault composer
-                            , pendingError
-                            , if draft.missingFiles then
-                                p [ class "notice" ] [ text "Images cannot be restored after reload. Check history before resubmitting an uncertain image request. Reselect images or ", button [ onClick DiscardMissingFiles ] [ text "Discard missing attachments" ] ]
+                  else
+                    text ""
+                , p [ id "connection", class "sr-only", attribute "role" "status" ] [ text connection ]
+                ]
+            , div [ id "search-bar", hidden (model.search == Nothing) ]
+                [ div [ class "compose-box" ]
+                    [ input
+                        [ id "search"
+                        , A.type_ "search"
+                        , attribute "aria-label" "Find in conversation"
+                        , A.placeholder "Find in conversation…"
+                        , value (Maybe.withDefault "" model.search)
+                        , onInput Search
+                        , on "keydown"
+                            (D.field "key" D.string
+                                |> D.map
+                                    (\key ->
+                                        if key == "Escape" then
+                                            Dismiss
 
-                              else
-                                text ""
-                            ]
-                        , metadata
-                        , if state.metadata.resume then
-                            button [ onClick (Command "resume" "") ] [ text "Resume interrupted execution" ]
-
-                          else
-                            text ""
-                        , p [ id "connection", class "sr-only", attribute "role" "status" ] [ text connection ]
-                        ]
-                    , div [ id "search-bar", hidden (model.search == Nothing) ]
-                        [ div [ class "compose-box" ]
-                            [ input
-                                [ id "search"
-                                , A.type_ "search"
-                                , attribute "aria-label" "Find in conversation"
-                                , A.placeholder "Find in conversation…"
-                                , value (Maybe.withDefault "" model.search)
-                                , onInput Search
-                                , on "keydown"
-                                    (D.field "key" D.string
-                                        |> D.map
-                                            (\key ->
-                                                if key == "Escape" then
-                                                    Dismiss
-
-                                                else
-                                                    NoOp
-                                            )
+                                        else
+                                            NoOp
                                     )
-                                ]
-                                []
-                            , div [ class "actions" ]
-                                [ Html.output [ id "search-count" ]
-                                    [ text
-                                        (if List.isEmpty matches then
-                                            "0/0"
+                            )
+                        ]
+                        []
+                    , div [ class "actions" ]
+                        [ Html.output [ id "search-count" ]
+                            [ text
+                                (if List.isEmpty matches then
+                                    "0/0"
 
-                                         else
-                                            String.fromInt (model.searchIndex + 1) ++ "/" ++ String.fromInt (List.length matches)
-                                        )
-                                    ]
-                                , span [ class "spacer" ] []
-                                , button [ id "search-prev", class "icon", onClick (SearchMove -1), attribute "aria-label" "Previous match" ] [ text "↑" ]
-                                , button [ id "search-next", class "icon", onClick (SearchMove 1), attribute "aria-label" "Next match" ] [ text "↓" ]
-                                ]
+                                 else
+                                    String.fromInt (model.searchIndex + 1) ++ "/" ++ String.fromInt (List.length matches)
+                                )
                             ]
+                        , span [ class "spacer" ] []
+                        , button [ id "search-prev", class "icon", onClick (SearchMove -1), attribute "aria-label" "Previous match" ] [ text "↑" ]
+                        , button [ id "search-next", class "icon", onClick (SearchMove 1), attribute "aria-label" "Next match" ] [ text "↓" ]
                         ]
                     ]
+                ]
+            ]
     in
     { title =
-        if model.catalog /= Nothing then
-            "Sessions"
+        case model.pane of
+            Preferences ->
+                "Session settings"
 
-        else
-            case model.pane of
-                Preferences ->
-                    "Session settings"
+            Context ->
+                "Context"
 
-                Context ->
-                    "Context"
+            Branches ->
+                "Branches"
 
-                Branches ->
-                    "Branches"
+            Tree ->
+                "Conversation tree"
 
-                Tree ->
-                    "Conversation tree"
-
-                Conversation ->
-                    state.metadata.title
+            Conversation ->
+                state.metadata.title
     , body =
         [ main_
             [ id "page"
+            , A.classList [ ( "hide-thinking", state.metadata.hideThinking ), ( "hide-images", state.metadata.hideImages ) ]
             , attribute "data-view"
                 (if model.pane == Conversation then
                     "conversation"
@@ -1706,26 +1658,18 @@ view model =
                                 ]
 
                           else
-                            a [ id "conversation-title", class "header-title", href "/elm/catalog", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
+                            a [ id "conversation-title", class "header-title", href "/elm", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
                                 [ text
-                                    (if model.catalog /= Nothing then
-                                        "Sessions"
-
-                                     else
-                                        state.metadata.title
-                                    )
+                                    state.metadata.title
                                 ]
                         ]
                     , if model.pane == Context || model.pane == Branches then
                         a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
 
-                      else if model.catalog /= Nothing then
-                        iconButton "close" "Conversation" Dismiss
-
                       else
-                        a [ id "menu-toggle", class "icon", href "/sessions/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
+                        a [ id "menu-toggle", class "icon", href "/elm/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
                     ]
-                , if model.pane == Conversation && model.catalog == Nothing then
+                , if model.pane == Conversation then
                     branchHeader model.path state.metadata.branches
 
                   else

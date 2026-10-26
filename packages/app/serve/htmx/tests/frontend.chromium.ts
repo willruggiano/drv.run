@@ -388,7 +388,7 @@ await test("SSE heads avoid initial history, append keyed entries, and morph res
 await test("morph preserves existing disclosure but applies server defaults to new failed details", async (t) => {
   const f = await fixture(t);
   const b = await browserFixture(t, f.sessions);
-  await b.page.goto(`${b.base}/sessions`);
+  await b.page.goto(`${b.base}/htmx/`);
   await b.page.evaluate(() => {
     const host = document.createElement("section");
     host.id = "disclosure-test";
@@ -461,7 +461,7 @@ await test("HTML workflow: create, submit, review, navigate without ending, end,
   page.on("request", (request) => {
     if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests.push(request.url());
   });
-  await page.goto(`${b.base}/sessions`);
+  await page.goto(`${b.base}/htmx/`);
   // Window state proves links/forms use enhanced navigation, not document reloads.
   await page.evaluate(() => {
     document.documentElement.dataset.enhanced = "yes";
@@ -538,18 +538,13 @@ await test("ordinary forms and direct URLs work without JavaScript; GET actions 
   const browserContext = await b.browser.newContext({ javaScriptEnabled: false });
   t.after(() => browserContext.close());
   const page = await browserContext.newPage();
-  await page.goto(`${b.base}/sessions`);
+  await page.goto(`${b.base}/htmx/`);
   await page.getByRole("button", { name: "Create session", exact: true }).click();
   await page.locator("[data-events] #composer").waitFor();
   const [info] = (await f.sessions.catalog()).sessions;
   const session = await f.sessions.get(info.id);
   assert.equal(page.url(), b.base + conversationURL(session));
   await openSessions(page);
-  await page.locator("#session-filter").fill("no matching session");
-  await page.getByRole("button", { name: "Filter", exact: true }).click();
-  assert.equal(await page.locator("#session-list > .session-row > .session").count(), 0);
-  await page.locator("#session-filter").fill(info.id);
-  await page.getByRole("button", { name: "Filter", exact: true }).click();
   assert.equal(await page.locator("#session-list > .session-row > .session").count(), 1);
   await page.locator("#session-list > .session-row > .session").click();
   const initial = await readHistory(session.root);
@@ -604,7 +599,7 @@ await test("committed fragments preserve history, drafts, attachments, focus and
   const f = await fixture(t);
   const session = await f.create();
   const attack =
-    '<img src=x onerror="window.injected=true"><form hx-post="/sessions"><button>Injected</button></form><script>window.injected=true</script>';
+    '<img src=x onerror="window.injected=true"><form hx-post="/htmx/"><button>Injected</button></form><script>window.injected=true</script>';
   await session.root.commit(
     (tx) =>
       tx.appendEntry(session.root.id, {
@@ -714,7 +709,7 @@ await test("committed fragments preserve history, drafts, attachments, focus and
   await before.dispose();
   const requestId = await page.locator('#composer [name="requestId"]').inputValue();
   await openSessions(page);
-  await page.locator(`a[href="/sessions/${session.id}"]`).click();
+  await page.locator(`a[href="/htmx/sessions/${session.id}"]`).click();
   await page.locator("#previews img").waitFor();
   assert.equal(await text.inputValue(), "Keep this draft");
   assert.equal(await page.locator('#composer [name="requestId"]').inputValue(), requestId);
@@ -868,8 +863,8 @@ await test("pending review response cannot navigate a newer page; review subscri
   const b = await browserFixture(t, f.sessions);
   await b.page.setViewportSize({ width: 820, height: 844 });
   const { page } = b;
-  await page.goto(`${b.base}/sessions`);
-  await page.locator(`a[href="/sessions/${session.id}"]`).click();
+  await page.goto(`${b.base}/htmx/`);
+  await page.locator(`a[href="/htmx/sessions/${session.id}"]`).click();
   await page.waitForFunction(
     () => document.querySelector("#connection")?.textContent === "Connected",
   );
@@ -893,7 +888,7 @@ await test("pending review response cannot navigate a newer page; review subscri
   // htmx history restores with outerSync: #page itself stays connected.
   await page.goBack();
   await page.getByRole("button", { name: "Create session", exact: true }).waitFor();
-  await page.waitForURL(`${b.base}/sessions`);
+  await page.waitForURL(`${b.base}/htmx/`);
   await waitFor(async () => subscriptions === 0);
   release.resolve();
   await delivered.promise;
@@ -905,7 +900,7 @@ await test("pending review response cannot navigate a newer page; review subscri
         else document.addEventListener("htmx:finally:request", () => resolve(), { once: true });
       }),
   );
-  assert.equal(page.url(), `${b.base}/sessions`);
+  assert.equal(page.url(), `${b.base}/htmx/`);
   assert.equal(await page.locator("[data-events]").count(), 0);
   assert.equal(subscriptions, 0);
   assert.deepEqual(b.errors, []);
@@ -1046,7 +1041,7 @@ await test("image submission reaches Durable; generation completes after the HTM
   assert.equal((await session.harness.snapshot(LiveDoc, session.root.id, context))?.run, undefined);
 });
 
-await test("HTML expands worker scope to auth and retires obsolete registrations and cached shell", async (t) => {
+await test("HTML scopes its worker to its frontend and retires obsolete registrations and cached shell", async (t) => {
   const f = await fixture(t);
   const b = await browserFixture(t, f.sessions);
   const server = httpServer(f.sessions, "127.0.0.1", b.assets);
@@ -1074,16 +1069,16 @@ await test("HTML expands worker scope to auth and retires obsolete registrations
     );
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  await b.page.goto(base);
+  await b.page.goto(base + "/htmx/");
   await b.page.evaluate(async () => {
     await navigator.serviceWorker.register("/sw.js", { scope: "/" });
-    await navigator.serviceWorker.register("/htmx/sw.js", { scope: "/sessions" });
+    await navigator.serviceWorker.register("/htmx/sw.js", { scope: "/htmx/" });
     await navigator.serviceWorker.ready;
     await (await caches.open("pi-shell-v26")).put("/", new Response("Retired shell"));
     await caches.open("unrelated-cache");
   });
   legacy = false;
-  await b.page.goto(base);
+  await b.page.goto(base + "/htmx/");
   await waitFor(() =>
     b.page.evaluate(async () => {
       const workers = await navigator.serviceWorker.getRegistrations();
@@ -1101,7 +1096,7 @@ await test("HTML expands worker scope to auth and retires obsolete registrations
     ),
     caches: await caches.keys(),
   }));
-  assert.deepEqual(state.scopes, ["/"]);
+  assert.deepEqual(state.scopes, ["/htmx"]);
   assert.equal(state.caches.includes("unrelated-cache"), true);
   assert.equal(state.caches.includes("pi-shell-v26"), false);
   assert.equal(await b.page.locator("#composer").count(), 1);

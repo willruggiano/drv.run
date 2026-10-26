@@ -26,7 +26,7 @@ await test("HTTP composition runs pi-env tools and preserves work after disconne
       body: new URLSearchParams(data),
       redirect: "manual",
     });
-  const created = await post(base + "/sessions", {
+  const created = await post(base + "/htmx/", {
     id,
     target: targetKey(f.binding),
     model: modelKey(model),

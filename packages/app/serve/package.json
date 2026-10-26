@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node build.ts dist",
-    "check": "tsc -p tsconfig.json && cd elm && elm-format src tests --validate && elm make src/Main.elm --optimize --output=/dev/null",
+    "check": "tsc -p tsconfig.json && cd elm && elm-format src tests --validate && elm make src/Main.elm src/Site.elm --optimize --output=/dev/null",
     "test:elm": "cd elm && elm-test --seed 1"
   },
   "dependencies": {

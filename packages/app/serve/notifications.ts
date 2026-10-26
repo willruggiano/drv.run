@@ -5,7 +5,6 @@ import type { JsonWebKey } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Activity, object, type ActivityOptions } from "./activity.ts";
 import { FormError } from "./forms.ts";
-import { html as h, renderHTML } from "./html.ts";
 import {
   pushSubscription,
   pushTarget,
@@ -175,18 +174,6 @@ export class Notifications {
   }
 
   async route(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-    if (request.method === "GET" && url.pathname === "/activity") {
-      response.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-      });
-      response.end(
-        renderHTML(
-          h`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Activity · drv.run</title><link rel="stylesheet" href="/styles.css"><link rel="manifest" href="/sessions/manifest.webmanifest"><script type="module" src="/activity-client.js"></script></head><body><main><nav><a href="/sessions">Sessions</a></nav><h1>Activity</h1><p id="connection">Connecting…</p><button id="enable-push" type="button">Enable push on this device</button><button id="disable-push" type="button">Disable push on this device</button><p id="push-status" role="status"></p><h2>Current status</h2><div id="sources"></div><h2>Inbox</h2><div id="inbox"></div></main></body></html>`,
-        ),
-      );
-      return;
-    }
     if (request.method === "GET" && url.pathname === "/activity/events") {
       const selected = url.searchParams.has("item")
         ? Number(url.searchParams.get("item"))

@@ -8,6 +8,7 @@ import type { ProxyAuthorization } from "../auth.ts";
 import type { Sessions } from "../sessions.ts";
 import { chromiumExecutable, serve } from "./testing.ts";
 import { buildAssets } from "../build.ts";
+import type { GlobalSettingsStore } from "../server.ts";
 import type { Notifications } from "../notifications.ts";
 
 export async function browserFixture(
@@ -15,6 +16,7 @@ export async function browserFixture(
   sessions: Sessions,
   authorization?: ProxyAuthorization,
   notifications?: Notifications,
+  settings?: GlobalSettingsStore,
 ) {
   const assets = await mkdtemp(join(tmpdir(), "serve-assets-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
@@ -29,7 +31,7 @@ export async function browserFixture(
     sessions,
     assets,
     "127.0.0.1",
-    undefined,
+    settings,
     undefined,
     authorization,
     notifications,

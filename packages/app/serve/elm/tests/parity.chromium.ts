@@ -22,7 +22,7 @@ await test(
     for (const frontend of ["htmx", "elm", "native"]) {
       const session = await f.create();
       const other = await f.create();
-      const path = (frontend === "elm" ? "/elm" : "") + conversationURL(session);
+      const path = conversationURL(session, undefined, frontend === "elm" ? "elm" : "htmx");
       const native =
         frontend === "native" ? await browser.newContext({ javaScriptEnabled: false }) : undefined;
       const tab = native ? await native.newPage() : page;
@@ -53,14 +53,6 @@ await test(
         [other.id],
       );
       await tab.reload();
-      if (frontend === "elm")
-        await tab
-          .locator(
-            (await tab.locator("#conversation-title").isVisible())
-              ? "#conversation-title"
-              : "#footer-sessions",
-          )
-          .click();
       await tab.locator(".session-row").waitFor();
       assert.equal(await tab.locator(`.session-row a[href*="${session.id}"]`).count(), 0);
       await tab.getByRole("button", { name: "Archive session", exact: true }).click();
@@ -78,7 +70,7 @@ await test("rename completes and updates the session title in both frontends", a
   const { page, base, errors } = await browserFixture(t, f.sessions);
   page.setDefaultTimeout(10000);
   for (const frontend of ["htmx", "elm"]) {
-    const path = (frontend === "elm" ? "/elm" : "") + conversationURL(session);
+    const path = conversationURL(session, undefined, frontend === "elm" ? "elm" : "htmx");
     await page.goto(base + path);
     await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
     await page.fill("#prompt", "/rena");
@@ -183,7 +175,7 @@ await test("conversation frontend visual parity", { timeout: 60000 }, async (t) 
     const geometry = new Map<string, unknown>();
     await page.setViewportSize({ width, height: 900 });
     for (const frontend of ["htmx", "elm"]) {
-      const path = (frontend === "elm" ? "/elm" : "") + conversationURL(session);
+      const path = conversationURL(session, undefined, frontend === "elm" ? "elm" : "htmx");
       await page.goto(b.base + path);
       await page.locator("#transcript .tool-call").waitFor();
       await page.locator("#prompt").fill("A retained draft");
@@ -276,7 +268,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    const path = "/elm" + conversationURL(session);
+    const path = conversationURL(session, undefined, "elm");
     await page.goto(b.base + path);
     const entry = await page.locator(`#entry-${first.id}`).elementHandle();
     assert(entry);
@@ -375,8 +367,8 @@ await test(
     await page.locator("#send").click();
     await page.locator("#branches a").nth(1).waitFor();
     assert.equal(await page.locator('#branches [aria-current="true"]').getAttribute("href"), path);
-    await page.locator(`#branches a[href="/elm${conversationURL(session, branch.id)}"]`).click();
-    await page.waitForURL(b.base + "/elm" + conversationURL(session, branch.id));
+    await page.locator(`#branches a[href="${conversationURL(session, branch.id, "elm")}"]`).click();
+    await page.waitForURL(b.base + conversationURL(session, branch.id, "elm"));
     await page.locator("#prompt").fill("Branch draft");
     await page.goBack();
     await page.locator("#branches a").nth(1).waitFor();
@@ -397,7 +389,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + "/elm" + conversationURL(session));
+    await page.goto(b.base + conversationURL(session, undefined, "elm"));
     await page.locator("#prompt").fill("Retained draft");
     await page.locator("#footer-collapse").click();
     await rename(session, "Changed name");
@@ -442,7 +434,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    const path = "/elm" + conversationURL(session);
+    const path = conversationURL(session, undefined, "elm");
     await page.setViewportSize({ width: 1440, height: 900 });
     for (const [panel, selector] of [
       ["settings", '#session-settings input[name="name"]'],
@@ -498,7 +490,7 @@ await test(
     await page.waitForURL((url) => url.pathname !== path);
     const review = (await session.harness.snapshot(Review, session.root.id, context))?.active;
     assert(review !== undefined);
-    assert.equal(new URL(page.url()).pathname, "/elm" + conversationURL(session, review));
+    assert.equal(new URL(page.url()).pathname, conversationURL(session, review, "elm"));
     const conversation = await session.harness.conversation(review, context);
     assert(conversation);
     await conversation.waitForIdle(context);

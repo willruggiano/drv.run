@@ -385,7 +385,9 @@ async function pageWorkload(
   );
   const initialBefore = bytesWritten();
   const initialMs = await stage("initial", async () => {
-    await page.goto(base + (frontend === "elm" ? "/elm" : "") + conversationURL(session));
+    await page.goto(
+      base + conversationURL(session, undefined, frontend === "elm" ? "elm" : "htmx"),
+    );
     await page.waitForFunction(() => window.__piBenchmarkStreamReady !== undefined);
     const elapsed = await page.evaluate(() => window.__piBenchmarkComplete);
     // Drain the initial event handler and resulting layout before token timing.

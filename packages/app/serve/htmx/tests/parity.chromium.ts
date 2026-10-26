@@ -16,7 +16,7 @@ import { conversationURL } from "../../presentation.ts";
 import { modelKey, targetKey } from "../forms.ts";
 import { rename, sessionInfo, Sessions } from "../../sessions.ts";
 import { browserFixture } from "../../tests/browser-testing.ts";
-import { returnToConversation, openSessions } from "./testing.ts";
+import { returnToConversation } from "./testing.ts";
 import { fixture, readHistory, waitFor, model } from "../../tests/sessions-testing.ts";
 import { directoryFixture, serve } from "../../tests/testing.ts";
 
@@ -251,7 +251,7 @@ await test("HTML shared defaults persist and do not change existing conversation
   const base = await serve(t, sessions, b.assets, "127.0.0.1", store);
   const { page } = b;
   page.setDefaultTimeout(10000);
-  await page.goto(base + "/sessions/settings");
+  await page.goto(base + "/htmx/settings");
   await page.selectOption('[name="defaultThinkingLevel"]', "low");
   await waitFor(async () => store.read().values.defaultThinkingLevel === "low");
   await page.selectOption('[name="hideThinkingBlock"]', "true");
@@ -389,7 +389,7 @@ await test("HTML target directory selection, path completions and slash activati
   const b = await browserFixture(t, f.sessions);
   const { page } = b;
   page.setDefaultTimeout(10000);
-  await page.goto(b.base + "/sessions");
+  await page.goto(b.base + "/htmx/");
   await page.locator("#new-options > summary").click();
   const options = await page.locator("#options").elementHandle();
   assert(options);
@@ -545,12 +545,12 @@ await test("HTML draft reload and offline shell never persist conversation repre
       )
     ).flat(),
   );
-  assert(cached.includes("/sessions/offline"));
+  assert(cached.includes("/htmx/offline"));
   assert.equal(
     cached.some((path) => path.includes(session.id)),
     false,
   );
-  assert.equal(cached.includes("/sessions"), false);
+  assert.equal(cached.includes("/htmx/"), false);
   await b.browserContext.setOffline(true);
   await page.reload();
   assert.equal(await page.locator("[data-events]").count(), 0);
@@ -686,12 +686,12 @@ await test("HTML initial-message retry after reload keeps its creation and submi
     b = await browserFixture(t, f.sessions);
   const { page } = b;
   page.setDefaultTimeout(10000);
-  await page.goto(b.base + "/sessions");
+  await page.goto(b.base + "/htmx/");
   f.faux.setResponses([fauxAssistantMessage("Created exactly once.")]);
   await page.locator('#composer [name="content"]').fill("Initial message");
   const id = await page.locator('#composer [name="id"]').inputValue();
   const requestId = await page.locator('#composer [name="requestId"]').inputValue();
-  await page.route("**/sessions", async (route) => {
+  await page.route("**/htmx/", async (route) => {
     if (route.request().method() !== "POST") {
       await route.continue();
       return;
@@ -704,7 +704,7 @@ await test("HTML initial-message retry after reload keeps its creation and submi
   const session = await f.sessions.get(id);
   await session.root.waitForIdle(context);
   const before = await readHistory(session.root);
-  await page.unroute("**/sessions");
+  await page.unroute("**/htmx/");
   await page.reload();
   await page.waitForFunction(
     () =>
@@ -718,7 +718,7 @@ await test("HTML initial-message retry after reload keeps its creation and submi
   assert.deepEqual(await readHistory(session.root), before);
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
   assert.equal(f.faux.state.callCount, 1);
-  await page.goto(b.base + "/sessions");
+  await page.goto(b.base + "/htmx/");
   await page.locator('#composer [name="content"]').fill("/new");
   await page.getByRole("button", { name: "Create session", exact: true }).click();
   await page.locator("[data-events] #composer").waitFor();
@@ -733,7 +733,7 @@ await test("HTML ordinary messages enable Send and consecutive submissions retai
   const b = await browserFixture(t, f.sessions);
   const { page } = b;
   page.setDefaultTimeout(10000);
-  await page.goto(b.base + "/sessions");
+  await page.goto(b.base + "/htmx/");
   await page.locator("#create").click();
   await page.locator("[data-events] #composer").waitFor();
   const catalog = await f.sessions.catalog();
@@ -825,7 +825,7 @@ await test("HTML creation captures options once and carries newer drafts and fil
   const b = await browserFixture(t, f.sessions);
   const { page } = b;
   page.setDefaultTimeout(10000);
-  await page.goto(b.base + "/sessions");
+  await page.goto(b.base + "/htmx/");
   for (const [key, id] of [
     ["t", "targets"],
     ["m", "models"],
@@ -848,7 +848,7 @@ await test("HTML creation captures options once and carries newer drafts and fil
   const requested = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   t.after(() => release.resolve());
-  await page.route("**/sessions", async (route) => {
+  await page.route("**/htmx/", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     const response = await route.fetch();
     requested.resolve();
@@ -920,7 +920,7 @@ await test("HTML malformed commands never fall through to ordinary prompt submis
   assert.deepEqual(b.errors, []);
 });
 
-await test("HTML remains the default frontend and retired routes cannot mutate sessions", async (t) => {
+await test("framework chooser has no default frontend and retired routes cannot mutate sessions", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   const before = await sessionInfo(session);
@@ -929,10 +929,11 @@ await test("HTML remains the default frontend and retired routes cannot mutate s
   for (const removed of ["client.js", "index.html", "sw.js"])
     assert.equal(assets.includes(removed), false);
   const root = await fetch(b.base, { redirect: "manual" });
-  assert.equal(root.status, 303);
-  assert.equal(root.headers.get("location"), "/sessions");
+  assert.equal(root.status, 200);
+  assert.equal(root.headers.get("location"), null);
   await b.page.goto(b.base);
-  assert.equal(new URL(b.page.url()).pathname, "/sessions");
+  assert.equal(new URL(b.page.url()).pathname, "/");
+  await b.page.getByRole("link", { name: "htmx >" }).click();
   assert.equal(await b.page.locator("#composer").count(), 1);
   assert.equal(await b.page.getByRole("link", { name: "Original UI" }).count(), 0);
   for (const path of [
@@ -965,7 +966,7 @@ await test("HTML remains the default frontend and retired routes cannot mutate s
 await test("HTML landing lists the newest five sessions even when execution is unavailable", async (t) => {
   const f = await directoryFixture(t);
   const { page, base, errors } = await browserFixture(t, f.sessions);
-  await page.goto(base);
+  await page.goto(base + "/htmx/");
   assert.equal(await page.locator("#recent-title").count(), 0);
   assert.equal(await page.locator("#session-list a").count(), 0);
   assert.equal(await page.locator("#composer #create").isVisible(), true);
@@ -998,7 +999,7 @@ await test("HTML landing lists the newest five sessions even when execution is u
       await page
         .locator("#session-list a")
         .evaluateAll((nodes) =>
-          nodes.map((node) => new URL((node as HTMLAnchorElement).href).pathname.split("/")[2]),
+          nodes.map((node) => new URL((node as HTMLAnchorElement).href).pathname.split("/")[3]),
         ),
       ids.slice(0, 5),
     );
@@ -1008,19 +1009,11 @@ await test("HTML landing lists the newest five sessions even when execution is u
       true,
     );
     assert.equal(await page.locator("#new-options > summary").isVisible(), true);
-    await openSessions(page);
-    await page.locator("#picker").waitFor();
-    assert.equal(await page.locator("#session-list a").count(), 7);
-    await page.locator("#session-filter").fill("Session 0");
-    await page.waitForFunction(() => document.querySelectorAll("#session-list a").length === 1);
-    await page.goBack();
-    await page.locator("#landing").waitFor();
-    assert.equal(await page.locator("#session-list a").count(), 5);
     await page.locator("#session-list a").first().click();
-    await page.waitForURL(`${base}/sessions/${ids[0]}/conversations/1`);
+    await page.waitForURL(`${base}/htmx/sessions/${ids[0]}/conversations/1`);
     await page.reload();
     await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
-    await page.goto(base);
+    await page.goto(base + "/htmx/");
   }
   assert.deepEqual(errors, []);
 });

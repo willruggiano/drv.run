@@ -24,8 +24,8 @@ await test("archive endpoints require same-origin POSTs and hide sessions from t
     const session = await f.create();
     const path =
       frontend === "elm"
-        ? `/elm${conversationURL(session)}/archive`
-        : `/sessions/${session.id}/archive?view=sessions&q=keep`;
+        ? `${conversationURL(session, undefined, "elm")}/archive`
+        : `/htmx/sessions/${session.id}/archive`;
     assert.equal((await fetch(base + path)).status, 405);
     const rejectedHeaders: Record<string, string>[] = [{}, { Origin: "http://evil.test" }];
     for (const headers of rejectedHeaders) {
@@ -49,9 +49,9 @@ await test("archive endpoints require same-origin POSTs and hide sessions from t
     });
     assert.equal(response.status, frontend === "elm" ? 200 : 303);
     if (frontend === "elm") assert.deepEqual(await response.json(), { archived: true });
-    else assert.equal(response.headers.get("location"), "/sessions?view=sessions&q=keep");
+    else assert.equal(response.headers.get("location"), "/htmx/");
     assert.deepEqual((await f.sessions.catalog()).sessions, []);
-    assert.deepEqual(await (await fetch(base + "/elm/catalog")).json(), []);
+    assert.deepEqual((await (await fetch(base + "/elm?data=1")).json()).sessions, []);
     const missing = path.replace(session.id, randomUUID());
     assert.equal(
       (
@@ -176,7 +176,7 @@ await test("HTML forms preserve cross-site, Host, input and size protections", a
 
 await test("document-only projections never re-render completed history; reconnect and reset reconcile identities", () => {
   const { view } = benchmarkFixture(50);
-  const renderer = new ConversationFragments("/sessions/test/conversations/1");
+  const renderer = new ConversationFragments("/htmx/sessions/test/conversations/1");
   renderer.render(view, {});
   assert.equal(renderer.metrics.entries, 150);
   const initial = { ...renderer.metrics };
@@ -339,7 +339,7 @@ await test("HTML creation validates the initial submission and deduplicates lost
     content: "Initial request",
   };
   const post = (data: Record<string, string>) =>
-    fetch(base + "/sessions", {
+    fetch(base + "/htmx/", {
       method: "POST",
       headers: { Origin: base },
       body: new URLSearchParams(data),

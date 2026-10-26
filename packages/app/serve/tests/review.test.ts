@@ -38,7 +38,7 @@ await test("HTTP review commands select conversations without submitting slash t
         : session.root;
       const before = await readHistory(original);
       const base = await serve(t, f.sessions);
-      const resource = `${base}/sessions/${session.id}/conversations`;
+      const resource = `${base}/htmx/sessions/${session.id}/conversations`;
       const submit = (id: number, operation: string) => post(`${resource}/${id}/${operation}`, {});
       assert.equal((await submit(original.id, "end-review")).status, 409);
       f.faux.setResponses([fauxAssistantMessage("No findings.")]);

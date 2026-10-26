@@ -1,7 +1,9 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { Conversation } from "@earendil-works/pi-durable";
 import { sessionInfo, rename, selectEnvironment, type Sessions, type Session } from "./sessions.ts";
-import { thinkingLevels } from "./settings.ts";
+import type { GlobalSettingsStore } from "./server.ts";
+import { SessionError } from "./sessions.ts";
+import { settingFields, thinkingLevels } from "./settings.ts";
 import type { IncomingMessage } from "node:http";
 import type { UserInput } from "@earendil-works/pi-durable";
 
@@ -125,4 +127,76 @@ export async function saveSessionSettings(
     context,
   );
   if (name !== current.name) await rename(session, name);
+}
+
+const optional = (data: FormData, key: string) => (data.has(key) ? field(data, key) : "");
+const thinking = (value: string) => thinkingLevels.find((level) => level === value);
+const modelKey = (model: { provider: string; modelId: string }) =>
+  JSON.stringify([model.provider, model.modelId]);
+export async function createSession(
+  data: FormData,
+  sessions: Sessions,
+  context: Context,
+): Promise<Session> {
+  const catalog = await sessions.catalog(context);
+  const target = catalog.targets.find(
+    (target) =>
+      JSON.stringify([target.provider, target.target]) === field(data, "target", 8192) &&
+      target.available,
+  );
+  const model = catalog.models.find(
+    (model) => JSON.stringify([model.provider, model.modelId]) === field(data, "model", 1024),
+  );
+  if (!target || !model) throw new SessionError("unavailable", "Target or model is unavailable.");
+  const level = optional(data, "thinkingLevel");
+  if (level && !thinking(level)) throw new FormError(400, "Invalid thinking level.");
+  let content = await inputContent(data);
+  if (data.has("command")) {
+    if (
+      field(data, "command", 20) !== "new" ||
+      typeof content !== "string" ||
+      content.trim() !== "/new"
+    )
+      throw new FormError(400, "Invalid creation command.");
+    content = undefined;
+  }
+  const requestId = content === undefined ? undefined : field(data, "requestId", 200);
+  if (requestId !== undefined && !requestId.trim()) throw new FormError(400, "Missing request ID.");
+  const baseDirectory = optional(data, "baseDirectory");
+  const session = await sessions.create(
+    field(data, "id", 36),
+    target,
+    { provider: model.provider, modelId: model.modelId },
+    thinking(level),
+    target.directoryRoot ? baseDirectory : baseDirectory || undefined,
+  );
+  if (content !== undefined)
+    await session.root.submit({ type: "input", content, requestId }, context);
+  return session;
+}
+export async function saveGlobalSettings(
+  data: FormData,
+  sessions: Sessions,
+  settings: GlobalSettingsStore,
+  context: Context,
+): Promise<void> {
+  const values: Record<string, unknown> = {};
+  for (const item of settingFields) {
+    if ("readonly" in item) continue;
+    const value = field(data, item.key, 100);
+    if ("type" in item && item.type === "boolean" && value !== "true" && value !== "false")
+      throw new FormError(400, "Invalid boolean setting.");
+    values[item.key] = "choices" in item ? value : value === "true";
+  }
+  const model = (await sessions.catalog(context)).models.find(
+    (model) => modelKey(model) === optional(data, "model"),
+  );
+  if (optional(data, "model") && !model) throw new FormError(400, "Model is unavailable.");
+  await settings.update(
+    {
+      values,
+      ...(model ? { model, modelThinkingLevel: optional(data, "modelThinkingLevel") || null } : {}),
+    },
+    sessions,
+  );
 }

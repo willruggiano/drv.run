@@ -1,3 +1,4 @@
+import { installPwa, installPreferences } from "../pwa.ts";
 type App = {
   ports: {
     stream: {
@@ -9,6 +10,7 @@ type App = {
   };
 };
 type BrowserRequest =
+  | { kind: "opened"; value: Record<string, Record<string, boolean>> }
   | { kind: "rendered"; epoch: number }
   | { kind: "download"; url: string }
   | { kind: "selection"; caret: number }
@@ -111,26 +113,37 @@ try {
 } catch {
   /* Optional storage. */
 }
-const app = Elm.Main.init({ flags: { nonce: crypto.randomUUID(), drafts } });
-document.body.classList.add("stacked-layout", "bottom-align");
+let opened: unknown = {};
 try {
-  for (const [name, key, fallback] of [
-    ["wrap-code", "pi.html.wrap-code", false],
-    ["bottom-align", "pi.bottomAlign", true],
-  ] as const) {
-    const stored = localStorage.getItem(key);
-    document.body.classList.toggle(name, stored === null ? fallback : stored === "true");
-  }
+  opened = JSON.parse(sessionStorage.getItem("pi.elm.opened") ?? "{}");
 } catch {
-  /* Optional local preferences. */
+  /* Optional disclosure restoration. */
 }
+const app = Elm.Main.init({ flags: { nonce: crypto.randomUUID(), drafts, opened } });
+document.body.classList.add("stacked-layout", "bottom-align");
+installPwa();
+installPreferences();
 let stopStream: (() => void) | undefined;
 let epoch = 0;
 let path = location.pathname;
 let pane = "";
-let pinned = true;
-let restore: number | undefined;
 const positions = new Map<string, number>();
+try {
+  const saved: unknown = JSON.parse(sessionStorage.getItem("pi.elm.scroll") ?? "{}");
+  if (saved && typeof saved === "object")
+    for (const [key, value] of Object.entries(saved))
+      if (
+        key.startsWith("/elm/sessions/") &&
+        typeof value === "number" &&
+        Number.isFinite(value) &&
+        value >= 0
+      )
+        positions.set(key, value);
+} catch {
+  /* Optional scroll restoration. */
+}
+let restore = positions.get(path);
+let pinned = restore === undefined;
 const scroll = () => document.querySelector<HTMLElement>("#conversation-scroll");
 const prompt = () => document.querySelector<HTMLTextAreaElement>("#prompt");
 const send = (kind: string, payload: unknown) => app.ports.incoming.send({ kind, epoch, payload });
@@ -255,6 +268,14 @@ app.ports.persist.subscribe((value) => {
   }
 });
 app.ports.browser.subscribe((request) => {
+  if (request.kind === "opened") {
+    try {
+      sessionStorage.setItem("pi.elm.opened", JSON.stringify(request.value));
+    } catch {
+      /* Optional disclosure restoration. */
+    }
+    return;
+  }
   if (request.kind === "cancel-completions") {
     clearTimeout(completionTimer);
     return;
@@ -395,6 +416,11 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || event.isComposing) return;
   if (document.querySelector("dialog[open]")) return;
+  if ((event.ctrlKey || event.metaKey) && event.key === "k" && !event.shiftKey) {
+    event.preventDefault();
+    send("sessions", null);
+    return;
+  }
   if (event.key === "Escape") {
     const branches = document.querySelector<HTMLDetailsElement>("#branch-disclosure[open]");
     if (branches?.checkVisibility()) {
@@ -412,7 +438,14 @@ document.addEventListener("keydown", (event) => {
     send("search", null);
   }
 });
-window.addEventListener("pagehide", () => stopStream?.());
+window.addEventListener("pagehide", () => {
+  stopStream?.();
+  try {
+    sessionStorage.setItem("pi.elm.scroll", JSON.stringify(Object.fromEntries(positions)));
+  } catch {
+    /* Optional scroll restoration. */
+  }
+});
 
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) send("restored", null);

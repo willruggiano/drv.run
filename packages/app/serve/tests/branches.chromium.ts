@@ -57,7 +57,9 @@ await test(
     for (const frontend of ["htmx", "elm"]) {
       const prefix = frontend === "elm" ? "/elm" : "";
       await page.setViewportSize({ width: 1440, height: 900 });
-      await page.goto(b.base + prefix + conversationURL(session));
+      await page.goto(
+        b.base + conversationURL(session, undefined, prefix === "/elm" ? "elm" : "htmx"),
+      );
       await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
       const disclosure = page.locator("#branch-disclosure");
       const summary = disclosure.locator("summary");
@@ -74,7 +76,7 @@ await test(
       );
       assert.equal(
         await tree.locator('[aria-current="true"]').getAttribute("href"),
-        prefix + conversationURL(session),
+        conversationURL(session, undefined, prefix === "/elm" ? "elm" : "htmx"),
       );
       assert.equal(
         await tree
@@ -157,11 +159,13 @@ await test(
       await page.keyboard.press("Enter");
       assert.equal(await tree.isVisible(), true);
       await tree.locator(`#branch-${nested.id} > .branch-row a`).click();
-      await page.waitForURL(b.base + prefix + conversationURL(session, nested.id));
+      await page.waitForURL(
+        b.base + conversationURL(session, nested.id, prefix === "/elm" ? "elm" : "htmx"),
+      );
       await waitFor(
         async () =>
           (await page.locator('#branch-tree [aria-current="true"]').getAttribute("href")) ===
-          prefix + conversationURL(session, nested.id),
+          conversationURL(session, nested.id, prefix === "/elm" ? "elm" : "htmx"),
       );
       await page.setViewportSize({ width: 390, height: 844 });
       assert.equal(await disclosure.isVisible(), false);
@@ -195,7 +199,7 @@ await test(
     page.setDefaultTimeout(10000);
     for (const frontend of ["htmx", "elm"]) {
       const prefix = frontend === "elm" ? "/elm" : "";
-      const path = prefix + conversationURL(session);
+      const path = conversationURL(session, undefined, prefix === "/elm" ? "elm" : "htmx");
       await page.setViewportSize({ width: 390, height: 844 });
       await page.goto(b.base + path);
       await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
@@ -282,7 +286,9 @@ await test(
       await page.waitForURL(b.base + path);
       await page.goto(b.base + path + "/tree");
       await pane.locator(`#branch-${branch.id} > .branch-row a`).click();
-      await page.waitForURL(b.base + prefix + conversationURL(session, branch.id));
+      await page.waitForURL(
+        b.base + conversationURL(session, branch.id, prefix === "/elm" ? "elm" : "htmx"),
+      );
       assert.equal(await page.locator("#conversation-scroll").isVisible(), true);
       assert.equal(await page.locator("#tree-view").isVisible(), false);
       assert.equal(f.faux.state.callCount, 0);

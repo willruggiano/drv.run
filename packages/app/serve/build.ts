@@ -15,12 +15,13 @@ export async function buildAssets(source: string, destination: string): Promise<
   const { stderr } = await promisify(execFile)("esbuild", [
     ...[
       "elm/client.ts",
+      "elm/site.ts",
       "htmx/client.ts",
       "htmx/morph.ts",
       "highlight.ts",
-      "activity-client.ts",
+      "htmx/activity.ts",
       "styles.css",
-      "htmx/sw.js",
+      "worker.js",
     ].map((file) => join(source, file)),
     "--bundle",
     "--minify",
@@ -34,6 +35,8 @@ export async function buildAssets(source: string, destination: string): Promise<
   if (stderr) process.stderr.write(stderr);
   await buildElmAssets(join(source, "elm"), join(destination, "elm"));
   await buildHtmxAssets(join(source, "htmx"), join(destination, "htmx"));
+  for (const frontend of ["elm", "htmx"])
+    await copyFile(join(destination, "worker.js"), join(destination, frontend, "sw.js"));
   // Upstream's CommonJS files omit the package-level BSD notice.
   const require = createRequire(resolve(source, "highlight.ts"));
   const license = await readFile(require.resolve("highlight.js/LICENSE"), "utf8");

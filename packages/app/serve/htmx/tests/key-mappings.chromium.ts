@@ -17,7 +17,7 @@ async function setup(t: TestContext): Promise<Page> {
   const { page, base, errors } = await browserFixture(t, f.sessions);
   t.after(() => assert.deepEqual(errors, []));
   await page.setViewportSize({ width: 820, height: 844 });
-  await page.goto(base + "/sessions?view=sessions");
+  await page.goto(base + "/htmx/");
   await page.evaluate(() => {
     document.addEventListener("htmx:config:request", (event) => {
       if (["targets", "models"].includes(event.detail.ctx.sourceElement.id)) event.preventDefault();
@@ -45,12 +45,12 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
     ["t", "targets"],
     ["m", "models"],
   ]) {
-    await page.focus("#close-view");
+    await page.focus("#menu-toggle");
     await page.keyboard.press(key);
     await focused(page, id);
     assert.equal(await page.locator(`#${id}`).getAttribute("data-opened"), "true");
   }
-  await page.focus("#close-view");
+  await page.focus("#menu-toggle");
   await page.keyboard.press("n");
   assert.equal(await page.locator("#create").getAttribute("data-clicks"), "1");
   await page.locator("#create").evaluate((node) => {
@@ -58,22 +58,22 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
   });
   await page.keyboard.press("n");
   assert.equal(await page.locator("#create").getAttribute("data-clicks"), "1");
-  await page.focus("#session-filter");
+  await page.focus("#prompt");
   await page.keyboard.type("tmn");
-  assert.equal(await page.inputValue("#session-filter"), "tmn");
+  assert.equal(await page.inputValue("#prompt"), "tmn");
   for (const id of ["targets", "models"]) {
     await page.focus(`#${id}`);
     await page.keyboard.press("n");
     await focused(page, id);
   }
-  await page.focus("#close-view");
+  await page.focus("#menu-toggle");
   for (const key of ["Control+t", "Alt+m", "Shift+N", "Meta+n"]) {
     await page.keyboard.press(key);
-    await focused(page, "close-view");
+    await focused(page, "menu-toggle");
   }
   assert.equal(
     await page.evaluate(() => {
-      const button = document.getElementById("close-view")!;
+      const button = document.getElementById("menu-toggle")!;
       return [{ repeat: true }, { isComposing: true }].every((extra) =>
         button.dispatchEvent(
           new KeyboardEvent("keydown", { key: "t", bubbles: true, cancelable: true, ...extra }),
@@ -82,25 +82,6 @@ await test("browser key mappings: sessions mnemonics", async (t) => {
     }),
     true,
   );
-});
-
-await test("browser key mappings: slash focuses session filter without inserting text", async (t) => {
-  const page = await setup(t);
-  await page.fill("#session-filter", "existing");
-  await page.focus("#close-view");
-  await page.keyboard.press("/");
-  await focused(page, "session-filter");
-  assert.equal(await page.inputValue("#session-filter"), "existing");
-  // Once editing, slash remains ordinary input.
-  await page.keyboard.press("End");
-  await page.keyboard.press("/");
-  assert.equal(await page.inputValue("#session-filter"), "existing/");
-  await page.focus("#targets");
-  await page.keyboard.press("/");
-  await focused(page, "targets");
-  await page.focus("#close-view");
-  await page.keyboard.press("Control+/");
-  await focused(page, "close-view");
 });
 
 await test("browser key mappings: Ctrl+J/K navigate visible sessions and Enter activates", async (t) => {
@@ -113,7 +94,7 @@ await test("browser key mappings: Ctrl+J/K navigate visible sessions and Enter a
       node.setAttribute("data-selected", (event.target as HTMLElement).id);
     });
   });
-  await page.focus("#session-filter");
+  await page.focus("#prompt");
   await page.keyboard.press("Control+j");
   await focused(page, "one");
   await page.keyboard.press("Control+j");
@@ -125,24 +106,24 @@ await test("browser key mappings: Ctrl+J/K navigate visible sessions and Enter a
   assert.equal(await page.locator("#session-list").getAttribute("data-selected"), null);
   await page.keyboard.press("Enter");
   assert.equal(await page.locator("#session-list").getAttribute("data-selected"), "two");
-  await page.focus("#session-filter");
+  await page.focus("#prompt");
   await page.keyboard.press("Control+k");
   await focused(page, "two");
-  // Filtering rebuilds the list; navigation must not retain stale buttons.
+  // Archiving rebuilds the list; navigation must not retain stale buttons.
   await page.locator("#session-list").evaluate((node) => {
     node.innerHTML = '<a id="only" href="#only">Only match</a>';
   });
-  await page.focus("#session-filter");
+  await page.focus("#prompt");
   await page.keyboard.press("Control+j");
   await focused(page, "only");
   await page.keyboard.press("Control+k");
   await focused(page, "only");
   await page.locator("#session-list").evaluate((node) => node.replaceChildren());
-  await page.focus("#session-filter");
+  await page.focus("#prompt");
   await page.keyboard.press("Control+j");
   await page.keyboard.press("Control+k");
-  await focused(page, "session-filter");
-  assert.equal(await page.inputValue("#session-filter"), "");
+  await focused(page, "prompt");
+  assert.equal(await page.inputValue("#prompt"), "");
 });
 
 await test("browser key mappings: Ctrl+J/K navigate landing recent sessions", async (t) => {
@@ -151,7 +132,7 @@ await test("browser key mappings: Ctrl+J/K navigate landing recent sessions", as
   await f.create();
   const { page, base, errors } = await browserFixture(t, f.sessions);
   page.setDefaultTimeout(10000);
-  await page.goto(base + "/sessions");
+  await page.goto(base + "/htmx/");
   const recent = page.locator("#landing #session-list a");
   assert.equal(await recent.count(), 2);
   const selected = async (index: number) =>
@@ -168,7 +149,7 @@ await test("browser key mappings: Ctrl+J/K navigate landing recent sessions", as
   await page.focus("#prompt");
   await page.keyboard.press("Control+k");
   await selected(1);
-  assert.equal(page.url(), base + "/sessions");
+  assert.equal(page.url(), base + "/htmx/");
   const href = await recent.nth(1).getAttribute("href");
   assert(href);
   const session = await f.sessions.get(href.split("/").at(-1)!);
@@ -176,10 +157,10 @@ await test("browser key mappings: Ctrl+J/K navigate landing recent sessions", as
   await page.waitForURL(base + conversationURL(session));
   await page.keyboard.press("Tab");
   await focused(page, "prompt");
-  await page.goto(base + "/sessions");
+  await page.goto(base + "/htmx/");
   await page.focus("#prompt");
   await page.keyboard.press("Meta+k");
-  await page.locator("#picker").waitFor();
+  await page.locator("#landing").waitFor();
   assert.deepEqual(errors, []);
 });
 
@@ -196,8 +177,7 @@ await test("browser key mappings: composer is first in native tab order without 
     for (const width of [390, 820]) {
       await page.setViewportSize({ width, height: 844 });
       for (const [route, id] of [
-        ["/sessions", "prompt"],
-        ["/sessions?view=sessions", "session-filter"],
+        ["/htmx/", "prompt"],
         [path, "prompt"],
         [path + "/reset", "prompt"],
         [path + "/settings", "prompt"],
@@ -226,8 +206,7 @@ await test("browser key mappings: Escape blurs the composer without navigation o
   page.setDefaultTimeout(10000);
   const path = conversationURL(session);
   for (const [route, id] of [
-    ["/sessions", "prompt"],
-    ["/sessions?view=sessions", "session-filter"],
+    ["/htmx/", "prompt"],
     [path, "prompt"],
     [path + "/reset", "prompt"],
     [path + "/settings", "prompt"],

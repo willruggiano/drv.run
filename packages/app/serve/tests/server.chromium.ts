@@ -1,3 +1,4 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -11,7 +12,11 @@ import { chromium } from "playwright";
 import { checkCLI, chromiumExecutable } from "./testing.ts";
 import { benchmark, benchmarkOptions } from "../benchmark.ts";
 import { conversationURL } from "../presentation.ts";
-import { fixture, readHistory } from "./sessions-testing.ts";
+import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
+import { rename, sessionInfo } from "../sessions.ts";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { GlobalSettingsStore } from "../server.ts";
 import { browserFixture } from "./browser-testing.ts";
 
 await test("both frontends use only the shared stylesheet", async (t) => {
@@ -19,7 +24,9 @@ await test("both frontends use only the shared stylesheet", async (t) => {
   const session = await f.create();
   const b = await browserFixture(t, f.sessions);
   for (const prefix of ["", "/elm"]) {
-    await b.page.goto(b.base + prefix + conversationURL(session));
+    await b.page.goto(
+      b.base + conversationURL(session, undefined, prefix === "/elm" ? "elm" : "htmx"),
+    );
     await b.page.locator("#prompt").waitFor();
     assert.deepEqual(
       await b.page.evaluate(() =>
@@ -40,7 +47,9 @@ await test("both frontends confirm /reset with two keyboard submissions without 
       for (const handoff of ["", "Preserve the handoff."])
         await t.test(`${prefix || "htmx"}: ${shortcut}, handoff=${Boolean(handoff)}`, async () => {
           const session = await f.create();
-          await b.page.goto(b.base + prefix + conversationURL(session));
+          await b.page.goto(
+            b.base + conversationURL(session, undefined, prefix === "/elm" ? "elm" : "htmx"),
+          );
           const prompt = b.page.locator("#prompt");
           await prompt.fill(handoff ? `/reset ${handoff}` : "/reset");
           if (!handoff) await b.page.locator('#completions [role="option"]').waitFor();
@@ -56,6 +65,120 @@ await test("both frontends confirm /reset with two keyboard submissions without 
           assert.equal(after.length, before.length + 1);
           assert.equal(after.at(-1)?.kind, "pi.reset");
         });
+  assert.deepEqual(b.errors, []);
+});
+
+await test("frontend landings create, reopen and archive sessions without crossing frontend routes", async (t) => {
+  const f = await fixture(t);
+  const settings = new GlobalSettingsStore(
+    SettingsManager.inMemory({ defaultProvider: model.provider, defaultModel: model.modelId }),
+  );
+  const b = await browserFixture(t, f.sessions, undefined, undefined, settings);
+  b.page.setDefaultTimeout(10000);
+  const root = await b.page.goto(b.base);
+  assert.equal(root?.status(), 200);
+  assert.deepEqual(
+    await b.page
+      .locator("a")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href"))),
+    ["/elm", "/htmx/"],
+  );
+  assert.equal(await b.page.locator("script").count(), 0);
+  for (let i = 0; i < 7; i++) await rename(await f.create(), `Session ${i}`);
+  for (const frontend of ["elm", "htmx"] as const) {
+    await t.test(frontend, async () => {
+      const page = await b.browserContext.newPage();
+      t.after(() => page.close());
+      page.setDefaultTimeout(10000);
+      const requests: string[] = [];
+      page.on("request", (request) => requests.push(new URL(request.url()).pathname));
+      page.on("pageerror", (error) => b.errors.push(error));
+      const landing = frontend === "elm" ? "/elm" : "/htmx/";
+      await page.goto(b.base + landing);
+      await page.locator("#session-list a").first().waitFor();
+      assert.equal(await page.locator("#session-list a").count(), 5);
+      const catalog = await f.sessions.catalog();
+      assert.deepEqual(
+        await page
+          .locator("#session-list a")
+          .evaluateAll((nodes) =>
+            nodes.map((node) => new URL((node as HTMLAnchorElement).href).pathname.split("/")[3]),
+          ),
+        catalog.sessions.slice(0, 5).map((item) => item.id),
+      );
+      assert.equal(await page.locator("#session-filter, #picker").count(), 0);
+      f.faux.setResponses([fauxAssistantMessage("Created from the landing.")]);
+      await page.locator("#prompt").fill("Initial prompt");
+      await page.keyboard.press("Control+Enter");
+      await page.waitForURL(new RegExp(`/${frontend}/sessions/.*/conversations/`));
+      const id = new URL(page.url()).pathname.split("/")[3];
+      const session = await f.sessions.get(id);
+      await session.root.waitForIdle(BACKGROUND_CONTEXT);
+      assert.equal(
+        (await readHistory(session.root)).filter((entry) => entry.kind === "pi.user").length,
+        1,
+      );
+      await page.goto(b.base + landing);
+      await page.locator(`#session-list a[href="/${frontend}/sessions/${id}"]`).waitFor();
+      await page.locator("#menu-toggle").click();
+      await page.locator('#global-settings select[name="hideThinkingBlock"]').selectOption("true");
+      await waitFor(async () => settings.read().values.hideThinkingBlock === true);
+      await page.getByRole("link", { name: "Sessions", exact: true }).click();
+      await page.locator("#landing").waitFor();
+      await page.getByRole("link", { name: "Auth", exact: true }).click();
+      await page.locator('#github-authorization [data-state="unconfigured"]').waitFor();
+      await page.goto(b.base + landing);
+      await page.locator(`#session-list a[href="/${frontend}/sessions/${id}"]`).click();
+      await page.waitForURL(b.base + conversationURL(session, undefined, frontend));
+      await page.goto(b.base + landing);
+      await page.locator("#prompt").fill("Unsent new-session draft");
+      for (const operation of ["repository", "history", "compact", "reset"]) {
+        await page.goto(b.base + conversationURL(session, undefined, frontend) + "/" + operation);
+        if (operation === "reset")
+          await page.getByRole("button", { name: "Confirm reset" }).waitFor();
+        else
+          await page
+            .getByRole("heading", {
+              name: { repository: "Repository", history: "History", compact: "Compact context" }[
+                operation
+              ],
+              exact: true,
+              includeHidden: true,
+            })
+            .last()
+            .waitFor({ state: "attached" });
+        if (operation === "compact") {
+          assert.equal(await page.locator('textarea[name="argument"]').inputValue(), "");
+          await page.locator('textarea[name="argument"]').fill("Retain the important context");
+        }
+      }
+      await page.goto(b.base + landing);
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLTextAreaElement>("#prompt")?.value ===
+          "Unsent new-session draft",
+      );
+      const row = page
+        .locator(".session-row")
+        .filter({ has: page.locator(`a[href="/${frontend}/sessions/${id}"]`) });
+      await row.getByRole("button", { name: "Archive session" }).click();
+      await row.waitFor({ state: "detached" });
+      assert.equal(
+        (await f.sessions.catalog()).sessions.some((item) => item.id === id),
+        false,
+      );
+      assert.equal(await page.locator("#session-list a").count(), 5);
+      assert.equal(
+        requests.some((path) => path.startsWith(frontend === "elm" ? "/htmx" : "/elm")),
+        false,
+      );
+      assert.equal(
+        requests.some((path) => /^\/(sessions|auth|activity)(\/|$)/.test(path)),
+        false,
+      );
+      await settings.update({ values: { hideThinkingBlock: false } }, f.sessions);
+    });
+  }
   assert.deepEqual(b.errors, []);
 });
 
@@ -244,7 +367,7 @@ await test("server reads HOST/PORT and starts with no local execution target", a
       );
       await checkCLI(
         child,
-        `http://${address}:${port}/sessions`,
+        `http://${address}:${port}/htmx/`,
         (response) => response.text(),
         async (html) => {
           await page.setContent(html);
@@ -258,3 +381,43 @@ await test("server reads HOST/PORT and starts with no local execution target", a
     });
   }
 });
+
+for (const frontend of ["elm", "htmx"] as const)
+  await test(`${frontend}: landing creation retry after reload retains options and input identity`, async (t) => {
+    const f = await fixture(t);
+    f.faux.setResponses([fauxAssistantMessage("Created once.")]);
+    const b = await browserFixture(t, f.sessions);
+    const path = frontend === "elm" ? "/elm" : "/htmx/";
+    await b.page.goto(b.base + path);
+    await b.page.locator("#new-options summary").click();
+    await b.page.locator('select[name="thinkingLevel"]').selectOption("high");
+    await b.page.locator("#new-options summary").click();
+    await b.page.locator("#prompt").fill("Create exactly once");
+    await b.page.route(b.base + path, async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      await route.fetch({ maxRedirects: 0 });
+      await route.abort("connectionreset");
+    });
+    await b.page.locator("#create").click();
+    await b.page.locator("#request-error:not(:empty)").waitFor();
+    assert.equal((await f.sessions.catalog()).sessions.length, 1);
+    await b.page.unrouteAll({ behavior: "wait" });
+    await b.page.reload();
+    await b.page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "Create exactly once",
+    );
+    assert.equal(await b.page.locator('select[name="thinkingLevel"]').inputValue(), "high");
+    await b.page.locator("#create").click();
+    await b.page.waitForURL(new RegExp(`/${frontend}/sessions/.*/conversations/`));
+    const catalog = await f.sessions.catalog();
+    assert.equal(catalog.sessions.length, 1);
+    const session = await f.sessions.get(catalog.sessions[0].id);
+    await session.root.waitForIdle(BACKGROUND_CONTEXT);
+    assert.equal((await sessionInfo(session, session.root)).thinkingLevel, "high");
+    assert.equal(
+      (await readHistory(session.root)).filter((entry) => entry.kind === "pi.user").length,
+      1,
+    );
+    assert.equal(f.faux.state.callCount, 1);
+    assert.deepEqual(b.errors, []);
+  });

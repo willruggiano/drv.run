@@ -72,9 +72,9 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    const path = conversationURL(session);
+    const path = conversationURL(session, undefined, "elm");
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(b.base + "/elm" + path);
+    await page.goto(b.base + path);
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -139,7 +139,7 @@ await test(
       const browserContext = await b.browser.newContext({ locale, timezoneId });
       const page = await browserContext.newPage();
       page.on("pageerror", (error) => b.errors.push(error));
-      await page.goto(b.base + "/elm" + conversationURL(session));
+      await page.goto(b.base + conversationURL(session, undefined, "elm"));
       await page.waitForFunction(() => customElements.get("elm-time") !== undefined);
       const results = await page.evaluate(() => {
         const node = document.createElement("elm-time");
@@ -187,7 +187,7 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.setViewportSize({ width: 1440, height: 900 });
-    const path = "/elm" + conversationURL(first);
+    const path = conversationURL(first, undefined, "elm");
     await page.goto(b.base + path);
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
@@ -280,17 +280,19 @@ await test(
       () => document.querySelector("#controls")?.getAttribute("data-state") === "ready",
     );
 
-    // Catalog dismissal remounts the composer without changing the route.
+    // The dedicated landing is a real history entry; returning restores the draft.
     await page.locator("#conversation-title").click();
     await page.locator("#session-list").waitFor();
-    await page.getByRole("button", { name: "Conversation", exact: true }).click();
+    await page.goBack();
     await waitFor(async () => (await height()) === multiline);
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "Other conversation" }).click();
-    await page.waitForURL(b.base + "/elm" + conversationURL(second));
+    await page.waitForURL(b.base + conversationURL(second, undefined, "elm"));
     await prompt.fill("short");
     await fits();
     assert((await height()) < multiline);
+    await page.goBack();
+    await page.locator("#landing").waitFor();
     await page.goBack();
     await page.waitForURL(b.base + path);
     await waitFor(async () => (await height()) === multiline);
@@ -329,7 +331,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    const path = "/elm" + conversationURL(session);
+    const path = conversationURL(session, undefined, "elm");
     await page.goto(b.base + path);
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
@@ -390,19 +392,23 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.setViewportSize({ width: 1000, height: 900 });
-    await page.goto(b.base + "/elm" + conversationURL(first));
+    await page.goto(b.base + conversationURL(first, undefined, "elm"));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
     await page.locator("#prompt").fill("First draft");
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "Second" }).click();
-    await page.waitForURL(b.base + "/elm" + conversationURL(second));
+    await page.waitForURL(b.base + conversationURL(second, undefined, "elm"));
     await page.locator("#prompt").fill("Second draft");
+    await page.goBack();
+    await page.locator("#landing").waitFor();
     await page.goBack();
     await page.waitForFunction(
       () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "First draft",
     );
+    await page.goForward();
+    await page.locator("#landing").waitFor();
     await page.goForward();
     await page.waitForFunction(
       () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "Second draft",
@@ -410,7 +416,7 @@ await test(
     await page.locator("#prompt").fill("/res");
     await page.locator('#completions [role="option"]').first().waitFor();
     await page.locator("#prompt").press("Escape");
-    assert.equal(await page.locator("#completions").isVisible(), false);
+    await page.locator("#completions").waitFor({ state: "hidden" });
     await page.locator("#prompt").dispatchEvent("compositionstart");
     await page.locator("#prompt").fill("構成中");
     await page
@@ -480,7 +486,7 @@ await test(
     await page.route("**/events", (route) =>
       route.fulfill({ contentType: "text/event-stream", body: 'data: {"version":999}\n\n' }),
     );
-    await page.goto(b.base + "/elm" + conversationURL(session));
+    await page.goto(b.base + conversationURL(session, undefined, "elm"));
     await page.getByRole("button", { name: "Reconnect", exact: true }).waitFor();
     await page.unroute("**/events");
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
@@ -526,7 +532,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + "/elm" + conversationURL(session));
+    await page.goto(b.base + conversationURL(session, undefined, "elm"));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -571,7 +577,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + "/elm" + conversationURL(session));
+    await page.goto(b.base + conversationURL(session, undefined, "elm"));
     await page.locator("#prompt").fill("Start a cancellable tool");
     await page.locator("#send").click();
     await page.locator('.tool-call[data-state="running"]').waitFor();
@@ -617,7 +623,7 @@ await test(
     const server = await streamServer(t, f.sessions, b.assets);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(server.base + "/elm" + conversationURL(session));
+    await page.goto(server.base + conversationURL(session, undefined, "elm"));
     const select = async (file: string) => {
       const chooser = page.waitForEvent("filechooser");
       await page.getByRole("button", { name: "Upload attachments" }).click();
@@ -682,7 +688,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + "/elm" + conversationURL(session));
+    await page.goto(b.base + conversationURL(session, undefined, "elm"));
     await page.locator("#prompt").fill("Not admitted");
     const chooser = page.waitForEvent("filechooser");
     await page.getByRole("button", { name: "Upload attachments" }).click();
@@ -760,7 +766,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + "/elm" + conversationURL(restored));
+    await page.goto(b.base + conversationURL(restored, undefined, "elm"));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -879,7 +885,7 @@ await test(
         },
       });
     });
-    await page.goto(b.base + "/elm" + conversationURL(session));
+    await page.goto(b.base + conversationURL(session, undefined, "elm"));
     await page.waitForFunction(() => window.elmTransportTest.ready);
     await page.clock.pauseAt(new Date("2026-01-01T01:00:00Z"));
     const control = await page.evaluateHandle(() => window.elmTransportTest);
@@ -1002,7 +1008,7 @@ await test(
       attempts++;
       return route.fulfill({ status: 204 });
     });
-    await page.goto(b.base + "/elm" + conversationURL(session));
+    await page.goto(b.base + conversationURL(session, undefined, "elm"));
     await page.getByRole("button", { name: "Reconnect", exact: true }).waitFor();
     assert.equal(attempts, 1);
     await page.locator("#prompt").fill("Retained after terminal failure");
@@ -1091,7 +1097,7 @@ await test(
     const watches = observeWatches(t, session);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(server.base + "/elm" + conversationURL(session));
+    await page.goto(server.base + conversationURL(session, undefined, "elm"));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -1168,7 +1174,7 @@ await test(
 );
 
 await test(
-  "Elm releases observers on navigation and rejects late acknowledgements and catalog callbacks",
+  "Elm releases observers on landing navigation and reconciles an acknowledgement lost with the old document",
   { timeout: 45000 },
   async (t) => {
     const f = await fixture(t);
@@ -1183,7 +1189,7 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.setViewportSize({ width: 1000, height: 900 });
-    await page.goto(server.base + "/elm" + conversationURL(first));
+    await page.goto(server.base + conversationURL(first, undefined, "elm"));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -1202,36 +1208,30 @@ await test(
     await received.promise;
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "Second" }).click();
-    await page.waitForURL(server.base + "/elm" + conversationURL(second));
+    await page.waitForURL(server.base + conversationURL(second, undefined, "elm"));
     await page.locator("#prompt").fill("Second draft");
     await waitFor(
       async () => firstWatches.size === 0 && secondWatches.size === 1 && server.streams.size === 1,
     );
     release.resolve();
-    await page.waitForFunction(
-      (path) => JSON.parse(sessionStorage.getItem("pi.elm.drafts")!)[path].pending === null,
-      "/elm" + conversationURL(first),
-    );
     assert.equal(await page.locator("#prompt").inputValue(), "Second draft");
     assert.deepEqual(await readHistory(second.root), []);
-    const catalogReceived = Promise.withResolvers<void>(),
-      catalogRelease = Promise.withResolvers<void>();
-    t.after(() => catalogRelease.resolve());
-    await page.route("**/elm/catalog", async (route) => {
-      const response = await route.fetch();
-      catalogReceived.resolve();
-      await catalogRelease.promise;
-      await route.fulfill({ response });
-    });
     await page.locator("#conversation-title").click();
-    await catalogReceived.promise;
-    await page.goBack();
-    await page.waitForURL(server.base + "/elm" + conversationURL(first));
-    catalogRelease.resolve();
+    await page.locator("#session-list a").filter({ hasText: "First" }).click();
+    await page.waitForURL(server.base + conversationURL(first, undefined, "elm"));
     await page.unrouteAll({ behavior: "wait" });
     await waitFor(async () => firstWatches.size === 1 && secondWatches.size === 0);
     assert.equal(await page.locator("#session-list").count(), 0);
-    assert.equal(await page.locator("#prompt").inputValue(), "");
+    // A full document navigation cannot receive the old acknowledgement. Retry
+    // reconciles the persisted request identity without another model input.
+    await page.getByRole("button", { name: "Retry original input", exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    assert.equal(
+      (await readHistory(first.root)).filter((entry) => entry.kind === "pi.user").length,
+      1,
+    );
     await page.evaluate(() =>
       window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })),
     );
@@ -1269,7 +1269,7 @@ await test(
           };
         } else sessionStorage.setItem("pi.elm.drafts", "{");
       }, mode);
-      await page.goto(b.base + "/elm" + conversationURL(session));
+      await page.goto(b.base + conversationURL(session, undefined, "elm"));
       await page.waitForFunction(
         () => document.querySelector("#connection")?.textContent === "Connected",
       );
@@ -1320,7 +1320,20 @@ await test(
         () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
       );
       await session.root.waitForIdle(context);
-      assert.deepEqual(await page.evaluate(() => caches.keys()), []);
+      assert.equal(
+        await page.evaluate(async () =>
+          (
+            await Promise.all(
+              (await caches.keys()).map(async (key) =>
+                (await (await caches.open(key)).keys()).some((request) =>
+                  new URL(request.url).pathname.includes("/sessions/"),
+                ),
+              ),
+            )
+          ).some(Boolean),
+        ),
+        false,
+      );
       await page.close();
     }
     assert.equal(
@@ -1342,7 +1355,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + "/elm" + conversationURL(session));
+    await page.goto(b.base + conversationURL(session, undefined, "elm"));
     for (const [count, size, type] of [
       [5, 1, "image/png"],
       [1, 5 * 1024 * 1024 + 1, "image/png"],
@@ -1445,7 +1458,7 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.setViewportSize({ width: 1000, height: 900 });
-    await page.goto(b.base + "/elm" + conversationURL(session));
+    await page.goto(b.base + conversationURL(session, undefined, "elm"));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -1563,10 +1576,12 @@ await test(
     await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#latest")?.hidden);
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "Other" }).click();
-    await page.waitForURL(b.base + "/elm" + conversationURL(other));
+    await page.waitForURL(b.base + conversationURL(other, undefined, "elm"));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
+    await page.goBack();
+    await page.locator("#landing").waitFor();
     await page.goBack();
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",

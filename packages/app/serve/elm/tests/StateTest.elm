@@ -142,13 +142,6 @@ tests =
                                 { newer | error = "New operation error", reset = Just "new reset" }
                         in
                         Expect.all [ \_ -> Expect.equal failed (Main.update (Main.Acknowledged base.path pending (Ok ( pending.identity, pending.revision ))) failed |> Tuple.first), \_ -> Expect.equal failed (Main.update (Main.Acknowledged base.path pending (Err Http.NetworkError)) failed |> Tuple.first) ] ()
-        , test "dismissed and old-route catalog callbacks cannot reopen navigation" <|
-            \_ ->
-                let
-                    base =
-                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
-                in
-                Expect.all [ \_ -> Expect.equal Nothing (Main.update (Main.Catalog base.epoch (Ok [])) base |> Tuple.first).catalog, \_ -> Expect.equal (Just []) (Main.update (Main.Catalog (base.epoch - 1) (Ok [ ( "stale", "stale" ) ])) { base | catalog = Just [] } |> Tuple.first).catalog ] ()
         , test "navigation ends composition and invalidates completion callbacks" <|
             \_ ->
                 let
@@ -264,39 +257,6 @@ tests =
                         Main.update (Main.SettingsSaved base.epoch { initial | name = "First" } (Ok True)) newer |> Tuple.first
                 in
                 Expect.equal ( Just "Second", Just "First", Just "Second" ) ( Maybe.map .name acknowledged.settings, Maybe.map .name acknowledged.savedSettings, Maybe.map .name acknowledged.saving )
-        , test "archive waits for success, retains failed rows and ignores stale acknowledgements" <|
-            \_ ->
-                let
-                    base =
-                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
-
-                    row =
-                        ( base.path, "Session" )
-
-                    other =
-                        ( "/elm/sessions/other/conversations/1", "Other" )
-
-                    loaded =
-                        { base | catalog = Just [ row, other ] }
-
-                    pending =
-                        Main.update (Main.ArchiveSession base.path) loaded |> Tuple.first
-
-                    failed =
-                        Main.update (Main.SessionArchived base.epoch base.path (Err Http.NetworkError)) pending |> Tuple.first
-
-                    saved =
-                        Main.update (Main.SessionArchived base.epoch base.path (Ok ())) pending |> Tuple.first
-                in
-                Expect.all
-                    [ \_ -> Expect.equal loaded.catalog pending.catalog
-                    , \_ -> Expect.equal [ base.path ] pending.archiving
-                    , \_ -> Expect.equal pending (Main.update (Main.ArchiveSession base.path) pending |> Tuple.first)
-                    , \_ -> Expect.equal ( loaded.catalog, [], False ) ( failed.catalog, failed.archiving, String.isEmpty failed.error )
-                    , \_ -> Expect.equal ( Just [ other ], [], base.path ) ( saved.catalog, saved.archiving, saved.path )
-                    , \_ -> Expect.equal pending (Main.update (Main.SessionArchived (base.epoch - 1) base.path (Ok ())) pending |> Tuple.first)
-                    ]
-                    ()
         , test "late panel loads and saves cannot replace another route's state" <|
             \_ ->
                 let

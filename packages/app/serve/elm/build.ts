@@ -7,7 +7,13 @@ import { promisify } from "node:util";
 export async function buildAssets(source: string, destination: string): Promise<void> {
   await promisify(execFile)(
     "elm",
-    ["make", "src/Main.elm", "--optimize", `--output=${resolve(destination, "main.js")}`],
+    [
+      "make",
+      "src/Main.elm",
+      "src/Site.elm",
+      "--optimize",
+      `--output=${resolve(destination, "main.js")}`,
+    ],
     { cwd: source },
   );
   // Elm exports through top-level `this`. An enclosing type=module package makes
