@@ -129,7 +129,7 @@ class AppPage {
       defaults: "#global-preferences",
     }[panel];
     await this.page.wait(
-      `!!document.querySelector(${JSON.stringify(selector)}) && document.querySelector('#connection')?.textContent === 'Connected'`,
+      `!!document.querySelector(${JSON.stringify(selector)})?.checkVisibility()${panel === "defaults" ? "" : " && document.querySelector('#connection')?.textContent === 'Connected'"}`,
       panel,
     );
     this.check();
@@ -170,13 +170,17 @@ class AppPage {
     }
   }
   async present(value: Presentation) {
-    // Context has no composer. Return through the real close control before
-    // applying a draft change, including one committed together with navigation.
+    // Context and standalone defaults have no composer. Return before editing
+    // a draft, including changes committed together with navigation.
     if (
       this.selected !== "conversation" &&
-      (this.selected !== value.panel || (this.selected === "context" && value.draft !== this.draft))
+      (this.selected !== value.panel ||
+        (["context", "defaults"].includes(this.selected) && value.draft !== this.draft))
     ) {
-      await this.click("#close-view");
+      if (this.selected === "defaults") {
+        const navigation = await this.page.send("Page.navigate", { url: this.base + this.path });
+        assert(!navigation.errorText, navigation.errorText);
+      } else await this.click("#close-view");
       await this.ready("conversation");
       this.selected = "conversation";
     }
@@ -203,17 +207,17 @@ class AppPage {
       if (value.panel === "settings") await this.click("#footer-model");
       else if (value.panel === "context") await this.click("#footer-context");
       else if (value.panel === "defaults") {
-        // Mobile intentionally has no global-settings control. Its native URL
-        // is a supported entry point; do not resize or activate hidden controls.
+        // The mobile conversation has no global-settings control. Use the
+        // standalone page URL rather than activating a hidden control.
         const navigation = await this.page.send("Page.navigate", {
-          url: `${this.base}/sessions/settings?return=${encodeURIComponent(this.path)}`,
+          url: `${this.base}/htmx/settings`,
         });
         assert(!navigation.errorText, navigation.errorText);
       }
       await this.ready(value.panel);
       this.selected = value.panel;
     }
-    if (value.panel !== "context")
+    if (value.panel !== "context" && value.panel !== "defaults")
       await this.page.wait(
         `document.querySelector('#prompt')?.value === ${JSON.stringify(value.draft)}`,
         "preserved draft",

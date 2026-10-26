@@ -12,7 +12,7 @@ export function updateSend() {
   const form = composer();
   if (!form) return;
   const { text, files } = controls(form);
-  const pending = form.dataset.submitting === "true";
+  const pending = form.dataset.submitting === "true" || form.dataset.restoring === "true";
   for (const button of document.querySelectorAll<HTMLButtonElement>("button[form=composer]"))
     button.disabled = pending || (!text.value.trim() && !files.files?.length);
   const create = form.querySelector<HTMLButtonElement>("#create");

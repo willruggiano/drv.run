@@ -1099,3 +1099,82 @@ await test("cd completes directories and changes cwd in HTML without model input
     assert.deepEqual(errors, []);
   }
 });
+
+await test("HTML draft reload restores model and target dependent creation controls", async (t) => {
+  const f = await fixture(t);
+  const plain = { provider: "plain", modelId: "plain" };
+  f.options.models.setProvider(
+    fauxProvider({ provider: plain.provider, models: [{ id: plain.modelId, reasoning: false }] })
+      .provider,
+  );
+  const root = join(f.workspace, "scoped");
+  await mkdir(join(root, "child"), { recursive: true });
+  const target = {
+    provider: "local",
+    target: root,
+    cwd: root,
+    directoryRoot: root,
+    label: "Scoped",
+    available: true,
+  };
+  await f.reopen({
+    defaults: { model: plain },
+    targets: async () => [{ ...f.binding, label: "Local", available: true }, target],
+  });
+  const b = await browserFixture(t, f.sessions);
+  const { page } = b;
+  page.setDefaultTimeout(10000);
+  await page.goto(b.base + "/htmx/");
+  await page.locator("#new-options summary").click();
+  await page.locator("#models").selectOption(modelKey(model));
+  await page.waitForFunction(() => !!document.querySelector('#thinking option[value="high"]'));
+  await page.locator("#targets").selectOption(targetKey(target));
+  await page.locator("#base-directory").waitFor({ state: "visible" });
+  await page.locator("#thinking").selectOption("high");
+  await page.locator("#base-directory").fill("child");
+  await page.locator("#prompt").fill("Use the restored options");
+  const requested = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  await page.route("**/htmx/options?**", async (route) => {
+    const response = await route.fetch();
+    requested.resolve();
+    await release.promise;
+    await route.fulfill({ response });
+  });
+  await page.reload();
+  await requested.promise;
+  assert.equal(await page.locator("#create").isDisabled(), true);
+  await page.locator("#prompt").fill("Use the restored options and this newer draft");
+  release.resolve();
+
+  await page.locator("#new-options summary").click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector<HTMLSelectElement>("#models")?.value ===
+      JSON.stringify(["faux", "faux-1"]),
+  );
+  await page.waitForFunction(
+    () => document.querySelector<HTMLSelectElement>("#thinking")?.value === "high",
+  );
+  assert.equal(await page.locator("#targets").inputValue(), targetKey(target));
+  assert.equal(await page.locator("#base-directory").isVisible(), true);
+  assert.equal(await page.locator("#base-directory").inputValue(), "child");
+  await page.locator("#new-options summary").click();
+  assert.equal(
+    await page.locator("#prompt").inputValue(),
+    "Use the restored options and this newer draft",
+  );
+  f.faux.setResponses([fauxAssistantMessage("Restored")]);
+  await page.locator("#create").click();
+  await page.waitForURL(new RegExp("/htmx/sessions/.*/conversations/"));
+  const catalog = await f.sessions.catalog();
+  assert.equal(catalog.sessions.length, 1);
+  const session = await f.sessions.get(catalog.sessions[0].id);
+  await session.root.waitForIdle(context);
+  const info = await sessionInfo(session);
+  assert.deepEqual(info.model, model);
+  assert.equal(info.thinkingLevel, "high");
+  assert.equal(info.cwd, join(root, "child"));
+  assert.deepEqual(b.errors, []);
+});

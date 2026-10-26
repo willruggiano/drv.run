@@ -15,7 +15,7 @@ import { conversationURL } from "../presentation.ts";
 import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
 import { rename, sessionInfo } from "../sessions.ts";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { GlobalSettingsStore } from "../server.ts";
 import { browserFixture } from "./browser-testing.ts";
 
@@ -421,3 +421,52 @@ for (const frontend of ["elm", "htmx"] as const)
     assert.equal(f.faux.state.callCount, 1);
     assert.deepEqual(b.errors, []);
   });
+
+await test("Elm default model reselection preserves saved thinking overrides", async (t) => {
+  const f = await fixture(t);
+  const plain = { provider: "plain", modelId: "plain" };
+  f.options.models.setProvider(
+    fauxProvider({ provider: plain.provider, models: [{ id: plain.modelId, reasoning: false }] })
+      .provider,
+  );
+  const settings = new GlobalSettingsStore(
+    SettingsManager.inMemory({ defaultProvider: model.provider, defaultModel: model.modelId }),
+  );
+  const b = await browserFixture(t, f.sessions, undefined, undefined, settings);
+  b.page.setDefaultTimeout(10000);
+  await b.page.goto(b.base + "/elm/settings");
+  const selected = b.page.locator('[name="model"]');
+  const thinking = b.page.locator('[name="modelThinkingLevel"]');
+  const key = `${model.provider}/${model.modelId}`;
+  for (const level of ["high", ""]) {
+    await thinking.selectOption(level);
+    await waitFor(async () => settings.read().modelThinkingLevels[key] === (level || undefined));
+    await selected.selectOption(JSON.stringify([plain.provider, plain.modelId]));
+    await waitFor(async () => settings.read().model?.provider === plain.provider);
+    await selected.selectOption(JSON.stringify([model.provider, model.modelId]));
+    await waitFor(async () => settings.read().model?.provider === model.provider);
+    assert.equal(await thinking.inputValue(), level);
+    assert.equal(settings.read().modelThinkingLevels[key], level || undefined);
+  }
+  const accepted = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  await b.page.route(b.base + "/elm/settings", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch();
+    accepted.resolve();
+    await release.promise;
+    await route.fulfill({ response });
+  });
+  await thinking.selectOption("high");
+  await accepted.promise;
+  await selected.selectOption(JSON.stringify([plain.provider, plain.modelId]));
+  await selected.selectOption(JSON.stringify([model.provider, model.modelId]));
+  assert.equal(await thinking.inputValue(), "high");
+  release.resolve();
+  await b.page.waitForFunction(
+    () => document.querySelector(".save-status")?.textContent === "Saved",
+  );
+  assert.equal(settings.read().modelThinkingLevels[key], "high");
+  assert.deepEqual(b.errors, []);
+});

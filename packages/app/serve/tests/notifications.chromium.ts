@@ -30,13 +30,19 @@ for (const frontend of ["elm", "htmx"] as const) {
     await b.page.getByRole("link", { name: "Sessions", exact: true }).click();
     await b.page.locator("#landing").waitFor();
     activity.accept(source, 2, { type: "status", record: { id: "", state: "done" } });
-    await b.page.goto(`${b.base}/${frontend}/activity`);
+    await b.page.goBack();
     await b.page.locator("#inbox article").first().waitFor();
     await b.page.waitForFunction(() => document.querySelectorAll("#inbox article").length === 2);
     assert.equal(
       await b.page.getByRole("button", { name: "Read", exact: true }).isDisabled(),
       true,
     );
+    await b.page.getByRole("button", { name: "Enable push on this device", exact: true }).click();
+    await b.page.locator("#push-status:not(:empty)").waitFor();
+    await b.page.getByRole("button", { name: "Mark read", exact: true }).click();
+    await waitFor(async () => activity.history().every((item) => item.read));
+    activity.accept(source, 3, { type: "status", record: { id: "", state: "blocked" } });
+    await b.page.waitForFunction(() => document.querySelectorAll("#inbox article").length === 3);
     assert.deepEqual(b.errors, []);
   });
 

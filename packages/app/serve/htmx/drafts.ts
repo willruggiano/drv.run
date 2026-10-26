@@ -1,7 +1,9 @@
-import type { HtmxRequestCtx } from "htmx.org";
+import type { Htmx, HtmxRequestCtx } from "htmx.org";
 import { composer, controls, resizePrompt, updateSend, report } from "./dom.ts";
 import { previews } from "./attachments.ts";
 import { closeCompletions } from "./completions.ts";
+declare const htmx: Htmx;
+
 type Draft = {
   text: string;
   files: File[];
@@ -23,14 +25,17 @@ function saveDraft() {
     files: Array.from(files.files ?? []),
     requestId: request.value,
     creationId: form.querySelector<HTMLInputElement>('[name="id"]')?.value,
-    options: form.classList.contains("new-composer")
-      ? Object.fromEntries(
-          Array.from(
-            form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("#new-options [name]"),
-            (field) => [field.name, field.value],
-          ),
-        )
-      : undefined,
+    options:
+      form.dataset.restoring === "true"
+        ? drafts.get(form.action)?.options
+        : form.classList.contains("new-composer")
+          ? Object.fromEntries(
+              Array.from(
+                form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("#new-options [name]"),
+                (field) => [field.name, field.value],
+              ),
+            )
+          : undefined,
   };
   storeDraft(form.action, draft);
 }
@@ -103,13 +108,49 @@ export function restoreDraft(form: HTMLFormElement) {
     request.value = draft.requestId;
     const id = form.querySelector<HTMLInputElement>('[name="id"]');
     if (id && draft.creationId) id.value = draft.creationId;
-    if (draft.options)
-      for (const field of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+    if (draft.options && form.classList.contains("new-composer")) {
+      const fields = form.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
         "#new-options [name]",
-      )) {
-        const value = draft.options[field.name];
-        if (value !== undefined) field.value = value;
-      }
+      );
+      const rebuild = Array.from(fields).some(
+        (field) =>
+          ["model", "target"].includes(field.name) &&
+          draft.options?.[field.name] !== undefined &&
+          draft.options[field.name] !== field.value,
+      );
+      if (rebuild) {
+        const options = form.querySelector<HTMLElement>("#options")!;
+        const path = form.querySelector("#models")!.getAttribute("hx-get")!;
+        // Rebuild dependent controls with the complete saved selection. A select
+        // change would deliberately reset thinking/directory instead of restoring it.
+        form.dataset.restoring = "true";
+        options.inert = true;
+        updateSend();
+        void htmx
+          .ajax("GET", path, {
+            source: options,
+            target: options,
+            select: "#options",
+            swap: "outerHTML",
+            push: false,
+            values: draft.options,
+          })
+          .then(() => {
+            if (!form.isConnected) return;
+            if (options.isConnected)
+              throw new Error("Could not restore creation options. Reload to retry.");
+            delete form.dataset.restoring;
+            updateSend();
+          })
+          .catch(() => {
+            if (form.isConnected) report("Could not restore creation options. Reload to retry.");
+          });
+      } else
+        for (const field of fields) {
+          const value = draft.options[field.name];
+          if (value !== undefined) field.value = value;
+        }
+    }
     const transfer = new DataTransfer();
     draft.files.forEach((file) => transfer.items.add(file));
     files.files = transfer.files;
@@ -227,6 +268,11 @@ export function installDrafts() {
     (event) => {
       const form = event.target;
       if (!(form instanceof HTMLFormElement) || form.getAttribute("id") !== "composer") return;
+      if (form.dataset.restoring === "true") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
       const { text, files, request } = controls(form);
       const match = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(text.value.trim());
       if (!text.value.trimStart().startsWith("/")) return;

@@ -302,6 +302,24 @@ override catalog key =
     D.decodeString (D.list D.string) key |> Result.map (String.join "/") |> Result.toMaybe |> Maybe.andThen (\name -> Dict.get name catalog.overrides) |> Maybe.withDefault ""
 
 
+rememberOverride : Dict String String -> Catalog -> Catalog
+rememberOverride values catalog =
+    case Dict.get "model" values |> Maybe.andThen (D.decodeString (D.list D.string) >> Result.toMaybe) |> Maybe.map (String.join "/") of
+        Just key ->
+            case Dict.get "modelThinkingLevel" values of
+                Just "" ->
+                    { catalog | overrides = Dict.remove key catalog.overrides }
+
+                Just level ->
+                    { catalog | overrides = Dict.insert key level catalog.overrides }
+
+                Nothing ->
+                    catalog
+
+        Nothing ->
+            catalog
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
@@ -449,7 +467,7 @@ update msg model =
                             case model.page of
                                 Defaults catalog ->
                                     if key == "model" then
-                                        Dict.insert "modelThinkingLevel" (override catalog str) values
+                                        Dict.insert "modelThinkingLevel" (override (Maybe.map (\pending -> rememberOverride pending catalog) model.saving |> Maybe.withDefault catalog) str) values
 
                                     else
                                         values
@@ -474,8 +492,21 @@ update msg model =
 
                 Ok () ->
                     let
+                        saved =
+                            Maybe.withDefault model.saved model.saving
+
                         updated =
-                            { model | saved = Maybe.withDefault model.saved model.saving, saving = Nothing }
+                            { model
+                                | saved = saved
+                                , saving = Nothing
+                                , page =
+                                    case model.page of
+                                        Defaults catalog ->
+                                            Defaults (rememberOverride saved catalog)
+
+                                        _ ->
+                                            model.page
+                            }
                     in
                     if updated.values /= updated.saved then
                         update Save updated

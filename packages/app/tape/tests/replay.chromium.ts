@@ -77,47 +77,51 @@ await test(
   },
 );
 
-await test(
-  "returning from Context and changing or clearing the draft needs one commit",
-  { timeout: 90_000 },
-  async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "tape-context-draft-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    const assets = join(directory, "assets");
-    await buildAssets(fileURLToPath(new URL("../../serve/", import.meta.url)), assets);
-    const source = await record(join(directory, "record"), "context");
-    for (const draft of ["A changed draft on return", ""]) {
-      await t.test(draft ? "change" : "clear", async () => {
-        const candidate = structuredClone(source);
-        let previous = candidate.initial.presentation.panel;
-        let replaced = false;
-        for (const frame of candidate.frames) {
-          if (frame.type !== "commit") continue;
-          for (const change of frame.changes) {
-            if (change.kind !== "app.presentation") continue;
-            if (previous === "context" && change.value.panel === "conversation") {
-              change.value.draft = draft;
-              replaced = true;
+for (const scene of ["context", "default-preferences"] as const)
+  await test(
+    `returning from ${scene} and changing or clearing the draft needs one commit`,
+    { timeout: 90_000 },
+    async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), "tape-context-draft-"));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const assets = join(directory, "assets");
+      await buildAssets(fileURLToPath(new URL("../../serve/", import.meta.url)), assets);
+      const source = await record(join(directory, "record"), scene);
+      for (const draft of ["A changed draft on return", ""]) {
+        await t.test(draft ? "change" : "clear", async () => {
+          const candidate = structuredClone(source);
+          let previous = candidate.initial.presentation.panel;
+          let replaced = false;
+          for (const frame of candidate.frames) {
+            if (frame.type !== "commit") continue;
+            for (const change of frame.changes) {
+              if (change.kind !== "app.presentation") continue;
+              if (
+                previous === (scene === "context" ? "context" : "defaults") &&
+                change.value.panel === "conversation"
+              ) {
+                change.value.draft = draft;
+                replaced = true;
+              }
+              previous = change.value.panel;
             }
-            previous = change.value.panel;
           }
-        }
-        assert(replaced);
-        const tape = decode(JSON.stringify(candidate));
-        const result = await replay(
-          tape,
-          "mobile",
-          assets,
-          join(directory, draft ? "changed" : "cleared"),
-          t.signal,
-        );
-        const returned = result.captures.find((capture) => capture.name === "returned");
-        assert(returned);
-        assert.equal(
-          returned.stateHash,
-          digest(JSON.stringify({ presentation: { panel: "conversation", draft }, live: {} })),
-        );
-      });
-    }
-  },
-);
+          assert(replaced);
+          const tape = decode(JSON.stringify(candidate));
+          const result = await replay(
+            tape,
+            "mobile",
+            assets,
+            join(directory, draft ? "changed" : "cleared"),
+            t.signal,
+          );
+          const returned = result.captures.find((capture) => capture.name === "returned");
+          assert(returned);
+          assert.equal(
+            returned.stateHash,
+            digest(JSON.stringify({ presentation: { panel: "conversation", draft }, live: {} })),
+          );
+        });
+      }
+    },
+  );
