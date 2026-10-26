@@ -63,7 +63,6 @@
           (self.packages.${prev.stdenv.hostPlatform.system})
           app
           bench
-          cloud-hypervisor
           mitm-proxy
           subtrace
           ;
