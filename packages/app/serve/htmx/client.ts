@@ -1,3 +1,4 @@
+import "../tree-view.ts";
 import { resizePrompt } from "./dom.ts";
 import { installDrafts } from "./drafts.ts";
 import { installAttachments } from "./attachments.ts";

@@ -232,7 +232,7 @@ a { color: var(--link); } [hidden] { display: none !important; }
 /* iOS zooms focused form controls below 16px. Include landscape phones and
    tablets without enlarging the rest of the UI or restricting pinch zoom. */
 @media (max-width: 650px), (any-pointer: coarse) {
-  input, textarea, select, #branches { font-size: 16px; }
+  input, textarea, select { font-size: 16px; }
 }
 
 /* The app menu drops down from the right edge on every screen size. */
@@ -300,7 +300,7 @@ body.stacked-layout {
 .queued-messages .icon { display: flex; align-items: center; justify-content: center; width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 0; font-size: 16px; }
 #queue:empty { display: none; }
 .pane .actions { margin: 16px 0; }
-#sessions, #branches, #recent-sessions { max-height: none; overflow: visible; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+#sessions, #recent-sessions { max-height: none; overflow: visible; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
 :is(#landing, #preferences.pane) { display: flex; flex-direction: column; }
 :is(#landing, #preferences.pane) > div { width: 100%; max-width: 560px; margin: auto; }
 #session-settings label { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 8px 0; }
@@ -336,7 +336,6 @@ body.stacked-layout {
 .bar > .icon { display: inline-flex; align-items: center; justify-content: center; }
 #close-view { margin-left: auto; }
 #menu-toggle { margin-left: 0; }
-#branches .session[aria-current=true] { background: var(--selected); }
 @media (max-width: 650px) {
   .stacked-layout #app-header > .bar { display: none; }
   .pane { padding: 8px 16px 16px; }
@@ -525,16 +524,41 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 @media (max-width: 1199px) { .branch-disclosure { margin-bottom: 8px; } }
 @media (max-width: 650px) { .branch-disclosure { display: none; } }
 
-#tree-view .branch-panel { width: 100%; max-height: none; margin: 0 auto; padding: 0; overflow: visible; font: 11px/1.7 var(--font-mono); }
-@media (min-width: 651px) {
-  #page:has(#tree-view) #bottom-line .footer-row { grid-template-columns: 40px minmax(0, 1fr) auto; }
-  #page:has(#tree-view) #bottom-line #footer-sessions { display: inline-flex; grid-area: 1 / 1 / 3 / 2; }
-  #page:has(#tree-view) #footer-instance { grid-area: 1 / 2; }
-  #page:has(#tree-view) #footer-stats { grid-area: 2 / 2; }
-  #page:has(#tree-view) .footer-model-context { grid-area: 1 / 3 / 3; }
-}
 
 .frontend-chooser { margin: auto; display: grid; gap: 8px; }
 
 .creation-options { border: 0; padding: 0; margin: 0; min-width: 0; }
 .activity-body { white-space: pre-wrap; }
+
+/* Conversation and session-entry explorers share one headerless main view and composer. */
+pi-tree { display: contents; }
+.stacked-layout #page:has(pi-tree) { grid-template-rows: minmax(0, 1fr) auto auto; }
+.stacked-layout pi-tree #main-area { grid-row: 1; }
+.stacked-layout pi-tree #app-footer { grid-row: 2; }
+#page:has(pi-tree) > #request-error { grid-area: 3 / 1 / auto / -1; }
+pi-tree #tree-rows { font: 11px/1.7 var(--font-mono); --branch-row-height: 24px; --branch-row-half: 12px; }
+pi-tree #tree-rows.branch-panel { margin: 0; max-height: none; padding: 0; overflow: visible; }
+pi-tree .branch-row a[data-selected=true]:not([aria-current=true]) { background: var(--selected); }
+.entry-row { display: flex; align-items: center; gap: 6px; width: 100%; height: var(--branch-row-height); min-height: 0; padding: 0 4px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.entry-row[aria-pressed=true] { background: var(--selected); }
+.entry-row:hover { background: var(--hover); }
+.entry-prefix { display: flex; align-self: stretch; flex: none; }
+.tree-rail { position: relative; width: 24px; flex: none; }
+.tree-rail[data-line=true]::before { content: ''; position: absolute; left: 4px; top: 0; bottom: 0; border-left: 1px solid var(--border-hover); pointer-events: none; }
+.tree-rail[data-first=true]::before { top: calc(-1 * var(--branch-row-half)); }
+.tree-rail[data-last=true]::before { bottom: 50%; }
+.tree-rail[data-connector=true]::after { content: ''; position: absolute; left: 4px; right: 5px; top: 50%; border-top: 1px solid var(--border-hover); pointer-events: none; }
+.entry-tree .path-marker { flex: none; width: 1ch; color: var(--accent); }
+.entry-copy { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry-text { color: var(--fg); }
+.entry-tree .role-user { color: var(--syntax-keyword); }
+.entry-tree .role-assistant { color: var(--accent); }
+.entry-tree :is(.role-tool, .role-event) { color: var(--muted); }
+.entry-tree .current-tag { flex: none; margin-left: auto; color: var(--accent); font: 10px var(--font-mono); }
+#tree-empty { color: var(--muted); }
+#tree-filter { width: auto; max-width: 120px; }
+#tree-count { color: var(--muted); font: 11px var(--font-mono); white-space: nowrap; }
+#tree-prev, #tree-next { width: 40px; padding: 0; font-size: 20px; flex-shrink: 0; }
+#tree-next { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
+#tree-error { margin: 0; color: var(--danger); }
+@media (min-width: 651px) and (hover: hover) and (pointer: fine) { #tree-prev, #tree-next { width: 32px; font-size: 18px; } }

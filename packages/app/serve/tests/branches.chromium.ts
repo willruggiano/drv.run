@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import type { Locator } from "playwright";
+import type { Locator, Page } from "playwright";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { Review } from "harness";
@@ -10,6 +10,18 @@ import { fixture, waitFor } from "./sessions-testing.ts";
 import { conversationURL } from "../presentation.ts";
 
 const context = BACKGROUND_CONTEXT;
+
+async function assertCanonicalGrid(page: Page) {
+  const width = page.viewportSize()!.width;
+  if (width < 1200) return;
+  const main = await page.locator("#main-area").boundingBox();
+  const composer = await page.locator("#app-footer .compose-box").boundingBox();
+  assert.ok(main && composer);
+  assert.equal(main.width, 820);
+  assert.equal(main.x, (width - 820) / 2);
+  assert.equal(main.x, composer.x);
+  assert.equal(main.width, composer.width);
+}
 
 async function assertCompactTree(tree: Locator) {
   const bounds = await tree.boundingBox();
@@ -175,123 +187,242 @@ await test(
 );
 
 await test(
-  "/tree replaces the mobile main pane and keeps drafts, navigation, and branch activity live",
-  { timeout: 60000 },
+  "/fork and /tree use live data, isolated search composers and continuous rails in both frontends",
+  { timeout: 90000 },
   async (t) => {
     const f = await fixture(t);
-    const session = await f.create();
-    const at = await session.root.commit(
-      (tx) =>
-        tx.appendEntry(session.root.id, {
-          kind: "pi.assistant",
-          model: [fauxAssistantMessage("Original conversation", { timestamp: 1700000000000 })],
-        }),
-      context,
-    );
-    const branch = await session.root.fork(at.id, { ownership: { kind: "ownerless" } }, context);
-    // Enough rows to require scrolling in the pane, not the document or composer.
-    await session.root.commit(async (tx) => {
-      for (let index = 0; index < 32; index++)
-        await tx.forkConversation(session.root.id, at.id, { ownership: { kind: "ownerless" } });
-    }, context);
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    for (const frontend of ["htmx", "elm"]) {
-      const prefix = frontend === "elm" ? "/elm" : "";
-      const path = conversationURL(session, undefined, prefix === "/elm" ? "elm" : "htmx");
-      await page.setViewportSize({ width: 390, height: 844 });
-      await page.goto(b.base + path);
-      await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
-      const documentHandle = await page.evaluateHandle(() => window.document);
-      await page.locator("#prompt").fill("/tr");
-      await page.locator("#completions [role=option]").waitFor();
-      await page.locator("#prompt").press("Tab");
-      await waitFor(async () => (await page.locator("#prompt").inputValue()) === "/tree ");
-      await page.locator("#send").click();
-      await page.waitForURL(b.base + path + "/tree");
-      const pane = page.locator("#tree-view");
-      await pane.locator(`#branch-${branch.id}`).waitFor();
-      assert.equal(await page.locator("#conversation-scroll").isVisible(), false);
-      assert.equal(await page.locator("#app-footer").isVisible(), true);
-      assert.equal(await page.locator("dialog[open], :modal, :popover-open").count(), 0);
-      assert.equal(await page.locator("#branch-disclosure").isVisible(), false);
-      assert.equal(await page.locator("#app-header .bar").isVisible(), false);
-      assert.equal(await pane.locator("h1, h2, #close-view").count(), 0);
-      assert.equal(await documentHandle.evaluate((doc) => doc === document), true);
-      assert.equal(f.faux.state.callCount, 0);
-      for (const width of [320, 390, 650, 1440]) {
-        await page.setViewportSize({ width, height: 844 });
-        await assertCompactTree(pane.locator("#branch-tree"));
-        const bounds = await pane.boundingBox();
-        const footer = await page.locator("#app-footer").boundingBox();
-        assert.ok(bounds && footer && bounds.y + bounds.height <= footer.y + 1);
-        assert.equal(await pane.evaluate((node) => node.scrollHeight > node.clientHeight), true);
-        assert.equal(
-          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-          true,
-        );
-        assert.equal(await page.locator("#footer-sessions").isVisible(), true);
-      }
-      await page.setViewportSize({ width: 390, height: 844 });
-      await page.locator("#prompt").fill("Retained while browsing branches");
-      const footerBefore = await page.locator("#app-footer").boundingBox();
-      await pane.evaluate((node) => {
-        node.scrollTop = 120;
-      });
-      assert.equal(await pane.evaluate((node) => node.scrollTop), 120);
-      assert.deepEqual(await page.locator("#app-footer").boundingBox(), footerBefore);
-      await pane.evaluate((node) => {
-        node.scrollTop = 0;
-      });
-      await branch.commit(
+    for (const frontend of ["htmx", "elm"] as const) {
+      const session = await f.create();
+      const first = await session.root.commit(
         (tx) =>
-          tx.appendEntry(branch.id, {
-            kind: "pi.assistant",
-            model: [fauxAssistantMessage("Updated sibling", { timestamp: 1700000001000 })],
+          tx.appendEntry(session.root.id, {
+            kind: "pi.user",
+            model: [{ role: "user", content: "Shared prompt", timestamp: 1700000000000 }],
           }),
         context,
       );
-      await pane
-        .locator(`#branch-${branch.id} > .branch-row .tool-status[data-state=completed]`)
-        .waitFor();
-      const time = pane.locator(`#branch-${branch.id} > .branch-row .branch-time`);
-      assert.equal(
-        frontend === "elm"
-          ? Number(await time.getAttribute("timestamp"))
-          : Date.parse((await time.getAttribute("datetime"))!),
-        1700000001000,
+      const original = await session.root.commit(
+        (tx) =>
+          tx.appendEntry(session.root.id, {
+            kind: "pi.assistant",
+            model: [fauxAssistantMessage("Original answer")],
+          }),
+        context,
       );
-      if (b.screenshots)
-        await page.screenshot({ path: join(b.screenshots, `mobile-tree-${frontend}.png`) });
-      await page.locator("#footer-sessions").click();
+      const branch = await session.root.fork(
+        first.id,
+        { ownership: { kind: "ownerless" } },
+        context,
+      );
+      const alternative = await branch.commit(
+        (tx) =>
+          tx.appendEntry(branch.id, {
+            kind: "pi.assistant",
+            model: [
+              fauxAssistantMessage(
+                [
+                  { type: "text", text: "Alternative answer" },
+                  {
+                    type: "toolCall",
+                    id: "read-1",
+                    name: "read",
+                    arguments: { path: "src/main.ts" },
+                  },
+                ],
+                { stopReason: "toolUse" },
+              ),
+            ],
+          }),
+        context,
+      );
+      const tool = await branch.commit(
+        (tx) =>
+          tx.appendEntry(branch.id, {
+            kind: "pi.tool-result",
+            data: { diagnostics: [] },
+            model: [
+              {
+                role: "toolResult",
+                toolCallId: "read-1",
+                toolName: "read",
+                content: [{ type: "text", text: "Source file contents" }],
+                isError: false,
+                timestamp: 3,
+              },
+            ],
+          }),
+        context,
+      );
+      const more = await session.root.commit(async (tx) => {
+        const entries = [];
+        for (let i = 0; i < 35; i++)
+          entries.push(
+            await tx.appendEntry(session.root.id, {
+              kind: "pi.user",
+              model: [
+                {
+                  role: "user",
+                  content: `Root prompt ${i}`,
+                  timestamp: 1700000000000 + (i + 10) * 1000,
+                },
+              ],
+            }),
+          );
+        return entries;
+      }, context);
+      const path = conversationURL(session, session.root.id, frontend);
+      await page.goto(b.base + path);
+      await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
+      const documentHandle = await page.evaluateHandle(() => document);
+      await page.locator("#prompt").fill("/fork");
+      await page.locator("#send").click();
+      await page.waitForURL(b.base + path + "/branches");
+      const pane = page.locator("#tree-view");
+      const rows = page.locator("#tree-rows");
+      await rows.locator(`[data-id="${branch.id}"]`).waitFor();
+      await assertCompactTree(rows);
+      assert.equal(await page.locator("#app-header, #queue, #preview, #send").count(), 0);
+      assert.equal(await page.locator("#tree-close svg").count(), 1);
+      assert.equal(await page.locator("#tree-filter").isVisible(), false);
+      assert.equal(await page.locator("#prompt").inputValue(), "");
+      await page.locator("#prompt").fill(`branch ${branch.id}`);
+      assert.equal(await rows.locator("a").count(), 1);
+      const update = await branch.commit(
+        (tx) =>
+          tx.appendEntry(branch.id, {
+            kind: "pi.assistant",
+            model: [fauxAssistantMessage("Failed sibling", { stopReason: "error" })],
+          }),
+        context,
+      );
+      await rows.locator('.tool-status[data-state="failed"]').waitFor();
+      assert.equal(await page.locator("#prompt").inputValue(), `branch ${branch.id}`);
+      assert.equal(
+        await page.locator("#prompt").evaluate((node) => node === document.activeElement),
+        true,
+      );
+      await page.locator("#prompt").fill("");
+      for (const width of [390, 1440]) {
+        await page.setViewportSize({ width, height: 844 });
+        await assertCompactTree(rows);
+        await assertCanonicalGrid(page);
+        if (b.screenshots)
+          await page.screenshot({ path: join(b.screenshots, `fork-${frontend}-${width}.png`) });
+      }
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.locator("#tree-close").click();
       await page.waitForURL(b.base + path);
       assert.equal(await documentHandle.evaluate((doc) => doc === document), true);
       await waitFor(
         async () =>
-          (await page.locator("#prompt").inputValue()) === "Retained while browsing branches",
+          (await page.locator("#prompt").inputValue()) === (frontend === "elm" ? "/fork" : ""),
       );
-      assert.equal(await page.locator("#prompt").inputValue(), "Retained while browsing branches");
-      await page.goBack();
+      await page.locator("#prompt").fill("/tree");
+      await page.locator("#send").click();
       await page.waitForURL(b.base + path + "/tree");
-      await pane.locator(`#branch-${branch.id}`).waitFor();
-      assert.equal(await page.locator("#prompt").inputValue(), "Retained while browsing branches");
-      await page.reload();
-      await pane
-        .locator(`#branch-${branch.id} > .branch-row .tool-status[data-state=completed]`)
-        .waitFor();
-      assert.equal(await page.locator("#prompt").inputValue(), "Retained while browsing branches");
-      await page.locator("#footer-sessions").focus();
+      await rows.locator(`[data-id="${alternative.id}"]`).waitFor();
+      assert.equal(await page.locator("#prompt").inputValue(), "");
+      assert.equal(await page.locator("#tree-filter").isVisible(), true);
+      assert.equal(await rows.locator(`[data-id="${first.id}"]`).count(), 1);
+      assert.equal(
+        await rows.locator(`[data-id="${alternative.id}"]`).getAttribute("data-parent"),
+        String(first.id),
+      );
+      assert.equal(
+        await rows.locator(`[data-id="${original.id}"]`).getAttribute("data-parent"),
+        String(first.id),
+      );
+      assert.equal(
+        await rows.locator('[aria-current="true"]').getAttribute("data-id"),
+        String(more.at(-1)!.id),
+      );
+      assert.equal(await rows.locator(`[data-id="${tool.id}"]`).count(), 1);
+      await page.locator("#tree-filter").selectOption("no-tools");
+      assert.equal(await rows.locator(`[data-id="${tool.id}"]`).count(), 0);
+      await page.locator("#tree-filter").selectOption("user-only");
+      assert.equal(await rows.locator("button").count(), 36);
+      await page.locator("#prompt").fill("no-such-entry");
+      assert.equal(await rows.locator("button").count(), 0);
+      assert.equal(await page.locator("#tree-empty").isVisible(), true);
+      assert.equal(await page.locator("#tree-next").isDisabled(), true);
+      await page.locator("#tree-filter").selectOption("all");
+      await page.locator("#prompt").fill("alternative");
+      assert.equal(await rows.locator("button").count(), 1);
+      const appended = await branch.commit(
+        (tx) =>
+          tx.appendEntry(branch.id, {
+            kind: "pi.assistant",
+            model: [fauxAssistantMessage("Alternative continued")],
+          }),
+        context,
+      );
+      await rows.locator(`[data-id="${appended.id}"]`).waitFor();
+      assert.equal(await page.locator("#prompt").inputValue(), "alternative");
+      await page.locator("#prompt").press("ArrowDown");
+      assert.equal(
+        await rows.locator('[aria-pressed="true"]').getAttribute("data-id"),
+        String(appended.id),
+      );
+      await page.locator("#prompt").fill("");
+      assert.equal(
+        await rows.locator(`[data-id="${appended.id}"]`).getAttribute("data-parent"),
+        String(update.id),
+      );
+      await rows.locator(`[data-id="${alternative.id}"]`).click();
+      assert.equal(page.url(), b.base + path + "/tree");
+      assert.equal(
+        await rows.locator('[aria-current="true"]').getAttribute("data-id"),
+        String(more.at(-1)!.id),
+      );
+      for (const width of [320, 390, 650, 1440, 1920]) {
+        await page.setViewportSize({ width, height: 844 });
+        await assertCanonicalGrid(page);
+        const bounds = await pane.boundingBox();
+        const footer = await page.locator("#app-footer").boundingBox();
+        const tree = await rows.boundingBox();
+        assert.ok(tree && tree.width <= 820 && tree.x >= Math.max(0, (width - 820) / 2));
+        assert.ok(bounds && footer && bounds.y + bounds.height <= footer.y + 1);
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          true,
+        );
+        assert.equal(await pane.evaluate((node) => node.scrollHeight > node.clientHeight), true);
+        if (b.screenshots && [390, 1440].includes(width))
+          await page.screenshot({
+            path: join(b.screenshots, `session-tree-${frontend}-${width}.png`),
+          });
+      }
+      await page.setViewportSize({ width: 390, height: 420 });
+      const compactFooter = await page.locator("#app-footer").boundingBox();
+      assert.ok(compactFooter && compactFooter.y + compactFooter.height <= 420);
+      await page.locator("#prompt").focus();
       await page.keyboard.press("Escape");
       await page.waitForURL(b.base + path);
-      await page.goto(b.base + path + "/tree");
-      await pane.locator(`#branch-${branch.id} > .branch-row a`).click();
-      await page.waitForURL(
-        b.base + conversationURL(session, branch.id, prefix === "/elm" ? "elm" : "htmx"),
+      await waitFor(
+        async () =>
+          (await page.locator("#prompt").inputValue()) === (frontend === "elm" ? "/tree" : ""),
       );
-      assert.equal(await page.locator("#conversation-scroll").isVisible(), true);
-      assert.equal(await page.locator("#tree-view").isVisible(), false);
+      await page.locator("#prompt").fill("Keep this unsent draft");
+      await page.goto(b.base + path + "/tree");
+      await rows.locator("button").first().waitFor();
+      await page.locator("#prompt").fill("isolated search");
+      await page.locator("#tree-close").click();
+      await page.waitForURL(b.base + path);
+      await waitFor(
+        async () => (await page.locator("#prompt").inputValue()) === "Keep this unsent draft",
+      );
+      await page.goto(b.base + path + "/branches");
+      const explorerDocument = await page.evaluateHandle(() => document);
+      await rows.locator(`a[data-id="${branch.id}"]`).click();
+      await page.waitForURL(b.base + conversationURL(session, branch.id, frontend));
+      await page.locator("#controls[data-state=ready]").waitFor({ state: "attached" });
+      assert.equal(await explorerDocument.evaluate((doc) => doc === document), true);
+      await explorerDocument.dispose();
       assert.equal(f.faux.state.callCount, 0);
+      await page.setViewportSize({ width: 390, height: 844 });
       await documentHandle.dispose();
     }
     assert.deepEqual(b.errors, []);

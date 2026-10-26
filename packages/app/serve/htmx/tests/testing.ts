@@ -24,5 +24,5 @@ export async function submitCommand(page: Page, command: string): Promise<void> 
 
 export async function visitOriginal(page: Page): Promise<void> {
   await submitCommand(page, "/fork");
-  await page.locator("#branches .session").filter({ hasText: "Main" }).click();
+  await page.locator("#tree-rows a").first().click();
 }

@@ -1,5 +1,6 @@
 import type { GlobalSettingsStore } from "../server.ts";
 import { BranchTree, type Branch } from "../branches.ts";
+import { SessionTree, conversationTree, type TreeData } from "../trees.ts";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@earendil-works/chord/context";
@@ -330,6 +331,7 @@ export class ElmProjection {
 }
 
 type Metadata = {
+  explorer?: TreeData;
   branches: (Branch & { path: string })[];
   durations: Record<string, number>;
   title: string;
@@ -499,14 +501,6 @@ export async function elmFrontend(
           })),
         ],
       });
-    } else if (pane === "branches") {
-      json(
-        response,
-        (await new BranchTree(session).read(context)).map((branch) => ({
-          ...branch,
-          path: `${conversationURL(session, branch.id, "elm")}`,
-        })),
-      );
     } else throw new FormError(400, "Unknown panel.");
     return;
   }
@@ -587,12 +581,15 @@ export async function elmFrontend(
     let ready = false;
     let sending = false;
     const branches = new BranchTree(session);
+    const sessionTree =
+      url.searchParams.get("pane") === "tree" ? new SessionTree(session) : undefined;
     let timingsDirty = true;
     let durations: Record<string, number> = {};
     const pendingEntries: EntryRecord[] = [];
     const stopCommits = session.harness.subscribeCommits((publication) => {
       if (response.destroyed) return;
-      if (branches.invalidate(publication)) {
+      const treeChanged = sessionTree?.invalidate(publication) ?? false;
+      if (branches.invalidate(publication) || treeChanged) {
         dirty = true;
         if (ready) void send();
       }
@@ -693,9 +690,18 @@ export async function elmFrontend(
             ...branch,
             path: `${conversationURL(session, branch.id, "elm")}`,
           }));
+          const explorer: TreeData | undefined = sessionTree
+            ? {
+                kind: "entries",
+                path: conversationURL(session, conversation.id, "elm"),
+                nodes: await sessionTree.read(conversation.id, context),
+              }
+            : url.searchParams.get("pane") === "branches"
+              ? conversationTree(session, conversation.id, tree, "elm")
+              : undefined;
           const frame = projector.project(
             current,
-            { ...info, durations, branches: tree },
+            { ...info, durations, branches: tree, ...(explorer ? { explorer } : {}) },
             inspection,
           );
           if (frame) response.write(`data: ${JSON.stringify({ ...frame, subscription })}\n\n`);

@@ -275,7 +275,7 @@ await test("mobile browser Context follows the approved mock, isolates late even
   await returnToConversation(page);
   await page.fill("#prompt", "/fork");
   await page.press("#prompt", "Control+Enter");
-  await page.locator(`#branches a[data-conversation="${empty.id}"]`).click();
+  await page.locator(`#tree-rows a[data-id="${empty.id}"]`).click();
   await page.waitForURL(base + conversationURL(session, empty.id));
   await page.click("#footer-context");
   await page.waitForFunction(

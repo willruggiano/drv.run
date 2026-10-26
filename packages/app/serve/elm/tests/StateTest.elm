@@ -271,7 +271,7 @@ tests =
                 in
                 Expect.all
                     (List.map (\msg _ -> Expect.equal current (Main.update msg current |> Tuple.first))
-                        [ Main.SettingsLoaded 1 (Ok stale), Main.SettingsSaved 1 stale (Ok True), Main.BranchesLoaded 1 (Ok []), Main.Directories 1 0 (Ok [ "old" ]) ]
+                        [ Main.SettingsLoaded 1 (Ok stale), Main.SettingsSaved 1 stale (Ok True), Main.Directories 1 0 (Ok [ "old" ]) ]
                     )
                     ()
         ]

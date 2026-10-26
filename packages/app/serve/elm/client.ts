@@ -1,3 +1,4 @@
+import "../tree-view.ts";
 import { installPwa, installPreferences } from "../pwa.ts";
 type App = {
   ports: {
@@ -221,7 +222,7 @@ app.ports.stream.subscribe((request) => {
   function connect() {
     if (stopped) return;
     const connection = new EventSource(
-      `${request.path}/events${request.pane === "context" ? "?pane=context" : ""}`,
+      `${request.path}/events${request.pane ? `?pane=${encodeURIComponent(request.pane)}` : ""}`,
     );
     current = connection;
     let receivedAt: number | undefined;
@@ -377,7 +378,7 @@ for (const name of ["input", "click", "keyup", "compositionend"])
   document.addEventListener(
     name,
     (event) => {
-      if (event.target !== prompt()) return;
+      if (event.target !== prompt() || prompt()?.closest("pi-tree")) return;
       if (
         event instanceof KeyboardEvent &&
         !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
@@ -399,7 +400,7 @@ for (const name of ["paste", "drop"])
         : event instanceof DragEvent
           ? event.dataTransfer?.files
           : undefined;
-    if (files?.length) {
+    if (files?.length && !document.querySelector("pi-tree")) {
       event.preventDefault();
       send("files", Array.from(files));
     }
@@ -408,6 +409,22 @@ document.addEventListener("dragover", (event) => {
   if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
 });
 document.addEventListener("click", (event) => {
+  const link =
+    event.target instanceof Element && event.target.closest<HTMLAnchorElement>("pi-tree a");
+  if (
+    link &&
+    !event.defaultPrevented &&
+    event.button === 0 &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    !event.altKey &&
+    link.origin === location.origin
+  ) {
+    event.preventDefault();
+    send("navigate", link.href);
+    return;
+  }
   const image =
     event.target instanceof Element &&
     event.target.closest<HTMLImageElement>("img.transcript-image");

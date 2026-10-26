@@ -1,4 +1,5 @@
 import { BranchTree, type Branch } from "../branches.ts";
+import { SessionTree, conversationTree, type TreeData } from "../trees.ts";
 import {
   FormError,
   form,
@@ -52,7 +53,6 @@ import {
   type LiveState,
   type InboxState,
   type UsageState,
-  type Cursor,
 } from "@earendil-works/pi-durable";
 import { Review } from "harness";
 import { endReview, startReview } from "../review.ts";
@@ -102,7 +102,7 @@ export function htmlPage(
   const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/htmx/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
   const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!conversation && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/htmx/"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}<p id="request-error" role="alert"></p></header>`;
   return renderHTML(
-    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${(!conversation && title === "Sessions") || title === "Session settings" || title === "Conversation tree" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
+    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${(!conversation && title === "Sessions") || title === "Session settings" || title === "Conversation tree" || title === "Session tree" ? h`<div id="request-error" role="alert"></div>` : header}${content}</main></body></html>`,
   );
 }
 export function html(
@@ -168,13 +168,12 @@ async function panelFrame(
   settings: GlobalSettingsStore | undefined,
   context: Context,
   content: SafeHtml,
-  tree = false,
 ): Promise<SafeHtml> {
   const path = conversationURL(session, conversation.id);
   const watch = await conversation.watch(context);
   try {
     const review = (await session.harness.snapshot(Review, conversation.id, context)) ?? {};
-    return h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events${tree ? "?pane=tree" : ""}`)}><main id="main-area">${content}</main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context, true, tree))}</section>`;
+    return h`${navigation(path)}<section class="conversation-layout" ${streamAttributes(`${path}/events`)}><main id="main-area">${content}</main>${queueHTML(watch.value, path)}${composerHTML(path, watch.value, review, await metadataHTML(session, conversation, watch.value, settings, context, true))}</section>`;
   } finally {
     await watch.stop();
   }
@@ -196,6 +195,12 @@ function branchRows(
 function branchHeader(session: Session, current: number, branches: Branch[]): SafeHtml {
   const name = branches.find((branch) => branch.id === current)?.title ?? `Branch ${current}`;
   return h`<details id="branch-disclosure" class="branch-disclosure"><summary aria-label="Conversation branches">${icon("fork")}<span>${name.toLowerCase()}</span><span class="branch-chevron" aria-hidden="true">›</span></summary><nav class="branch-panel" aria-label="Conversation branches"><ul id="branch-tree">${branchRows(session, current, branches)}</ul></nav></details>`;
+}
+
+function explorerHTML(data: TreeData, fallback = false): SafeHtml {
+  const rows = (parent: number | null): SafeHtml =>
+    h`<ul>${data.nodes.filter((node) => node.parent === parent).map((node) => h`<li>${node.path ? h`<a href="${node.path}" aria-current="${node.current}">${node.text}</a>` : h`<span>${node.role}: ${node.text}</span>`}${rows(node.id)}</li>`)}</ul>`;
+  return h`<pi-tree id="tree-explorer" value="${JSON.stringify(data)}" hx-morph-skip-children>${fallback ? h`<main id="main-area"><section id="tree-view" class="pane">${data.kind === "branches" ? rows(null) : h`<ul>${data.nodes.map((node) => h`<li>${node.role}: ${node.text}</li>`)}</ul>`}</section></main><footer id="app-footer" class="composer-area"><div class="composer-shell"><a class="icon" data-return href="${data.path}" aria-label="Close tree">${icon("close")}</a></div></footer>` : ""}</pi-tree>`;
 }
 
 function liveHTML(view: ConversationView, calls: ReadonlyMap<string, Call> = new Map()): SafeHtml {
@@ -388,6 +393,9 @@ async function events(
   const conversation = await getConversation(session, id, context);
   const watch = await conversation.watch(context);
   const branches = new BranchTree(session);
+  const exploring = pane === "tree" || pane === "branches";
+  const sessionTree = pane === "tree" ? new SessionTree(session) : undefined;
+  let treeDirty = true;
   let branchesDirty = true;
   let view = watch.value;
   let review: ReviewState | undefined;
@@ -398,6 +406,10 @@ async function events(
   let timingsDirty = true;
   let durations = new Map<number, number>();
   const stopCommits = session.harness.subscribeCommits((publication) => {
+    if (sessionTree?.invalidate(publication)) {
+      treeDirty = true;
+      if (ready) queueMicrotask(schedule);
+    }
     if (branches.invalidate(publication)) {
       branchesDirty = true;
       if (ready) queueMicrotask(schedule);
@@ -440,7 +452,7 @@ async function events(
   try {
     const snapshot = await session.harness.snapshot(Review, conversation.id, context);
     review ??= snapshot ?? {};
-    records = inspection ? [] : await history(conversation, context);
+    records = inspection || exploring ? [] : await history(conversation, context);
     context.abortSignal?.throwIfAborted();
   } catch (error) {
     stop();
@@ -474,7 +486,7 @@ async function events(
           metadata = true;
           previousRun = run;
         }
-        const timingsChanged = !inspection && timingsDirty;
+        const timingsChanged = !inspection && !exploring && timingsDirty;
         if (timingsChanged) {
           timingsDirty = false;
           durations = await compactionTimes(session, context);
@@ -485,16 +497,24 @@ async function events(
           if (inspected !== previousInspection)
             fragment = partial("context-view", contextHTML(inspected));
           previousInspection = inspected;
-        } else fragment = renderer.project(current, review ?? {}, durations);
+        } else if (!exploring) fragment = renderer.project(current, review ?? {}, durations);
         if (timingsChanged) {
           for (const [entry, ms] of durations)
             fragment = h`${fragment}${partial(`duration-${entry}`, timing(entry, ms))}`;
         }
-        if (!inspection && metadata) {
+        if (!inspection && !exploring && metadata) {
           metadata = false;
-          fragment = h`${fragment}${partial("session-meta", await metadataHTML(session, conversation, current, settings, context, true, pane === "tree"))}`;
+          fragment = h`${fragment}${partial("session-meta", await metadataHTML(session, conversation, current, settings, context, true))}`;
         }
-        if (!inspection && branchesDirty) {
+        if (exploring && (sessionTree ? treeDirty : branchesDirty)) {
+          treeDirty = false;
+          branchesDirty = false;
+          const data: TreeData = sessionTree
+            ? { kind: "entries", path, nodes: await sessionTree.read(conversation.id, context) }
+            : conversationTree(session, conversation.id, await branches.read(context), "htmx");
+          fragment = partial("tree-explorer", explorerHTML(data));
+        }
+        if (!inspection && !exploring && branchesDirty) {
           branchesDirty = false;
           fragment = h`${fragment}${partial("branch-tree", branchRows(session, id, await branches.read(context)), "innerMorph")}`;
         }
@@ -648,8 +668,8 @@ export async function hypermedia(
   const operation = match[3];
   const titles: Record<string, string> = {
     settings: "Session settings",
-    branches: "Branches",
-    tree: "Conversation tree",
+    branches: "Conversation tree",
+    tree: "Session tree",
     context: "Context",
     compact: "Compact context",
     reset: "Reset context",
@@ -674,46 +694,22 @@ export async function hypermedia(
     );
     return;
   }
-  if (request.method === "GET" && operation === "tree") {
-    const branches = await new BranchTree(session).read(context);
+  if (request.method === "GET" && (operation === "tree" || operation === "branches")) {
+    const data: TreeData =
+      operation === "tree"
+        ? {
+            kind: "entries",
+            path,
+            nodes: await new SessionTree(session).read(conversation.id, context),
+          }
+        : conversationTree(
+            session,
+            conversation.id,
+            await new BranchTree(session).read(context),
+            "htmx",
+          );
     page(
-      await panelFrame(
-        session,
-        conversation,
-        settings,
-        context,
-        h`<section id="tree-view" class="pane" aria-label="Conversation tree"><nav class="branch-panel" aria-label="Conversation branches"><ul id="branch-tree">${branchRows(session, conversation.id, branches)}</ul></nav></section>`,
-        true,
-      ),
-    );
-    return;
-  }
-  if (request.method === "GET" && operation === "branches") {
-    const records = [];
-    let cursor: Cursor | undefined;
-    do {
-      const page = await session.harness.commit(
-        (tx) => tx.scanConversations({}, 256, cursor),
-        context,
-      );
-      records.push(...page.items);
-      cursor = page.next;
-    } while (cursor);
-    const items = await Promise.all(
-      records.map(async (record) => {
-        const review = await session.harness.snapshot(Review, record.id, context);
-        const parent = review?.original ?? record.parent?.conversationId;
-        return h`<a href="${conversationURL(session, record.id)}" class="session" data-conversation="${record.id}" aria-current="${record.id === conversation.id}"><strong>${review?.original !== undefined ? `Review ${record.id}` : record.id === session.root.id ? "Main" : `Branch ${record.id}`}</strong>${parent === undefined ? "" : h`<small>From ${parent}</small>`}</a>`;
-      }),
-    );
-    page(
-      await panelFrame(
-        session,
-        conversation,
-        settings,
-        context,
-        h`<section id="branch-picker" class="pane"><div id="branches">${h`${items}`}</div></section>`,
-      ),
+      h`<section class="conversation-layout" ${streamAttributes(`${path}/events?pane=${operation}`)}>${explorerHTML(data, true)}</section>`,
     );
     return;
   }
@@ -908,7 +904,7 @@ function saved(request: IncomingMessage, response: ServerResponse, path: string)
   } else redirect(request, response, path);
 }
 function navigation(path: string): SafeHtml {
-  const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/tree`, "Conversation tree", h`data-command="tree"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/rename`, "Rename session", "rename", h`<input type="hidden" name="argument" data-command-argument>`)}${h`${["compact", "reset"].map((command) => h`<form method="get" action="${path}/${command}" data-command="${command}" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>${command}</button></form>`)}`}</div>`;
+  const commands = h`<div hidden>${link(path, "Conversation", h`data-return`)}${link(`${path}/settings`, "Settings", h`data-command="settings"`)}${link(`${path}/settings`, "Model", h`data-command="model"`)}${link(`${path}/branches`, "Branches", h`data-command="fork"`)}${link(`${path}/tree`, "Session tree", h`data-command="tree"`)}${link(`${path}/export`, "Export JSON", h`hx-boost="false" data-command="export" download`)}<button type="button" data-command="search" data-search-toggle>Search</button>${action(`${path}/cd`, "Change working directory", "cd", h`<input type="hidden" name="argument" data-command-argument>`)}${action(`${path}/rename`, "Rename session", "rename", h`<input type="hidden" name="argument" data-command-argument>`)}${h`${["compact", "reset"].map((command) => h`<form method="get" action="${path}/${command}" data-command="${command}" data-command-deferred><input type="hidden" name="requestId" data-command-request><input type="hidden" name="argument" data-command-argument><button>${command}</button></form>`)}`}</div>`;
   const search = h`<div id="search-bar" hidden><div class="compose-box"><input id="search" type="search" aria-label="Find in conversation" placeholder="Find in conversation…"><div class="actions"><output id="search-count"></output><span class="spacer"></span><button id="search-prev" class="icon" type="button" data-search-step="-1" aria-label="Previous match">↑</button><button id="search-next" class="icon" type="button" data-search-step="1" aria-label="Next match">↓</button></div></div></div>`;
   return h`${commands}${search}`;
 }
@@ -924,7 +920,6 @@ async function metadataHTML(
   settings: GlobalSettingsStore | undefined,
   context: Context,
   withControls = true,
-  tree = false,
 ): Promise<SafeHtml> {
   const [info, inspection] = await Promise.all([
     sessionInfo(session, conversation, undefined, context),
@@ -951,9 +946,7 @@ async function metadataHTML(
   const model = h`<a id="footer-model" class="model-summary" href="${path}/settings" aria-label="Model and thinking settings"><span class="model-name">${info.model?.modelId ?? "No model"}</span>${dot}<span class="model-effort">${info.thinkingLevel}</span></a>`;
   const contextUsage = h`<a id="footer-context" class="context-usage" href="${path}/context" aria-label="Context usage details" data-level="${percent !== undefined && percent > 90 ? "critical" : percent !== undefined && percent > 70 ? "warning" : "normal"}">${percent === undefined ? "—" : `${percent.toFixed(1)}%`}/${count(status.window)}${status.autoCompact ? " (auto)" : ""}</a>`;
   const sessionsLink = withControls
-    ? tree
-      ? h`<a id="footer-sessions" class="icon footer-chevron" href="${path}" data-return aria-label="Conversation" title="Return to conversation">${icon("chevron-left")}</a>`
-      : h`<a id="footer-sessions" class="icon footer-chevron" href="/htmx/" aria-label="Sessions" title="Sessions">${icon("chevron-left")}</a>`
+    ? h`<a id="footer-sessions" class="icon footer-chevron" href="/htmx/" aria-label="Sessions" title="Sessions">${icon("chevron-left")}</a>`
     : h``;
   // The browser owns collapse state; metadata updates must not reset the toggle.
   const collapse = withControls

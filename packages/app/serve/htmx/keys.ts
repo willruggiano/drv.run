@@ -83,9 +83,9 @@ export function installKeys() {
       search(direction || (event.shiftKey ? -1 : 1));
       return;
     }
-    const list = Array.from(
-      document.querySelectorAll<HTMLElement>("#session-list a, #branches a"),
-    ).filter((node) => node.checkVisibility() && node.getAttribute("aria-disabled") !== "true");
+    const list = Array.from(document.querySelectorAll<HTMLElement>("#session-list a")).filter(
+      (node) => node.checkVisibility() && node.getAttribute("aria-disabled") !== "true",
+    );
     if (direction && list.length && !(event.target instanceof HTMLSelectElement)) {
       event.preventDefault();
       moveFocus(list, direction);

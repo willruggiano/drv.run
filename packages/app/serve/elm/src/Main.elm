@@ -129,9 +129,6 @@ loadPanel model =
         Preferences ->
             Http.get { url = model.path ++ "/panel?view=settings", expect = Http.expectJson (SettingsLoaded model.epoch) Panel.settingsDecoder }
 
-        Branches ->
-            Http.get { url = model.path ++ "/panel?view=branches", expect = Http.expectJson (BranchesLoaded model.epoch) Panel.branchesDecoder }
-
         _ ->
             Cmd.none
 
@@ -203,7 +200,6 @@ type alias Model =
     , nextNavigation : Maybe Browser.UrlRequest
     , directories : List String
     , directoryRequest : Int
-    , branches : List Panel.Branch
     , composerExpanded : Bool
     , image : Maybe String
     , latest : Bool
@@ -244,7 +240,6 @@ type Msg
     | SaveSettings
     | SettingsSaved Int Panel.Settings (Result Http.Error Bool)
     | Directories Int Int (Result Http.Error (List String))
-    | BranchesLoaded Int (Result Http.Error (List Panel.Branch))
     | CloseImage
     | Collapse
     | Latest
@@ -282,7 +277,6 @@ initModel path nonce =
     , nextNavigation = Nothing
     , directories = []
     , directoryRequest = 0
-    , branches = []
     , composerExpanded = True
     , image = Nothing
     , latest = False
@@ -504,7 +498,14 @@ update msg model =
                         , epoch = model.epoch + 1
                         , state =
                             if path == model.path then
-                                model.state
+                                let
+                                    old =
+                                        model.state
+
+                                    metadata =
+                                        old.metadata
+                                in
+                                { old | metadata = { metadata | explorer = Nothing } }
 
                             else
                                 Protocol.empty
@@ -522,7 +523,6 @@ update msg model =
                         , directories = []
                         , directoryRequest = model.directoryRequest + 1
                         , image = Nothing
-                        , branches = []
                     }
             in
             ( updated, Cmd.batch [ connect updated, loadPanel updated, browser (E.object [ ( "kind", E.string "resize" ) ]) ] )
@@ -609,6 +609,14 @@ update msg model =
                                         ( { model | image = Just src }, browser (E.object [ ( "kind", E.string "dialog" ), ( "id", E.string "image-dialog" ) ]) )
 
                                     Err _ ->
+                                        ( model, Cmd.none )
+
+                            "navigate" ->
+                                case D.decodeValue D.string payload |> Result.toMaybe |> Maybe.andThen Url.fromString of
+                                    Just url ->
+                                        update (UrlRequested (Browser.Internal url)) model
+
+                                    Nothing ->
                                         ( model, Cmd.none )
 
                             "sessions" ->
@@ -1115,18 +1123,6 @@ update msg model =
                     _ ->
                         ( { model | saving = Nothing, error = "Settings were not saved. Your changes are retained; retry saving.", savedSettings = Nothing }, Cmd.none )
 
-        BranchesLoaded epoch result ->
-            if epoch /= model.epoch || model.pane /= Branches then
-                ( model, Cmd.none )
-
-            else
-                case result of
-                    Ok branches ->
-                        ( { model | branches = branches }, Cmd.none )
-
-                    Err error ->
-                        ( { model | error = httpError error }, Cmd.none )
-
         CloseImage ->
             ( { model | image = Nothing }, Cmd.none )
 
@@ -1517,11 +1513,7 @@ view model =
             section [ id "session-meta" ]
                 [ div [ id "bottom-line", attribute "aria-label" "Conversation statistics" ]
                     [ div [ class "footer-row" ]
-                        [ if model.pane == Tree then
-                            a [ id "footer-sessions", class "icon footer-chevron", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "chevron-left" ]
-
-                          else
-                            a [ id "footer-sessions", class "icon footer-chevron", href "/elm", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ]
+                        [ a [ id "footer-sessions", class "icon footer-chevron", href "/elm", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ]
                         , span [ id "footer-instance" ] [ text state.metadata.instance ]
                         , a [ id "footer-stats", href (model.path ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ])
                         , div [ class "footer-model-context" ]
@@ -1581,30 +1573,10 @@ view model =
                     Maybe.map Panel.contextView state.inspection |> Maybe.withDefault (section [ id "context-view", class "pane" ] [ text "Loading context…" ])
 
                 Tree ->
-                    section [ id "tree-view", class "pane", attribute "aria-label" "Conversation tree" ]
-                        [ branchPanel model.path state.metadata.branches ]
+                    text ""
 
                 Branches ->
-                    section [ id "branch-picker", class "pane" ]
-                        [ div [ id "branches" ]
-                            (List.map
-                                (\item ->
-                                    a
-                                        [ class "session"
-                                        , href item.path
-                                        , attribute "aria-current"
-                                            (if item.path == model.path then
-                                                "true"
-
-                                             else
-                                                "false"
-                                            )
-                                        ]
-                                        [ Html.strong [] [ text item.title ], Maybe.map (\parent -> Html.small [] [ text ("From " ++ String.fromInt parent) ]) item.parent |> Maybe.withDefault (text "") ]
-                                )
-                                model.branches
-                            )
-                        ]
+                    text ""
 
                 Conversation ->
                     text ""
@@ -1680,10 +1652,10 @@ view model =
                 "Context"
 
             Branches ->
-                "Branches"
+                "Conversation tree"
 
             Tree ->
-                "Conversation tree"
+                "Session tree"
 
             Conversation ->
                 state.metadata.title
@@ -1699,37 +1671,31 @@ view model =
                     "panel"
                 )
             ]
-            (header [ id "app-header" ]
-                [ div [ class "bar", hidden (model.pane == Preferences || model.pane == Tree) ]
-                    [ h1 []
-                        [ if model.pane == Context || model.pane == Branches then
-                            span [ class "header-title" ]
-                                [ text
-                                    (if model.pane == Context then
-                                        "Context"
+            (if model.pane == Tree || model.pane == Branches then
+                [ Html.node "pi-tree"
+                    [ id "tree-explorer"
+                    , attribute "value"
+                        (E.encode 0
+                            (Maybe.withDefault
+                                (E.object
+                                    [ ( "kind"
+                                      , E.string
+                                            (if model.pane == Tree then
+                                                "entries"
 
-                                     else
-                                        "Branches"
-                                    )
-                                ]
-
-                          else
-                            a [ id "conversation-title", class "header-title", href "/elm", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
-                                [ text
-                                    state.metadata.title
-                                ]
-                        ]
-                    , if model.pane == Context || model.pane == Branches then
-                        a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
-
-                      else
-                        a [ id "menu-toggle", class "icon", href "/elm/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
+                                             else
+                                                "branches"
+                                            )
+                                      )
+                                    , ( "path", E.string model.path )
+                                    , ( "nodes", E.list identity [] )
+                                    ]
+                                )
+                                state.metadata.explorer
+                            )
+                        )
                     ]
-                , if model.pane == Conversation then
-                    branchHeader model.path state.metadata.branches
-
-                  else
-                    text ""
+                    []
                 , p [ id "request-error", attribute "role" "alert" ]
                     [ text model.error
                     , case model.connection of
@@ -1740,7 +1706,42 @@ view model =
                             text ""
                     ]
                 ]
-                :: (body ++ [ Maybe.map (\src -> Html.node "dialog" [ id "image-dialog", preventDefaultOn "cancel" (D.succeed ( CloseImage, True )) ] [ Html.img [ A.src src, A.alt "Attachment" ] [], button [ onClick CloseImage ] [ text "Close image" ] ]) model.image |> Maybe.withDefault (text "") ])
+
+             else
+                header [ id "app-header" ]
+                    [ div [ class "bar", hidden (model.pane == Preferences) ]
+                        [ h1 []
+                            [ if model.pane == Context then
+                                span [ class "header-title" ] [ text "Context" ]
+
+                              else
+                                a [ id "conversation-title", class "header-title", href "/elm", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
+                                    [ text
+                                        state.metadata.title
+                                    ]
+                            ]
+                        , if model.pane == Context then
+                            a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
+
+                          else
+                            a [ id "menu-toggle", class "icon", href "/elm/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
+                        ]
+                    , if model.pane == Conversation then
+                        branchHeader model.path state.metadata.branches
+
+                      else
+                        text ""
+                    , p [ id "request-error", attribute "role" "alert" ]
+                        [ text model.error
+                        , case model.connection of
+                            Broken _ ->
+                                button [ onClick Retry ] [ text "Reconnect" ]
+
+                            _ ->
+                                text ""
+                        ]
+                    ]
+                    :: (body ++ [ Maybe.map (\src -> Html.node "dialog" [ id "image-dialog", preventDefaultOn "cancel" (D.succeed ( CloseImage, True )) ] [ Html.img [ A.src src, A.alt "Attachment" ] [], button [ onClick CloseImage ] [ text "Close image" ] ]) model.image |> Maybe.withDefault (text "") ])
             )
         ]
     }

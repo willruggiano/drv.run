@@ -56,6 +56,7 @@ type alias Metadata =
     , hideImages : Bool
     , resume : Bool
     , level : String
+    , explorer : Maybe D.Value
     }
 
 
@@ -76,7 +77,7 @@ empty =
     , live = { busy = False, messages = [], tools = [], notices = [], compactions = [] }
     , inspection = Nothing
     , queue = []
-    , metadata = { branches = [], durations = Dict.empty, title = "Conversation", instance = "", model = "", thinking = "", input = "0", output = "0", read = "0", hit = "CH—", cost = "0.000", context = "—", level = "normal", resume = False, hideThinking = False, hideImages = False }
+    , metadata = { explorer = Nothing, branches = [], durations = Dict.empty, title = "Conversation", instance = "", model = "", thinking = "", input = "0", output = "0", read = "0", hit = "CH—", cost = "0.000", context = "—", level = "normal", resume = False, hideThinking = False, hideImages = False }
     }
 
 
@@ -193,6 +194,7 @@ metadataDecoder =
         |> andMap (optional "hideImages" D.bool |> D.map (Maybe.withDefault False))
         |> andMap (optional "resume" D.bool |> D.map (Maybe.withDefault False))
         |> andMap (D.field "level" D.string)
+        |> andMap (optional "explorer" D.value)
 
 
 frameDecoder : Decoder Frame

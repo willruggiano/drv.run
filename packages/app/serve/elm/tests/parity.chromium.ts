@@ -365,14 +365,16 @@ await test(
     const branch = await session.root.fork(first.id, { ownership: { kind: "ownerless" } }, context);
     await page.locator("#prompt").fill("/fork");
     await page.locator("#send").click();
-    await page.locator("#branches a").nth(1).waitFor();
-    assert.equal(await page.locator('#branches [aria-current="true"]').getAttribute("href"), path);
-    await page.locator(`#branches a[href="${conversationURL(session, branch.id, "elm")}"]`).click();
+    await page.locator("#tree-rows a").nth(1).waitFor();
+    assert.equal(await page.locator('#tree-rows [aria-current="true"]').getAttribute("href"), path);
+    await page
+      .locator(`#tree-rows a[href="${conversationURL(session, branch.id, "elm")}"]`)
+      .click();
     await page.waitForURL(b.base + conversationURL(session, branch.id, "elm"));
     await page.locator("#prompt").fill("Branch draft");
     await page.goBack();
-    await page.locator("#branches a").nth(1).waitFor();
-    await page.locator("#branches a").first().focus();
+    await page.locator("#tree-rows a").nth(1).waitFor();
+    await page.locator("#tree-rows a").first().focus();
     await page.keyboard.press("Escape");
     await page.waitForURL(b.base + path);
     assert.equal(await page.locator("#prompt").inputValue(), "/fork");
@@ -439,13 +441,14 @@ await test(
     for (const [panel, selector] of [
       ["settings", '#session-settings input[name="name"]'],
       ["context", "#context-view[data-tokens]"],
-      ["branches", "#branches a"],
+      ["branches", "#tree-rows a"],
+      ["tree", "#tree-view"],
     ]) {
       await page.goto(b.base + path + "/" + panel);
       await page.locator(selector).waitFor();
       await page.reload();
       await page.locator(selector).waitFor();
-      await page.locator("#close-view").click();
+      await page.locator("#close-view, #tree-close").click();
       await page.waitForURL(b.base + path);
     }
     const image = await (await fetch(b.base + "/icon-192.png")).arrayBuffer();
