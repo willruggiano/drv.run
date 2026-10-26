@@ -1,5 +1,4 @@
 import { installSelectKeyMappings, navigationDirection, moveFocus } from "./key-mappings.ts";
-import { composer, controls } from "./dom.ts";
 import {
   closeCompletions,
   completionItems,
@@ -13,9 +12,13 @@ export function installKeys() {
   installSelectKeyMappings(document);
   document.addEventListener("keydown", (event) => {
     if (event.isComposing || event.defaultPrevented) return;
-    const form = composer();
-    const text = form && controls(form).text;
-    if (event.target === text && completionItems().length) {
+    const text = document.querySelector<HTMLTextAreaElement>("#prompt");
+    const form = text?.form;
+    if (
+      event.target === text &&
+      completionItems().length &&
+      !(event.key === "Enter" && (event.ctrlKey || event.metaKey))
+    ) {
       const direction = navigationDirection(event);
       if (direction || ["ArrowDown", "ArrowUp"].includes(event.key)) {
         event.preventDefault();

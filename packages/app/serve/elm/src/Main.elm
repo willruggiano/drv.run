@@ -642,7 +642,12 @@ update msg model =
                         submit "endreview" "" mode True model
 
                     "/reset" ->
-                        ( { model | reset = Just argument, completions = Nothing }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
+                        ( { model | reset = Just argument, completions = Nothing }
+                        , Cmd.batch
+                            [ browser (E.object [ ( "kind", E.string "resize" ) ])
+                            , browser (E.object [ ( "kind", E.string "focus" ), ( "id", E.string "prompt" ) ])
+                            ]
+                        )
 
                     "/compact" ->
                         submit "compact" argument mode True model
@@ -1143,7 +1148,7 @@ keyDown model =
                 else if key == "Escape" then
                     ( Dismiss, True )
 
-                else if model.completions /= Nothing && List.member key [ "ArrowDown", "ArrowUp", "Enter", "Tab" ] then
+                else if model.completions /= Nothing && not (key == "Enter" && (ctrl || meta)) && List.member key [ "ArrowDown", "ArrowUp", "Enter", "Tab" ] then
                     ( if key == "ArrowDown" then
                         CompletionMove 1
 

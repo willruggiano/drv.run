@@ -11,7 +11,7 @@ import { chromium } from "playwright";
 import { checkCLI, chromiumExecutable } from "./testing.ts";
 import { benchmark, benchmarkOptions } from "../benchmark.ts";
 import { conversationURL } from "../presentation.ts";
-import { fixture } from "./sessions-testing.ts";
+import { fixture, readHistory } from "./sessions-testing.ts";
 import { browserFixture } from "./browser-testing.ts";
 
 await test("both frontends use only the shared stylesheet", async (t) => {
@@ -28,6 +28,34 @@ await test("both frontends use only the shared stylesheet", async (t) => {
       ["/styles.css"],
     );
   }
+  assert.deepEqual(b.errors, []);
+});
+
+await test("both frontends confirm /reset with two keyboard submissions without losing input focus", async (t) => {
+  const f = await fixture(t);
+  const b = await browserFixture(t, f.sessions);
+  b.page.setDefaultTimeout(10000);
+  for (const prefix of ["", "/elm"])
+    for (const shortcut of ["Control+Enter", "Meta+Enter"])
+      for (const handoff of ["", "Preserve the handoff."])
+        await t.test(`${prefix || "htmx"}: ${shortcut}, handoff=${Boolean(handoff)}`, async () => {
+          const session = await f.create();
+          await b.page.goto(b.base + prefix + conversationURL(session));
+          const prompt = b.page.locator("#prompt");
+          await prompt.fill(handoff ? `/reset ${handoff}` : "/reset");
+          if (!handoff) await b.page.locator('#completions [role="option"]').waitFor();
+          const before = await readHistory(session.root);
+          await b.page.keyboard.press(shortcut);
+          await b.page.getByRole("button", { name: "Confirm reset" }).waitFor();
+          await b.page.waitForFunction(() => document.activeElement?.id === "prompt");
+          assert.equal(await prompt.inputValue(), handoff);
+          assert.deepEqual(await readHistory(session.root), before);
+          await b.page.keyboard.press(shortcut);
+          await b.page.locator('[data-context="pi.reset"]').waitFor();
+          const after = await readHistory(session.root);
+          assert.equal(after.length, before.length + 1);
+          assert.equal(after.at(-1)?.kind, "pi.reset");
+        });
   assert.deepEqual(b.errors, []);
 });
 
