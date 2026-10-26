@@ -111,6 +111,7 @@ class OAuth:
 
 
 async def enroll(authorization: Authorization, oauth: OAuth, account: Account) -> None:
+    assert account.user_id is not None
     oauth.identity = account.user_id
 
     def show(device: Device) -> None:

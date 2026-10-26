@@ -121,6 +121,7 @@ class ControlTest(unittest.IsolatedAsyncioTestCase):
                 "device": None,
                 "expires_at": self.clock() + 28800,
                 "refresh_expires_at": self.clock() + 15897600,
+                "account_id": None,
             },
         )
         async with self.authorization.lease(ALICE) as token:

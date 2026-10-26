@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Context } from "@earendil-works/chord/context";
-import type { ProxyAuthorization } from "../auth.ts";
+import { authorizationProviders, type ProxyAuthorization } from "../auth.ts";
 import type { GlobalSettingsStore } from "../server.ts";
 import type { Notifications } from "../notifications.ts";
 import type { Sessions } from "../sessions.ts";
@@ -48,10 +48,16 @@ export async function pages(
     );
     return true;
   }
-  if (path === "/elm/auth/login" || path === "/elm/auth/logout") {
+  const authAction = /^\/elm\/auth\/(openai\/)?(login|logout)$/.exec(path);
+  if (authAction) {
     if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
     await form(request);
-    await authorization.change(path.endsWith("/login") ? "login" : "logout", signal);
+    if (!request.headers.origin) throw new FormError(403, "Origin header required.");
+    await authorization.change(
+      authAction[2] === "login" ? "login" : "logout",
+      signal,
+      authAction[1] ? "openai" : "github",
+    );
     json(response, { saved: true });
     return true;
   }
@@ -127,21 +133,27 @@ export async function pages(
       defaultModel: preferences?.model ? key(preferences.model) : "",
     });
   } else if (path === "/elm/auth") {
-    const auth = await authorization.status(signal);
-    json(response, {
-      kind: "auth",
-      state: auth.state,
-      userId: auth.userId,
-      expires: auth.expiresAt === null ? null : new Date(auth.expiresAt * 1000).toISOString(),
-      failed: !!auth.error,
-      device: auth.device
-        ? {
-            code: auth.device.userCode,
-            uri: auth.device.verificationUri,
-            expires: new Date(auth.device.expiresAt * 1000).toISOString(),
-          }
-        : null,
-    });
+    const providers = await Promise.all(
+      authorizationProviders.map(async ({ id, label }) => {
+        const auth = await authorization.status(signal, id);
+        return {
+          id,
+          label,
+          state: auth.state,
+          identity: auth.accountId ?? (auth.userId === null ? null : String(auth.userId)),
+          expires: auth.expiresAt === null ? null : new Date(auth.expiresAt * 1000).toISOString(),
+          failed: !!auth.error,
+          device: auth.device
+            ? {
+                code: auth.device.userCode,
+                uri: auth.device.verificationUri,
+                expires: new Date(auth.device.expiresAt * 1000).toISOString(),
+              }
+            : null,
+        };
+      }),
+    );
+    json(response, { kind: "auth", providers });
   } else json(response, { kind: path.split("/").at(-1) });
   return true;
 }

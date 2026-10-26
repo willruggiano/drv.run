@@ -51,6 +51,7 @@ from mitmproxy.proxy.layers.tcp import TCPLayer
 from mitmproxy.proxy.mode_servers import ProxyConnectionHandler
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
 from mitmproxy.tools.dump import DumpMaster
+from openai import OpenAI
 from tornado.httpclient import HTTPRequest, HTTPResponse
 from tornado.httpserver import HTTPServer
 from tornado.httputil import HTTPServerRequest
@@ -611,9 +612,15 @@ class Control:
 
 class ControlHandler(RequestHandler):
     def __init__(
-        self, application: Application, request: HTTPServerRequest, *, control: Control
+        self,
+        application: Application,
+        request: HTTPServerRequest,
+        *,
+        control: Control,
+        export_access: bool = False,
     ) -> None:
         self.control: Control = control
+        self.export_access: bool = export_access
         super().__init__(application, request)
 
     @override
@@ -639,6 +646,24 @@ class ControlHandler(RequestHandler):
                 await self.control.login()
             elif operation == "logout":
                 await self.control.logout()
+            elif operation == "token" and self.export_access:
+                # Only the owner's Unix socket exposes this endpoint. Never route
+                # it through the web UI or the guest-facing HTTP proxy.
+                async with self.control.authorization.lease(
+                    self.control.account
+                ) as token:
+                    tokens = self.control.authorization.load(self.control.account)
+                    self.set_header("Content-Type", "application/json")
+                    cast(Callable[[str], None], self.write)(
+                        json.dumps(
+                            {
+                                "access_token": token,
+                                "expires_at": tokens.expires_at,
+                                "account_id": tokens.account_id,
+                            }
+                        )
+                    )
+                return
             else:
                 raise HTTPError(405)
             self.set_status(204)
@@ -650,7 +675,9 @@ class ControlHandler(RequestHandler):
         cast(Callable[[str], None], self.write)("authorization operation failed")
 
 
-def control_server(control: Control, listener: socket.socket) -> HTTPServer:
+def control_server(
+    control: Control, listener: socket.socket, openai: Control | None = None
+) -> HTTPServer:
     if listener.family != socket.AF_UNIX:
         raise ValueError("authorization control requires a Unix socket")
     listener.setblocking(False)
@@ -661,6 +688,17 @@ def control_server(control: Control, listener: socket.socket) -> HTTPServer:
         HTTPServer(
             Application(
                 [(r"/(status|login|logout)", ControlHandler, {"control": control})]
+                + (
+                    [
+                        (
+                            r"/openai/(status|login|logout|token)",
+                            ControlHandler,
+                            {"control": openai, "export_access": True},
+                        )
+                    ]
+                    if openai is not None
+                    else []
+                )
             ),
             max_body_size=1024,
             max_header_size=4096,
@@ -694,6 +732,7 @@ async def serve(
     credentials: Mapping[str, Account],
     authorization: Authorization,
     owners: Sequence[Owner],
+    openai: Authorization,
 ) -> None:
     master = create_master(state, port, credentials, authorization)
     loop = asyncio.get_running_loop()
@@ -705,8 +744,11 @@ async def serve(
     try:
         for owner in owners:
             control = Control(authorization, Account(owner.name, owner.user_id))
-            controls.append(control)
-            servers.append(control_server(control, listeners[owner.name]))
+            openai_control = Control(openai, Account(owner.name))
+            controls.extend([control, openai_control])
+            servers.append(
+                control_server(control, listeners[owner.name], openai_control)
+            )
         await master.run()
     finally:
         for server in servers:
@@ -723,6 +765,7 @@ class Arguments(argparse.Namespace):
     operation: str = ""
     config: str = "/etc/mitm-proxy.json"
     user: str | None = None
+    provider: str = "github"
 
 
 def configuration(path: Path) -> tuple[str, int, list[Owner], CertificateAuthority]:
@@ -737,6 +780,7 @@ def configuration(path: Path) -> tuple[str, int, list[Owner], CertificateAuthori
     for name, value in object_value(data["owners"]).items():
         owner = object_value(value)
         account = Account(name, integer(owner, "githubUserId"))
+        assert account.user_id is not None
         owners.append(Owner(account.name, integer(owner, "gid"), account.user_id))
     ca = CertificateAuthority(
         text(data, "caCertificate"), Path(text(data, "caPrivateKeyFile"))
@@ -765,16 +809,26 @@ async def run(
         return await client.fetch(request, raise_error=False)
 
     authorization = Authorization(tokens, GitHub(client_id, fetch))
+    openai = Authorization(tokens / "openai", OpenAI(fetch))
     try:
         if args.operation == "serve":
             await serve(
-                ca_store, port, read_credentials(state, owners), authorization, owners
+                ca_store,
+                port,
+                read_credentials(state, owners),
+                authorization,
+                owners,
+                openai,
             )
             return
         owner = next((owner for owner in owners if owner.name == args.user), None)
         if owner is None:
             raise ValueError("select a configured host user with --user")
-        account = Account(owner.name, owner.user_id)
+        account = Account(
+            owner.name, owner.user_id if args.provider == "github" else None
+        )
+        if args.provider == "openai":
+            authorization = openai
         if args.operation == "login":
             await authorization.login(account, show)
         elif args.operation == "logout":
@@ -792,6 +846,9 @@ def main() -> None:
     )
     _ = parser.add_argument("--config", default="/etc/mitm-proxy.json")
     _ = parser.add_argument("--user")
+    _ = parser.add_argument(
+        "--provider", choices=["github", "openai"], default="github"
+    )
     args = parser.parse_args(namespace=Arguments())
     state = Path("/var/lib/mitm-proxy")
     tokens = Path("/var/lib/mitm-proxy-auth")

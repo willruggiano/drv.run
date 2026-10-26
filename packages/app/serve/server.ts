@@ -3,7 +3,7 @@ import { Notifications } from "./notifications.ts";
 import { pages } from "./elm/pages.ts";
 import { elmFrontend } from "./elm/frontend.ts";
 import { html as h, renderHTML } from "./html.ts";
-import { ProxyAuthorization } from "./auth.ts";
+import { hostModels, ProxyAuthorization } from "./auth.ts";
 import { authPage } from "./htmx/auth.ts";
 import { hypermedia, errorPage, activityPage } from "./htmx/frontend.ts";
 import { openApplication } from "./application.ts";
@@ -15,8 +15,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
   DEFAULT_COMPACTION_POLICY,
   DEFAULT_RETRY_POLICY,
@@ -480,8 +478,8 @@ export async function main(): Promise<void> {
     throw new Error("HOST must be an IP address; IPv6 wildcard binding is not supported.");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT.");
   process.umask(0o077);
-  const models = createModels();
-  for (const provider of builtinProviders()) models.setProvider(provider);
+  const authorization = new ProxyAuthorization();
+  const models = hostModels(authorization);
   const settings = await GlobalSettingsStore.open(
     join(stateDirectory(), "drv-run", "settings.json"),
   );
@@ -508,7 +506,7 @@ export async function main(): Promise<void> {
   let server: ReturnType<typeof httpServer>;
   try {
     if (notifications) await sessions.catalog();
-    server = httpServer(sessions, host, undefined, settings, origin, undefined, notifications);
+    server = httpServer(sessions, host, undefined, settings, origin, authorization, notifications);
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(port, host, () => {

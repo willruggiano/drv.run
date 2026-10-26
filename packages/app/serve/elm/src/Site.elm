@@ -37,14 +37,14 @@ type alias Catalog =
 
 
 type alias Auth =
-    { state : String, userId : Maybe Int, expires : Maybe String, error : Bool, device : Maybe { code : String, uri : String, expires : String } }
+    { id : String, label : String, state : String, identity : Maybe String, expires : Maybe String, error : Bool, device : Maybe { code : String, uri : String, expires : String } }
 
 
 type Page
     = Loading
     | Landing Catalog
     | Defaults Catalog
-    | Authorization Auth
+    | Authorization (List Auth)
     | Activity
 
 
@@ -142,7 +142,7 @@ pageDecoder =
                         D.map Defaults catalogDecoder
 
                     "auth" ->
-                        D.map Authorization (D.map5 Auth (D.field "state" D.string) (D.field "userId" (D.nullable D.int)) (D.field "expires" (D.nullable D.string)) (D.field "failed" D.bool) (D.field "device" (D.nullable (D.map3 (\code uri expires -> { code = code, uri = uri, expires = expires }) (D.field "code" D.string) (D.field "uri" D.string) (D.field "expires" D.string)))))
+                        D.map Authorization (D.field "providers" (D.list (D.map7 Auth (D.field "id" D.string) (D.field "label" D.string) (D.field "state" D.string) (D.field "identity" (D.nullable D.string)) (D.field "expires" (D.nullable D.string)) (D.field "failed" D.bool) (D.field "device" (D.nullable (D.map3 (\code uri expires -> { code = code, uri = uri, expires = expires }) (D.field "code" D.string) (D.field "uri" D.string) (D.field "expires" D.string)))))))
 
                     "activity" ->
                         D.succeed Activity
@@ -333,7 +333,7 @@ update msg model =
                         [ siteBrowser (E.object [ ( "kind", E.string "rendered" ) ])
                         , case page of
                             Authorization auth ->
-                                if auth.state == "authorizing" then
+                                if List.any (\provider -> provider.state == "authorizing") auth then
                                     Process.sleep 2000 |> Task.perform (\_ -> Refresh)
 
                                 else
@@ -847,7 +847,7 @@ view model =
                     [ main_ [ id "main-area" ] [ section [ id "global-preferences", class "pane" ] (defaultsView model catalog) ] ]
 
                 Authorization auth ->
-                    [ main_ [ id "main-area" ] [ section [ id "github-authorization", class "pane" ] (authView model.busy auth) ] ]
+                    [ main_ [ id "main-area" ] ([ Html.nav [] [ a [ href "/elm" ] [ text "Sessions" ] ], h1 [] [ text "Auth" ] ] ++ List.map (\provider -> section [ id (provider.id ++ "-authorization"), class "pane" ] (authView model.busy provider)) auth) ]
 
                 Activity ->
                     [ main_ [ id "main-area" ]
@@ -1040,7 +1040,7 @@ authView busy auth =
         status =
             case auth.state of
                 "unconfigured" ->
-                    "GitHub credentials are not configured for this host user."
+                    auth.label ++ " credentials are not configured for this host user."
 
                 "not-enrolled" ->
                     "Not authorized"
@@ -1049,50 +1049,69 @@ authView busy auth =
                     "Authorized"
 
                 "temporarily-unavailable" ->
-                    "Access token expired or credentials temporarily unavailable. The proxy renews tokens when Git needs them."
+                    "Access token expired or credentials temporarily unavailable. The credential service renews tokens when needed."
 
                 "reauthorization-required" ->
                     "Authorization required"
 
                 _ ->
-                    "Waiting for GitHub approval"
+                    "Waiting for " ++ auth.label ++ " approval"
 
-        action path title =
-            form [ onSubmit (Action path) ] [ button [ A.disabled busy ] [ text title ] ]
+        action operation title =
+            form
+                [ onSubmit
+                    (Action
+                        ((if auth.id == "github" then
+                            "/elm/auth/"
+
+                          else
+                            "/elm/auth/openai/"
+                         )
+                            ++ operation
+                        )
+                    )
+                ]
+                [ button [ A.disabled busy ] [ text title ] ]
     in
-    [ Html.nav [] [ a [ href "/elm" ] [ text "Sessions" ] ]
-    , h1 [] [ text "Auth" ]
-    , h2 [] [ text "GitHub" ]
+    [ h2 [] [ text auth.label ]
     , p [ attribute "role" "status", attribute "data-state" auth.state ] [ text status ]
-    , Maybe.map (\user -> p [] [ text ("GitHub user ID: " ++ String.fromInt user) ]) auth.userId |> Maybe.withDefault (text "")
+    , Maybe.map (\identity -> p [] [ text (auth.label ++ " identity: " ++ identity) ]) auth.identity |> Maybe.withDefault (text "")
     , if auth.error then
-        p [ attribute "role" "alert" ] [ text "Authorization did not complete. Try again and approve with the configured GitHub account." ]
+        p [ attribute "role" "alert" ] [ text ("Authorization did not complete. Try again and approve with the intended " ++ auth.label ++ " account.") ]
 
       else
         text ""
-    , Maybe.map (\device -> div [] [ p [] [ text "Enter ", Html.code [] [ text device.code ], text " at ", a [ href device.uri, A.target "_blank", A.rel "noopener noreferrer" ] [ text "GitHub device authorization" ], text "." ], p [] [ text "Code expires at ", Html.time [ A.datetime device.expires ] [ text device.expires ], text "." ] ]) auth.device |> Maybe.withDefault (text "")
+    , Maybe.map (\device -> div [] [ p [] [ text "Enter ", Html.code [] [ text device.code ], text " at ", a [ href device.uri, A.target "_blank", A.rel "noopener noreferrer" ] [ text (auth.label ++ " device authorization") ], text "." ], p [] [ text "Code expires at ", Html.time [ A.datetime device.expires ] [ text device.expires ], text "." ] ]) auth.device |> Maybe.withDefault (text "")
     , Maybe.map (\expires -> p [] [ text "Access token expires at ", Html.time [ A.datetime expires ] [ text expires ], text "; renewal is automatic." ]) auth.expires |> Maybe.withDefault (text "")
     , if auth.state == "unconfigured" then
         text ""
 
       else
         div []
-            [ p [] [ text "All guests of this host user share this GitHub Git access. Access and refresh tokens stay on the host." ]
+            [ p []
+                [ text
+                    (if auth.id == "github" then
+                        "All guests of this host user share this GitHub Git access. Access and refresh tokens stay on the host."
+
+                     else
+                        "Host Pi uses this OpenAI account for Codex model requests. The credential service owns refresh; tools in guests receive no OpenAI tokens."
+                    )
+                ]
             , div [ class "actions" ]
                 [ if auth.state == "authorizing" then
                     text ""
 
                   else
-                    action "/elm/auth/login"
+                    action "login"
                         (if auth.state == "usable" then
                             "Reauthorize"
 
                          else
                             "Authorize"
                         )
-                , action "/elm/auth/logout" "Remove authorization"
+                , action "logout" "Remove authorization"
                 , a [ href "/elm/auth" ] [ text "Refresh" ]
                 ]
-            , p [] [ text "Removal cancels pending authorization and deletes local credentials. It does not revoke the app authorization at GitHub." ]
+            , p [] [ text "Removal cancels pending authorization and deletes local credentials. It does not revoke upstream authorization or already-issued access tokens." ]
             ]
     ]

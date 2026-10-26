@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 from urllib.parse import urlencode
 
 from tornado.httpclient import (
@@ -45,9 +45,9 @@ def object_value(value: object) -> dict[str, object]:
     return result
 
 
-def text(data: Mapping[str, object], key: str) -> str:
+def text(data: Mapping[str, object], key: str, limit: int = 4096) -> str:
     value = data[key]
-    if not isinstance(value, str) or not value or len(value) > 4096:
+    if not isinstance(value, str) or not value or len(value) > limit:
         raise ValueError("expected nonempty string")
     return value
 
@@ -83,7 +83,8 @@ class Tokens:
     access_token: str
     refresh_token: str
     expires_at: float
-    refresh_expires_at: float
+    refresh_expires_at: float | None = None
+    account_id: str | None = None
 
     @staticmethod
     def response(data: Mapping[str, object], now: float) -> "Tokens":
@@ -103,6 +104,17 @@ class Tokens:
         )
 
 
+class OAuthProvider(Protocol):
+    client_id: str
+    refresh_margin: int
+    clock: Callable[[], float]
+
+    async def device(self) -> Device: ...
+    async def authorize(self, device: Device, user_id: int | None) -> Tokens: ...
+    async def refresh(self, token: str) -> Tokens: ...
+    def validate(self, tokens: Tokens) -> None: ...
+
+
 class GitHub:
     def __init__(
         self,
@@ -112,6 +124,7 @@ class GitHub:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.client_id: str = client_id
+        self.refresh_margin: int = 60
         self.fetch: Callable[[HTTPRequest], Awaitable[HTTPResponse]] = fetch
         self.clock: Callable[[], float] = clock
         self.sleep: Callable[[float], Awaitable[None]] = sleep
@@ -168,7 +181,7 @@ class GitHub:
         except (ValueError, TypeError, KeyError):
             raise AuthError("temporarily-unavailable") from None
 
-    async def authorize(self, device: Device, user_id: int) -> Tokens:
+    async def authorize(self, device: Device, user_id: int | None) -> Tokens:
         interval = device.interval
         while self.clock() + interval < device.expires_at:
             await self.sleep(interval)
@@ -221,16 +234,24 @@ class GitHub:
         except (ValueError, TypeError, KeyError):
             raise AuthError("temporarily-unavailable") from None
 
+    def validate(self, tokens: Tokens) -> None:
+        if (
+            not re.fullmatch(r"ghu_[A-Za-z0-9_]+", tokens.access_token)
+            or not re.fullmatch(r"ghr_[A-Za-z0-9_]+", tokens.refresh_token)
+            or tokens.refresh_expires_at is None
+            or tokens.account_id is not None
+        ):
+            raise ValueError("invalid GitHub token state")
+
 
 @dataclass(frozen=True)
 class Account:
     name: str
-    user_id: int
+    user_id: int | None = None
 
     def __post_init__(self) -> None:
-        if (
-            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", self.name)
-            or self.user_id <= 0
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", self.name) or (
+            self.user_id is not None and self.user_id <= 0
         ):
             raise ValueError("invalid account")
 
@@ -238,15 +259,16 @@ class Account:
 @dataclass(frozen=True)
 class AccountStatus:
     state: Status
-    user_id: int
+    user_id: int | None
     expires_at: float | None = None
     refresh_expires_at: float | None = None
+    account_id: str | None = None
 
 
 class Authorization:
-    def __init__(self, directory: Path, github: GitHub) -> None:
+    def __init__(self, directory: Path, provider: OAuthProvider) -> None:
         self.directory: Path = directory
-        self.github: GitHub = github
+        self.provider: OAuthProvider = provider
 
     @asynccontextmanager
     async def locked(
@@ -294,27 +316,34 @@ class Authorization:
                 if (
                     stat.S_IMODE(info.st_mode) != 0o600
                     or info.st_uid != os.geteuid()
-                    or info.st_size > 16384
+                    or info.st_size > 65536
                 ):
                     raise ValueError("unsafe state")
                 data = object_value(cast(object, json.load(file)))
             if (
                 integer(data, "version") != 1
-                or data.get("client_id") != self.github.client_id
-                or integer(data, "user_id") != account.user_id
+                or data.get("client_id") != self.provider.client_id
+                or (
+                    integer(data, "user_id")
+                    if account.user_id is not None
+                    else data["user_id"]
+                )
+                != account.user_id
                 or data.get("refreshing") is True
             ):
                 raise AuthError("reauthorization-required")
             tokens = Tokens(
-                text(data, "access_token"),
+                text(data, "access_token", 16384),
                 text(data, "refresh_token"),
                 timestamp(data, "expires_at"),
-                timestamp(data, "refresh_expires_at"),
+                timestamp(data, "refresh_expires_at")
+                if data.get("refresh_expires_at") is not None
+                else None,
+                text(data, "account_id")
+                if data.get("account_id") is not None
+                else None,
             )
-            if not re.fullmatch(
-                r"ghu_[A-Za-z0-9_]+", tokens.access_token
-            ) or not re.fullmatch(r"ghr_[A-Za-z0-9_]+", tokens.refresh_token):
-                raise ValueError("invalid token state")
+            self.provider.validate(tokens)
             return tokens
         except FileNotFoundError:
             raise AuthError("not-enrolled") from None
@@ -327,7 +356,7 @@ class Authorization:
         data = {
             **asdict(tokens),
             "version": 1,
-            "client_id": self.github.client_id,
+            "client_id": self.provider.client_id,
             "user_id": account.user_id,
             "refreshing": refreshing,
         }
@@ -365,9 +394,10 @@ class Authorization:
         # Serialize the whole enrollment with logout and renewal. A failed or
         # cancelled enrollment leaves the previous pair untouched.
         async with self.locked(account):
-            device = await self.github.device()
+            device = await self.provider.device()
             show(device)
-            tokens = await self.github.authorize(device, account.user_id)
+            tokens = await self.provider.authorize(device, account.user_id)
+            self.provider.validate(tokens)
             self.save(account, tokens)
 
     async def logout(self, account: Account) -> None:
@@ -380,12 +410,19 @@ class Authorization:
             async with self.locked(account, shared=True):
                 tokens = self.load(account)
                 state: Status = "usable"
-                if tokens.refresh_expires_at <= self.github.clock():
+                if (
+                    tokens.refresh_expires_at is not None
+                    and tokens.refresh_expires_at <= self.provider.clock()
+                ):
                     state = "reauthorization-required"
-                elif tokens.expires_at <= self.github.clock():
+                elif tokens.expires_at <= self.provider.clock():
                     state = "temporarily-unavailable"
                 return AccountStatus(
-                    state, account.user_id, tokens.expires_at, tokens.refresh_expires_at
+                    state,
+                    account.user_id,
+                    tokens.expires_at,
+                    tokens.refresh_expires_at,
+                    tokens.account_id,
                 )
         except AuthError as error:
             return AccountStatus(error.state, account.user_id)
@@ -399,10 +436,13 @@ class Authorization:
         while True:
             async with self.locked(account, shared=True):
                 tokens = self.load(account)
-                now = self.github.clock()
-                if tokens.refresh_expires_at <= now:
+                now = self.provider.clock()
+                if (
+                    tokens.refresh_expires_at is not None
+                    and tokens.refresh_expires_at <= now
+                ):
                     raise AuthError("reauthorization-required")
-                if tokens.expires_at > now + 60:
+                if tokens.expires_at > now + self.provider.refresh_margin:
                     yield tokens.access_token
                     return
             # Do not upgrade a shared flock: conversion is not atomic. Recheck
@@ -410,14 +450,20 @@ class Authorization:
             # intervening logout/login cannot leave us forwarding a stale token.
             async with self.locked(account):
                 tokens = self.load(account)
-                now = self.github.clock()
-                if tokens.refresh_expires_at <= now:
+                now = self.provider.clock()
+                if (
+                    tokens.refresh_expires_at is not None
+                    and tokens.refresh_expires_at <= now
+                ):
                     raise AuthError("reauthorization-required")
-                if tokens.expires_at <= now + 60:
+                if tokens.expires_at <= now + self.provider.refresh_margin:
                     # Persist intent BEFORE consuming a single-use refresh token.
                     self.save(account, tokens, refreshing=True)
-                    tokens = await self.github.refresh(tokens.refresh_token)
-                    self.save(account, tokens)
+                    renewed = await self.provider.refresh(tokens.refresh_token)
+                    self.provider.validate(renewed)
+                    if renewed.account_id != tokens.account_id:
+                        raise AuthError("reauthorization-required")
+                    self.save(account, renewed)
 
 
 def http_client() -> AsyncHTTPClient:

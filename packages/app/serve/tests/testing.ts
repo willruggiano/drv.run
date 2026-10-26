@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ProxyAuthorization } from "../auth.ts";
+import { ProxyAuthorization, type AuthorizationProvider } from "../auth.ts";
 import type { ChildProcess } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
@@ -192,26 +192,46 @@ export async function directoryFixture(t: TestContext, root?: string) {
 export async function authorizationFixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "serve-auth-"));
   const path = join(directory, "alice.sock");
-  const empty = { state: "not-enrolled", user_id: 1, device: null, error: null };
-  let snapshot: unknown = empty;
+  const empty = (provider: AuthorizationProvider) => ({
+    state: "not-enrolled",
+    user_id: provider === "github" ? 1 : null,
+    device: null,
+    error: null,
+  });
+  const snapshots: Record<AuthorizationProvider, unknown> = {
+    github: empty("github"),
+    openai: empty("openai"),
+  };
+  let credential: unknown = null;
+  const calls: { method: string | undefined; path: string | undefined }[] = [];
   const server = createServer((request, response) => {
+    calls.push({ method: request.method, path: request.url });
     response.setHeader("Content-Type", "application/json");
-    if (request.method === "GET" && request.url === "/status") {
-      response.end(JSON.stringify(snapshot));
-    } else if (request.method === "POST" && request.url === "/login") {
-      snapshot = {
-        ...empty,
+    const provider = request.url?.startsWith("/openai/") ? "openai" : "github";
+    const operation = request.url?.split("/").at(-1);
+    if (request.method === "GET" && operation === "status") {
+      response.end(JSON.stringify(snapshots[provider]));
+    } else if (request.method === "POST" && operation === "login") {
+      snapshots[provider] = {
+        ...empty(provider),
         state: "authorizing",
         device: {
           user_code: "ABCD-EFGH",
-          verification_uri: "https://github.com/login/device",
+          verification_uri:
+            provider === "github"
+              ? "https://github.com/login/device"
+              : "https://auth.openai.com/codex/device",
           expires_at: 1900000900,
         },
       };
       response.writeHead(204).end();
-    } else if (request.method === "POST" && request.url === "/logout") {
-      snapshot = empty;
+    } else if (request.method === "POST" && operation === "logout") {
+      snapshots[provider] = empty(provider);
+      if (provider === "openai") credential = null;
       response.writeHead(204).end();
+    } else if (request.method === "POST" && request.url === "/openai/token") {
+      if (credential === null) response.writeHead(503).end();
+      else response.end(JSON.stringify(credential));
     } else response.writeHead(404).end();
   });
   await new Promise<void>((resolve) => server.listen(path, resolve));
@@ -224,11 +244,20 @@ export async function authorizationFixture(t: TestContext) {
   });
   return {
     authorization: new ProxyAuthorization(path),
-    reply(value: unknown) {
-      snapshot = value;
+    calls,
+    reply(value: unknown, provider: AuthorizationProvider = "github") {
+      snapshots[provider] = value;
     },
-    approve() {
-      snapshot = { ...empty, state: "usable", expires_at: 1900028800 };
+    token(value: unknown) {
+      credential = value;
+    },
+    approve(provider: AuthorizationProvider = "github") {
+      snapshots[provider] = {
+        ...empty(provider),
+        state: "usable",
+        expires_at: 1900028800,
+        ...(provider === "openai" ? { account_id: "account-alice" } : {}),
+      };
     },
   };
 }
