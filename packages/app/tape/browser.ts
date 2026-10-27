@@ -232,7 +232,18 @@ class AppPage {
         "live document rendered",
       );
     }
-    await this.page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
+    if (profiles[this.profile].mobile) {
+      // A mouse move does not reliably clear touch's sticky hover state.
+      await this.page.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x: 0, y: 0 }],
+      });
+      await this.page.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    } else await this.page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
+    await this.page.wait(
+      "!document.querySelector(':is(a, button, input, select, textarea):hover')",
+      "pointer outside interactive content",
+    );
     await this.page.evaluate(`(async () => {
       await document.fonts.ready;
       await Promise.all(Array.from(document.images, image => image.decode()));
