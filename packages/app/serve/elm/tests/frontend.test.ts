@@ -4,7 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { copyJson } from "@earendil-works/chord";
 import { test } from "node:test";
-import { ElmProjection } from "../frontend.ts";
+import { ElmProjection, conversationFrames } from "../stream.ts";
 import { benchmarkFixture } from "../../benchmark.ts";
 import { fixture, readHistory, model } from "../../tests/sessions-testing.ts";
 import {
@@ -19,7 +19,8 @@ import { GlobalSettingsStore } from "../../server.ts";
 import { sessionInfo } from "../../sessions.ts";
 import { conversationURL } from "../../presentation.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { LiveDoc } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 
 const metadata = {
   branches: [],
@@ -352,4 +353,211 @@ await test("editing retains unavailable choices but creation cannot select them"
   assert.equal((await post(base + "/", { ...selected, id: randomUUID() })).status, 409);
   assert.deepEqual(await sessionInfo(current), { ...before, name: "Retained" });
   assert.equal(f.sessions.opened.size, 1);
+});
+
+await test(
+  "conversation frames retain commits across initialization and resets, including sibling trees",
+  { timeout: 10000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const context = BACKGROUND_CONTEXT;
+    const first = await session.root.commit(
+      (tx) =>
+        tx.appendEntry(session.root.id, {
+          kind: "pi.user",
+          model: [{ role: "user", content: "First", timestamp: 1 }],
+        }),
+      context,
+    );
+    const acquired = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    const entries = session.root.entries.bind(session.root);
+    const read = t.mock.method(
+      session.root,
+      "entries",
+      async (...args: Parameters<typeof entries>) => {
+        const page = await entries(...args);
+        acquired.resolve();
+        await release.promise;
+        return page;
+      },
+    );
+    const frames = conversationFrames(session, session.root, context, { pane: "tree" });
+    t.after(() => frames.return());
+    const initial = frames.next();
+    await acquired.promise;
+    const during = await session.root.commit(async (tx) => {
+      const entry = await tx.appendEntry(session.root.id, {
+        kind: "pi.user",
+        model: [{ role: "user", content: "During initialization", timestamp: 2 }],
+      });
+      const reset = await tx.appendEntry(session.root.id, { kind: "pi.reset", head: "self" });
+      return [entry.id, reset.id];
+    }, context);
+    release.resolve();
+    const snapshot = await initial;
+    assert(!snapshot.done);
+    assert.equal(snapshot.value.snapshot, true);
+    assert.equal(snapshot.value.sequence, 1);
+    assert.deepEqual(
+      snapshot.value.entries.map((entry) => entry.id),
+      [first.id, ...during],
+    );
+    assert.deepEqual(
+      snapshot.value.metadata?.explorer?.nodes.map((node) => node.id),
+      [first.id, ...during],
+    );
+    assert.equal(read.mock.callCount(), 1);
+    read.mock.restore();
+    const fork = await session.root.fork(first.id, { ownership: { kind: "ownerless" } }, context);
+    const sibling = await fork.commit(
+      (tx) =>
+        tx.appendEntry(fork.id, { kind: "pi.assistant", model: [fauxAssistantMessage("Sibling")] }),
+      context,
+    );
+    const changed = await frames.next();
+    assert(!changed.done);
+    assert.equal(changed.value.subscription, snapshot.value.subscription);
+    assert.equal(changed.value.sequence, 2);
+    assert.deepEqual(changed.value.entries, []);
+    assert.equal(
+      changed.value.metadata?.branches.some((branch) => branch.id === fork.id),
+      true,
+    );
+    const node = changed.value.metadata?.explorer?.nodes.find((node) => node.id === sibling.id);
+    assert(node);
+    assert.equal(node.parent, first.id);
+    assert.equal(node.active, false);
+  },
+);
+
+await test(
+  "conversation frames coalesce slow consumption and publish settings-only changes",
+  { timeout: 10000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const settings = new GlobalSettingsStore();
+    const context = BACKGROUND_CONTEXT;
+    const frames = conversationFrames(session, session.root, context, { settings });
+    t.after(() => frames.return());
+    const first = await frames.next();
+    assert(!first.done);
+    for (let index = 0; index < 110; index++) {
+      await session.root.commit(async (tx) => {
+        const { role, api, provider, model, usage, stopReason, timestamp } =
+          fauxAssistantMessage("");
+        (await tx.doc(LiveDoc, session.root.id)).generation = {
+          attempt: 1,
+          message: {
+            role,
+            api,
+            provider,
+            model,
+            usage,
+            stopReason,
+            timestamp,
+            content: [{ type: "text", text: `Partial ${index}` }],
+          },
+        };
+      }, context);
+    }
+    const latest = await frames.next();
+    assert(!latest.done);
+    assert.equal(latest.value.sequence, 2);
+    assert.deepEqual(latest.value.entries, []);
+    assert.deepEqual(latest.value.live?.messages[0].blocks, [
+      { kind: "text", text: "Partial 109" },
+    ]);
+    const waiting = frames.next();
+    await settings.update({ values: { hideThinkingBlock: true } }, f.sessions);
+    const preference = await waiting;
+    assert(!preference.done);
+    assert.equal(preference.value.sequence, 3);
+    assert.equal(preference.value.metadata?.hideThinking, true);
+    assert.equal(preference.value.live, undefined);
+    assert.deepEqual(preference.value.entries, []);
+  },
+);
+
+await test("conversation frame lifetime releases all observers on return, cancellation, close, overflow, and failure", async (t) => {
+  for (const end of ["return", "cancel", "close", "overflow", "failure"])
+    await t.test(end, { timeout: 10000 }, async (t) => {
+      const f = await fixture(t);
+      const session = await f.create();
+      const settings = new GlobalSettingsStore();
+      let commits = 0,
+        preferences = 0;
+      const subscribe = session.harness.subscribeCommits.bind(session.harness);
+      t.mock.method(
+        session.harness,
+        "subscribeCommits",
+        (listener: Parameters<typeof subscribe>[0]) => {
+          commits++;
+          const release = subscribe(listener);
+          return () => {
+            commits--;
+            release();
+          };
+        },
+      );
+      const observe = settings.watch.bind(settings);
+      t.mock.method(settings, "watch", (listener: () => void) => {
+        preferences++;
+        const release = observe(listener);
+        return () => {
+          preferences--;
+          release();
+        };
+      });
+      const watch = session.root.watch.bind(session.root);
+      const watches: Awaited<ReturnType<typeof watch>>[] = [];
+      t.mock.method(session.root, "watch", async (...args: Parameters<typeof watch>) => {
+        const value = await watch(...args);
+        watches.push(value);
+        return value;
+      });
+      const abort = new AbortController();
+      const frames = conversationFrames(
+        session,
+        session.root,
+        withAbortSignal(abort.signal, BACKGROUND_CONTEXT),
+        { settings },
+      );
+      t.after(async () => {
+        abort.abort();
+        await frames.return();
+      });
+      assert.equal((await frames.next()).done, false);
+      assert.equal(commits, 1);
+      assert.equal(preferences, 1);
+      if (end === "return") await frames.return();
+      else if (end === "overflow") {
+        await session.root.commit(async (tx) => {
+          for (let i = 0; i < 1025; i++) await tx.appendEntry(session.root.id, { kind: "message" });
+        }, BACKGROUND_CONTEXT);
+        await assert.rejects(frames.next(), Error);
+      } else if (end === "failure") {
+        const error = new Error("Metadata failure");
+        t.mock.method(session.root, "agent", async () => {
+          throw error;
+        });
+        const pending = frames.next();
+        const rejected = assert.rejects(pending, (actual) => actual === error);
+        await settings.update({ values: { hideThinkingBlock: true } }, f.sessions);
+        await rejected;
+      } else {
+        const pending = frames.next();
+        if (end === "cancel") abort.abort();
+        else await session.harness.close(BACKGROUND_CONTEXT);
+        assert.equal((await pending).done, true);
+      }
+      assert.equal(watches.length, 1);
+      await watches[0].closed;
+      assert.equal(commits, 0);
+      assert.equal(preferences, 0);
+      assert.equal(f.faux.state.callCount, 0);
+    });
 });
