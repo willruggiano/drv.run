@@ -1,3 +1,5 @@
+import { authSection } from "./auth.ts";
+import type { ProxyAuthorization } from "../auth.ts";
 import { BranchTree, type Branch } from "../branches.ts";
 import { SessionTree, conversationTree, type TreeData } from "../trees.ts";
 import {
@@ -103,9 +105,12 @@ export function htmlPage(
   // htmx must see readyState=loading so initialization waits for DOMContentLoaded,
   // after the deferred extensions and module have registered their handlers.
   const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/htmx/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
-  const header = h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!sessionHeader && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/htmx/"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}${sessionName === undefined ? requestError : ""}</header>`;
+  const header =
+    !sessionHeader && title === "Sessions"
+      ? h`<header id="app-header"><nav class="landing-navigation" aria-label="Global"><a class="icon" href="/htmx/activity" aria-label="Activity" title="Activity">${icon("bell")}</a><a class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a></nav>${requestError}</header>`
+      : h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!sessionHeader && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/htmx/"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}${sessionName === undefined ? requestError : ""}</header>`;
   return renderHTML(
-    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${sessionName === undefined && ((!conversation && title === "Sessions") || title === "Session settings" || title === "Conversation tree" || title === "Session tree") ? requestError : header}${sessionName !== undefined ? requestError : ""}${content}</main></body></html>`,
+    h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${sessionName === undefined && (title === "Session settings" || title === "Conversation tree" || title === "Session tree") ? requestError : header}${sessionName !== undefined ? requestError : ""}${content}</main></body></html>`,
   );
 }
 export function html(
@@ -558,6 +563,8 @@ export async function hypermedia(
   url: URL,
   sessions: Sessions,
   context: Context,
+  authorization: ProxyAuthorization,
+  signal: AbortSignal,
   settings?: GlobalSettingsStore,
 ): Promise<void> {
   // htmx 4 boosts forms into history even when HX-Reswap is none. Only the
@@ -638,7 +645,7 @@ export async function hypermedia(
     if (request.method === "GET") {
       html(
         response,
-        h`<main id="main-area"><section id="global-preferences" class="pane">${globalForm(await sessions.catalog(context), settings?.read(), url.searchParams.get("model") ?? undefined, settingsPath)}</section></main>`,
+        h`<main id="main-area"><section id="global-preferences" class="pane">${globalForm(await sessions.catalog(context), settings?.read(), url.searchParams.get("model") ?? undefined, settingsPath)}${await authSection(authorization, signal)}</section></main>`,
         200,
         undefined,
         "Global settings",

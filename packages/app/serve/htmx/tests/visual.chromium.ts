@@ -330,7 +330,7 @@ await test("panel headers respect safe areas, stay above scrolling content and c
     }
     await page.goto(b.base + "/htmx/");
     await page.locator("#landing").waitFor();
-    assert.equal(await page.locator("#app-header").count(), 0);
+    assert.equal(await page.locator("#app-header .landing-navigation").isVisible(), true);
   }
   await page.goto(b.base + "/htmx/settings");
   assert.equal(await page.locator("#app-footer").isVisible(), false);
@@ -924,7 +924,7 @@ await test("transcripts have no action controls, session indicator, or reserved 
           () => document.querySelector("#connection")?.textContent === "Connected",
         );
       const absent =
-        '#status, .session-status, .status-menu, .entry-actions, .message-actions, .action-menu, #message-menu, #transcript button, #live button, [data-copy-source], a[href="/htmx/auth"]';
+        "#status, .session-status, .status-menu, .entry-actions, .message-actions, .action-menu, #message-menu, #transcript button, #live button, [data-copy-source]";
       assert.equal(await page.locator(absent).count(), 0);
       const message = page.locator('#transcript article[data-role="user"]');
       assert.equal(
@@ -1008,7 +1008,6 @@ await test("scrollbars stay hidden site-wide while both axes retain native scrol
       `${path}/settings`,
       `${path}/context`,
       "/htmx/settings",
-      "/htmx/auth",
       "/design-system.html",
     ]) {
       await page.goto(b.base + route);

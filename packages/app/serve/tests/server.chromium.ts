@@ -173,9 +173,10 @@ await test("frontend landings create, reopen and archive sessions without crossi
         catalog.sessions.slice(0, 5).map((item) => item.id),
       );
       assert.equal(await page.locator("#session-filter, #picker").count(), 0);
-      assert.equal(await page.locator("#app-header, #landing nav").count(), 0);
-      for (const route of ["settings", "auth", "activity"])
-        assert.equal(await page.locator(`a[href="/${frontend}/${route}"]`).count(), 0);
+      assert.equal(await page.locator("#app-header .landing-navigation").count(), 1);
+      for (const route of ["settings", "activity"])
+        assert.equal(await page.locator(`a[href="/${frontend}/${route}"]`).isVisible(), true);
+      assert.equal(await page.locator(`a[href="/${frontend}/auth"]`).count(), 0);
       for (const route of ["repository", "history"])
         assert.equal(
           (
@@ -208,7 +209,7 @@ await test("frontend landings create, reopen and archive sessions without crossi
       await waitFor(async () => settings.read().values.hideThinkingBlock === true);
       await page.getByRole("link", { name: "Sessions", exact: true }).click();
       await page.locator("#landing").waitFor();
-      await page.goto(`${b.base}/${frontend}/auth`);
+      await page.getByRole("link", { name: "Global settings", exact: true }).click();
       await page.locator('#github-authorization [data-state="unconfigured"]').waitFor();
       await page.goto(b.base + landing);
       await page.locator(`#session-list a[href="/${frontend}/sessions/${id}"]`).click();

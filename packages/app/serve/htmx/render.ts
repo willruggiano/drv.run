@@ -17,9 +17,20 @@ export const action = (
 ) =>
   h`<form method="post" action="${url}"${command ? h` data-command="${command}"` : ""}>${fields}<button${buttonAttributes}>${text}</button></form>`;
 export function icon(
-  name: "fork" | "settings" | "close" | "check" | "send" | "chevron-left" | "chevron-down",
+  name:
+    | "trash"
+    | "bell"
+    | "fork"
+    | "settings"
+    | "close"
+    | "check"
+    | "send"
+    | "chevron-left"
+    | "chevron-down",
 ): SafeHtml {
   const paths = {
+    trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
+    bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>',
     fork: '<circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M18 7v2c0 5-12 1-12 8"/>',
     settings:
       '<path d="m9 3-.6 2.4-1.5.9-2.4-.7-3 5.2L3.3 12l.1 1.8-1.7 1.8 3 5.2 2.3-.7 1.6.9.5 2.4h6l.6-2.4 1.5-.9 2.4.7 3-5.2-1.8-1.2-.1-1.8 1.7-1.8-3-5.2-2.3.7-1.6-.9L15 3Z" transform="translate(1 -1) scale(.92)"/><circle cx="12" cy="12" r="3.2"/>',

@@ -18,6 +18,12 @@ icon : String -> Html msg
 icon name =
     Svg.svg [ S.class "glyph", S.viewBox "0 0 24 24", attribute "aria-hidden" "true" ]
         (case name of
+            "trash" ->
+                [ Svg.path [ S.d "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" ] [] ]
+
+            "bell" ->
+                [ Svg.path [ S.d "M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" ] [] ]
+
             "fork" ->
                 [ Svg.circle [ S.cx "6", S.cy "5", S.r "2" ] [], Svg.circle [ S.cx "18", S.cy "5", S.r "2" ] [], Svg.circle [ S.cx "6", S.cy "19", S.r "2" ] [], Svg.path [ S.d "M6 7v10M18 7v2c0 5-12 1-12 8" ] [] ]
 

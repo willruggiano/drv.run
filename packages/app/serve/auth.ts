@@ -179,7 +179,7 @@ export class ProxyAuthorization {
     } catch {
       throw new FormError(
         503,
-        "OpenAI credentials are unavailable. Check OpenAI authorization on the Auth page.",
+        "OpenAI credentials are unavailable. Check OpenAI authorization in global settings.",
       );
     }
   }

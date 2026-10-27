@@ -37,14 +37,13 @@ type alias Catalog =
 
 
 type alias Auth =
-    { id : String, label : String, state : String, identity : Maybe String, expires : Maybe String, error : Bool, device : Maybe { code : String, uri : String, expires : String } }
+    { id : String, label : String, state : String, identity : Maybe String, error : Bool, device : Maybe { code : String, uri : String } }
 
 
 type Page
     = Loading
     | Landing Catalog
-    | Defaults Catalog
-    | Authorization (List Auth)
+    | Defaults Catalog (List Auth)
     | Activity
 
 
@@ -80,6 +79,8 @@ type alias Model =
 type Msg
     = Loaded (Result Http.Error Page)
     | Refresh
+    | RefreshAuth
+    | AuthLoaded (Result Http.Error (List Auth))
     | Navigate Browser.UrlRequest
     | Edit String
     | EditOption Panel.Field String
@@ -129,6 +130,11 @@ catalogDecoder =
         |> andMap (D.field "levels" (D.list D.string))
 
 
+authDecoder : D.Decoder (List Auth)
+authDecoder =
+    D.list (D.map6 Auth (D.field "id" D.string) (D.field "label" D.string) (D.field "state" D.string) (D.field "identity" (D.nullable D.string)) (D.field "failed" D.bool) (D.field "device" (D.nullable (D.map2 (\code uri -> { code = code, uri = uri }) (D.field "code" D.string) (D.field "uri" D.string)))))
+
+
 pageDecoder : D.Decoder Page
 pageDecoder =
     D.field "kind" D.string
@@ -139,10 +145,7 @@ pageDecoder =
                         D.map Landing catalogDecoder
 
                     "settings" ->
-                        D.map Defaults catalogDecoder
-
-                    "auth" ->
-                        D.map Authorization (D.field "providers" (D.list (D.map7 Auth (D.field "id" D.string) (D.field "label" D.string) (D.field "state" D.string) (D.field "identity" (D.nullable D.string)) (D.field "expires" (D.nullable D.string)) (D.field "failed" D.bool) (D.field "device" (D.nullable (D.map3 (\code uri expires -> { code = code, uri = uri, expires = expires }) (D.field "code" D.string) (D.field "uri" D.string) (D.field "expires" D.string)))))))
+                        D.map2 Defaults catalogDecoder (D.field "providers" authDecoder)
 
                     "activity" ->
                         D.succeed Activity
@@ -197,6 +200,11 @@ main =
         , onUrlRequest = Navigate
         , onUrlChange = \_ -> NoOp
         }
+
+
+loadAuth : Cmd Msg
+loadAuth =
+    Http.get { url = "/elm/settings?data&auth", expect = Http.expectJson AuthLoaded authDecoder }
 
 
 load : Model -> Cmd Msg
@@ -287,7 +295,7 @@ update msg model =
                     let
                         values =
                             case page of
-                                Defaults catalog ->
+                                Defaults catalog _ ->
                                     Dict.fromList
                                         (( "model", catalog.defaultModel )
                                             :: ( "modelThinkingLevel", override catalog catalog.defaultModel )
@@ -332,9 +340,9 @@ update msg model =
                     , Cmd.batch
                         [ siteBrowser (E.object [ ( "kind", E.string "rendered" ) ])
                         , case page of
-                            Authorization auth ->
+                            Defaults _ auth ->
                                 if List.any (\provider -> provider.state == "authorizing") auth then
-                                    Process.sleep 2000 |> Task.perform (\_ -> Refresh)
+                                    Process.sleep 2000 |> Task.perform (\_ -> RefreshAuth)
 
                                 else
                                     Cmd.none
@@ -349,6 +357,26 @@ update msg model =
 
         Refresh ->
             ( model, load model )
+
+        RefreshAuth ->
+            ( model, loadAuth )
+
+        AuthLoaded result ->
+            case ( model.page, result ) of
+                ( Defaults catalog _, Ok auth ) ->
+                    ( { model | page = Defaults catalog auth }
+                    , if List.any (\provider -> provider.state == "authorizing") auth then
+                        Process.sleep 2000 |> Task.perform (\_ -> RefreshAuth)
+
+                      else
+                        Cmd.none
+                    )
+
+                ( _, Err error ) ->
+                    ( { model | error = message error }, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
 
         Navigate destination ->
             let
@@ -413,7 +441,7 @@ update msg model =
                     { model
                         | values =
                             case model.page of
-                                Defaults catalog ->
+                                Defaults catalog _ ->
                                     if key == "model" then
                                         Dict.insert "modelThinkingLevel" (override (Maybe.map (\pending -> rememberOverride pending catalog) model.saving |> Maybe.withDefault catalog) str) values
 
@@ -449,8 +477,8 @@ update msg model =
                                 , saving = Nothing
                                 , page =
                                     case model.page of
-                                        Defaults catalog ->
-                                            Defaults (rememberOverride saved catalog)
+                                        Defaults catalog auth ->
+                                            Defaults (rememberOverride saved catalog) auth
 
                                         _ ->
                                             model.page
@@ -601,7 +629,14 @@ update msg model =
                     ( { model | busy = False, error = message error }, Cmd.none )
 
                 Ok () ->
-                    ( { model | busy = False }, load model )
+                    ( { model | busy = False }
+                    , case model.page of
+                        Defaults _ _ ->
+                            loadAuth
+
+                        _ ->
+                            load model
+                    )
 
         Incoming payload ->
             case D.decodeValue (D.field "kind" D.string) payload of
@@ -750,11 +785,8 @@ view model =
                 Landing _ ->
                     "Sessions"
 
-                Defaults _ ->
+                Defaults _ _ ->
                     "Global settings"
-
-                Authorization _ ->
-                    "Auth"
 
                 Activity ->
                     "Activity"
@@ -843,11 +875,8 @@ view model =
                         ]
                     ]
 
-                Defaults catalog ->
-                    [ main_ [ id "main-area" ] [ section [ id "global-preferences", class "pane" ] (defaultsView model catalog) ] ]
-
-                Authorization auth ->
-                    [ main_ [ id "main-area" ] ([ Html.nav [] [ a [ href "/elm" ] [ text "Sessions" ] ], h1 [] [ text "Auth" ] ] ++ List.map (\provider -> section [ id (provider.id ++ "-authorization"), class "pane" ] (authView model.busy provider)) auth) ]
+                Defaults catalog auth ->
+                    [ main_ [ id "main-area" ] [ section [ id "global-preferences", class "pane" ] (defaultsView model catalog ++ [ section [ id "authorization", class "settings-group", attribute "aria-labelledby" "authorization-title" ] (h2 [ id "authorization-title" ] [ text "Auth" ] :: List.map (\provider -> section [ id (provider.id ++ "-authorization"), class "provider-authorization" ] (authView model.busy provider)) auth) ]) ] ]
 
                 Activity ->
                     [ main_ [ id "main-area" ]
@@ -906,7 +935,13 @@ view model =
         [ main_ [ id "page", attribute "data-view" "panel" ]
             ((case model.page of
                 Landing _ ->
-                    []
+                    [ header [ id "app-header" ]
+                        [ Html.nav [ class "landing-navigation", attribute "aria-label" "Global" ]
+                            [ a [ class "icon", href "/elm/activity", attribute "aria-label" "Activity", A.title "Activity" ] [ Transcript.icon "bell" ]
+                            , a [ class "icon", href "/elm/settings", attribute "aria-label" "Global settings", A.title "Global settings" ] [ Transcript.icon "settings" ]
+                            ]
+                        ]
+                    ]
 
                 Loading ->
                     []
@@ -1040,78 +1075,54 @@ authView busy auth =
         status =
             case auth.state of
                 "unconfigured" ->
-                    auth.label ++ " credentials are not configured for this host user."
+                    "Not configured"
 
                 "not-enrolled" ->
                     "Not authorized"
 
                 "usable" ->
-                    "Authorized"
+                    ""
 
                 "temporarily-unavailable" ->
-                    "Access token expired or credentials temporarily unavailable. The credential service renews tokens when needed."
+                    "Temporarily unavailable"
 
                 "reauthorization-required" ->
                     "Authorization required"
 
                 _ ->
-                    "Waiting for " ++ auth.label ++ " approval"
+                    "Waiting for approval"
 
-        action operation title =
+        action operation attributes content =
             form
                 [ onSubmit
-                    (Action
-                        ((if auth.id == "github" then
-                            "/elm/auth/"
-
-                          else
-                            "/elm/auth/openai/"
-                         )
-                            ++ operation
-                        )
-                    )
+                    (Action ("/elm/settings/auth/" ++ auth.id ++ "/" ++ operation))
                 ]
-                [ button [ A.disabled busy ] [ text title ] ]
+                [ button (A.disabled busy :: attributes) content ]
     in
-    [ h2 [] [ text auth.label ]
-    , p [ attribute "role" "status", attribute "data-state" auth.state ] [ text status ]
-    , Maybe.map (\identity -> p [] [ text (auth.label ++ " identity: " ++ identity) ]) auth.identity |> Maybe.withDefault (text "")
+    [ Html.h3 [ attribute "data-state" auth.state ]
+        [ text auth.label
+        , Maybe.map (\identity -> span [ class "account-identity", attribute "aria-label" "Account ID", A.title identity ] [ text identity ]) auth.identity |> Maybe.withDefault (text "")
+        , if auth.state == "usable" then
+            text ""
+
+          else
+            span [ attribute "role" "status", A.title status ] [ text status ]
+        ]
     , if auth.error then
-        p [ attribute "role" "alert" ] [ text ("Authorization did not complete. Try again and approve with the intended " ++ auth.label ++ " account.") ]
+        p [ attribute "role" "alert" ] [ text "Authorization failed. Try again." ]
 
       else
         text ""
-    , Maybe.map (\device -> div [] [ p [] [ text "Enter ", Html.code [] [ text device.code ], text " at ", a [ href device.uri, A.target "_blank", A.rel "noopener noreferrer" ] [ text (auth.label ++ " device authorization") ], text "." ], p [] [ text "Code expires at ", Html.time [ A.datetime device.expires ] [ text device.expires ], text "." ] ]) auth.device |> Maybe.withDefault (text "")
-    , Maybe.map (\expires -> p [] [ text "Access token expires at ", Html.time [ A.datetime expires ] [ text expires ], text "; renewal is automatic." ]) auth.expires |> Maybe.withDefault (text "")
+    , Maybe.map (\device -> div [] [ p [] [ text "Enter ", Html.code [] [ text device.code ], text " at ", a [ href device.uri, A.target "_blank", A.rel "noopener noreferrer" ] [ text (auth.label ++ " device authorization") ], text "." ] ]) auth.device |> Maybe.withDefault (text "")
     , if auth.state == "unconfigured" then
         text ""
 
       else
-        div []
-            [ p []
-                [ text
-                    (if auth.id == "github" then
-                        "All guests of this host user share this GitHub Git access. Access and refresh tokens stay on the host."
+        div [ class "actions" ]
+            [ if auth.state == "authorizing" || auth.state == "usable" then
+                action "logout" [ class "icon auth-remove", attribute "aria-label" "Remove authorization", A.title "Remove authorization" ] [ Transcript.icon "trash" ]
 
-                     else
-                        "Host Pi uses this OpenAI account for Codex model requests. The credential service owns refresh; tools in guests receive no OpenAI tokens."
-                    )
-                ]
-            , div [ class "actions" ]
-                [ if auth.state == "authorizing" then
-                    text ""
-
-                  else
-                    action "login"
-                        (if auth.state == "usable" then
-                            "Reauthorize"
-
-                         else
-                            "Authorize"
-                        )
-                , action "logout" "Remove authorization"
-                , a [ href "/elm/auth" ] [ text "Refresh" ]
-                ]
-            , p [] [ text "Removal cancels pending authorization and deletes local credentials. It does not revoke upstream authorization or already-issued access tokens." ]
+              else
+                action "login" [ class "auth-primary" ] [ text "Authorize" ]
             ]
     ]

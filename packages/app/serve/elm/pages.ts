@@ -48,7 +48,7 @@ export async function pages(
     );
     return true;
   }
-  const authAction = /^\/elm\/auth\/(openai\/)?(login|logout)$/.exec(path);
+  const authAction = /^\/elm\/settings\/auth\/(github|openai)\/(login|logout)$/.exec(path);
   if (authAction) {
     if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
     await form(request);
@@ -56,12 +56,12 @@ export async function pages(
     await authorization.change(
       authAction[2] === "login" ? "login" : "logout",
       signal,
-      authAction[1] ? "openai" : "github",
+      authAction[1] === "openai" ? "openai" : "github",
     );
     json(response, { saved: true });
     return true;
   }
-  if (!landing && !["/elm/settings", "/elm/auth", "/elm/activity"].includes(path)) return false;
+  if (!landing && !["/elm/settings", "/elm/activity"].includes(path)) return false;
   if (path === "/elm/activity" && !notifications) throw new FormError(404, "Not found.");
   if (request.method === "POST") {
     const data = await form(request, 8 * 1024 * 1024);
@@ -81,12 +81,41 @@ export async function pages(
     return true;
   }
   if (landing || path === "/elm/settings") {
+    const providers =
+      path === "/elm/settings"
+        ? await Promise.all(
+            authorizationProviders.map(async ({ id, label }) => {
+              const auth = await authorization.status(signal, id);
+              return {
+                id,
+                label,
+                state: auth.state,
+                identity:
+                  auth.state === "usable"
+                    ? (auth.accountId ?? (auth.userId === null ? null : String(auth.userId)))
+                    : null,
+                failed: !!auth.error,
+                device: auth.device
+                  ? {
+                      code: auth.device.userCode,
+                      uri: auth.device.verificationUri,
+                    }
+                  : null,
+              };
+            }),
+          )
+        : [];
+    if (!landing && url.searchParams.has("auth")) {
+      json(response, providers);
+      return true;
+    }
     const catalog = await sessions.catalog(context);
     const key = (item: { provider: string; modelId: string }) =>
       JSON.stringify([item.provider, item.modelId]);
     const preferences = settings?.read();
     json(response, {
       kind: landing ? "landing" : "settings",
+      providers,
       models: catalog.models.map((item) => ({
         key: key(item),
         label: `${item.provider} / ${item.name}`,
@@ -132,28 +161,6 @@ export async function pages(
       levels: thinkingLevels,
       defaultModel: preferences?.model ? key(preferences.model) : "",
     });
-  } else if (path === "/elm/auth") {
-    const providers = await Promise.all(
-      authorizationProviders.map(async ({ id, label }) => {
-        const auth = await authorization.status(signal, id);
-        return {
-          id,
-          label,
-          state: auth.state,
-          identity: auth.accountId ?? (auth.userId === null ? null : String(auth.userId)),
-          expires: auth.expiresAt === null ? null : new Date(auth.expiresAt * 1000).toISOString(),
-          failed: !!auth.error,
-          device: auth.device
-            ? {
-                code: auth.device.userCode,
-                uri: auth.device.verificationUri,
-                expires: new Date(auth.device.expiresAt * 1000).toISOString(),
-              }
-            : null,
-        };
-      }),
-    );
-    json(response, { kind: "auth", providers });
   } else json(response, { kind: path.split("/").at(-1) });
   return true;
 }

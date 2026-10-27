@@ -4,7 +4,7 @@ import { pages } from "./elm/pages.ts";
 import { elmFrontend } from "./elm/frontend.ts";
 import { html as h, renderHTML } from "./html.ts";
 import { hostModels, ProxyAuthorization } from "./auth.ts";
-import { authPage } from "./htmx/auth.ts";
+import { authAction } from "./htmx/auth.ts";
 import { hypermedia, errorPage, activityPage } from "./htmx/frontend.ts";
 import { openApplication } from "./application.ts";
 import { ownerOptions } from "./instances.ts";
@@ -380,8 +380,8 @@ export function httpServer(
       if (url.pathname === "/htmx/activity" && notifications && request.method === "GET") {
         return activityPage(response);
       }
-      if (url.pathname === "/htmx/auth" || url.pathname.startsWith("/htmx/auth/"))
-        return await authPage(request, response, url, authorization, controller.signal);
+      if (url.pathname.startsWith("/htmx/settings/auth/"))
+        return await authAction(request, response, url, authorization, controller.signal);
       if (url.pathname === "/elm" || url.pathname.startsWith("/elm/")) {
         if (
           await pages(
@@ -400,7 +400,16 @@ export function httpServer(
         return await elmFrontend(request, response, url, sessions, context, settings);
       }
       if (url.pathname === "/htmx" || url.pathname.startsWith("/htmx/"))
-        return await hypermedia(request, response, url, sessions, context, settings);
+        return await hypermedia(
+          request,
+          response,
+          url,
+          sessions,
+          context,
+          authorization,
+          controller.signal,
+          settings,
+        );
       if (url.pathname === "/") {
         if (request.method !== "GET") throw new RequestError(405, "Method not allowed.");
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
