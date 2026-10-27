@@ -2,6 +2,7 @@ port module Site exposing (main)
 
 import Browser
 import Browser.Navigation as Nav
+import Composer
 import Dict exposing (Dict)
 import File exposing (File)
 import File.Select
@@ -768,40 +769,42 @@ view model =
                         ]
                     , footer [ id "app-footer", class "composer-area" ]
                         [ form [ id "composer", class "new-composer", onSubmit Create ]
-                            [ Html.details [ id "new-options" ] [ Html.summary [ attribute "aria-label" "New session options", A.title "New session options" ] [ Transcript.icon "settings", span [ class "options-close", attribute "aria-hidden" "true" ] [ text "×" ] ], Html.fieldset [ A.disabled (model.pending /= Nothing), class "creation-options" ] [ Panel.optionsView EditOption NoOp model.directories catalog.options ] ]
-                            , div [ class "compose-box" ]
-                                [ prompt
-                                , div [ id "completions", attribute "role" "listbox", hidden (List.isEmpty (completions model)) ]
-                                    (List.indexedMap
-                                        (\index name ->
-                                            button
-                                                [ A.type_ "button"
-                                                , attribute "role" "option"
-                                                , attribute "aria-selected"
-                                                    (if index == model.completionIndex then
-                                                        "true"
-
-                                                     else
-                                                        "false"
-                                                    )
-                                                , onClick (ChooseCompletion index)
-                                                ]
-                                                [ span [] [ text ("/" ++ name) ]
-                                                , span [ class "completion-description" ]
-                                                    [ text
-                                                        (if name == "new" then
-                                                            "Start a new session with the same settings"
+                            [ Html.fieldset [ id "new-options", attribute "aria-label" "New session options", A.disabled (model.pending /= Nothing) ] [ Panel.creationOptionsView EditOption NoOp model.directories catalog.options ]
+                            , Composer.shell
+                                [ Composer.box
+                                    [ prompt
+                                    , div [ id "completions", attribute "role" "listbox", hidden (List.isEmpty (completions model)) ]
+                                        (List.indexedMap
+                                            (\index name ->
+                                                button
+                                                    [ A.type_ "button"
+                                                    , attribute "role" "option"
+                                                    , attribute "aria-selected"
+                                                        (if index == model.completionIndex then
+                                                            "true"
 
                                                          else
-                                                            "Open sessions"
+                                                            "false"
                                                         )
+                                                    , onClick (ChooseCompletion index)
                                                     ]
-                                                ]
+                                                    [ span [] [ text ("/" ++ name) ]
+                                                    , span [ class "completion-description" ]
+                                                        [ text
+                                                            (if name == "new" then
+                                                                "Start a new session with the same settings"
+
+                                                             else
+                                                                "Open sessions"
+                                                            )
+                                                        ]
+                                                    ]
+                                            )
+                                            (completions model)
                                         )
-                                        (completions model)
-                                    )
-                                , div [ id "previews" ] (List.indexedMap (\index item -> button [ A.type_ "button", A.disabled (model.pending /= Nothing), onClick (Remove index), attribute "aria-label" ("Remove " ++ File.name item.file) ] [ Html.img [ A.src item.url, A.alt (File.name item.file) ] [] ]) model.files)
-                                , div [ class "actions" ] [ button [ id "input-toggle", class "icon enhanced-only", A.type_ "button", attribute "aria-label" "Upload attachments", A.disabled (model.pending /= Nothing), onClick PickFiles ] [ text "+" ], span [ class "spacer" ] [], button [ id "create", class "icon", attribute "aria-label" "Create session", A.title "New session", A.disabled (model.busy || catalog.options.model == "" || catalog.options.target == "") ] [ text "+" ] ]
+                                    , div [ id "previews" ] (List.indexedMap (\index item -> button [ A.type_ "button", A.disabled (model.pending /= Nothing), onClick (Remove index), attribute "aria-label" ("Remove " ++ File.name item.file) ] [ Html.img [ A.src item.url, A.alt (File.name item.file) ] [] ]) model.files)
+                                    ]
+                                    (div [ class "actions" ] [ button [ id "input-toggle", class "icon enhanced-only", A.type_ "button", attribute "aria-label" "Upload attachments", A.disabled (model.pending /= Nothing), onClick PickFiles ] [ text "+" ], span [ class "spacer" ] [], button [ id "create", class "icon", attribute "aria-label" "Create session", A.title "New session", A.disabled (model.busy || catalog.options.model == "" || catalog.options.target == "") ] [ Transcript.icon "send" ] ])
                                 ]
                             ]
                         , if model.missingFiles then

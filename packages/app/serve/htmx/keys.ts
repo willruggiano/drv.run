@@ -116,8 +116,6 @@ export function installKeys() {
     const control = id && document.getElementById(id);
     if (control && !control.matches(":disabled")) {
       event.preventDefault();
-      const options = control.closest("details");
-      if (options) options.open = true;
       control.focus();
       if (control instanceof HTMLSelectElement) {
         try {

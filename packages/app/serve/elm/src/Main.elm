@@ -2,6 +2,7 @@ port module Main exposing (Draft, Model, Msg(..), acknowledge, draftDecoder, ini
 
 import Browser
 import Browser.Navigation as Nav
+import Composer
 import Dict exposing (Dict)
 import File exposing (File)
 import File.Select
@@ -1426,7 +1427,7 @@ view model =
             textarea [ id "prompt", A.name "content", A.rows 2, A.maxlength 100000, A.tabindex 1, A.placeholder "Ask Pi…", attribute "aria-label" "Message", attribute "aria-autocomplete" "list", attribute "aria-controls" "completions", value draft.text, onInput Edit, keyDown model, on "compositionstart" (D.succeed (Composition True)), on "compositionend" (D.succeed (Composition False)) ] []
 
         composer =
-            div [ class "compose-box" ]
+            Composer.box
                 [ form
                     [ id "composer"
                     , onSubmit
@@ -1443,7 +1444,8 @@ view model =
                     , completions
                     , div [ id "previews", attribute "aria-label" "Attached images" ] (List.map (\attachment -> button [ A.type_ "button", attribute "aria-label" "Remove attachment", onClick (RemoveFile attachment.id) ] [ Html.img [ A.src attachment.url, A.alt (File.name attachment.file) ] [] ]) draft.files)
                     ]
-                , div
+                ]
+                (div
                     [ id "controls"
                     , class "actions"
                     , attribute "data-state"
@@ -1490,7 +1492,7 @@ view model =
                         ]
                         [ Transcript.icon "send" ]
                     ]
-                ]
+                )
 
         confirmationComposer confirmation =
             let
@@ -1515,17 +1517,15 @@ view model =
 
         metadata =
             section [ id "session-meta" ]
-                [ div [ id "bottom-line", attribute "aria-label" "Conversation statistics" ]
-                    [ div [ class "footer-row" ]
-                        [ a [ id "footer-sessions", class "icon footer-chevron", href "/elm", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ]
-                        , span [ id "footer-instance" ] [ text state.metadata.instance ]
-                        , a [ id "footer-stats", href (model.path ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ])
-                        , div [ class "footer-model-context" ]
-                            [ a [ id "footer-model", class "model-summary", href (model.path ++ "/settings"), attribute "aria-label" "Model and thinking settings" ] [ span [ class "model-name" ] [ text state.metadata.model ], dot, span [ class "model-effort" ] [ text state.metadata.thinking ] ]
-                            , dot
-                            , a [ id "footer-context", class "context-usage", attribute "data-level" state.metadata.level, href (model.path ++ "/context"), attribute "aria-label" "Context usage details" ] [ text state.metadata.context ]
-                            ]
-                        , button
+                [ Composer.metadata
+                    { label = "Conversation statistics"
+                    , before = [ a [ id "footer-sessions", class "icon footer-chevron", href "/elm", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ] ]
+                    , instance = span [ id "footer-instance" ] [ text state.metadata.instance ]
+                    , statistics = [ a [ id "footer-stats", href (model.path ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ]) ]
+                    , model = a [ id "footer-model", class "model-summary", href (model.path ++ "/settings"), attribute "aria-label" "Model and thinking settings" ] [ span [ class "model-name" ] [ text state.metadata.model ], dot, span [ class "model-effort" ] [ text state.metadata.thinking ] ]
+                    , context = Just (a [ id "footer-context", class "context-usage", attribute "data-level" state.metadata.level, href (model.path ++ "/context"), attribute "aria-label" "Context usage details" ] [ text state.metadata.context ])
+                    , after =
+                        [ button
                             [ id "footer-collapse"
                             , class "icon footer-chevron"
                             , A.type_ "button"
@@ -1555,7 +1555,7 @@ view model =
                             ]
                             [ Transcript.icon "chevron-down" ]
                         ]
-                    ]
+                    }
                 ]
 
         panel =
@@ -1590,7 +1590,7 @@ view model =
             , queue
             , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
                 [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
-                , div [ id "composer-shell", class "composer-shell" ]
+                , Composer.shell
                     [ Maybe.map confirmationComposer model.confirmation |> Maybe.withDefault composer
                     , pendingError
                     , if draft.missingFiles then

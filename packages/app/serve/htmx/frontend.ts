@@ -35,6 +35,9 @@ import {
 } from "../completions.ts";
 import {
   hidden,
+  composerBox,
+  composerShell,
+  footerMetadata,
   icon,
   link,
   action,
@@ -169,8 +172,11 @@ function composerHTML(
     confirmation?.command === "reset" ? "Handoff instructions" : "Compaction instructions";
   const input = confirmation
     ? h`<form class="compose-box" method="post" action="${path}/${confirmation.command}" data-command="${confirmation.command}" hx-sync="this:drop">${hidden("requestId", confirmation.requestId)}<textarea id="prompt" tabindex="1" name="argument" aria-label="${instructions}" data-command-argument rows="2" maxlength="100000" placeholder="${instructions}…">${confirmation.argument}</textarea><div class="actions"><a class="icon" href="${path}" data-return aria-label="Cancel ${label}" title="Cancel ${label}">${icon("close")}</a><span class="spacer"></span><button id="send" class="icon" aria-label="Confirm ${label}" title="Confirm ${label}">${icon("check")}</button></div></form>`
-    : h`<div class="compose-box"><form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop">${hidden("requestId", randomUUID())}<textarea id="prompt" tabindex="1" name="content" aria-label="Message" data-completions hx-get="${path}/completions" hx-trigger="input changed delay:120ms, compositionend delay:120ms" hx-target="#completions" hx-select="#completions" hx-swap="outerHTML" hx-sync="this:replace" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>${controls(path, view, review)}</div>`;
-  return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button><div id="composer-shell" class="composer-shell">${input}</div><div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
+    : composerBox(
+        h`<form id="composer" method="post" action="${path}/submit" enctype="multipart/form-data" hx-encoding="multipart/form-data" hx-sync="this:drop">${hidden("requestId", randomUUID())}<textarea id="prompt" tabindex="1" name="content" aria-label="Message" data-completions hx-get="${path}/completions" hx-trigger="input changed delay:120ms, compositionend delay:120ms" hx-target="#completions" hx-select="#completions" hx-swap="outerHTML" hx-sync="this:replace" rows="2" maxlength="100000" placeholder="Ask Pi…"></textarea><div id="completions" role="listbox" hidden></div><label class="attachment-picker">Images<input id="images" name="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label><div id="previews" aria-label="Attached images"></div></form>`,
+        controls(path, view, review),
+      );
+  return h`<footer id="app-footer" class="composer-area"><button id="latest" type="button" data-latest hidden>↓ Latest</button>${composerShell(input)}<div id="usage-menu" popover>${usageHTML(view)}</div>${metadata}<p id="connection" class="sr-only" role="status">Live updates require JavaScript.</p></footer>`;
 }
 async function panelFrame(
   session: Session,
@@ -968,7 +974,7 @@ async function metadataHTML(
     ? h`<button id="footer-collapse" class="icon footer-chevron" type="button" aria-controls="composer-shell" aria-expanded="true" aria-label="Collapse composer" title="Collapse composer" hx-morph-skip>${icon("chevron-down")}</button>`
     : h``;
   const newSession = h`${info.binding && info.model ? h`<form method="post" action="/htmx/" data-command="new"><input type="hidden" name="id" value="${id}" data-command-request><input type="hidden" name="requestId" value="${id}" data-command-request>${hidden("target", targetKey(info.binding))}${hidden("model", modelKey(info.model))}${hidden("thinkingLevel", info.thinkingLevel)}${hidden("baseDirectory", info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/") ? info.cwd.slice(info.directoryRoot.length + 1) : "")}<button>New session</button></form>` : ""}`;
-  return h`<section id="session-meta" data-name="${info.name || "Untitled session"}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}"><div id="bottom-line" aria-label="Conversation statistics"><div class="footer-row">${sessionsLink}${instance}${statistics}<div class="footer-model-context">${model}${dot}${contextUsage}</div>${collapse}</div></div>${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${newSession}</section>`;
+  return h`<section id="session-meta" data-name="${info.name || "Untitled session"}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}">${footerMetadata({ label: "Conversation statistics", instance, statistics, model, context: contextUsage, before: sessionsLink, after: collapse })}${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${newSession}</section>`;
 }
 
 export function errorPage(

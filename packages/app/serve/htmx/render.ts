@@ -6,6 +6,22 @@ import type { ContextInspection, ContextPart } from "../inspection.ts";
 
 export const hidden = (name: string, value: string) =>
   h`<input type="hidden" name="${name}" value="${value}">`;
+export const footerDot = h`<span class="footer-dot" aria-hidden="true"></span>`;
+export const composerBox = (content: SafeHtml, controls: SafeHtml) =>
+  h`<div class="compose-box">${content}${controls}</div>`;
+export const composerShell = (content: SafeHtml) =>
+  h`<div id="composer-shell" class="composer-shell">${content}</div>`;
+export function footerMetadata(content: {
+  label: string;
+  instance: SafeHtml;
+  model: SafeHtml;
+  statistics?: SafeHtml;
+  context?: SafeHtml;
+  before?: SafeHtml;
+  after?: SafeHtml;
+}): SafeHtml {
+  return h`<div id="bottom-line" aria-label="${content.label}"><div class="footer-row">${content.before ?? h``}${content.instance}${content.statistics ?? h``}<div class="footer-model-context">${content.model}${content.context ? h`${footerDot}${content.context}` : h``}</div>${content.after ?? h``}</div></div>`;
+}
 export const link = (url: string, text: string, attributes = h``) =>
   h`<a href="${url}" ${attributes}>${text}</a>`;
 export const action = (

@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { chromium } from "playwright";
-import { checkCLI, chromiumExecutable } from "./testing.ts";
+import { checkCLI, chromiumExecutable, directoryFixture } from "./testing.ts";
 import { benchmark, benchmarkOptions } from "../benchmark.ts";
 import { conversationURL } from "../presentation.ts";
 import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
@@ -308,6 +308,178 @@ await test("both frontends confirm context commands with two keyboard submission
               assert.equal(after.at(-1)?.kind, command === "reset" ? "pi.reset" : "pi.compaction");
             },
           );
+  assert.deepEqual(b.errors, []);
+});
+
+await test("landing composer places creation settings in the mobile and desktop bars", async (t) => {
+  const f = await directoryFixture(t);
+  await mkdir(join(f.workspace, "drv.run"));
+  for (const name of ["Review changes", "Session tree"]) await rename(await f.create(), name);
+  const b = await browserFixture(t, f.sessions);
+  for (const frontend of ["elm", "htmx"] as const) {
+    for (const hasTouch of [true, false]) {
+      await t.test(`${frontend}: ${hasTouch ? "touch" : "mouse"}`, async () => {
+        const browserContext = await b.browser.newContext({
+          viewport: { width: 390, height: 844 },
+          isMobile: hasTouch,
+          hasTouch,
+        });
+        t.after(() => browserContext.close());
+        const page = await browserContext.newPage();
+        page.on("pageerror", (error) => b.errors.push(error));
+        const conversation = await browserContext.newPage();
+        conversation.on("pageerror", (error) => b.errors.push(error));
+        const reference = await f.sessions.get((await f.sessions.catalog()).sessions[0].id);
+        await conversation.goto(b.base + conversationURL(reference, undefined, frontend));
+        await conversation.locator("#prompt").fill("Review the current changes");
+        await page.goto(`${b.base}/${frontend}/`);
+        const models = page.getByRole("combobox", { name: "Model", exact: true });
+        const thinking = page.getByRole("combobox", { name: "Thinking", exact: true });
+        const environment = page.getByRole("combobox", { name: "Environment", exact: true });
+        const directory = page.getByRole("combobox", { name: "Base directory", exact: true });
+        await models.selectOption(JSON.stringify([model.provider, model.modelId]));
+        await page.waitForFunction(
+          () =>
+            document.querySelector<HTMLSelectElement>("#thinking")?.selectedOptions.length === 1,
+        );
+        assert.equal(await thinking.inputValue(), "");
+        await thinking.selectOption("high");
+        await directory.fill("drv.run");
+        await page.locator("#prompt").fill("Review the current changes");
+        for (const width of [320, 390, 650, 651, 1440]) {
+          await page.setViewportSize({ width, height: 844 });
+          await conversation.setViewportSize({ width, height: 844 });
+          // ResizeObserver schedules textarea measurement on the next animation frame.
+          for (const view of [page, conversation])
+            await view.evaluate(
+              () =>
+                new Promise<void>((resolve) =>
+                  requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+                ),
+            );
+          for (const selector of [
+            "#composer-shell .compose-box",
+            "#prompt",
+            "#input-toggle",
+            "#submit",
+            "#footer-model",
+          ]) {
+            const geometry = (node: Element) => {
+              const bounds = node.getBoundingClientRect();
+              const style = getComputedStyle(node);
+              return {
+                x: bounds.x,
+                width: bounds.width,
+                height: bounds.height,
+                padding: style.padding,
+                font: {
+                  family: style.fontFamily,
+                  size: style.fontSize,
+                  weight: style.fontWeight,
+                  lineHeight: style.lineHeight,
+                },
+                background: style.backgroundColor,
+                borderRadius: style.borderRadius,
+              };
+            };
+            const actual = await page
+              .locator(selector === "#submit" ? "#create" : selector)
+              .evaluate(geometry);
+            const expected = await conversation
+              .locator(selector === "#submit" ? "#send" : selector)
+              .evaluate(geometry);
+            if (selector === "#footer-model") {
+              assert.deepEqual(actual.font, expected.font);
+              if (width > 650) assert.equal(actual.x + actual.width, expected.x + expected.width);
+            } else {
+              assert.deepEqual(actual, expected);
+            }
+          }
+          for (const control of [models, thinking, environment, directory])
+            assert.equal(await control.isVisible(), true);
+          const box = await page.locator("#composer-shell .compose-box").boundingBox();
+          const target = await environment.boundingBox();
+          const cwd = await directory.boundingBox();
+          const selectedModel = await models.boundingBox();
+          const selectedThinking = await thinking.boundingBox();
+          assert(box && target && cwd && selectedModel && selectedThinking);
+          assert.equal(target.y, cwd.y);
+          assert.equal(selectedModel.y, selectedThinking.y);
+          assert(selectedModel.y >= box.y + box.height);
+          if (width <= 650) {
+            assert(target.y + target.height <= box.y);
+            assert.equal(target.x + target.width, selectedModel.x + selectedModel.width);
+            assert.equal(cwd.x, selectedThinking.x);
+            const dots = await page
+              .locator(".selector-summary > .footer-dot")
+              .evaluateAll((nodes) =>
+                nodes.map((node) => {
+                  const bounds = node.getBoundingClientRect();
+                  return {
+                    x: bounds.x + bounds.width / 2,
+                    width: bounds.width,
+                    height: bounds.height,
+                  };
+                }),
+              );
+            assert.equal(dots.length, 2);
+            for (const dot of dots) {
+              assert(dot.width > 0 && dot.height > 0);
+              assert.equal(dot.x, box.x + box.width / 2);
+            }
+          } else {
+            assert.equal(target.y, selectedModel.y);
+            const instance = await conversation.locator("#footer-instance").boundingBox();
+            assert(instance);
+            assert.equal(target.x, instance.x);
+            assert(target.x + target.width <= cwd.x);
+            assert(cwd.x < box.x + box.width / 2);
+            assert(cwd.x + cwd.width <= selectedModel.x);
+            assert(selectedModel.x + selectedModel.width <= selectedThinking.x);
+            assert(selectedThinking.x + selectedThinking.width <= box.x + box.width);
+          }
+          assert.equal(
+            await page.locator("#app-footer .context-usage, #new-options summary").count(),
+            0,
+          );
+          assert.equal(await page.locator("#create .glyph").count(), 1);
+          assert.equal(
+            await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+            true,
+          );
+          const settings = await page
+            .getByRole("link", { name: "Global settings", exact: true })
+            .boundingBox();
+          assert(settings && settings.y >= 16);
+          if (b.screenshots && ((width === 390 && hasTouch) || (width === 1440 && !hasTouch))) {
+            await page.locator("#prompt").blur();
+            await page.screenshot({
+              path: join(b.screenshots, `${frontend}-landing-${width}.png`),
+            });
+            await conversation.locator("#prompt").blur();
+            await conversation.screenshot({
+              path: join(b.screenshots, `${frontend}-conversation-${width}.png`),
+            });
+          }
+        }
+        await page.reload();
+        await page.waitForFunction(
+          () => document.querySelector<HTMLSelectElement>("#thinking")?.value === "high",
+        );
+        assert.equal(await directory.inputValue(), "drv.run");
+        assert.equal(await models.inputValue(), JSON.stringify([model.provider, model.modelId]));
+        f.faux.setResponses([fauxAssistantMessage("Reviewed.")]);
+        await page.getByRole("button", { name: "Create session", exact: true }).click();
+        await page.waitForURL(new RegExp(`/${frontend}/sessions/.*/conversations/`));
+        const session = await f.sessions.get(new URL(page.url()).pathname.split("/")[3]);
+        await session.root.waitForIdle(BACKGROUND_CONTEXT);
+        const info = await sessionInfo(session);
+        assert.deepEqual(info.model, model);
+        assert.equal(info.thinkingLevel, "high");
+        assert.equal(info.cwd, join(f.workspace, "drv.run"));
+      });
+    }
+  }
   assert.deepEqual(b.errors, []);
 });
 
@@ -647,9 +819,7 @@ for (const frontend of ["elm", "htmx"] as const)
     const b = await browserFixture(t, f.sessions);
     const path = frontend === "elm" ? "/elm" : "/htmx/";
     await b.page.goto(b.base + path);
-    await b.page.locator("#new-options summary").click();
     await b.page.locator('select[name="thinkingLevel"]').selectOption("high");
-    await b.page.locator("#new-options summary").click();
     await b.page.locator("#prompt").fill("Create exactly once");
     await b.page.route(b.base + path, async (route) => {
       if (route.request().method() !== "POST") return route.continue();

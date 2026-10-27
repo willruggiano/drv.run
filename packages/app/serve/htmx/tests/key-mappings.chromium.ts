@@ -34,7 +34,6 @@ async function setup(t: TestContext): Promise<Page> {
     create.onclick = () => {
       create.dataset.clicks = String(Number(create.dataset.clicks || 0) + 1);
     };
-    document.querySelector<HTMLDetailsElement>("#new-options")!.open = true;
   });
   return page;
 }

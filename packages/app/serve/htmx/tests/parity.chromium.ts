@@ -389,11 +389,10 @@ await test("HTML target directory selection, path completions and slash activati
   const { page } = b;
   page.setDefaultTimeout(10000);
   await page.goto(b.base + "/htmx/");
-  await page.locator("#new-options > summary").click();
   const options = await page.locator("#options").elementHandle();
   assert(options);
   await page.selectOption('[name="target"]', targetKey(f.binding));
-  await options.waitForElementState("hidden");
+  await page.waitForFunction((node) => !node.isConnected, options);
   await options.dispose();
   await page.locator('[name="baseDirectory"]').fill("project");
   await page.waitForFunction(() =>
@@ -832,15 +831,8 @@ await test("HTML creation captures options once and carries newer drafts and fil
     ["t", "targets"],
     ["m", "models"],
   ]) {
-    await page.locator("#new-options").evaluate((node: HTMLDetailsElement) => {
-      node.open = false;
-    });
     await page.locator("#prompt").blur();
     await page.keyboard.press(key);
-    assert.equal(
-      await page.locator("#new-options").evaluate((node: HTMLDetailsElement) => node.open),
-      true,
-    );
     assert.equal(await page.evaluate(() => document.activeElement?.id), id);
     await page.locator(`#${id}`).blur();
   }
@@ -1010,7 +1002,10 @@ await test("HTML landing lists the newest five sessions even when execution is u
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
     );
-    assert.equal(await page.locator("#new-options > summary").isVisible(), true);
+    assert.equal(
+      await page.getByRole("combobox", { name: "Model", exact: true }).isVisible(),
+      true,
+    );
     await page.locator("#session-list a").first().click();
     await page.waitForURL(`${base}/htmx/sessions/${ids[0]}/conversations/1`);
     await page.reload();
@@ -1127,7 +1122,6 @@ await test("HTML draft reload restores model and target dependent creation contr
   const { page } = b;
   page.setDefaultTimeout(10000);
   await page.goto(b.base + "/htmx/");
-  await page.locator("#new-options summary").click();
   await page.locator("#models").selectOption(modelKey(model));
   await page.waitForFunction(() => !!document.querySelector('#thinking option[value="high"]'));
   await page.locator("#targets").selectOption(targetKey(target));
@@ -1150,7 +1144,6 @@ await test("HTML draft reload restores model and target dependent creation contr
   await page.locator("#prompt").fill("Use the restored options and this newer draft");
   release.resolve();
 
-  await page.locator("#new-options summary").click();
   await page.waitForFunction(
     () =>
       document.querySelector<HTMLSelectElement>("#models")?.value ===
@@ -1162,7 +1155,6 @@ await test("HTML draft reload restores model and target dependent creation contr
   assert.equal(await page.locator("#targets").inputValue(), targetKey(target));
   assert.equal(await page.locator("#base-directory").isVisible(), true);
   assert.equal(await page.locator("#base-directory").inputValue(), "child");
-  await page.locator("#new-options summary").click();
   assert.equal(
     await page.locator("#prompt").inputValue(),
     "Use the restored options and this newer draft",
