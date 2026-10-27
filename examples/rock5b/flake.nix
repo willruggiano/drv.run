@@ -81,22 +81,161 @@
           exec deploy --fast-connection=true --hostname=rock5b --skip-checks ./examples/rock5b "$@"
         '';
       };
-    in {
-      build = {
-        type = "app";
-        program = nixpkgs.lib.getExe build;
-        meta.description = "nix-fast-build the host, guest, and shell outputs";
+      installerKey = pkgs.writeShellApplication {
+        name = "rock5b.installer-key";
+        runtimeInputs = with pkgs; [coreutils openssh ssh-to-age sops];
+        text = ''
+          if [[ $# != 1 ]]; then
+            echo "Usage: rock5b.installer-key /private/identity-directory (from the repository root)" >&2
+            exit 1
+          fi
+          test -f examples/rock5b/flake.nix
+          identity=$(realpath -m "$1")
+          case "$identity/" in
+            "$(pwd -P)/"* | "${builtins.storeDir}/"*) echo "Keep private keys outside the repository and Nix store." >&2; exit 1 ;;
+          esac
+          umask 077
+          mkdir -m 0700 "$identity"
+          ssh-keygen -q -t ed25519 -N "" -f "$identity/ssh_host_ed25519_key"
+          recipient=$(ssh-to-age -i "$identity/ssh_host_ed25519_key.pub")
+          ciphertext=$(mktemp -d "$identity/ciphertext.XXXXXX")
+          trap 'rm -rf "$ciphertext"' EXIT
+          secrets=examples/rock5b/secrets
+          for name in ${nixpkgs.lib.concatStringsSep " " (builtins.attrNames self.nixosConfigurations.rock5b.config.sops.secrets)}; do
+            sops decrypt --input-type json --output-type binary "$secrets/$name" |
+              sops encrypt --input-type binary --output-type json --age "$recipient" /dev/stdin >"$ciphertext/$name"
+          done
+          # Publish only after every existing secret has been decrypted and re-encrypted.
+          for file in "$ciphertext"/*; do
+            mv "$file" "$secrets/$(basename "$file")"
+          done
+          ssh-keygen -lf "$identity/ssh_host_ed25519_key.pub"
+        '';
       };
-      deploy = {
-        type = "app";
-        program = nixpkgs.lib.getExe deploy;
-        meta.description = "build and deploy the rock5b";
-      };
-    });
+    in
+      {
+        installer-key = {
+          type = "app";
+          program = nixpkgs.lib.getExe installerKey;
+          meta.description = "generate a fresh host identity and re-encrypt the host's SOPS secrets";
+        };
+        build = {
+          type = "app";
+          program = nixpkgs.lib.getExe build;
+          meta.description = "nix-fast-build the host, guest, and shell outputs";
+        };
+        deploy = {
+          type = "app";
+          program = nixpkgs.lib.getExe deploy;
+          meta.description = "build and deploy the rock5b";
+        };
+      }
+      // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isAarch64 {
+        installer-image = {
+          type = "app";
+          program = nixpkgs.lib.getExe (pkgs.writeShellApplication {
+            name = "rock5b.installer-image";
+            runtimeInputs = with pkgs; [coreutils openssh ssh-to-age sops];
+            text = ''
+              if [[ $# != 2 ]]; then
+                echo "Usage: rock5b.installer-image /private/ssh_host_ed25519_key /new/image-directory (from the repository root)" >&2
+                exit 1
+              fi
+              test -f examples/rock5b/flake.nix
+              identity=$(realpath -e "$1")
+              output=$(realpath -m "$2")
+              for path in "$identity" "$output"; do
+                case "$path/" in
+                  "$(pwd -P)/"* | "${builtins.storeDir}/"*) echo "Keep private keys and images outside the repository and Nix store." >&2; exit 1 ;;
+                esac
+              done
+              umask 077
+              validation=$(mktemp -d)
+              trap 'rm -rf "$validation"' EXIT
+              ssh-to-age -private-key -i "$identity" > "$validation/age-key"
+              for secret in ${nixpkgs.lib.escapeShellArgs (map (secret: toString secret.sopsFile) (builtins.attrValues self.nixosConfigurations.rock5b.config.sops.secrets))}; do
+                env -i PATH="$PATH" HOME="$validation" SOPS_AGE_KEY_FILE="$validation/age-key" \
+                  sops decrypt --input-type json --output-type binary "$secret" >/dev/null
+              done
+              rm -rf "$validation"
+              trap - EXIT
+              mkdir -m 0700 "$output"
+              cd "$output"
+              ${self.nixosConfigurations.rock5b-installer.config.system.build.diskoImagesScript} \
+                --post-format-files "$identity" /boot/ssh_host_ed25519_key
+              chmod 0600 main.raw
+            '';
+          });
+          meta.description = "assemble a private MMC installer image on an aarch64-linux builder";
+        };
+      });
 
     checks = eachSystem (pkgs:
       deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy
       // {
+        installer = let
+          host = self.nixosConfigurations.rock5b.config;
+          installer = self.nixosConfigurations.rock5b-installer.config;
+          disk = installer.disko.devices.disk.main;
+          service = installer.systemd.services.rock5b-install;
+        in
+          assert disk.device == "/dev/mmcblk1";
+          assert disk.content.partitions.ESP.label != host.disko.devices.disk.main.content.partitions.ESP.label;
+          assert disk.content.partitions.root.label != host.disko.devices.disk.main.content.partitions.root.label;
+          assert service.unitConfig.ConditionPathExists == "!/var/lib/rock5b-installer/started";
+          assert service.serviceConfig.Restart == "no";
+          assert service.environment.INSTALL_ROOT == host.disko.rootMountPoint;
+            pkgs.runCommand "rock5b-installer-tests" {nativeBuildInputs = with pkgs; [nodejs bash coreutils];} ''
+              test -x ${service.serviceConfig.ExecStart}
+              test -s ${service.environment.HANDOFF_SCRIPT}
+              node --test ${./.}/tests/installer.test.ts
+              touch "$out"
+            '';
+        installer-identity =
+          pkgs.runCommand "rock5b-installer-identity-tests" {
+            nativeBuildInputs = with pkgs; [age sops ssh-to-age openssh coreutils];
+          } ''
+            mkdir -p repo/examples/rock5b/secrets
+            cd repo
+            touch examples/rock5b/flake.nix
+            export SOPS_AGE_KEY_FILE="$TMPDIR/old-age-key"
+            age-keygen -o "$SOPS_AGE_KEY_FILE"
+            recipient=$(age-keygen -y "$SOPS_AGE_KEY_FILE")
+            printf '\x00test credential\n' > "$TMPDIR/plaintext"
+            for name in ${nixpkgs.lib.concatStringsSep " " (builtins.attrNames self.nixosConfigurations.rock5b.config.sops.secrets)}; do
+              sops encrypt --input-type binary --output-type json --age "$recipient" "$TMPDIR/plaintext" \
+                > "examples/rock5b/secrets/$name"
+            done
+            cp -a examples/rock5b/secrets "$TMPDIR/original"
+            ${self.apps.${pkgs.stdenv.hostPlatform.system}.installer-key.program} "$TMPDIR/identity"
+            ssh-to-age -private-key -i "$TMPDIR/identity/ssh_host_ed25519_key" > "$TMPDIR/new-age-key"
+            for secret in examples/rock5b/secrets/*; do
+              SOPS_AGE_KEY_FILE="$TMPDIR/new-age-key" sops decrypt --input-type json --output-type binary "$secret" > "$TMPDIR/decrypted"
+              cmp "$TMPDIR/plaintext" "$TMPDIR/decrypted"
+            done
+            if ${self.apps.${pkgs.stdenv.hostPlatform.system}.installer-key.program} "$PWD/leaked-key"; then
+              exit 1
+            fi
+            test ! -e leaked-key
+            cp -a examples/rock5b/secrets "$TMPDIR/before"
+            # The old identity must no longer decrypt anything, and failure must not publish ciphertext.
+            if ${self.apps.${pkgs.stdenv.hostPlatform.system}.installer-key.program} "$TMPDIR/rejected-identity"; then
+              exit 1
+            fi
+            for secret in examples/rock5b/secrets/*; do
+              cmp "$secret" "$TMPDIR/before/$(basename "$secret")"
+            done
+            # Fail after several successful decryptions; none may have been published.
+            cp "$TMPDIR/original/tailscale-auth-key" examples/rock5b/secrets/tailscale-auth-key
+            cp -a examples/rock5b/secrets "$TMPDIR/partial-before"
+            if SOPS_AGE_KEY_FILE="$TMPDIR/new-age-key" ${self.apps.${pkgs.stdenv.hostPlatform.system}.installer-key.program} "$TMPDIR/partial-identity"; then
+              exit 1
+            fi
+            for secret in examples/rock5b/secrets/*; do
+              cmp "$secret" "$TMPDIR/partial-before/$(basename "$secret")"
+            done
+            touch "$out"
+          '';
         storage-layout = let
           inherit (nixpkgs) lib;
           host = self.nixosConfigurations.rock5b.config;
@@ -150,6 +289,13 @@
         self.nixosModules.drv-run # serve nixos microvms over ssh
         self.nixosModules.mitm # proxies guest credentials, eg. for git access
         self.nixosModules.tailscale # so we can serve guest https over tailscale
+      ];
+    };
+
+    nixosConfigurations.rock5b-installer = nixpkgs.lib.nixosSystem {
+      modules = [
+        self.nixosModules.rock5b
+        (import ./installer.nix {target = self.nixosConfigurations.rock5b;})
       ];
     };
 
