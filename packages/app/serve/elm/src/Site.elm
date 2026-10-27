@@ -6,16 +6,16 @@ import Composer
 import Dict exposing (Dict)
 import File exposing (File)
 import File.Select
-import Html exposing (Html, a, button, div, footer, form, h1, h2, header, input, label, main_, option, p, section, select, span, text, textarea)
-import Html.Attributes as A exposing (attribute, class, hidden, href, id, value)
+import Html exposing (Html, a, button, div, footer, form, h1, h2, header, input, label, main_, option, p, section, select, span, text)
+import Html.Attributes as A exposing (attribute, class, href, id, value)
 import Html.Events exposing (onCheck, onClick, onInput, onSubmit, preventDefaultOn)
 import Http
+import Icon
 import Json.Decode as D
 import Json.Encode as E
 import Panel
 import Process
 import Task
-import Transcript
 import Url
 
 
@@ -719,7 +719,7 @@ view model =
             a [ href path ] [ text caption ]
 
         icon name caption path =
-            a [ id "close-view", class "icon", href path, attribute "aria-label" caption, A.title caption ] [ Transcript.icon name ]
+            a [ id "close-view", class "icon", href path, attribute "aria-label" caption, A.title caption ] [ Icon.view name ]
 
         title =
             case model.page of
@@ -738,11 +738,8 @@ view model =
         row item =
             div [ class "session-row" ]
                 [ a [ class "session", href item.path ] [ span [ class "session-heading" ] [ Html.strong [] [ text item.title ], Html.time [ A.datetime item.date, attribute "data-date-only" "" ] [ text item.date ] ], span [ class "session-detail" ] [ span [ class "session-environment" ] [ text item.environment ], dot, span [ class "model-summary" ] [ span [ class "model-name" ] [ text item.model ], dot, span [ class "model-effort" ] [ text item.thinking ] ], dot, span [ class "context-usage" ] [ text item.usage ] ] ]
-                , form [ onSubmit (Action (item.path ++ "/archive")) ] [ button [ class "icon session-archive", attribute "aria-label" "Archive session", A.title "Archive session", A.disabled model.busy ] [ Transcript.icon "close" ] ]
+                , form [ onSubmit (Action (item.path ++ "/archive")) ] [ button [ class "icon session-archive", attribute "aria-label" "Archive session", A.title "Archive session", A.disabled model.busy ] [ Icon.view "close" ] ]
                 ]
-
-        prompt =
-            textarea [ id "prompt", A.name "content", A.rows 2, A.tabindex 1, A.maxlength 100000, A.placeholder "Ask Pi…", attribute "aria-label" "Message", value model.text, onInput Edit, keys model, A.disabled (model.pending /= Nothing) ] []
 
         content =
             case model.page of
@@ -768,45 +765,40 @@ view model =
                             ]
                         ]
                     , footer [ id "app-footer", class "composer-area" ]
-                        [ form [ id "composer", class "new-composer", onSubmit Create ]
-                            [ Html.fieldset [ id "new-options", attribute "aria-label" "New session options", A.disabled (model.pending /= Nothing) ] [ Panel.creationOptionsView EditOption NoOp model.directories catalog.options ]
-                            , Composer.shell
-                                [ Composer.box
-                                    [ prompt
-                                    , div [ id "completions", attribute "role" "listbox", hidden (List.isEmpty (completions model)) ]
-                                        (List.indexedMap
-                                            (\index name ->
-                                                button
-                                                    [ A.type_ "button"
-                                                    , attribute "role" "option"
-                                                    , attribute "aria-selected"
-                                                        (if index == model.completionIndex then
-                                                            "true"
+                        [ Composer.view
+                            { text = model.text
+                            , edit = Edit
+                            , events = [ keys model ]
+                            , editingDisabled = model.pending /= Nothing
+                            , attachments = List.indexedMap (\index item -> { name = File.name item.file, url = item.url, remove = Remove index }) model.files
+                            , pickFiles = PickFiles
+                            , completions =
+                                if List.isEmpty (completions model) then
+                                    Nothing
 
-                                                         else
-                                                            "false"
-                                                        )
-                                                    , onClick (ChooseCompletion index)
-                                                    ]
-                                                    [ span [] [ text ("/" ++ name) ]
-                                                    , span [ class "completion-description" ]
-                                                        [ text
+                                else
+                                    Just
+                                        { items =
+                                            List.map
+                                                (\name ->
+                                                    { label = "/" ++ name
+                                                    , description =
+                                                        Just
                                                             (if name == "new" then
                                                                 "Start a new session with the same settings"
 
                                                              else
                                                                 "Open sessions"
                                                             )
-                                                        ]
-                                                    ]
-                                            )
-                                            (completions model)
-                                        )
-                                    , div [ id "previews" ] (List.indexedMap (\index item -> button [ A.type_ "button", A.disabled (model.pending /= Nothing), onClick (Remove index), attribute "aria-label" ("Remove " ++ File.name item.file) ] [ Html.img [ A.src item.url, A.alt (File.name item.file) ] [] ]) model.files)
-                                    ]
-                                    (div [ class "actions" ] [ button [ id "input-toggle", class "icon", A.type_ "button", attribute "aria-label" "Upload attachments", A.disabled (model.pending /= Nothing), onClick PickFiles ] [ text "+" ], span [ class "spacer" ] [], button [ id "create", class "icon", attribute "aria-label" "Create session", A.title "New session", A.disabled (model.busy || catalog.options.model == "" || catalog.options.target == "") ] [ Transcript.icon "send" ] ])
-                                ]
-                            ]
+                                                    }
+                                                )
+                                                (completions model)
+                                        , selected = model.completionIndex
+                                        , choose = ChooseCompletion
+                                        }
+                            , submission = Composer.Create (Panel.creationOptionsView EditOption NoOp model.directories catalog.options) Create
+                            , submitDisabled = model.busy || catalog.options.model == "" || catalog.options.target == ""
+                            }
                         , if model.missingFiles then
                             p [ class "notice" ] [ text "Images cannot be restored after reload. ", button [ onClick DiscardFiles ] [ text "Discard missing attachments" ] ]
 
@@ -825,7 +817,7 @@ view model =
                 Landing _ ->
                     [ header [ id "app-header" ]
                         [ Html.nav [ class "landing-navigation", attribute "aria-label" "Global" ]
-                            [ a [ class "icon", href "/settings", attribute "aria-label" "Global settings", A.title "Global settings" ] [ Transcript.icon "settings" ]
+                            [ a [ class "icon", href "/settings", attribute "aria-label" "Global settings", A.title "Global settings" ] [ Icon.view "settings" ]
                             ]
                         ]
                     ]
@@ -1014,7 +1006,7 @@ authView busy auth =
       else
         div [ class "actions" ]
             [ if auth.state == "authorizing" || auth.state == "usable" then
-                action "logout" [ class "icon auth-remove", attribute "aria-label" "Remove authorization", A.title "Remove authorization" ] [ Transcript.icon "trash" ]
+                action "logout" [ class "icon auth-remove", attribute "aria-label" "Remove authorization", A.title "Remove authorization" ] [ Icon.view "trash" ]
 
               else
                 action "login" [ class "auth-primary" ] [ text "Authorize" ]

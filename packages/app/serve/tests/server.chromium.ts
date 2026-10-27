@@ -767,6 +767,9 @@ await test(`elm: landing creation retry after reload retains options and input i
   await b.page.locator("#create").click();
   await b.page.locator("#request-error:not(:empty)").waitFor();
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
+  assert.equal(await b.page.locator("#prompt").isDisabled(), true);
+  assert.equal(await b.page.locator("#input-toggle").isDisabled(), true);
+  assert.equal(await b.page.locator("#create").isEnabled(), true);
   await b.page.unrouteAll({ behavior: "wait" });
   await b.page.reload();
   await b.page.waitForFunction(

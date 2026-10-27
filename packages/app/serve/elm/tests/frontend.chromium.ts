@@ -582,8 +582,11 @@ await test(
     page.setDefaultTimeout(10000);
     await page.goto(b.base + conversationURL(session));
     await page.locator("#prompt").fill("Start a cancellable tool");
+    const send = await page.locator("#send").elementHandle();
+    assert(send);
     await page.locator("#send").click();
     await page.locator('.tool-call[data-state="running"]').waitFor();
+    assert.equal(await send.evaluate((node) => node === document.getElementById("send")), true);
     for (const mode of ["followUp", "steer"]) {
       await page.locator("#prompt").fill(`Queued ${mode}`);
       await page
@@ -612,6 +615,7 @@ await test(
       (await session.harness.snapshot(LiveDoc, session.root.id, context))?.run,
       undefined,
     );
+    assert.equal(await send.evaluate((node) => node === document.getElementById("send")), true);
     assert.deepEqual(b.errors, []);
   },
 );

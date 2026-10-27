@@ -11,6 +11,7 @@ import Html.Attributes as A exposing (attribute, class, hidden, href, id, value)
 import Html.Events exposing (on, onClick, onInput, onSubmit, preventDefaultOn)
 import Html.Lazy
 import Http
+import Icon
 import Json.Decode as D
 import Json.Encode as E
 import Panel
@@ -1298,7 +1299,7 @@ view model =
                 |> Maybe.withDefault (text "")
 
         iconButton name label action =
-            button [ class "icon", A.type_ "button", attribute "aria-label" label, A.title label, onClick action ] [ Transcript.icon name ]
+            button [ class "icon", A.type_ "button", attribute "aria-label" label, A.title label, onClick action ] [ Icon.view name ]
 
         message msg =
             Transcript.viewMessage Toggle opened state.tools True msg
@@ -1394,105 +1395,23 @@ view model =
                     ]
                 )
 
-        completions =
-            div [ id "completions", attribute "role" "listbox", hidden (model.completions == Nothing) ]
-                (model.completions
-                    |> Maybe.map
-                        (.items
-                            >> List.indexedMap
-                                (\index item ->
-                                    button
-                                        [ A.type_ "button"
-                                        , attribute "role" "option"
-                                        , attribute "aria-selected"
-                                            (if index == model.completionIndex then
-                                                "true"
-
-                                             else
-                                                "false"
-                                            )
-                                        , onClick (ChooseCompletion index)
-                                        ]
-                                        [ span [] [ text item.label ]
-                                        , item.description
-                                            |> Maybe.map (\description -> span [ class "completion-description" ] [ text description ])
-                                            |> Maybe.withDefault (text "")
-                                        ]
-                                )
-                        )
-                    |> Maybe.withDefault []
-                )
-
-        prompt =
-            textarea [ id "prompt", A.name "content", A.rows 2, A.maxlength 100000, A.tabindex 1, A.placeholder "Ask Pi…", attribute "aria-label" "Message", attribute "aria-autocomplete" "list", attribute "aria-controls" "completions", value draft.text, onInput Edit, keyDown model, on "compositionstart" (D.succeed (Composition True)), on "compositionend" (D.succeed (Composition False)) ] []
-
         composer =
-            Composer.box
-                [ form
-                    [ id "composer"
-                    , onSubmit
-                        (Send
-                            (if busy then
-                                "followUp"
+            Composer.view
+                { text = draft.text
+                , edit = Edit
+                , events = [ keyDown model, on "compositionstart" (D.succeed (Composition True)), on "compositionend" (D.succeed (Composition False)) ]
+                , editingDisabled = False
+                , attachments = List.map (\attachment -> { name = File.name attachment.file, url = attachment.url, remove = RemoveFile attachment.id }) draft.files
+                , pickFiles = PickFiles
+                , completions = Maybe.map (\completion -> { items = List.map (\item -> { label = item.label, description = item.description }) completion.items, selected = model.completionIndex, choose = ChooseCompletion }) model.completions
+                , submission =
+                    if busy then
+                        Composer.Working { queue = Send "followUp", steer = Send "steer", stop = Command "abort" "" }
 
-                             else
-                                "reject"
-                            )
-                        )
-                    ]
-                    [ prompt
-                    , completions
-                    , div [ id "previews", attribute "aria-label" "Attached images" ] (List.map (\attachment -> button [ A.type_ "button", attribute "aria-label" "Remove attachment", onClick (RemoveFile attachment.id) ] [ Html.img [ A.src attachment.url, A.alt (File.name attachment.file) ] [] ]) draft.files)
-                    ]
-                ]
-                (div
-                    [ id "controls"
-                    , class "actions"
-                    , attribute "data-state"
-                        (if busy then
-                            "working"
-
-                         else
-                            "ready"
-                        )
-                    ]
-                    [ button [ id "input-toggle", class "icon", A.type_ "button", attribute "aria-label" "Upload attachments", onClick PickFiles ] [ text "+" ]
-                    , span [ class "spacer" ] []
-                    , if busy then
-                        button [ class "submission-mode", A.type_ "button", A.disabled disabled, onClick (Send "steer") ] [ text "Steer" ]
-
-                      else
-                        text ""
-                    , if busy then
-                        button [ id "stop", class "icon", A.type_ "button", attribute "aria-label" "Stop", onClick (Command "abort" "") ] [ Transcript.icon "close" ]
-
-                      else
-                        text ""
-                    , button
-                        [ id "send"
-                        , class "icon"
-                        , A.type_ "button"
-                        , A.disabled disabled
-                        , attribute "aria-label"
-                            (if busy then
-                                "Queue"
-
-                             else
-                                "Send"
-                            )
-                        , onClick
-                            (Send
-                                (if busy then
-                                    "followUp"
-
-                                 else
-                                    "reject"
-                                )
-                            )
-                        ]
-                        [ Transcript.icon "send" ]
-                    ]
-                )
+                    else
+                        Composer.Ready (Send "reject")
+                , submitDisabled = disabled
+                }
 
         confirmationComposer confirmation =
             let
@@ -1512,14 +1431,14 @@ view model =
             in
             form [ class "compose-box", onSubmit ConfirmContext ]
                 [ textarea [ id "prompt", A.rows 2, A.placeholder (instructions ++ "…"), A.maxlength 100000, A.tabindex 1, attribute "aria-label" instructions, A.name "argument", value confirmation.argument, onInput EditConfirmation, keyDown model, on "compositionstart" (D.succeed (Composition True)), on "compositionend" (D.succeed (Composition False)) ] []
-                , div [ class "actions" ] [ a [ class "icon", href model.path, attribute "aria-label" ("Cancel " ++ label), A.title ("Cancel " ++ label), preventDefaultOn "click" (D.succeed ( Dismiss, True )) ] [ Transcript.icon "close" ], span [ class "spacer" ] [], button [ id "send", class "icon", attribute "aria-label" ("Confirm " ++ label), A.disabled (draft.pending /= Nothing) ] [ Transcript.icon "check" ] ]
+                , div [ class "actions" ] [ a [ class "icon", href model.path, attribute "aria-label" ("Cancel " ++ label), A.title ("Cancel " ++ label), preventDefaultOn "click" (D.succeed ( Dismiss, True )) ] [ Icon.view "close" ], span [ class "spacer" ] [], button [ id "send", class "icon", attribute "aria-label" ("Confirm " ++ label), A.disabled (draft.pending /= Nothing) ] [ Icon.view "check" ] ]
                 ]
 
         metadata =
             section [ id "session-meta" ]
                 [ Composer.metadata
                     { label = "Conversation statistics"
-                    , before = [ a [ id "footer-sessions", class "icon footer-chevron", href "/", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ] ]
+                    , before = [ a [ id "footer-sessions", class "icon footer-chevron", href "/", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Icon.view "chevron-left" ] ]
                     , instance = span [ id "footer-instance" ] [ text state.metadata.instance ]
                     , statistics = [ a [ id "footer-stats", href (model.path ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ]) ]
                     , model = a [ id "footer-model", class "model-summary", href (model.path ++ "/settings"), attribute "aria-label" "Model and thinking settings" ] (Composer.modelDetails (text state.metadata.model) (text state.metadata.thinking))
@@ -1553,7 +1472,7 @@ view model =
                                 )
                             , onClick Collapse
                             ]
-                            [ Transcript.icon "chevron-down" ]
+                            [ Icon.view "chevron-down" ]
                         ]
                     }
                 ]
@@ -1562,7 +1481,7 @@ view model =
             case model.pane of
                 Preferences ->
                     section [ id "settings", class "pane", attribute "data-layout" "stacked", attribute "aria-label" "Session settings" ]
-                        [ a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
+                        [ a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Icon.view "close" ]
                         , div []
                             [ Maybe.map (Panel.settingsView EditSetting SaveSettings (model.saving /= Nothing) model.directories) model.settings |> Maybe.withDefault (p [ attribute "role" "status" ] [ text "Loading settings…" ])
                             , if model.error /= "" then
@@ -1675,10 +1594,10 @@ view model =
                                 ]
                         ]
                     , if model.pane == Context then
-                        a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
+                        a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Icon.view "close" ]
 
                       else
-                        a [ id "menu-toggle", class "icon", href "/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
+                        a [ id "menu-toggle", class "icon", href "/settings", attribute "aria-label" "Global settings" ] [ Icon.view "settings" ]
                     ]
                 , if model.pane == Conversation || exploring then
                     branchHeader model.path state.metadata.branches
@@ -1765,7 +1684,7 @@ branchHeader path branches =
     in
     Html.details [ id "branch-disclosure", class "branch-disclosure" ]
         [ Html.summary [ attribute "aria-label" "Conversation branches" ]
-            [ Transcript.icon "fork"
+            [ Icon.view "fork"
             , span [] [ text (Maybe.map (.title >> String.toLower) current |> Maybe.withDefault "branches") ]
             , span [ class "branch-chevron", attribute "aria-hidden" "true" ] [ text "›" ]
             ]
