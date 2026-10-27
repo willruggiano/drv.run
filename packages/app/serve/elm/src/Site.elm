@@ -954,15 +954,12 @@ defaultsView model catalog =
             ]
             (group "Model / thinking" [ models ]
                 :: List.map (\name -> group name []) [ "Execution", "Compaction", "Retries", "Display" ]
-                ++ [ button [] [ text "Save defaults" ] ]
             )
 
       else
         p [] [ text "Shared settings are not configured." ]
     , preference "wrap-code" "Wrap code"
     , preference "bottom-align" "Bottom-align messages"
-    , button [ id "install", A.type_ "button", hidden True ] [ text "Install app" ]
-    , button [ id "update", A.type_ "button", hidden True ] [ text "Update app" ]
     ]
 
 

@@ -11,7 +11,6 @@ self.addEventListener("activate", event => {
   ]));
 });
 self.addEventListener("message", event => {
-  if (event.data === "activate") self.skipWaiting();
   if (event.data === "claim") event.waitUntil(self.clients.claim());
 });
 self.addEventListener("fetch", event => {

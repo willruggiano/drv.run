@@ -56,6 +56,11 @@ await test("global and session settings share one container and autosave form wi
     );
     assert.equal(await form.getAttribute("aria-busy"), "false");
     assert.equal(await form.locator("output, [role=status]").count(), 0);
+    assert.equal(
+      await settings.getByRole("button", { name: "Save defaults", exact: true }).count(),
+      0,
+    );
+    assert.equal(await settings.locator("#install, #update").count(), 0);
     if (b.screenshots) {
       if (scope === "global") await b.page.locator("push-settings").scrollIntoViewIfNeeded();
       await b.page.screenshot({ path: join(b.screenshots, `elm-${scope}-settings.png`) });

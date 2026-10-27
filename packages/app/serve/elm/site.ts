@@ -1,4 +1,4 @@
-import { installPwa, installPreferences, restorePreferences, installStatus } from "../pwa.ts";
+import { installPwa, installPreferences, restorePreferences } from "../pwa.ts";
 import { installSelectKeyMappings, navigationDirection, moveFocus } from "../key-mappings.ts";
 
 type Request =
@@ -86,7 +86,6 @@ app.ports.siteBrowser.subscribe((request) => {
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           restorePreferences();
-          installStatus();
           resize();
           document.querySelectorAll<HTMLTimeElement>("time[data-date-only]").forEach((node) => {
             const date = new Date(node.dateTime);
