@@ -191,6 +191,53 @@
               node --test ${./.}/tests/installer.test.ts
               touch "$out"
             '';
+        installer-post-vm = let
+          host = self.nixosConfigurations.rock5b.config;
+          installer = self.nixosConfigurations.rock5b-installer.config;
+          # Test the evaluated hook on either builder architecture without
+          # building ARM firmware or the complete installer closure.
+          script = builtins.unsafeDiscardStringContext installer.disko.imageBuilder.extraPostVM;
+          firmware = pkgs.runCommand "rock5b-test-firmware" {} ''
+            mkdir -p "$out"
+            printf 'idbloader fixture' > "$out/idbloader.img"
+            printf 'u-boot fixture' > "$out/u-boot.itb"
+          '';
+          nativeScript =
+            nixpkgs.lib.replaceStrings
+            [
+              (toString self.nixosConfigurations.rock5b-installer.pkgs.coreutils)
+              (toString installer.hardware.rockchip.platformFirmware)
+            ]
+            [(toString pkgs.coreutils) (toString firmware)]
+            script;
+          checkedScript =
+            disko.lib.writeCheckedBash {
+              inherit pkgs;
+              checked = true;
+            } "rock5b-postVM.sh"
+            nativeScript;
+        in
+          assert host.disko.imageBuilder.extraPostVM == installer.disko.imageBuilder.extraPostVM;
+            pkgs.runCommand "rock5b-installer-post-vm-tests" {nativeBuildInputs = [pkgs.coreutils];} ''
+              if env -u out ${pkgs.bash}/bin/bash ${checkedScript}; then
+                echo 'The hook must reject a missing output directory.' >&2
+                exit 1
+              fi
+              imageDir="$TMPDIR/image output with spaces"
+              mkdir -p "$imageDir"
+              truncate -s 16M "$imageDir/main.raw"
+              printf 'preserved' | dd of="$imageDir/main.raw" conv=notrunc status=none
+              out="$imageDir" ${pkgs.bash}/bin/bash ${checkedScript}
+              test "$(stat -c %s "$imageDir/main.raw")" = 16777216
+              test "$(head -c 9 "$imageDir/main.raw")" = preserved
+              for spec in 'idbloader.img 64' 'u-boot.itb 16384'; do
+                read -r name sector <<< "$spec"
+                size=$(stat -c %s "${firmware}/$name")
+                dd if="$imageDir/main.raw" of=actual bs=1 skip=$((sector * 512)) count="$size" status=none
+                cmp actual "${firmware}/$name"
+              done
+              touch "$out"
+            '';
         installer-identity =
           pkgs.runCommand "rock5b-installer-identity-tests" {
             nativeBuildInputs = with pkgs; [age sops ssh-to-age openssh coreutils];
@@ -493,6 +540,15 @@
               };
           };
         };
+
+        # The pinned nixos-hardware hook fails disko.checkScripts: it uses an
+        # undeclared, unquoted $out. Keep the firmware layout, but validate and
+        # quote the output directory supplied by Disko/vmTools.
+        hardware.rockchip.diskoExtraPostVM = ''
+          : "''${out:?Disko must set the image output directory}"
+          ${pkgs.coreutils}/bin/dd conv=notrunc,fsync if=${config.hardware.rockchip.platformFirmware}/idbloader.img of="$out/${config.hardware.rockchip.diskoImageName}" bs=512 seek=64
+          ${pkgs.coreutils}/bin/dd conv=notrunc,fsync if=${config.hardware.rockchip.platformFirmware}/u-boot.itb of="$out/${config.hardware.rockchip.diskoImageName}" bs=512 seek=16384
+        '';
 
         hardware = {
           enableAllHardware = true;
