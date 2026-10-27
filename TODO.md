@@ -23,6 +23,7 @@
         passthru.{bench,tests}) -> generate the flake `checks` as function of
         its `packages`.
 - [ ] [[security.md]]
+- [ ] Reject host-local addresses in the proxy’s existing pre-connect policy
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
 - [ ] Automate/declarative guest port exposure / service publishing (proof of
       concept nixos test in tests/nixos/port-forwarding.nix)
