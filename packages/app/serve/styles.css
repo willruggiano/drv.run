@@ -352,8 +352,8 @@ body.stacked-layout {
   #session-filter-bar, #search-bar { padding: 6px 10px 4px; }
   .stacked-layout #bottom-line { padding-bottom: 0; }
   .stacked-layout #bottom-line .footer-row { display: flex; gap: 6px; }
-  .stacked-layout #bottom-line:has(.footer-chevron) { padding-inline: calc(var(--conversation-left) + 5px) calc(var(--conversation-right) + 5px); }
-  .stacked-layout #bottom-line .footer-row:has(.footer-chevron) { display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; gap: 6px; align-items: center; min-height: 40px; }
+  .stacked-layout #bottom-line { padding-inline: calc(var(--conversation-left) + 5px) calc(var(--conversation-right) + 5px); }
+  .stacked-layout #bottom-line .footer-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; gap: 6px; align-items: center; min-height: 40px; }
   .footer-model-context { grid-area: 1 / 2; justify-self: center; max-width: 100%; min-height: 40px; }
   #bottom-line #footer-sessions, #bottom-line #footer-collapse { display: inline-flex; }
   #footer-sessions { grid-area: 1 / 1; }
@@ -463,23 +463,30 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 /* Creation uses the conversation shell and metadata; only its fields are editable. */
 #composer.new-composer, #new-options, #new-options > #options { display: contents; }
 .new-composer #bottom-line { order: 1; }
-.selector-summary label { display: flex; align-items: center; min-width: 0; margin: 0; }
-.selector-summary label > span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.selector-summary label { min-height: 24px; position: relative; display: flex; align-items: center; min-width: 0; margin: 0; }
+.selector-summary .selector-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .selector-summary :is(input, select) { field-sizing: content; min-width: 0; max-width: 100%; min-height: 24px; padding: 0; border: 0; background: transparent; font: inherit; color: inherit; text-overflow: ellipsis; }
-.selector-summary select { width: auto; appearance: none; cursor: pointer; }
+.selector-summary select, .selector-summary input:not(:focus) { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.selector-summary input:focus + .selector-value { display: none; }
+.selector-summary label:has(select:focus-visible) { outline: 2px solid var(--primary); outline-offset: -2px; }
+.selector-summary .selector-value { margin: 0; font: inherit; color: inherit; overflow: hidden; text-overflow: ellipsis; }
+#footer-model.selector-summary { min-height: 24px; }
 .selector-summary option { background: var(--surface); }
-.selector-summary :is(input, select):hover { color: var(--fg); }
+.selector-summary label:hover { color: var(--fg); }
 .selector-summary input::placeholder { color: var(--muted); opacity: 1; }
-.selector-summary label[hidden], .selector-summary:has(> label[hidden]) > .footer-dot { display: none; }
+#footer-instance.selector-summary { gap: 0; }
+.instance-separator { white-space: pre; }
+.selector-summary label[hidden], .selector-summary:has(> label[hidden]) > .instance-separator { display: none; }
 @media (max-width: 650px) {
+  /* Creation still needs environment controls before a conversation exists. */
   .new-composer #bottom-line, .new-composer #bottom-line .footer-row { display: contents; }
-  .new-composer #footer-instance { display: grid; order: -1; margin-inline: 16px; }
-  .new-composer .footer-model-context { order: 1; padding-inline: 16px; }
-  .selector-summary, .stacked-layout #footer-model.selector-summary { display: grid; grid-template-columns: minmax(0, 1fr) 2px minmax(0, 1fr); }
-  #footer-model.selector-summary { width: 100%; }
-  .selector-summary label:first-child { justify-content: flex-end; }
-  .selector-summary label:first-child select { text-align-last: right; }
-  .selector-summary :is(input, select) { min-height: 28px; }
+  .new-composer #footer-instance, .stacked-layout .new-composer #footer-model { display: grid; grid-template-columns: minmax(0, 1fr) 2px minmax(0, 1fr); gap: 6px; }
+  .new-composer #footer-instance { order: -1; margin-inline: 16px; }
+  .new-composer #footer-instance label:first-child, .new-composer .model-name label { justify-content: flex-end; }
+  .new-composer .instance-separator { width: 2px; height: 2px; border-radius: 50%; background: currentColor; font-size: 0; }
+  .new-composer .footer-model-context { order: 1; align-self: stretch; max-width: none; padding-inline: 16px; }
+  .new-composer #footer-model { width: 100%; }
+  #footer-model.selector-summary, .selector-summary label { min-height: 28px; }
   #conversation-scroll { padding-top: 8px; padding-bottom: 8px; }
   .bar > .icon { min-height: 38px; }
   .composer-shell { padding: 6px 10px 4px; }

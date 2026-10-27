@@ -1,4 +1,4 @@
-module Panel exposing (Branch, Context, Field(..), Settings, branchesDecoder, contextDecoder, contextView, creationOptionsView, edit, optionsView, settingsBody, settingsDecoder, settingsView)
+module Panel exposing (Branch, Context, Field(..), Settings, branchesDecoder, contextDecoder, contextView, creationOptionsView, edit, modelOptionDecoder, optionsView, settingsBody, settingsDecoder, settingsView, targetOptionDecoder)
 
 import Composer
 import Dict
@@ -29,11 +29,21 @@ type alias Settings =
 
 
 type alias ModelOption =
-    { key : String, label : String, levels : List String, default : String }
+    { key : String, label : String, summary : String, levels : List String, default : String }
 
 
 type alias TargetOption =
-    { key : String, label : String, disabled : Bool, root : String }
+    { key : String, label : String, summary : String, disabled : Bool, root : String, cwd : String }
+
+
+modelOptionDecoder : Decoder ModelOption
+modelOptionDecoder =
+    D.map5 ModelOption (D.field "key" D.string) (D.field "label" D.string) (D.field "summary" D.string) (D.field "levels" (D.list D.string)) (D.field "default" D.string)
+
+
+targetOptionDecoder : Decoder TargetOption
+targetOptionDecoder =
+    D.map6 TargetOption (D.field "key" D.string) (D.field "label" D.string) (D.field "summary" D.string) (D.field "disabled" D.bool) (D.field "root" D.string) (D.field "cwd" D.string)
 
 
 settingsDecoder : Decoder Settings
@@ -44,8 +54,8 @@ settingsDecoder =
         (D.field "target" D.string)
         (D.field "thinking" D.string)
         (D.field "directory" D.string)
-        (D.field "models" (D.list (D.map4 ModelOption (D.field "key" D.string) (D.field "label" D.string) (D.field "levels" (D.list D.string)) (D.field "default" D.string))))
-        (D.field "targets" (D.list (D.map4 TargetOption (D.field "key" D.string) (D.field "label" D.string) (D.field "disabled" D.bool) (D.field "root" D.string))))
+        (D.field "models" (D.list modelOptionDecoder))
+        (D.field "targets" (D.list targetOptionDecoder))
 
 
 edit : Field -> String -> Settings -> Settings
@@ -94,7 +104,7 @@ optionsView : (Field -> String -> msg) -> msg -> List String -> Settings -> Html
 optionsView change save directories settings =
     let
         controls =
-            optionFields change save directories settings
+            optionFields False change save directories settings
     in
     div [ id "options" ] [ controls.environment, controls.model, controls.thinking, controls.directory, controls.directories ]
 
@@ -103,15 +113,15 @@ creationOptionsView : (Field -> String -> msg) -> msg -> List String -> Settings
 creationOptionsView change save directories settings =
     let
         controls =
-            optionFields change save directories settings
+            optionFields True change save directories settings
     in
     div [ id "options" ]
         [ Composer.metadata
             { label = "New session settings"
             , before = []
-            , instance = div [ id "footer-instance", class "model-summary selector-summary" ] [ controls.environment, Composer.dot, controls.directory ]
+            , instance = div [ id "footer-instance", class "model-summary selector-summary" ] [ controls.environment, span [ class "instance-separator" ] [ text " · " ], controls.directory ]
             , statistics = []
-            , model = div [ id "footer-model", class "model-summary selector-summary" ] [ controls.model, Composer.dot, controls.thinking ]
+            , model = div [ id "footer-model", class "model-summary selector-summary" ] (Composer.modelDetails controls.model controls.thinking)
             , context = Nothing
             , after = []
             }
@@ -119,14 +129,17 @@ creationOptionsView change save directories settings =
         ]
 
 
-optionFields : (Field -> String -> msg) -> msg -> List String -> Settings -> { environment : Html msg, model : Html msg, thinking : Html msg, directory : Html msg, directories : Html msg }
-optionFields change save directories settings =
+optionFields : Bool -> (Field -> String -> msg) -> msg -> List String -> Settings -> { environment : Html msg, model : Html msg, thinking : Html msg, directory : Html msg, directories : Html msg }
+optionFields compact change save directories settings =
     let
         model =
             List.filter (.key >> (==) settings.model) settings.models |> List.head
 
+        target =
+            List.filter (.key >> (==) settings.target) settings.targets |> List.head
+
         root =
-            List.filter (.key >> (==) settings.target) settings.targets |> List.head |> Maybe.map .root |> Maybe.withDefault ""
+            target |> Maybe.map .root |> Maybe.withDefault ""
 
         levels =
             Maybe.map .levels model |> Maybe.withDefault []
@@ -134,13 +147,29 @@ optionFields change save directories settings =
         choice selected key title disabled =
             option [ value key, A.selected (key == selected), A.disabled disabled ] [ text title ]
 
-        field title control =
-            label [] [ span [] [ text title ], control ]
+        field title summary control =
+            label []
+                ([ span [ class "selector-label" ] [ text title ], control ]
+                    ++ (if compact then
+                            [ span [ class "selector-value", attribute "aria-hidden" "true" ] [ text summary ] ]
+
+                        else
+                            []
+                       )
+                )
+
+        thinking =
+            if settings.thinking == "" then
+                Maybe.map .default model |> Maybe.withDefault "off"
+
+            else
+                settings.thinking
     in
-    { environment = field "Environment" (select [ id "targets", A.name "target", onInput (change Target) ] (List.map (\item -> choice settings.target item.key item.label item.disabled) settings.targets))
-    , model = field "Model" (select [ id "models", A.name "model", onInput (change Model) ] (List.map (\item -> choice settings.model item.key item.label False) settings.models))
+    { environment = field "Environment" (Maybe.map .summary target |> Maybe.withDefault "No execution environment") (select [ id "targets", A.name "target", onInput (change Target) ] (List.map (\item -> choice settings.target item.key item.label item.disabled) settings.targets))
+    , model = field "Model" (Maybe.map .summary model |> Maybe.withDefault "No model") (select [ id "models", A.name "model", onInput (change Model) ] (List.map (\item -> choice settings.model item.key item.label False) settings.models))
     , thinking =
         field "Thinking"
+            thinking
             (select [ id "thinking", A.name "thinkingLevel", onInput (change Thinking) ]
                 (choice settings.thinking "" ("Default (" ++ (Maybe.map .default model |> Maybe.withDefault "off") ++ ")") False
                     :: List.map (\level -> choice settings.thinking level level False) levels
@@ -152,7 +181,41 @@ optionFields change save directories settings =
                        )
                 )
             )
-    , directory = label [ A.hidden (root == "") ] [ span [] [ text "Base directory" ], input [ id "base-directory", A.name "baseDirectory", A.maxlength 4096, A.placeholder (root ++ " (default)"), A.list "directories", value settings.directory, onInput (change Directory), onBlur save ] [] ]
+    , directory =
+        if compact && root == "" then
+            span [] [ text (Maybe.map .cwd target |> Maybe.withDefault "") ]
+
+        else
+            label [ A.hidden (root == "") ]
+                ([ span [ class "selector-label" ] [ text "Base directory" ]
+                 , input
+                    [ id "base-directory"
+                    , A.name "baseDirectory"
+                    , A.maxlength 4096
+                    , A.placeholder (root ++ " (default)")
+                    , A.list "directories"
+                    , value settings.directory
+                    , onInput (change Directory)
+                    , onBlur save
+                    ]
+                    []
+                 ]
+                    ++ (if compact then
+                            [ span [ class "selector-value", attribute "aria-hidden" "true" ]
+                                [ text
+                                    (if settings.directory == "" then
+                                        root
+
+                                     else
+                                        root ++ "/" ++ settings.directory
+                                    )
+                                ]
+                            ]
+
+                        else
+                            []
+                       )
+                )
     , directories = Html.datalist [ id "directories" ] (List.map (\path -> option [ value path ] []) directories)
     }
 

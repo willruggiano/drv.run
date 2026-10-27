@@ -1,5 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -279,10 +280,11 @@ await test("the frontend confirms context commands with two keyboard submissions
   assert.deepEqual(b.errors, []);
 });
 
-await test("landing composer places creation settings in the mobile and desktop bars", async (t) => {
+await test("landing composer matches conversation summaries and geometry without context statistics", async (t) => {
   const f = await directoryFixture(t);
   await mkdir(join(f.workspace, "drv.run"));
-  for (const name of ["Review changes", "Session tree"]) await rename(await f.create(), name);
+  const reference = await f.sessions.create(randomUUID(), f.binding, model);
+  await rename(reference, "Review changes");
   const b = await browserFixture(t, f.sessions);
 
   for (const hasTouch of [true, false]) {
@@ -297,21 +299,47 @@ await test("landing composer places creation settings in the mobile and desktop 
       page.on("pageerror", (error) => b.errors.push(error));
       const conversation = await browserContext.newPage();
       conversation.on("pageerror", (error) => b.errors.push(error));
-      const reference = await f.sessions.get((await f.sessions.catalog()).sessions[0].id);
       await conversation.goto(b.base + conversationURL(reference, undefined));
       await conversation.locator("#prompt").fill("Review the current changes");
+      // Compare the conversation composer with only its context statistics omitted.
+      await conversation.addStyleTag({
+        content:
+          "#footer-stats, #footer-context, .footer-model-context > .footer-dot { display: none !important; } .footer-model-context { grid-row: 1 !important; }",
+      });
       await page.goto(`${b.base}/`);
       const models = page.getByRole("combobox", { name: "Model", exact: true });
       const thinking = page.getByRole("combobox", { name: "Thinking", exact: true });
       const environment = page.getByRole("combobox", { name: "Environment", exact: true });
       const directory = page.getByRole("combobox", { name: "Base directory", exact: true });
+      // Environment and cwd remain editable on mobile, before a session exists.
+      await environment.selectOption(JSON.stringify(["local", f.workspace]));
+      await environment.selectOption(JSON.stringify([f.binding.provider, f.binding.target]));
+      await directory.fill("drv.run");
+      await directory.blur();
+      assert.equal(await directory.inputValue(), "drv.run");
+      await directory.fill("");
+      await directory.blur();
       await models.selectOption(JSON.stringify([model.provider, model.modelId]));
       await page.waitForFunction(
         () => document.querySelector<HTMLSelectElement>("#thinking")?.selectedOptions.length === 1,
       );
       assert.equal(await thinking.inputValue(), "");
-      await thinking.selectOption("high");
-      await directory.fill("drv.run");
+      // Closed controls use the same summaries; native menus retain the full labels.
+      for (const [selector, value] of [
+        ["#footer-model .model-name .selector-value", model.modelId],
+        [
+          "#footer-model .model-effort .selector-value",
+          (await sessionInfo(reference)).thinkingLevel,
+        ],
+        ["#footer-instance label:first-child .selector-value", f.binding.target],
+      ])
+        assert.equal(await page.locator(selector).textContent(), value);
+      assert.match((await models.locator("option:checked").textContent()) ?? "", /^faux \/ /);
+      assert.match((await thinking.locator("option:checked").textContent()) ?? "", /^Default \(/);
+      assert.equal(
+        await page.locator("#footer-instance label:last-child .selector-value").textContent(),
+        f.binding.cwd,
+      );
       await page.locator("#prompt").fill("Review the current changes");
       for (const width of [320, 390, 650, 651, 1440]) {
         await page.setViewportSize({ width, height: 844 });
@@ -330,6 +358,8 @@ await test("landing composer places creation settings in the mobile and desktop 
           "#input-toggle",
           "#submit",
           "#footer-model",
+          "#footer-model .model-name",
+          "#footer-model .model-effort",
         ]) {
           const geometry = (node: Element) => {
             const bounds = node.getBoundingClientRect();
@@ -350,61 +380,82 @@ await test("landing composer places creation settings in the mobile and desktop 
             };
           };
           const actual = await page
-            .locator(selector === "#submit" ? "#create" : selector)
+            .locator(
+              selector === "#submit"
+                ? "#create"
+                : selector.startsWith("#footer-model .")
+                  ? `${selector} .selector-value`
+                  : selector,
+            )
             .evaluate(geometry);
           const expected = await conversation
             .locator(selector === "#submit" ? "#send" : selector)
             .evaluate(geometry);
-          if (selector === "#footer-model") {
-            assert.deepEqual(actual.font, expected.font);
-            if (width > 650) assert.equal(actual.x + actual.width, expected.x + expected.width);
+          if (width <= 650 && selector.startsWith("#footer-model")) {
+            // Landing settings flank a fixed center dot, not a centered text group.
+            assert.deepEqual(
+              { ...actual, x: expected.x, width: expected.width },
+              expected,
+              `${selector} at ${width}px`,
+            );
           } else {
-            assert.deepEqual(actual, expected);
+            assert.deepEqual(actual, expected, `${selector} at ${width}px`);
           }
         }
         for (const control of [models, thinking, environment, directory])
           assert.equal(await control.isVisible(), true);
         const box = await page.locator("#composer-shell .compose-box").boundingBox();
-        const target = await environment.boundingBox();
-        const cwd = await directory.boundingBox();
         const selectedModel = await models.boundingBox();
         const selectedThinking = await thinking.boundingBox();
-        assert(box && target && cwd && selectedModel && selectedThinking);
-        assert.equal(target.y, cwd.y);
+        assert(box && selectedModel && selectedThinking);
         assert.equal(selectedModel.y, selectedThinking.y);
         assert(selectedModel.y >= box.y + box.height);
+        const target = await environment.boundingBox();
+        const cwd = await directory.boundingBox();
+        assert(target && cwd);
+        assert.equal(target.y, cwd.y);
         if (width <= 650) {
           assert(target.y + target.height <= box.y);
-          assert.equal(target.x + target.width, selectedModel.x + selectedModel.width);
-          assert.equal(cwd.x, selectedThinking.x);
-          const dots = await page.locator(".selector-summary > .footer-dot").evaluateAll((nodes) =>
-            nodes.map((node) => {
-              const bounds = node.getBoundingClientRect();
-              return {
-                x: bounds.x + bounds.width / 2,
-                width: bounds.width,
-                height: bounds.height,
-              };
-            }),
-          );
+          assert(cwd.y + cwd.height <= box.y);
+          assert(target.x + target.width <= cwd.x);
+          assert(cwd.x + cwd.width <= box.x + box.width);
+          const dots = await page
+            .locator("#footer-instance .instance-separator, #footer-model > .footer-dot")
+            .evaluateAll((nodes) =>
+              nodes.map((node) => {
+                const bounds = node.getBoundingClientRect();
+                return {
+                  center: bounds.x + bounds.width / 2,
+                  width: bounds.width,
+                  height: bounds.height,
+                };
+              }),
+            );
           assert.equal(dots.length, 2);
           for (const dot of dots) {
-            assert(dot.width > 0 && dot.height > 0);
-            assert.equal(dot.x, box.x + box.width / 2);
+            assert.deepEqual(dot, { center: box.x + box.width / 2, width: 2, height: 2 });
           }
+          assert.equal(target.x + target.width, selectedModel.x + selectedModel.width);
+          assert.equal(cwd.x, selectedThinking.x);
         } else {
-          assert.equal(target.y, selectedModel.y);
           const instance = await conversation.locator("#footer-instance").boundingBox();
           assert(instance);
           assert.equal(target.x, instance.x);
           assert(target.x + target.width <= cwd.x);
-          assert(cwd.x < box.x + box.width / 2);
           assert(cwd.x + cwd.width <= selectedModel.x);
-          assert(selectedModel.x + selectedModel.width <= selectedThinking.x);
-          assert(selectedThinking.x + selectedThinking.width <= box.x + box.width);
         }
+        // The metadata starts at the same offset below the shared compose box.
+        const offset = async (view: typeof page) =>
+          view.evaluate(() => {
+            const box = document.querySelector(".compose-box")!.getBoundingClientRect();
+            const model = document.querySelector("#footer-model")!.getBoundingClientRect();
+            return model.y - box.bottom;
+          });
+        assert.equal(await offset(page), await offset(conversation));
         assert.equal(
-          await page.locator("#app-footer .context-usage, #new-options summary").count(),
+          await page
+            .locator("#app-footer .context-usage, #footer-stats, #new-options summary")
+            .count(),
           0,
         );
         assert.equal(await page.locator("#create .glyph").count(), 1);
@@ -427,6 +478,18 @@ await test("landing composer places creation settings in the mobile and desktop 
           });
         }
       }
+      await page.setViewportSize({ width: 390, height: 844 });
+      await thinking.selectOption("high");
+      assert.equal(
+        await page.locator("#footer-model .model-effort .selector-value").textContent(),
+        "high",
+      );
+      await directory.fill("drv.run");
+      await directory.blur();
+      assert.equal(
+        await page.locator("#footer-instance label:last-child .selector-value").textContent(),
+        join(f.binding.cwd, "drv.run"),
+      );
       await page.reload();
       await page.waitForFunction(
         () => document.querySelector<HTMLSelectElement>("#thinking")?.value === "high",

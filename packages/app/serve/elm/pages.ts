@@ -118,14 +118,17 @@ export async function pages(
     models: catalog.models.map((item) => ({
       key: key(item),
       label: `${item.provider} / ${item.name}`,
+      summary: item.modelId,
       levels: item.thinkingLevels,
       default: item.defaultThinkingLevel,
     })),
     targets: catalog.targets.map((item) => ({
       key: JSON.stringify([item.provider, item.target]),
       label: item.label,
+      summary: item.provider === "local" ? "local" : item.target,
       disabled: !item.available,
       root: item.directoryRoot ?? "",
+      cwd: item.cwd,
     })),
     model: catalog.defaultModel
       ? key(catalog.defaultModel)

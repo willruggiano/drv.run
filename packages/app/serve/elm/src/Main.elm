@@ -1522,7 +1522,7 @@ view model =
                     , before = [ a [ id "footer-sessions", class "icon footer-chevron", href "/", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ] ]
                     , instance = span [ id "footer-instance" ] [ text state.metadata.instance ]
                     , statistics = [ a [ id "footer-stats", href (model.path ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ]) ]
-                    , model = a [ id "footer-model", class "model-summary", href (model.path ++ "/settings"), attribute "aria-label" "Model and thinking settings" ] [ span [ class "model-name" ] [ text state.metadata.model ], dot, span [ class "model-effort" ] [ text state.metadata.thinking ] ]
+                    , model = a [ id "footer-model", class "model-summary", href (model.path ++ "/settings"), attribute "aria-label" "Model and thinking settings" ] (Composer.modelDetails (text state.metadata.model) (text state.metadata.thinking))
                     , context = Just (a [ id "footer-context", class "context-usage", attribute "data-level" state.metadata.level, href (model.path ++ "/context"), attribute "aria-label" "Context usage details" ] [ text state.metadata.context ])
                     , after =
                         [ button

@@ -452,6 +452,7 @@ export async function elmFrontend(
                 {
                   key: model,
                   label: `${info.model.modelId} (unavailable, keep)`,
+                  summary: info.model.modelId,
                   levels: thinkingLevels,
                   default: "off",
                 },
@@ -460,6 +461,7 @@ export async function elmFrontend(
           ...catalog.models.map((item) => ({
             key: modelKey(item),
             label: `${item.provider} / ${item.name}`,
+            summary: item.modelId,
             levels: item.thinkingLevels,
             default: item.defaultThinkingLevel,
           })),
@@ -470,16 +472,20 @@ export async function elmFrontend(
                 {
                   key: target,
                   label: `${info.binding.target} (unavailable, keep)`,
+                  summary: info.binding.provider === "local" ? "local" : info.binding.target,
                   disabled: false,
                   root: info.directoryRoot ?? "",
+                  cwd: info.cwd,
                 },
               ]
             : []),
           ...catalog.targets.map((item) => ({
             key: targetKey(item),
             label: item.label,
+            summary: item.provider === "local" ? "local" : item.target,
             disabled: !item.available && targetKey(item) !== target,
             root: item.directoryRoot ?? "",
+            cwd: item.cwd,
           })),
         ],
       });
