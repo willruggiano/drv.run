@@ -120,5 +120,3 @@ Others;
 - <https://github.com/pungggi/pi-continual-harness>
 - <https://github.com/tuneloop/tuneloop>
 - <https://gitlab.com/jarkkojs/goosedump>
-
-[headlong]: https://github.com/laude-institute/headlong

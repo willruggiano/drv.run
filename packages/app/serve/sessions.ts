@@ -490,18 +490,34 @@ export async function environment(
   if (!env) throw new SessionError("unavailable", "No execution environment selected.");
   return env;
 }
-export async function selectEnvironment(
+/** Caller cancellation can prevent admission; Durable settles an admitted commit atomically. */
+export async function configureSession(
   session: Session,
-  binding: ExecutionBinding,
-  conversation = session.root,
+  conversation: Conversation,
+  change: {
+    name: string;
+    binding?: ExecutionBinding;
+    cwd: string;
+    model?: ModelRef;
+    thinkingLevel?: ModelThinkingLevel;
+  },
+  context: Context,
 ): Promise<void> {
-  if (!validBinding(binding)) throw new SessionError("invalid", "Invalid execution destination.");
+  const name = validateName(change.name);
+  if (change.binding && !validBinding({ ...change.binding, cwd: change.cwd }))
+    throw new SessionError("invalid", "Invalid execution destination.");
   await conversation.commit(async (tx) => {
-    Object.assign(await tx.doc(Environment, conversation.id), {
-      provider: binding.provider,
-      target: binding.target,
+    if (change.binding)
+      Object.assign(await tx.doc(Environment, conversation.id), {
+        provider: change.binding.provider,
+        target: change.binding.target,
+      });
+    await configure(tx, conversation.id, {
+      model: change.model,
+      thinkingLevel: change.thinkingLevel,
+      cwd: change.cwd,
     });
-    await configure(tx, conversation.id, { cwd: binding.cwd });
+    (await tx.doc(Metadata, session.root.id)).name = name;
   }, context);
 }
 /** Complete relative paths in the bound environment, never the server's filesystem. */
@@ -691,15 +707,20 @@ export async function sessionInfo(
   };
 }
 
-export async function rename(session: Session, name: string): Promise<void> {
+function validateName(name: string): string {
   if (typeof name !== "string" || name.trim().length > 120 || hasControlCharacters(name))
     throw new SessionError(
       "invalid",
       "Session name must be at most 120 characters without control characters.",
     );
+  return name.trim();
+}
+
+export async function rename(session: Session, name: string): Promise<void> {
+  const validated = validateName(name);
   await session.root.commit(async (tx) => {
     const metadata = await tx.doc(Metadata, session.root.id);
-    metadata.name = name.trim();
+    metadata.name = validated;
   }, context);
 }
 

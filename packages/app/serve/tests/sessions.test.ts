@@ -4,16 +4,18 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import {
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { Conversation } from "@earendil-works/pi-durable";
+import { AgentDoc, type Conversation } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Sessions, SessionError, stateDirectory } from "../sessions.ts";
 import { readHistory, fixture, code, exists, model, waitFor } from "./sessions-testing.ts";
+
+import { saveSessionSettings, modelKey, targetKey } from "../settings.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -136,7 +138,12 @@ await test("environment selection persists independently and forks inherit selec
   const entry = (await one.status(context)).entry;
   assert(entry !== undefined);
   const binding = { provider: "local", target: second, cwd: second };
-  await runtime.selectEnvironment(session, binding);
+  await runtime.configureSession(
+    session,
+    session.root,
+    { name: "", binding, cwd: binding.cwd },
+    context,
+  );
   const fork = await session.root.fork(entry, { ownership: { kind: "ownerless" } }, context);
   assert.deepEqual(await session.harness.snapshot(runtime.Environment, fork.id, context), {
     provider: "local",
@@ -595,7 +602,12 @@ await test("switching environments leaves a running command in its original envi
   ]);
   await session.root.submit({ type: "input", content: "Run until released." }, context);
   await waitFor(() => exists(join(f.workspace, "started")));
-  await runtime.selectEnvironment(session, { provider: "local", target: next, cwd: next });
+  await runtime.configureSession(
+    session,
+    session.root,
+    { name: "", binding: { provider: "local", target: next, cwd: next }, cwd: next },
+    context,
+  );
   await writeFile(join(f.workspace, "release"), "");
   await session.root.waitForIdle(context);
   assert.equal(JSON.parse(await readFile(join(f.workspace, "completed.json"), "utf8")), 1);
@@ -678,3 +690,86 @@ await test("choices do not open persisted sessions; explicit bootstrap attaches 
   }
   assert.equal(f.faux.state.callCount, 0);
 });
+
+for (const mode of ["success", "cancel-before", "cancel-after", "rollback"] as const) {
+  await test(`session settings save atomically across conversation and root: ${mode}`, async (t) => {
+    const f = await fixture(t);
+    await f.reopen({
+      targets: async () => [
+        { ...f.binding, directoryRoot: f.workspace, label: "Local", available: true },
+      ],
+    });
+    const session = await f.create();
+    const entry = await session.root.commit(
+      (tx) => tx.appendEntry(session.root.id, { kind: "marker" }),
+      context,
+    );
+    const child = await session.root.fork(entry.id, { ownership: { kind: "ownerless" } }, context);
+    const before = await runtime.sessionInfo(session, child);
+    const rootAgent = await session.harness.snapshot(AgentDoc, session.root.id, context);
+    await mkdir(join(f.workspace, "nested"));
+    const controller = new AbortController();
+    let publications = 0;
+    const stop = session.harness.subscribeCommits((publication) => {
+      if (
+        !publication.changes.some(
+          (change) => change.type === "document" || change.type === "document.copy",
+        )
+      )
+        return;
+      publications++;
+      if (mode === "cancel-after") controller.abort();
+    });
+    t.after(stop);
+    const failure = new Error("Transaction rejected");
+    const commit = child.commit.bind(child);
+    if (mode === "cancel-before")
+      t.mock.method(child, "commit", (...[change, context]: Parameters<Conversation["commit"]>) => {
+        controller.abort();
+        return commit(change, context);
+      });
+    if (mode === "rollback")
+      t.mock.method(child, "commit", (...[change, context]: Parameters<Conversation["commit"]>) =>
+        commit(async (tx) => {
+          await change(tx);
+          throw failure;
+        }, context),
+      );
+    const saving = saveSessionSettings(
+      f.sessions,
+      session,
+      child,
+      {
+        name: "Reconfigured",
+        model: modelKey(model),
+        target: targetKey(f.binding),
+        thinkingLevel: "low",
+        baseDirectory: "nested",
+      },
+      withAbortSignal(controller.signal, context),
+    );
+    const changed = mode === "success" || mode === "cancel-after";
+    if (changed) await saving;
+    else await assert.rejects(saving, mode === "rollback" ? failure : { name: "AbortError" });
+    stop();
+    assert.equal(publications, changed ? 1 : 0);
+    const expected = changed
+      ? {
+          ...before,
+          name: "Reconfigured",
+          cwd: join(f.workspace, "nested"),
+          thinkingLevel: "low",
+        }
+      : before;
+    assert.deepEqual(await runtime.sessionInfo(session, child), expected);
+    assert.deepEqual(await session.harness.snapshot(AgentDoc, session.root.id, context), rootAgent);
+    await f.reopen({ targets: f.sessions.options.targets });
+    const reopened = await f.sessions.get(session.id);
+    const reopenedChild = await runtime.getConversation(reopened, child.id);
+    assert.deepEqual(await runtime.sessionInfo(reopened, reopenedChild), expected);
+    assert.deepEqual(
+      await reopened.harness.snapshot(AgentDoc, reopened.root.id, context),
+      rootAgent,
+    );
+  });
+}

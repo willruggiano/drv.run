@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import type { Context } from "@earendil-works/chord/context";
 import type { Conversation } from "@earendil-works/pi-durable";
-import { sessionInfo, rename, selectEnvironment, type Sessions, type Session } from "./sessions.ts";
+import type { Sessions, Session } from "./sessions.ts";
 import type { GlobalSettingsStore } from "./server.ts";
 import {
   settingFields,
   modelKey,
-  targetKey,
+  saveSessionSettings as saveSettings,
   resolveSelection,
   type Selection,
 } from "./settings.ts";
@@ -84,33 +84,16 @@ export async function saveSessionSettings(
   conversation: Conversation,
   context: Context,
 ): Promise<void> {
-  const choices = await sessions.choices(context);
-  const current = await sessionInfo(session, conversation, choices.targets, context);
-  const name = field(data, "name", 120);
-  const selected = selection(data);
-  const { target, model, thinkingLevel, cwd } = resolveSelection(
+  await saveSettings(
     sessions,
-    choices,
-    selected,
-    current,
-  );
-  // Validate every field before persisting any part of the form.
-  if (Array.from(name).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))
-    throw new FormError(400, "Invalid session name.");
-  if (
-    target &&
-    (!current.binding || targetKey(current.binding) !== selected.target || current.cwd !== cwd)
-  )
-    await selectEnvironment(session, { ...target, cwd }, conversation);
-  await conversation.configure(
+    session,
+    conversation,
     {
-      ...(model ? { model: { provider: model.provider, modelId: model.modelId } } : {}),
-      ...(thinkingLevel ? { thinkingLevel } : {}),
-      cwd,
+      ...selection(data),
+      name: field(data, "name", 120),
     },
     context,
   );
-  if (name !== current.name) await rename(session, name);
 }
 
 const optional = (data: FormData, key: string) => (data.has(key) ? field(data, key) : "");

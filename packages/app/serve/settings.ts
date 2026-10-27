@@ -1,8 +1,11 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { ModelRef } from "@earendil-works/pi-durable";
+import type { Conversation, ModelRef } from "@earendil-works/pi-durable";
 import {
   resolveBaseDirectory,
+  configureSession,
+  sessionInfo,
+  type Session,
   SessionError,
   type Choices,
   type SessionInfo,
@@ -158,6 +161,36 @@ export function resolveSelection(
       ? resolveBaseDirectory(target.directoryRoot, values.baseDirectory)
       : (target?.cwd ?? current?.cwd ?? ""),
   };
+}
+
+/** Validate the whole selection before admitting one durable settings mutation. */
+export async function saveSessionSettings(
+  sessions: Sessions,
+  session: Session,
+  conversation: Conversation,
+  values: Selection & { name: string },
+  context: Context,
+): Promise<void> {
+  const choices = await sessions.choices(context);
+  const current = await sessionInfo(session, conversation, choices.targets, context);
+  const { target, model, thinkingLevel, cwd } = resolveSelection(
+    sessions,
+    choices,
+    values,
+    current,
+  );
+  await configureSession(
+    session,
+    conversation,
+    {
+      name: values.name,
+      binding: target,
+      model: model ? { provider: model.provider, modelId: model.modelId } : undefined,
+      thinkingLevel,
+      cwd,
+    },
+    context,
+  );
 }
 
 /** Shared choice projection for creation and conversation settings. */
