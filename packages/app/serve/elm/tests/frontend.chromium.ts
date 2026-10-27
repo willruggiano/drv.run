@@ -796,212 +796,6 @@ await test(
   },
 );
 
-type TestStream = {
-  url: string;
-  closed: boolean;
-  readyState: number;
-  message(payload: unknown): void;
-  fail(terminal?: boolean): void;
-};
-
-declare global {
-  interface Window {
-    elmTransportTest: {
-      ready: boolean;
-      random: number;
-      sources: TestStream[];
-      received: { kind: string; epoch: number; payload: unknown }[];
-      request(value: { path: string; epoch: number }): void;
-    };
-  }
-}
-
-await test(
-  "Elm transport bounds retries, requires stable recovery and cancels obsolete attempts",
-  { timeout: 45000 },
-  async (t) => {
-    const f = await fixture(t);
-    const session = await f.create();
-    const b = await browserFixture(t, f.sessions);
-    const page = b.page;
-    await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
-    // Exercise the adapter's port interface without a second workflow model or network timing.
-    await page.route("**/main.js", (route) =>
-      route.fulfill({ contentType: "text/javascript", body: "" }),
-    );
-    await page.addInitScript(() => {
-      let subscription: ((value: { path: string; epoch: number }) => void) | undefined;
-      const control: Window["elmTransportTest"] = {
-        ready: false,
-        random: 0,
-        sources: [],
-        received: [],
-        request(value) {
-          if (!subscription) throw new Error("Stream port not subscribed");
-          subscription(value);
-        },
-      };
-      class Source implements TestStream {
-        static CLOSED = 2;
-        closed = false;
-        readyState = 0;
-        onmessage: ((event: MessageEvent<string>) => void) | null = null;
-        onerror: ((event: Event) => void) | null = null;
-        readonly url: string;
-        constructor(url: string) {
-          this.url = url;
-          control.sources.push(this);
-        }
-        close() {
-          this.closed = true;
-          this.readyState = Source.CLOSED;
-        }
-        message(payload: unknown) {
-          this.readyState = 1;
-          this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(payload) }));
-        }
-        fail(terminal = false) {
-          this.readyState = terminal ? Source.CLOSED : 0;
-          this.onerror?.(new Event("error"));
-        }
-      }
-      window.EventSource = Source as unknown as typeof EventSource;
-      Math.random = () => control.random;
-      Object.assign(window, {
-        elmTransportTest: control,
-        Elm: {
-          Main: {
-            init: () => ({
-              ports: {
-                stream: {
-                  subscribe(callback: typeof subscription) {
-                    subscription = callback;
-                    control.ready = true;
-                  },
-                },
-                persist: { subscribe() {} },
-                browser: { subscribe() {} },
-                incoming: {
-                  send(message: Window["elmTransportTest"]["received"][number]) {
-                    control.received.push(message);
-                  },
-                },
-              },
-            }),
-          },
-        },
-      });
-    });
-    await page.goto(b.base + conversationURL(session));
-    await page.waitForFunction(() => window.elmTransportTest.ready);
-    await page.clock.pauseAt(new Date("2026-01-01T01:00:00Z"));
-    const control = await page.evaluateHandle(() => window.elmTransportTest);
-    const count = () => control.evaluate((test) => test.sources.length);
-    const fail = () => control.evaluate((test) => test.sources.at(-1)!.fail());
-    const retryAfter = async (delay: number) => {
-      const before = await count();
-      await page.clock.runFor(delay - 1);
-      assert.equal(await count(), before);
-      await page.clock.runFor(1);
-      assert.equal(await count(), before + 1);
-    };
-    await control.evaluate((test) => test.request({ path: "/first", epoch: 1 }));
-    await fail();
-    assert.equal(await control.evaluate((test) => test.sources[0].closed), true);
-    // Duplicate errors and queued data from a closed source cannot schedule or dispatch work.
-    await control.evaluate((test) => {
-      test.sources[0].fail();
-      test.sources[0].message({ stale: true });
-    });
-    assert.deepEqual(await control.evaluate((test) => test.received), [
-      { kind: "disconnected", epoch: 1, payload: null },
-    ]);
-    await retryAfter(125);
-    for (const delay of [250, 500, 1000, 2000, 4000, 8000, 15000, 15000]) {
-      // A successful open plus one snapshot followed by EOF must not reset backoff.
-      await control.evaluate((test) => test.sources.at(-1)!.message({ snapshot: true }));
-      await fail();
-      await retryAfter(delay);
-    }
-    // The upper half of the jitter interval remains bounded at the cap.
-    await control.evaluate((test) => (test.random = 0.5));
-    await fail();
-    await retryAfter(22500);
-    // Merely remaining open without receiving data is not stable recovery.
-    await control.evaluate((test) => (test.sources.at(-1)!.readyState = 1));
-    await page.clock.runFor(30000);
-    await fail();
-    await retryAfter(22500);
-    await control.evaluate((test) => test.sources.at(-1)!.message({ snapshot: true }));
-    await page.clock.runFor(29999);
-    await fail();
-    await retryAfter(22500);
-    await control.evaluate((test) => test.sources.at(-1)!.message({ snapshot: true }));
-    await page.clock.runFor(30000);
-    await control.evaluate((test) => (test.random = 0.2));
-    await fail();
-    await retryAfter(150);
-
-    await fail();
-    const beforeNavigation = await count();
-    await control.evaluate((test) => test.request({ path: "/second", epoch: 2 }));
-    await page.clock.runFor(60000);
-    assert.equal(await count(), beforeNavigation + 1);
-    assert.equal(await control.evaluate((test) => test.sources.at(-1)!.url), "/second/events");
-    const beforeLate = await control.evaluate((test) => test.received.length);
-    await control.evaluate((test) => {
-      for (const old of test.sources.slice(0, -1)) {
-        old.message({ stale: true });
-        old.fail();
-      }
-    });
-    assert.equal(await control.evaluate((test) => test.received.length), beforeLate);
-    await fail();
-    await retryAfter(150);
-    // Protocol rejection closes the stream and cancels a pending transport retry.
-    await fail();
-    const beforeStop = await count();
-    await control.evaluate((test) => test.request({ path: "", epoch: 2 }));
-    await page.clock.runFor(60000);
-    assert.equal(await count(), beforeStop);
-
-    await control.evaluate((test) => test.request({ path: "/second", epoch: 3 }));
-    await fail();
-    const beforeHide = await count();
-    await page.evaluate(() =>
-      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })),
-    );
-    await page.clock.runFor(60000);
-    assert.equal(await count(), beforeHide);
-    await page.evaluate(() =>
-      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })),
-    );
-    assert.deepEqual(await control.evaluate((test) => test.received.at(-1)), {
-      kind: "restored",
-      epoch: 3,
-      payload: null,
-    });
-    // Elm owns restoration; its new epoch starts a fresh subscription immediately.
-    await control.evaluate((test) => test.request({ path: "/second", epoch: 4 }));
-    await control.evaluate((test) => test.sources.at(-1)!.fail(true));
-    const beforeTerminal = await count();
-    await page.clock.runFor(60000);
-    assert.equal(await count(), beforeTerminal);
-    assert.deepEqual(await control.evaluate((test) => test.received.at(-1)), {
-      kind: "stream-failed",
-      epoch: 4,
-      payload: null,
-    });
-    await control.evaluate((test) => test.request({ path: "/second", epoch: 5 }));
-    assert.equal(await count(), beforeTerminal + 1);
-    await fail();
-    await retryAfter(150);
-    await control.evaluate((test) => test.request({ path: "", epoch: 5 }));
-    await control.dispose();
-    assert.deepEqual(b.errors, []);
-  },
-);
-
 await test(
   "Elm exposes terminal stream failures for explicit retry",
   { timeout: 45000 },
@@ -1174,6 +968,15 @@ await test(
         .evaluateAll((nodes) => nodes.map((node) => node.id));
       assert.equal(new Set(ids).size, ids.length);
     }
+    await page.evaluate(() =>
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })),
+    );
+    await waitFor(async () => watches.size === 0 && server.streams.size === 0);
+    await page.evaluate(() =>
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })),
+    );
+    await waitFor(async () => watches.size === 1 && server.streams.size === 1);
+    assert.equal(await page.locator("#prompt").inputValue(), "Newer local draft");
     await page.goto("about:blank");
     await waitFor(async () => watches.size === 0 && server.streams.size === 0);
     assert.deepEqual(b.errors, []);

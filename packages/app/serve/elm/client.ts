@@ -1,4 +1,5 @@
 import "../tree-view.ts";
+import { openStream } from "./transport.ts";
 import { installPwa, installPreferences } from "../pwa.ts";
 type App = {
   ports: {
@@ -208,58 +209,17 @@ app.ports.stream.subscribe((request) => {
     const node = prompt();
     if (request.epoch === epoch && (node?.value || node?.style.height)) resize();
   });
-  let current: EventSource | undefined;
-  let retryTimer: ReturnType<typeof setTimeout> | undefined;
-  let retryWindow = 250;
-  let stopped = false;
-  stopStream = () => {
-    stopped = true;
-    clearTimeout(retryTimer);
-    const closing = current;
-    current = undefined;
-    closing?.close();
-  };
-  function connect() {
-    if (stopped) return;
-    const connection = new EventSource(
-      `${request.path}/events${request.pane ? `?pane=${encodeURIComponent(request.pane)}` : ""}`,
-    );
-    current = connection;
-    let receivedAt: number | undefined;
-    connection.onmessage = (event) => {
-      if (connection !== current) return;
-      receivedAt ??= performance.now();
-      const node = scroll();
-      if (node && !node.hidden && restore === undefined)
-        pinned = node.scrollHeight - node.clientHeight - node.scrollTop < 32;
-      let payload: unknown;
-      try {
-        payload = JSON.parse(event.data);
-      } catch {
-        payload = null;
+  stopStream = openStream(
+    `${request.path}/events${request.pane ? `?pane=${encodeURIComponent(request.pane)}` : ""}`,
+    ({ kind, payload }) => {
+      if (kind === "frame") {
+        const node = scroll();
+        if (node && !node.hidden && restore === undefined)
+          pinned = node.scrollHeight - node.clientHeight - node.scrollTop < 32;
       }
-      send("frame", payload);
-    };
-    connection.onerror = () => {
-      if (connection !== current) return;
-      const terminal = connection.readyState === EventSource.CLOSED;
-      current = undefined;
-      // Cancel the browser's retry timer; only this subscription may schedule retries.
-      connection.close();
-      if (terminal) {
-        send("stream-failed", null);
-        return;
-      }
-      send("disconnected", null);
-      // Opening, or receiving one snapshot then immediately closing, is not recovery.
-      if (receivedAt !== undefined && performance.now() - receivedAt >= 30_000) retryWindow = 250;
-      // Equal jitter: [125, 250) ms initially, doubling up to [15, 30) seconds.
-      const delay = retryWindow * (0.5 + Math.random() * 0.5);
-      retryWindow = Math.min(retryWindow * 2, 30_000);
-      retryTimer = setTimeout(connect, delay);
-    };
-  }
-  connect();
+      send(kind, payload);
+    },
+  );
 });
 app.ports.persist.subscribe((value) => {
   try {
