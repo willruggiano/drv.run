@@ -58,7 +58,7 @@ function worker(frontend: string) {
 }
 
 for (const frontend of ["elm", "htmx"] as const) {
-  await test(`${frontend}: worker displays rich text and click opens the conversation, not the activity inbox`, async () => {
+  await test(`${frontend}: worker displays rich text and click opens the conversation`, async () => {
     const w = worker(frontend);
     await w.dispatch("push", { data: { json: () => message } });
     assert.equal(w.shown.length, 1);
@@ -102,7 +102,7 @@ for (const frontend of ["elm", "htmx"] as const) {
     assert(options.body);
     assert.equal(options.icon, "/icon-192.png");
     assert.equal(options.tag, "drv-run-1");
-    assert.equal(options.data.url, `/${frontend}/`);
+    assert.equal(options.data.url, `/${frontend}/sessions`);
     for (const invalid of [null, {}, { activity: -1 }, { activity: "1" }])
       await w.dispatch("push", { data: { json: () => invalid } });
     await w.dispatch("push", {
@@ -116,7 +116,7 @@ for (const frontend of ["elm", "htmx"] as const) {
     await w.dispatch("notificationclick", {
       notification: { data: { activity: 1 }, close: () => {} },
     });
-    assert.deepEqual(w.opened, [`/${frontend}/`]);
+    assert.deepEqual(w.opened, [`/${frontend}/sessions`]);
   });
 
   await test(`${frontend}: worker never trusts arbitrary navigation or remote image URLs`, async () => {
@@ -141,11 +141,11 @@ for (const frontend of ["elm", "htmx"] as const) {
         },
       });
       const { options } = w.shown.at(-1)!;
-      assert.equal(options.data.url, `/${frontend}/`);
+      assert.equal(options.data.url, `/${frontend}/sessions`);
       assert.equal(options.icon, "/icon-192.png");
       assert.equal(options.badge, "/icon-192.png");
       await w.dispatch("notificationclick", { notification: { data: { url }, close: () => {} } });
-      assert.equal(w.opened.at(-1), `/${frontend}/`);
+      assert.equal(w.opened.at(-1), `/${frontend}/sessions`);
     }
   });
 }

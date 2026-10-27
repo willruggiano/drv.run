@@ -7,7 +7,7 @@ import File exposing (File)
 import File.Select
 import Html exposing (Html, a, button, div, footer, form, h1, h2, header, input, label, main_, option, p, section, select, span, text, textarea)
 import Html.Attributes as A exposing (attribute, class, hidden, href, id, value)
-import Html.Events exposing (onClick, onInput, onSubmit, preventDefaultOn)
+import Html.Events exposing (onCheck, onClick, onInput, onSubmit, preventDefaultOn)
 import Http
 import Json.Decode as D
 import Json.Encode as E
@@ -33,7 +33,7 @@ type alias Field =
 
 
 type alias Catalog =
-    { options : Panel.Settings, rows : List Row, fields : List Field, configured : Bool, defaultModel : String, overrides : Dict String String, levels : List String }
+    { options : Panel.Settings, rows : List Row, fields : List Field, configured : Bool, defaultModel : String, overrides : Dict String String, levels : List String, publicKey : String }
 
 
 type alias Auth =
@@ -44,11 +44,6 @@ type Page
     = Loading
     | Landing Catalog
     | Defaults Catalog (List Auth)
-    | Activity
-
-
-type alias Item =
-    { id : Int, label : String, source : String, body : String, path : String, unavailable : String, read : Bool }
 
 
 type alias Model =
@@ -68,9 +63,6 @@ type alias Model =
     , busy : Bool
     , directories : List String
     , directoryRequest : Int
-    , items : List Item
-    , sources : List { title : String, lines : List String }
-    , connected : Bool
     , completions : Bool
     , completionIndex : Int
     }
@@ -98,8 +90,6 @@ type Msg
     | Action String
     | Acted (Result Http.Error ())
     | Incoming D.Value
-    | Read Int
-    | Push Bool
     | CompletionMove Int
     | Complete
     | ChooseCompletion Int
@@ -128,6 +118,7 @@ catalogDecoder =
         |> andMap (D.field "defaultModel" D.string)
         |> andMap (D.field "overrides" (D.dict D.string))
         |> andMap (D.field "levels" (D.list D.string))
+        |> andMap (D.field "publicKey" D.string)
 
 
 authDecoder : D.Decoder (List Auth)
@@ -146,9 +137,6 @@ pageDecoder =
 
                     "settings" ->
                         D.map2 Defaults catalogDecoder (D.field "providers" authDecoder)
-
-                    "activity" ->
-                        D.succeed Activity
 
                     _ ->
                         D.fail "Unknown page"
@@ -186,9 +174,6 @@ main =
                         , busy = False
                         , directories = []
                         , directoryRequest = 0
-                        , items = []
-                        , sources = []
-                        , connected = False
                         , completions = False
                         , completionIndex = 0
                         }
@@ -346,9 +331,6 @@ update msg model =
 
                                 else
                                     Cmd.none
-
-                            Activity ->
-                                siteBrowser (E.object [ ( "kind", E.string "activity" ) ])
 
                             _ ->
                                 Cmd.none
@@ -640,14 +622,6 @@ update msg model =
 
         Incoming payload ->
             case D.decodeValue (D.field "kind" D.string) payload of
-                Ok "activity" ->
-                    case D.decodeValue (D.field "value" activityDecoder) payload of
-                        Ok ( sources, items ) ->
-                            ( { model | sources = sources, items = items, connected = True }, Cmd.none )
-
-                        Err _ ->
-                            ( { model | error = "Invalid activity update." }, Cmd.none )
-
                 Ok "home" ->
                     update (Navigate (Browser.External "/elm")) model
 
@@ -663,35 +637,8 @@ update msg model =
                         _ ->
                             ( model, Cmd.none )
 
-                Ok "disconnected" ->
-                    ( { model | connected = False }, Cmd.none )
-
-                Ok "status" ->
-                    ( { model | error = D.decodeValue (D.field "value" D.string) payload |> Result.withDefault "" }, Cmd.none )
-
                 _ ->
                     ( model, Cmd.none )
-
-        Read item ->
-            ( model
-            , Http.post
-                { url = "/elm/activity/read"
-                , body = Http.jsonBody (E.object [ ( "id", E.int item ) ])
-                , expect =
-                    Http.expectWhatever
-                        (\result ->
-                            case result of
-                                Ok () ->
-                                    NoOp
-
-                                Err error ->
-                                    Incoming (E.object [ ( "kind", E.string "status" ), ( "value", E.string (message error) ) ])
-                        )
-                }
-            )
-
-        Push enabled ->
-            ( model, siteBrowser (E.object [ ( "kind", E.string "push" ), ( "enabled", E.bool enabled ) ]) )
 
         CompletionMove delta ->
             ( { model | completionIndex = modBy (max 1 (List.length (completions model))) (model.completionIndex + delta) }, Cmd.none )
@@ -764,13 +711,6 @@ keys model =
         )
 
 
-activityDecoder : D.Decoder ( List { title : String, lines : List String }, List Item )
-activityDecoder =
-    D.map2 Tuple.pair
-        (D.field "sources" (D.list (D.map2 (\title lines -> { title = title, lines = lines }) (D.field "title" D.string) (D.field "lines" (D.list D.string)))))
-        (D.field "history" (D.list (D.map7 Item (D.field "id" D.int) (D.field "label" D.string) (D.field "source" D.string) (D.field "body" D.string) (D.field "path" D.string) (D.field "unavailable" D.string) (D.field "read" D.bool))))
-
-
 view : Model -> Browser.Document Msg
 view model =
     let
@@ -787,9 +727,6 @@ view model =
 
                 Defaults _ _ ->
                     "Global settings"
-
-                Activity ->
-                    "Activity"
 
                 Loading ->
                     "Pi"
@@ -876,59 +813,7 @@ view model =
                     ]
 
                 Defaults catalog auth ->
-                    [ main_ [ id "main-area" ] [ section [ id "global-preferences", class "pane" ] (defaultsView model catalog ++ [ section [ id "authorization", class "settings-group", attribute "aria-labelledby" "authorization-title" ] (h2 [ id "authorization-title" ] [ text "Auth" ] :: List.map (\provider -> section [ id (provider.id ++ "-authorization"), class "provider-authorization" ] (authView model.busy provider)) auth) ]) ] ]
-
-                Activity ->
-                    [ main_ [ id "main-area" ]
-                        [ section [ class "pane" ]
-                            [ h1 [] [ text "Activity" ]
-                            , p [ id "connection" ]
-                                [ text
-                                    (if model.connected then
-                                        "Connected"
-
-                                     else
-                                        "Disconnected; reconnecting…"
-                                    )
-                                ]
-                            , button [ id "enable-push", onClick (Push True) ] [ text "Enable push on this device" ]
-                            , button [ id "disable-push", onClick (Push False) ] [ text "Disable push on this device" ]
-                            , p [ id "push-status", attribute "role" "status" ] [ text model.error ]
-                            , h2 [] [ text "Current status" ]
-                            , div [ id "sources" ] (List.map (\source -> section [] (Html.h3 [] [ text source.title ] :: List.map (\line -> p [] [ text line ]) source.lines)) model.sources)
-                            , h2 [] [ text "Inbox" ]
-                            , div [ id "inbox" ]
-                                (List.map
-                                    (\item ->
-                                        Html.article [ id ("activity-" ++ String.fromInt item.id) ]
-                                            [ Html.h3 [] [ text item.label ]
-                                            , p [] [ text item.source ]
-                                            , if item.body == "" then
-                                                text ""
-
-                                              else
-                                                p [ class "activity-body" ] [ text item.body ]
-                                            , if item.path /= "" then
-                                                link item.path "Open conversation"
-
-                                              else
-                                                p [] [ text item.unavailable ]
-                                            , button [ A.disabled item.read, onClick (Read item.id) ]
-                                                [ text
-                                                    (if item.read then
-                                                        "Read"
-
-                                                     else
-                                                        "Mark read"
-                                                    )
-                                                ]
-                                            ]
-                                    )
-                                    model.items
-                                )
-                            ]
-                        ]
-                    ]
+                    [ main_ [ id "main-area" ] [ section [ id "settings", class "pane", attribute "aria-label" "Global settings" ] (defaultsView model catalog ++ [ Html.node "push-settings" [ attribute "public-key" catalog.publicKey ] [], section [ id "authorization", class "settings-group", attribute "aria-labelledby" "authorization-title" ] (h2 [ id "authorization-title" ] [ text "Auth" ] :: List.map (\provider -> section [ id (provider.id ++ "-authorization"), class "provider-authorization" ] (authView model.busy provider)) auth) ]) ] ]
     in
     { title = title
     , body =
@@ -937,8 +822,7 @@ view model =
                 Landing _ ->
                     [ header [ id "app-header" ]
                         [ Html.nav [ class "landing-navigation", attribute "aria-label" "Global" ]
-                            [ a [ class "icon", href "/elm/activity", attribute "aria-label" "Activity", A.title "Activity" ] [ Transcript.icon "bell" ]
-                            , a [ class "icon", href "/elm/settings", attribute "aria-label" "Global settings", A.title "Global settings" ] [ Transcript.icon "settings" ]
+                            [ a [ class "icon", href "/elm/settings", attribute "aria-label" "Global settings", A.title "Global settings" ] [ Transcript.icon "settings" ]
                             ]
                         ]
                     ]
@@ -993,31 +877,48 @@ defaultsView model catalog =
         choice selected key title =
             option [ value key, A.selected (selected == key) ] [ text title ]
 
-        field item =
-            label []
-                [ span [] [ text item.label ]
-                , if item.readonly then
-                    input [ A.type_ "number", value item.value, A.readonly True ] []
-
-                  else
-                    select [ A.name item.key, value (current item.key), onInput (EditDefault item.key) ]
-                        (List.map
-                            (\str ->
-                                choice (current item.key)
-                                    str
-                                    (if str == "true" then
-                                        "On"
-
-                                     else if str == "false" then
-                                        "Off"
-
-                                     else
-                                        str
-                                    )
-                            )
-                            item.choices
+        toggle key title attributes =
+            div [ class "setting-row" ]
+                [ span [] [ text title ]
+                , div [ class "setting-toggle", attribute "role" "radiogroup", attribute "aria-label" title ]
+                    (List.map
+                        (\( str, caption ) ->
+                            label [ class "toggle-option" ]
+                                [ input ([ A.type_ "radio", A.name key, value str ] ++ attributes str) []
+                                , span [] [ text caption ]
+                                ]
                         )
+                        [ ( "false", "Off" ), ( "true", "On" ) ]
+                    )
                 ]
+
+        field item =
+            if not item.readonly && item.choices == [ "true", "false" ] then
+                toggle item.key
+                    item.label
+                    (\str ->
+                        [ A.checked (current item.key == str)
+                        , onCheck
+                            (\checked ->
+                                if checked then
+                                    EditDefault item.key str
+
+                                else
+                                    NoOp
+                            )
+                        ]
+                    )
+
+            else
+                label []
+                    [ span [] [ text item.label ]
+                    , if item.readonly then
+                        input [ A.type_ "number", value item.value, A.readonly True ] []
+
+                      else
+                        select [ A.name item.key, value (current item.key), onInput (EditDefault item.key) ]
+                            (List.map (\str -> choice (current item.key) str str) item.choices)
+                    ]
 
         group name children =
             section [ class "settings-group" ] (h2 [] [ text name ] :: children ++ List.map field (List.filter (.group >> (==) name) catalog.fields))
@@ -1026,13 +927,19 @@ defaultsView model catalog =
             div [ id "model-defaults" ] [ label [] [ span [] [ text "Default model" ], select [ A.name "model", value (current "model"), onInput (EditDefault "model") ] (choice (current "model") "" "Keep configured default" :: List.map (\item -> choice (current "model") item.key item.label) catalog.options.models) ], label [] [ span [] [ text "Thinking override for this model" ], select [ A.name "modelThinkingLevel", value (current "modelThinkingLevel"), onInput (EditDefault "modelThinkingLevel") ] (choice (current "modelThinkingLevel") "" "Use global default" :: List.map (\str -> choice (current "modelThinkingLevel") str str) catalog.levels) ] ]
 
         preference key title =
-            label [] [ span [] [ text title ], select [ id key, attribute "data-preference" key ] [ option [ value "false" ] [ text "Off" ], option [ value "true" ] [ text "On" ] ] ]
+            toggle key title (\_ -> [ attribute "data-preference" key ])
     in
     [ h1 [] [ text "Global settings" ]
     , if catalog.configured then
         form
-            [ id "global-settings"
-            , attribute "data-autosave" ""
+            [ attribute "data-autosave" ""
+            , attribute "aria-busy"
+                (if model.saving /= Nothing then
+                    "true"
+
+                 else
+                    "false"
+                )
             , attribute "data-failed"
                 (if model.error == "" then
                     "false"
@@ -1044,20 +951,7 @@ defaultsView model catalog =
             ]
             (group "Model / thinking" [ models ]
                 :: List.map (\name -> group name []) [ "Execution", "Compaction", "Retries", "Display" ]
-                ++ [ button [] [ text "Save defaults" ]
-                   , Html.output [ class "save-status", attribute "role" "status" ]
-                        [ text
-                            (if model.saving /= Nothing then
-                                "Saving…"
-
-                             else if model.error /= "" then
-                                "Save failed"
-
-                             else
-                                "Saved"
-                            )
-                        ]
-                   ]
+                ++ [ button [] [ text "Save defaults" ] ]
             )
 
       else

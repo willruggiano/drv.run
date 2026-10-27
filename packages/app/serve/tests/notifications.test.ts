@@ -57,15 +57,11 @@ await test("native Pi completion reaches the durable inbox without a terminal or
   assert.equal(activity.history()[0].delivery, "disabled");
   await f.sessions.close();
 });
-await test("inbox and subscriptions retain the existing same-origin boundary", async (t) => {
+await test("settings subscriptions retain the same-origin boundary and Activity routes are removed", async (t) => {
   const f = await fixture(t);
   const activity = new Activity(":memory:");
   const notifications = new Notifications(activity, { activity: activityDefaults, push: null });
   t.after(() => notifications.close());
-  activity.accept(source, 1, {
-    type: "status",
-    record: { id: "", state: "blocked", kind: "permission" },
-  });
   const server = httpServer(
     f.sessions,
     "127.0.0.1",
@@ -84,26 +80,33 @@ await test("inbox and subscriptions retain the existing same-origin boundary", a
   const address = server.address();
   assert(address && typeof address === "object");
   const base = `http://127.0.0.1:${address.port}`;
-  assert.equal((await fetch(base + "/htmx/activity")).status, 200);
-  const id = activity.history()[0].id;
-  const write = (origin?: string) =>
-    fetch(base + "/htmx/activity/read", {
+  for (const frontend of ["elm", "htmx"]) {
+    for (const path of ["activity", "activity/events", "activity/read", "activity/subscribe"])
+      assert.equal((await fetch(`${base}/${frontend}/${path}`)).status, 404);
+    const sessions = await fetch(`${base}/${frontend}/sessions`, { redirect: "manual" });
+    assert.equal(sessions.status, 303);
+    assert.equal(sessions.headers.get("Location"), `/${frontend}/`);
+    const endpoint = "https://push.example/device";
+    const subscription = { endpoint };
+    activity.subscribe(endpoint, subscription);
+    const write = (origin?: string) =>
+      fetch(`${base}/${frontend}/settings/push/unsubscribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) },
+        body: JSON.stringify({ endpoint }),
+      });
+    assert.equal((await write()).status, 403);
+    assert.equal((await write("https://attacker.example")).status, 403);
+    assert.deepEqual(activity.subscriptions(), [subscription]);
+    assert.equal((await write(base)).status, 204);
+    assert.deepEqual(activity.subscriptions(), []);
+    const response = await fetch(`${base}/${frontend}/settings/push/subscribe`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) },
-      body: JSON.stringify({ id }),
+      headers: { "Content-Type": "application/json", Origin: base },
+      body: "{}",
     });
-  assert.equal((await write()).status, 403);
-  assert.equal((await write("https://attacker.example")).status, 403);
-  assert.equal(activity.history()[0].read, false);
-  assert.equal((await write(base)).status, 204);
-  assert.equal(activity.history()[0].read, true);
-  assert.equal(activity.sources()[0].records[0].state, "blocked");
-  const response = await fetch(base + "/htmx/activity/subscribe", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Origin: base },
-    body: "{}",
-  });
-  assert.equal(response.status, 409);
+    assert.equal(response.status, 409);
+  }
 });
 await test("push failures are retried finitely and never erase accepted activity", async (t) => {
   let now = 1000;

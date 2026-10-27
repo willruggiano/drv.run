@@ -61,18 +61,17 @@ export async function pages(
     json(response, { saved: true });
     return true;
   }
-  if (!landing && !["/elm/settings", "/elm/activity"].includes(path)) return false;
-  if (path === "/elm/activity" && !notifications) throw new FormError(404, "Not found.");
+  if (!landing && path !== "/elm/settings") return false;
   if (request.method === "POST") {
     const data = await form(request, 8 * 1024 * 1024);
     if (landing) {
       const session = await createSession(data, sessions, context);
       json(response, { path: conversationURL(session, undefined, "elm") });
-    } else if (path === "/elm/settings") {
+    } else {
       if (!settings) throw new FormError(503, "Shared settings are not configured.");
       await saveGlobalSettings(data, sessions, settings, context);
       json(response, { saved: true });
-    } else throw new FormError(405, "Method not allowed.");
+    }
     return true;
   }
   if (request.method !== "GET") throw new FormError(405, "Method not allowed.");
@@ -80,87 +79,87 @@ export async function pages(
     elmDocument(response, true);
     return true;
   }
-  if (landing || path === "/elm/settings") {
-    const providers =
-      path === "/elm/settings"
-        ? await Promise.all(
-            authorizationProviders.map(async ({ id, label }) => {
-              const auth = await authorization.status(signal, id);
-              return {
-                id,
-                label,
-                state: auth.state,
-                identity:
-                  auth.state === "usable"
-                    ? (auth.accountId ?? (auth.userId === null ? null : String(auth.userId)))
-                    : null,
-                failed: !!auth.error,
-                device: auth.device
-                  ? {
-                      code: auth.device.userCode,
-                      uri: auth.device.verificationUri,
-                    }
+  const providers =
+    path === "/elm/settings"
+      ? await Promise.all(
+          authorizationProviders.map(async ({ id, label }) => {
+            const auth = await authorization.status(signal, id);
+            return {
+              id,
+              label,
+              state: auth.state,
+              identity:
+                auth.state === "usable"
+                  ? (auth.accountId ?? (auth.userId === null ? null : String(auth.userId)))
                   : null,
-              };
-            }),
-          )
-        : [];
-    if (!landing && url.searchParams.has("auth")) {
-      json(response, providers);
-      return true;
-    }
-    const catalog = await sessions.catalog(context);
-    const key = (item: { provider: string; modelId: string }) =>
-      JSON.stringify([item.provider, item.modelId]);
-    const preferences = settings?.read();
-    json(response, {
-      kind: landing ? "landing" : "settings",
-      providers,
-      models: catalog.models.map((item) => ({
-        key: key(item),
-        label: `${item.provider} / ${item.name}`,
-        levels: item.thinkingLevels,
-        default: item.defaultThinkingLevel,
-      })),
-      targets: catalog.targets.map((item) => ({
-        key: JSON.stringify([item.provider, item.target]),
-        label: item.label,
-        disabled: !item.available,
-        root: item.directoryRoot ?? "",
-      })),
-      model: catalog.defaultModel
-        ? key(catalog.defaultModel)
-        : catalog.models[0]
-          ? key(catalog.models[0])
-          : "",
-      target: (() => {
-        const item = catalog.targets.find((item) => item.available);
-        return item ? JSON.stringify([item.provider, item.target]) : "";
-      })(),
-      sessions: catalog.sessions.slice(0, 5).map((item) => ({
-        path: `/elm/sessions/${item.id}`,
-        title: item.name || "Untitled session",
-        date: new Date(item.created).toISOString().slice(0, 10),
-        environment: item.binding
-          ? `${item.binding.provider === "local" ? "local" : item.binding.target} · ${item.cwd}`
-          : "No execution environment",
-        model: item.model?.modelId ?? "No model",
-        thinking: item.thinkingLevel,
-        usage: `${item.context.window && item.context.lastResponse ? ((item.context.lastResponse.tokens / item.context.window) * 100).toFixed(1) + "%" : "—"}/${item.context.window ? compactTokens(item.context.window) : "?"}${item.context.autoCompact ? " (auto)" : ""}`,
-      })),
-      configured: !!settings,
-      fields: settingFields.map((item) => ({
-        key: item.key,
-        label: item.label,
-        group: item.group,
-        readonly: "readonly" in item,
-        value: String(preferences?.values[item.key] ?? ""),
-        choices: "choices" in item ? item.choices : ["true", "false"],
-      })),
-      overrides: preferences?.modelThinkingLevels ?? {},
-      levels: thinkingLevels,
-      defaultModel: preferences?.model ? key(preferences.model) : "",
-    });
-  } else json(response, { kind: path.split("/").at(-1) });
+              failed: !!auth.error,
+              device: auth.device
+                ? {
+                    code: auth.device.userCode,
+                    uri: auth.device.verificationUri,
+                  }
+                : null,
+            };
+          }),
+        )
+      : [];
+  if (!landing && url.searchParams.has("auth")) {
+    json(response, providers);
+    return true;
+  }
+  const catalog = await sessions.catalog(context);
+  const key = (item: { provider: string; modelId: string }) =>
+    JSON.stringify([item.provider, item.modelId]);
+  const preferences = settings?.read();
+  json(response, {
+    kind: landing ? "landing" : "settings",
+    providers,
+    publicKey: notifications?.publicKey ?? "",
+    models: catalog.models.map((item) => ({
+      key: key(item),
+      label: `${item.provider} / ${item.name}`,
+      levels: item.thinkingLevels,
+      default: item.defaultThinkingLevel,
+    })),
+    targets: catalog.targets.map((item) => ({
+      key: JSON.stringify([item.provider, item.target]),
+      label: item.label,
+      disabled: !item.available,
+      root: item.directoryRoot ?? "",
+    })),
+    model: catalog.defaultModel
+      ? key(catalog.defaultModel)
+      : catalog.models[0]
+        ? key(catalog.models[0])
+        : "",
+    target: (() => {
+      const item = catalog.targets.find((item) => item.available);
+      return item ? JSON.stringify([item.provider, item.target]) : "";
+    })(),
+    sessions: catalog.sessions.slice(0, 5).map((item) => ({
+      path: `/elm/sessions/${item.id}`,
+      title: item.name || "Untitled session",
+      date: new Date(item.created).toISOString().slice(0, 10),
+      environment: item.binding
+        ? `${item.binding.provider === "local" ? "local" : item.binding.target} · ${item.cwd}`
+        : "No execution environment",
+      model: item.model?.modelId ?? "No model",
+      thinking: item.thinkingLevel,
+      usage: `${item.context.window && item.context.lastResponse ? ((item.context.lastResponse.tokens / item.context.window) * 100).toFixed(1) + "%" : "—"}/${item.context.window ? compactTokens(item.context.window) : "?"}${item.context.autoCompact ? " (auto)" : ""}`,
+    })),
+    configured: !!settings,
+    fields: settingFields.map((item) => ({
+      key: item.key,
+      label: item.label,
+      group: item.group,
+      readonly: "readonly" in item,
+      value: String(preferences?.values[item.key] ?? ""),
+      choices: "choices" in item ? item.choices : ["true", "false"],
+    })),
+    overrides: preferences?.modelThinkingLevels ?? {},
+    levels: thinkingLevels,
+    defaultModel: preferences?.model ? key(preferences.model) : "",
+  });
+
   return true;
 }

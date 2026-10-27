@@ -1561,10 +1561,10 @@ view model =
         panel =
             case model.pane of
                 Preferences ->
-                    section [ id "preferences", class "pane", attribute "aria-label" "Session settings" ]
+                    section [ id "settings", class "pane", attribute "data-layout" "stacked", attribute "aria-label" "Session settings" ]
                         [ a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
                         , div []
-                            [ Maybe.map (Panel.settingsView EditSetting SaveSettings model.directories) model.settings |> Maybe.withDefault (p [ attribute "role" "status" ] [ text "Loading settings…" ])
+                            [ Maybe.map (Panel.settingsView EditSetting SaveSettings (model.saving /= Nothing) model.directories) model.settings |> Maybe.withDefault (p [ attribute "role" "status" ] [ text "Loading settings…" ])
                             , if model.error /= "" then
                                 button [ onClick SaveSettings ] [ text "Retry saving settings" ]
 

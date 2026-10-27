@@ -71,9 +71,19 @@ settingsBody settings =
     Http.multipartBody (List.map (\( key, str ) -> Http.stringPart key str) [ ( "name", settings.name ), ( "model", settings.model ), ( "target", settings.target ), ( "thinkingLevel", settings.thinking ), ( "baseDirectory", settings.directory ) ])
 
 
-settingsView : (Field -> String -> msg) -> msg -> List String -> Settings -> Html msg
-settingsView change save directories settings =
-    form [ id "session-settings", onSubmit save ]
+settingsView : (Field -> String -> msg) -> msg -> Bool -> List String -> Settings -> Html msg
+settingsView change save saving directories settings =
+    form
+        [ attribute "data-autosave" ""
+        , attribute "aria-busy"
+            (if saving then
+                "true"
+
+             else
+                "false"
+            )
+        , onSubmit save
+        ]
         [ label [] [ span [] [ text "Session" ], input [ A.name "name", A.maxlength 120, A.placeholder "Untitled session", value settings.name, onInput (change Name), onBlur save ] [] ]
         , optionsView change save directories settings
         ]

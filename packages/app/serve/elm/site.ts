@@ -1,15 +1,8 @@
-import { activityView, type ActivitySnapshot } from "../activity-view.ts";
-import {
-  enablePush,
-  installPwa,
-  installPreferences,
-  restorePreferences,
-  installStatus,
-} from "../pwa.ts";
+import { installPwa, installPreferences, restorePreferences, installStatus } from "../pwa.ts";
 import { installSelectKeyMappings, navigationDirection, moveFocus } from "../key-mappings.ts";
 
 type Request =
-  | { kind: "rendered" | "resize" | "activity" }
+  | { kind: "rendered" | "resize" }
   | {
       kind: "draft";
       text: string;
@@ -17,8 +10,7 @@ type Request =
       missingFiles: boolean;
       options: Record<string, string>;
     }
-  | { kind: "created" | "navigate"; path: string }
-  | { kind: "push"; enabled: boolean };
+  | { kind: "created" | "navigate"; path: string };
 declare const Elm: {
   Site: {
     init(options: {
@@ -81,17 +73,12 @@ document.body.classList.add("stacked-layout", "bottom-align");
 installPwa();
 installPreferences();
 installSelectKeyMappings(document);
-let events: EventSource | undefined;
-let publicKey: string | null = null;
 function resize() {
   const prompt = document.querySelector<HTMLTextAreaElement>("#prompt");
   if (prompt) {
     prompt.style.height = "auto";
     prompt.style.height = `${prompt.scrollHeight}px`;
   }
-}
-function status(value: string) {
-  app.ports.siteIncoming.send({ kind: "status", value });
 }
 app.ports.siteBrowser.subscribe((request) => {
   switch (request.kind) {
@@ -130,29 +117,9 @@ app.ports.siteBrowser.subscribe((request) => {
       }
       location.assign(request.path);
       break;
-    case "activity": {
-      if (events) break;
-      const selected = /^#activity-([1-9][0-9]*)$/.exec(location.hash)?.[1];
-      events = new EventSource(`/elm/activity/events${selected ? `?item=${selected}` : ""}`);
-      events.onmessage = (event: MessageEvent<string>) => {
-        const snapshot = JSON.parse(event.data) as ActivitySnapshot;
-        publicKey = snapshot.publicKey;
-        app.ports.siteIncoming.send({ kind: "activity", value: activityView(snapshot, "/elm") });
-      };
-      events.onerror = () => app.ports.siteIncoming.send({ kind: "disconnected" });
-      break;
-    }
-    case "push":
-      void enablePush(request.enabled, publicKey)
-        .then(status)
-        .catch((error: unknown) =>
-          status(error instanceof Error ? error.message : "Request failed."),
-        );
-      break;
   }
 });
 window.addEventListener("resize", resize);
-window.addEventListener("pagehide", () => events?.close());
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) location.reload();
 });

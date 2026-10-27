@@ -5,7 +5,7 @@ import { elmFrontend } from "./elm/frontend.ts";
 import { html as h, renderHTML } from "./html.ts";
 import { hostModels, ProxyAuthorization } from "./auth.ts";
 import { authAction } from "./htmx/auth.ts";
-import { hypermedia, errorPage, activityPage } from "./htmx/frontend.ts";
+import { hypermedia, errorPage } from "./htmx/frontend.ts";
 import { openApplication } from "./application.ts";
 import { ownerOptions } from "./instances.ts";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -306,7 +306,6 @@ export function httpServer(
           "/htmx/sse.js",
           "/htmx/morph.js",
           "/highlight.js",
-          "/htmx/activity.js",
           "/styles.css",
           "/design-system.html",
           "/icon.svg",
@@ -326,7 +325,6 @@ export function httpServer(
           "htmx/sse.js": "text/javascript; charset=utf-8",
           "htmx/morph.js": "text/javascript; charset=utf-8",
           "highlight.js": "text/javascript; charset=utf-8",
-          "htmx/activity.js": "text/javascript; charset=utf-8",
           "styles.css": "text/css; charset=utf-8",
           "design-system.html": "text/html; charset=utf-8",
           "icon.svg": "image/svg+xml",
@@ -372,13 +370,15 @@ export function httpServer(
         );
         return;
       }
-      if (frontend && url.pathname.startsWith(`/${frontend}/activity/`) && notifications) {
+      if (frontend && url.pathname.startsWith(`/${frontend}/settings/push/`) && notifications) {
         const api = new URL(url);
         api.pathname = url.pathname.slice(frontend.length + 1);
         return await notifications.route(request, response, api);
       }
-      if (url.pathname === "/htmx/activity" && notifications && request.method === "GET") {
-        return activityPage(response);
+      if (frontend && url.pathname === `/${frontend}/sessions` && request.method === "GET") {
+        response.writeHead(303, { Location: `/${frontend}/` });
+        response.end();
+        return;
       }
       if (url.pathname.startsWith("/htmx/settings/auth/"))
         return await authAction(request, response, url, authorization, controller.signal);
@@ -409,6 +409,7 @@ export function httpServer(
           authorization,
           controller.signal,
           settings,
+          notifications,
         );
       if (url.pathname === "/") {
         if (request.method !== "GET") throw new RequestError(405, "Method not allowed.");

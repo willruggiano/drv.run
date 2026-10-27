@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { join } from "node:path";
+import { GlobalSettingsStore } from "../../server.ts";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { InboxDoc } from "@earendil-works/pi-durable";
-import { fixture, waitFor } from "../../tests/sessions-testing.ts";
+import { fixture, waitFor, model } from "../../tests/sessions-testing.ts";
 import { browserFixture } from "../../tests/browser-testing.ts";
 import { returnToConversation, openGlobalSettings } from "./testing.ts";
 import { conversationURL } from "../../presentation.ts";
@@ -140,10 +142,13 @@ await test("message alignment is a persistent browser preference shared across s
     await page.goto(b.base + path);
     await aligned(bottom);
     await openGlobalSettings(page);
-    assert.equal(await page.locator("#bottom-align").inputValue(), String(bottom));
-    await page.locator("#wrap-code").selectOption("true");
+    assert.equal(
+      await page.locator('[data-preference="bottom-align"][value="true"]').isChecked(),
+      bottom,
+    );
+    await page.locator('[data-preference="wrap-code"][value="true"]').check();
     bottom = !bottom;
-    await page.locator("#bottom-align").selectOption(String(bottom));
+    await page.locator(`[data-preference="bottom-align"][value="${bottom}"]`).check();
     assert.equal(
       await page.locator("body").evaluate((node) => node.classList.contains("wrap-code")),
       true,
@@ -154,7 +159,10 @@ await test("message alignment is a persistent browser preference shared across s
     await page.reload();
     await aligned(bottom);
     await openGlobalSettings(page);
-    assert.equal(await page.locator("#bottom-align").inputValue(), String(bottom));
+    assert.equal(
+      await page.locator('[data-preference="bottom-align"][value="true"]').isChecked(),
+      bottom,
+    );
     await returnToConversation(page);
     await page.locator(`#session-list a[href="/htmx/sessions/${path.split("/")[3]}"]`).click();
   }
@@ -173,8 +181,11 @@ await test("message alignment is a persistent browser preference shared across s
     await page.goto(b.base + path);
     await aligned(true);
     await openGlobalSettings(page);
-    assert.equal(await page.locator("#bottom-align").inputValue(), "true");
-    await page.locator("#bottom-align").selectOption("false");
+    assert.equal(
+      await page.locator('[data-preference="bottom-align"][value="true"]').isChecked(),
+      true,
+    );
+    await page.locator('[data-preference="bottom-align"][value="false"]').check();
     await returnToConversation(page);
     await page.locator(`#session-list a[href="/htmx/sessions/${path.split("/")[3]}"]`).click();
     await aligned(false);
@@ -251,11 +262,11 @@ await test("main panes reach the top on mobile and wide screens without mobile h
     }
     await page.setViewportSize({ width: 390, height: 900 });
     await page.locator("#footer-model").click();
-    await page.locator("#preferences").waitFor();
+    await page.locator("#settings").waitFor();
     assert.equal(await page.locator(".bar").count(), 0);
     assert.equal(await page.locator("#close-view").isVisible(), true);
     await returnToConversation(page);
-    await page.locator("#preferences").waitFor({ state: "hidden" });
+    await page.locator("#settings").waitFor({ state: "hidden" });
     await page.locator("#prompt").fill("/unknown-command");
     await page.locator("#send").click();
     const error = page.locator("#request-error:not(:empty)");
@@ -266,6 +277,76 @@ await test("main panes reach the top on mobile and wide screens without mobile h
     assert(mainBox.y >= errorBox.y + errorBox.height);
     assert.equal(await page.locator(".bar").isVisible(), false);
   }
+});
+
+await test("global settings rows match Display spacing, avoid needless wrapping and use muted labels", async (t) => {
+  const f = await fixture(t);
+  const b = await browserFixture(
+    t,
+    f.sessions,
+    undefined,
+    undefined,
+    new GlobalSettingsStore({ model }),
+  );
+  const { page } = b;
+  for (const frontend of ["elm", "htmx"] as const) {
+    await page.goto(`${b.base}/${frontend}/settings`);
+    await page.locator("#settings form[data-autosave]").waitFor();
+    const muted = await page
+      .locator("#app-header .header-title")
+      .evaluate((node) => getComputedStyle(node).color);
+    for (const width of [320, 390, 1440]) {
+      await page.setViewportSize({ width, height: 844 });
+      const displayHeight = await page
+        .getByRole("radiogroup", { name: "Show transcript images", exact: true })
+        .locator("..")
+        .evaluate((node) => node.getBoundingClientRect().height);
+      assert.equal(displayHeight, 32);
+      const rows = await page
+        .locator("#settings :is(label:not(.toggle-option), .setting-row)")
+        .evaluateAll((rows) =>
+          rows.map((row) => {
+            const label = row.querySelector(":scope > span")!;
+            const control = row.lastElementChild!;
+            const range = document.createRange();
+            range.selectNodeContents(label);
+            const labelBounds = label.getBoundingClientRect();
+            const controlBounds = control.getBoundingClientRect();
+            return {
+              color: getComputedStyle(label).color,
+              labelHeight: labelBounds.height,
+              controlHeight: controlBounds.height,
+              rowHeight: row.getBoundingClientRect().height,
+              gap: controlBounds.left - labelBounds.right,
+              lines: range.getClientRects().length,
+              modelDefaults: !!row.closest("#model-defaults"),
+            };
+          }),
+        );
+      assert.ok(rows.length > 10);
+      for (const row of rows) {
+        assert.equal(row.color, muted);
+        assert.equal(row.controlHeight, 28);
+        assert.ok(row.gap >= 16);
+        assert.ok(Math.abs(row.rowHeight - (Math.max(row.labelHeight, 28) + 4)) < 0.1);
+        if (!row.modelDefaults) {
+          assert.equal(row.lines, 1);
+          assert.equal(row.rowHeight, displayHeight);
+        }
+      }
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
+        false,
+      );
+      if (b.screenshots && width === 390) {
+        await page.locator("#settings").evaluate((node) => {
+          node.scrollTop = 0;
+        });
+        await page.screenshot({ path: join(b.screenshots, `${frontend}-settings-spacing.png`) });
+      }
+    }
+  }
+  assert.deepEqual(b.errors, []);
 });
 
 await test("panel headers respect safe areas, stay above scrolling content and close to their origin", async (t) => {
@@ -282,7 +363,7 @@ await test("panel headers respect safe areas, stay above scrolling content and c
     {
       url: "/htmx/settings",
       title: "Global settings",
-      pane: "#global-preferences",
+      pane: "#settings",
       composer: false,
     },
     { url: `${path}/context`, title: "Context", pane: "#context-view", composer: false },
@@ -323,9 +404,9 @@ await test("panel headers respect safe areas, stay above scrolling content and c
       assert.deepEqual(await bar.boundingBox(), header);
       assert.deepEqual(await close.boundingBox(), button);
       await close.click();
-      await page.waitForURL(b.base + (panel.pane === "#global-preferences" ? "/htmx/" : path));
+      await page.waitForURL(b.base + (panel.pane === "#settings" ? "/htmx/" : path));
       await page
-        .locator(panel.pane === "#global-preferences" ? "#landing" : "#conversation-scroll")
+        .locator(panel.pane === "#settings" ? "#landing" : "#conversation-scroll")
         .waitFor();
     }
     await page.goto(b.base + "/htmx/");
@@ -355,15 +436,18 @@ await test("session settings center above the composer without a header or save 
   for (const width of [320, 390, 820, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(b.base + path + "/settings");
-    const nameInput = page.locator('#session-settings [name="name"]');
+    const nameInput = page.locator('#settings form[data-autosave] [name="name"]');
     assert.equal(await nameInput.inputValue(), "");
     assert.equal(await nameInput.getAttribute("placeholder"), fallback);
     assert.equal(await page.locator("#app-header").count(), 0);
-    assert.equal(await page.locator("#session-settings .save-status").count(), 0);
-    assert.equal(await page.locator('#session-settings [name="instructions"]').count(), 0);
-    assert.equal(await page.locator("#session-settings > button").isVisible(), false);
+    assert.equal(await page.locator("#settings form[data-autosave] output").count(), 0);
+    assert.equal(
+      await page.locator('#settings form[data-autosave] [name="instructions"]').count(),
+      0,
+    );
+    assert.equal(await page.locator("#settings form[data-autosave] > button").isVisible(), false);
     for (const name of ["name", "target", "model", "thinkingLevel"]) {
-      const control = page.locator(`#session-settings [name="${name}"]`);
+      const control = page.locator(`#settings form[data-autosave] [name="${name}"]`);
       assert.equal(await control.isVisible(), true);
       const row = await control.evaluate((input) => {
         const label = input.closest("label")!.querySelector("span")!;
@@ -381,16 +465,16 @@ await test("session settings center above the composer without a header or save 
       assert.equal(row.alignment, "left");
     }
     const close = await page.locator("#close-view").boundingBox();
-    const form = await page.locator("#session-settings").boundingBox();
+    const form = await page.locator("#settings form[data-autosave]").boundingBox();
     assert(close && form);
     assert(close.y + close.height < form.y);
-    const pane = await page.locator("#preferences").boundingBox();
-    const settings = await page.locator("#preferences > div").boundingBox();
+    const pane = await page.locator("#settings").boundingBox();
+    const settings = await page.locator("#settings > div").boundingBox();
     const footer = await page.locator("#app-footer").boundingBox();
     assert(pane && settings && footer);
     assert(settings.y > pane.y);
     assert(settings.y + settings.height < footer.y);
-    const padding = await page.locator("#preferences").evaluate((node) => {
+    const padding = await page.locator("#settings").evaluate((node) => {
       const style = getComputedStyle(node);
       return { top: parseFloat(style.paddingTop), right: parseFloat(style.paddingRight) };
     });
@@ -447,15 +531,17 @@ await test("recent sessions and session settings share a compact, horizontally a
         false,
       );
       await page.goto(b.base + conversationURL(sessions[0]) + "/settings");
-      const settings = await page.locator("#preferences > div").boundingBox();
-      const valueLeft = await page.locator('#session-settings [name="name"]').evaluate((input) => {
-        const style = getComputedStyle(input);
-        return (
-          input.getBoundingClientRect().left +
-          parseFloat(style.borderLeftWidth) +
-          parseFloat(style.paddingLeft)
-        );
-      });
+      const settings = await page.locator("#settings > div").boundingBox();
+      const valueLeft = await page
+        .locator('#settings form[data-autosave] [name="name"]')
+        .evaluate((input) => {
+          const style = getComputedStyle(input);
+          return (
+            input.getBoundingClientRect().left +
+            parseFloat(style.borderLeftWidth) +
+            parseFloat(style.paddingLeft)
+          );
+        });
       assert(settings);
       assert.equal(landing.x, settings.x);
       assert.equal(landing.width, settings.width);

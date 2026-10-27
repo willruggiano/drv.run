@@ -5,8 +5,6 @@ import { browserFixture } from "../../tests/browser-testing.ts";
 import { authorizationFixture } from "../../tests/testing.ts";
 import { fixture, model, waitFor } from "../../tests/sessions-testing.ts";
 import { GlobalSettingsStore } from "../../server.ts";
-import { Activity, activityDefaults } from "../../activity.ts";
-import { Notifications } from "../../notifications.ts";
 import { rename } from "../../sessions.ts";
 
 for (const frontend of ["elm", "htmx"] as const)
@@ -19,16 +17,11 @@ for (const frontend of ["elm", "htmx"] as const)
         await rename(await f.create(), "Review the authentication flow");
         const control = await authorizationFixture(t);
         const settings = new GlobalSettingsStore({ model });
-        const notifications = new Notifications(new Activity(":memory:"), {
-          activity: activityDefaults,
-          push: null,
-        });
-        t.after(() => notifications.close());
         const { page, base, errors, screenshots } = await browserFixture(
           t,
           f.sessions,
           control.authorization,
-          notifications,
+          undefined,
           settings,
         );
         page.setDefaultTimeout(10_000);
@@ -40,24 +33,16 @@ for (const frontend of ["elm", "htmx"] as const)
         const selector = `#${provider}-authorization`;
         await page.goto(`${base}/${frontend}/`);
         await page.locator("#session-list a").waitFor();
-        for (const name of ["Global settings", "Activity"]) {
-          const link = page.getByRole("link", { name, exact: true });
-          assert.equal(await link.isVisible(), true);
-          const bounds = await link.boundingBox();
-          assert.ok(bounds && bounds.width >= 44 && bounds.height >= 44);
-        }
+        const settingsLink = page.getByRole("link", { name: "Global settings", exact: true });
+        assert.equal(await settingsLink.isVisible(), true);
+        const bounds = await settingsLink.boundingBox();
+        assert.ok(bounds && bounds.width >= 44 && bounds.height >= 44);
         await capture("landing");
-        const activity = page.getByRole("link", { name: "Activity", exact: true });
-        assert.equal(await activity.getAttribute("href"), `/${frontend}/activity`);
-        await activity.click();
-        await page.locator("#enable-push").waitFor();
-        assert.equal(new URL(page.url()).pathname, `/${frontend}/activity`);
-        await page.getByRole("link", { name: "Sessions", exact: true }).click();
-        await page.locator("#landing").waitFor();
+        assert.equal(await page.getByRole("link", { name: "Activity", exact: true }).count(), 0);
         await page.getByRole("link", { name: "Global settings", exact: true }).click();
         await page.locator(`${selector} [data-state="not-enrolled"]`).waitFor();
         assert.equal(new URL(page.url()).pathname, `/${frontend}/settings`);
-        assert.equal(await page.locator("#global-preferences #authorization").count(), 1);
+        assert.equal(await page.locator("#settings #authorization").count(), 1);
         assert.equal(await page.locator("form form").count(), 0);
         assert.equal(await page.locator(selector).getByRole("button").count(), 1);
         assert.equal(await page.locator(selector).getByRole("link").count(), 0);
@@ -126,18 +111,27 @@ for (const frontend of ["elm", "htmx"] as const)
           await route.continue();
         });
         await page
-          .locator('#global-settings select[name="hideThinkingBlock"]')
-          .selectOption("true");
+          .locator('#settings form[data-autosave] input[name="hideThinkingBlock"][value="true"]')
+          .check();
         await saving.promise;
+        assert.equal(
+          await page.locator("#settings form[data-autosave]").getAttribute("aria-busy"),
+          "true",
+        );
+        assert.equal(await page.locator("#settings form[data-autosave] output").count(), 0);
         assert.equal(settings.read().values.hideThinkingBlock, false);
         control.approve(provider);
         await page.locator(`${selector} [data-state="usable"]`).waitFor();
         assert.equal(
-          await page.locator('#global-settings select[name="hideThinkingBlock"]').inputValue(),
-          "true",
+          await page
+            .locator('#settings form[data-autosave] input[name="hideThinkingBlock"][value="true"]')
+            .isChecked(),
+          true,
         );
         resume.resolve();
         await waitFor(async () => settings.read().values.hideThinkingBlock === true);
+        await page.locator('#settings form[data-autosave][aria-busy="false"]').waitFor();
+        assert.equal(await page.locator("#settings form[data-autosave] output").count(), 0);
         assert.equal(await page.locator(selector).getAttribute("hx-get"), null);
         await page
           .locator(selector)
@@ -150,8 +144,10 @@ for (const frontend of ["elm", "htmx"] as const)
         );
         assert.equal(new URL(page.url()).pathname, `/${frontend}/settings`);
         assert.equal(
-          await page.locator('#global-settings select[name="hideThinkingBlock"]').inputValue(),
-          "true",
+          await page
+            .locator('#settings form[data-autosave] input[name="hideThinkingBlock"][value="true"]')
+            .isChecked(),
+          true,
         );
         assert.equal(
           await page.evaluate(() => document.documentElement.scrollWidth > innerWidth),
@@ -162,10 +158,8 @@ for (const frontend of ["elm", "htmx"] as const)
           await page.getByRole("link", { name: "Sessions", exact: true }).click();
           await page.locator("#landing").waitFor();
           const cog = page.getByRole("link", { name: "Global settings", exact: true });
-          const bell = page.getByRole("link", { name: "Activity", exact: true });
           const cogBounds = await cog.boundingBox();
-          const bellBounds = await bell.boundingBox();
-          assert.ok(cogBounds && bellBounds && bellBounds.x + bellBounds.width <= cogBounds.x);
+          assert.ok(cogBounds && cogBounds.width >= 44 && cogBounds.height >= 44);
           await cog.click();
           await page.locator("#authorization").scrollIntoViewIfNeeded();
           assert.equal(

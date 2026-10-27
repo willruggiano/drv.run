@@ -10,6 +10,8 @@ export function installSettings() {
   const refreshedForms = new WeakMap<HtmxRequestCtx, HTMLFormElement>();
   document.addEventListener("htmx:before:request", (event) => {
     const source = event.detail.ctx.sourceElement;
+    if (source instanceof HTMLFormElement && source.hasAttribute("data-autosave"))
+      source.setAttribute("aria-busy", "true");
     if (source instanceof HTMLSelectElement) {
       const form = source.closest<HTMLFormElement>("form[data-autosave]");
       if (form) refreshedForms.set(event.detail.ctx, form);
@@ -22,15 +24,11 @@ export function installSettings() {
       while (form.dataset.dirty === "true" && form.isConnected) {
         form.dataset.dirty = "false";
         form.dataset.failed = "false";
-        const status = form.querySelector(".save-status");
-        if (status) status.textContent = "Saving…";
         await htmx.ajax("POST", form.action, { source: form, target: form, swap: "none" });
         if (form.dataset.failed === "true") {
           form.dataset.dirty = "true";
-          if (status) status.textContent = "Save failed";
           return false;
         }
-        if (status) status.textContent = "Saved";
       }
       return true;
     })();
@@ -55,7 +53,11 @@ export function installSettings() {
   });
   document.addEventListener("change", (event) => {
     const target = event.target;
-    if (!(target instanceof HTMLSelectElement)) return;
+    if (
+      !(target instanceof HTMLSelectElement) &&
+      !(target instanceof HTMLInputElement && target.type === "radio")
+    )
+      return;
     const form = target.closest<HTMLFormElement>("form[data-autosave]");
     if (form) {
       form.dataset.dirty = "true";
@@ -64,8 +66,10 @@ export function installSettings() {
   });
   document.addEventListener("htmx:finally:request", (event) => {
     const { sourceElement, response } = event.detail.ctx;
-    if (sourceElement instanceof HTMLFormElement && sourceElement.hasAttribute("data-autosave"))
+    if (sourceElement instanceof HTMLFormElement && sourceElement.hasAttribute("data-autosave")) {
       sourceElement.dataset.failed = String(!response || response.status >= 400);
+      sourceElement.setAttribute("aria-busy", "false");
+    }
     const refreshed = refreshedForms.get(event.detail.ctx);
     if (refreshed?.isConnected && response && response.status < 400) {
       refreshed.dataset.dirty = "true";

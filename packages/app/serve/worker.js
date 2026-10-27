@@ -1,6 +1,6 @@
 // Cache only public assets, never pages or SSE.
 const ROOT = new URL(self.registration.scope).pathname.replace(/\/$/, "");
-const CACHE = `pi-${ROOT.slice(1)}-shell-v7`;
+const CACHE = `pi-${ROOT.slice(1)}-shell-v8`;
 const SHELL = [`${ROOT}/manifest.webmanifest`, "/styles.css", "/icon-192.png", "/icon-512.png", "/highlight.js", ...(ROOT === "/elm" ? ["/elm/main.js", "/elm/site.js", "/elm/client.js"] : ["/htmx/client.js", "/htmx/vendor.js", "/htmx/morph.js", "/htmx/sse.js"])];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));
@@ -28,7 +28,7 @@ self.addEventListener("fetch", event => {
 function destination(value) {
   if (typeof value === "string" && value.startsWith(ROOT + "/")) value = value.slice(ROOT.length);
   return typeof value === "string" && /^\/sessions\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/conversations\/[1-9][0-9]*$/.test(value)
-    ? ROOT + value : ROOT + "/";
+    ? ROOT + value : ROOT + "/sessions";
 }
 function text(value, fallback, limit) {
   return typeof value === "string" && value.trim() ? value.slice(0, limit) : fallback;
@@ -51,7 +51,7 @@ self.addEventListener("push", event => {
     silent: message.silent === true,
     renotify: message.renotify === true,
     requireInteraction: message.requireInteraction === true,
-    actions: [{ action: "open", title: text(message.action, url === ROOT + "/" ? "Open sessions" : "Open conversation", 128) }],
+    actions: [{ action: "open", title: text(message.action, url === ROOT + "/sessions" ? "Open sessions" : "Open conversation", 128) }],
     data: { activity: message.activity, url },
   }));
 });

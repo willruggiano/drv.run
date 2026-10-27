@@ -16,6 +16,7 @@ import { fixture, readHistory, waitFor, model } from "./sessions-testing.ts";
 import { rename, sessionInfo } from "../sessions.ts";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { GlobalSettingsStore } from "../server.ts";
+import { settingFields } from "../settings.ts";
 import { browserFixture } from "./browser-testing.ts";
 
 await test("both frontends use only the shared stylesheet", async (t) => {
@@ -36,6 +37,180 @@ await test("both frontends use only the shared stylesheet", async (t) => {
   }
   assert.deepEqual(b.errors, []);
 });
+
+await test("global and session settings share one container and autosave form without status output", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const b = await browserFixture(
+    t,
+    f.sessions,
+    undefined,
+    undefined,
+    new GlobalSettingsStore({ model }),
+  );
+  for (const frontend of ["elm", "htmx"] as const) {
+    for (const scope of ["global", "session"] as const) {
+      const root =
+        scope === "global" ? `/${frontend}` : conversationURL(session, undefined, frontend);
+      await b.page.goto(`${b.base}${root}/settings`);
+      const settings = b.page.locator("#settings");
+      const form = settings.locator("form[data-autosave]");
+      await form.waitFor();
+      assert.equal(await settings.count(), 1);
+      assert.equal(await form.count(), 1);
+      assert.equal(
+        await settings.getAttribute("data-layout"),
+        scope === "session" ? "stacked" : null,
+      );
+      assert.equal(await form.getAttribute("aria-busy"), "false");
+      assert.equal(await form.locator("output, [role=status]").count(), 0);
+      if (b.screenshots) {
+        if (scope === "global") await b.page.locator("push-settings").scrollIntoViewIfNeeded();
+        await b.page.screenshot({ path: join(b.screenshots, `${frontend}-${scope}-settings.png`) });
+      }
+    }
+  }
+  assert.deepEqual(b.errors, []);
+});
+
+for (const frontend of ["elm", "htmx"] as const)
+  await test(`${frontend}: settings toggles persist, support keyboards and use composer colors`, async (t) => {
+    const f = await fixture(t);
+    const settings = new GlobalSettingsStore({ model });
+    const b = await browserFixture(t, f.sessions, undefined, undefined, settings);
+    const { page } = b;
+    await page.goto(`${b.base}/${frontend}/`);
+    const primary = await page.locator("#create").evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { background: style.backgroundColor, foreground: style.color };
+    });
+    await page.getByRole("link", { name: "Global settings", exact: true }).click();
+    await page.locator("#settings form[data-autosave]").waitFor();
+    const booleans = settingFields.filter((field) => "type" in field && field.type === "boolean");
+    for (const field of booleans) {
+      const toggle = page.getByRole("radiogroup", { name: field.label, exact: true });
+      const off = toggle.getByRole("radio", { name: "Off", exact: true });
+      const on = toggle.getByRole("radio", { name: "On", exact: true });
+      assert.equal(await on.isChecked(), settings.read().values[field.key]);
+      await off.focus();
+      await off.press("Space");
+      await waitFor(async () => settings.read().values[field.key] === false);
+      assert.equal(await off.isChecked(), true);
+      assert.notEqual(
+        await toggle
+          .locator("input:checked + span")
+          .evaluate((node) => getComputedStyle(node).backgroundColor),
+        primary.background,
+      );
+      await off.press("ArrowRight");
+      await waitFor(async () => settings.read().values[field.key] === true);
+      assert.equal(await on.isChecked(), true);
+      const selected = await toggle.locator("input:checked + span").evaluate((node) => {
+        const style = getComputedStyle(node);
+        return { background: style.backgroundColor, foreground: style.color };
+      });
+      assert.deepEqual(selected, primary);
+      assert.deepEqual(
+        await toggle.evaluate((node) => {
+          const bounds = node.getBoundingClientRect();
+          return {
+            width: bounds.width,
+            height: bounds.height,
+            segments: Array.from(node.querySelectorAll(".toggle-option > span"), (segment) => {
+              const rect = segment.getBoundingClientRect();
+              return [rect.left - bounds.left, rect.top - bounds.top, rect.width, rect.height];
+            }),
+          };
+        }),
+        {
+          width: 88,
+          height: 28,
+          segments: [
+            [0, 0, 44, 28],
+            [44, 0, 44, 28],
+          ],
+        },
+      );
+      assert.deepEqual(
+        await page
+          .locator("#settings form[data-autosave]")
+          .evaluate((form, key) => new FormData(form as HTMLFormElement).getAll(key), field.key),
+        ["true"],
+      );
+    }
+    const wrap = page.getByRole("radiogroup", { name: "Wrap code", exact: true });
+    const align = page.getByRole("radiogroup", { name: "Bottom-align messages", exact: true });
+    await wrap.getByRole("radio", { name: "On", exact: true }).check();
+    await align.getByRole("radio", { name: "Off", exact: true }).check();
+    assert.deepEqual(
+      await page.evaluate(() => ({
+        wrap: document.body.classList.contains("wrap-code"),
+        bottom: document.body.classList.contains("bottom-align"),
+        storedWrap: localStorage.getItem("pi.html.wrap-code"),
+        storedBottom: localStorage.getItem("pi.bottomAlign"),
+      })),
+      { wrap: true, bottom: false, storedWrap: "true", storedBottom: "false" },
+    );
+    await page.reload();
+    await page.locator("#settings form[data-autosave]").waitFor();
+    for (const field of booleans)
+      assert.equal(
+        await page
+          .getByRole("radiogroup", { name: field.label, exact: true })
+          .getByRole("radio", { name: "On", exact: true })
+          .isChecked(),
+        true,
+      );
+    assert.equal(await wrap.getByRole("radio", { name: "On", exact: true }).isChecked(), true);
+    assert.equal(await align.getByRole("radio", { name: "Off", exact: true }).isChecked(), true);
+    const centers = await page.locator(".toggle-option > span").evaluateAll((labels) =>
+      labels.map((label) => {
+        const bounds = label.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(label);
+        const text = range.getBoundingClientRect();
+        return {
+          width: text.width,
+          height: text.height,
+          x: text.left + text.width / 2 - (bounds.left + bounds.width / 2),
+          y: text.top + text.height / 2 - (bounds.top + bounds.height / 2),
+        };
+      }),
+    );
+    assert.equal(centers.length, 2 * (booleans.length + 3));
+    for (const center of centers) {
+      assert.ok(center.width > 0 && center.height > 0);
+      assert.ok(Math.abs(center.x) <= 1, `Horizontal center offset: ${center.x}px`);
+      assert.ok(Math.abs(center.y) <= 1, `Vertical center offset: ${center.y}px`);
+    }
+    if (b.screenshots) {
+      await align.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(b.screenshots, `${frontend}-settings-toggles.png`) });
+    }
+    if (frontend === "htmx") {
+      const native = await b.browser.newContext({ javaScriptEnabled: false });
+      t.after(() => native.close());
+      const form = await native.newPage();
+      await form.goto(`${b.base}/htmx/settings`);
+      for (const field of booleans)
+        await form
+          .getByRole("radiogroup", { name: field.label, exact: true })
+          .getByRole("radio", { name: "Off", exact: true })
+          .check();
+      await form.getByRole("button", { name: "Save defaults", exact: true }).click();
+      for (const field of booleans) {
+        assert.equal(settings.read().values[field.key], false);
+        assert.equal(
+          await form
+            .getByRole("radiogroup", { name: field.label, exact: true })
+            .getByRole("radio", { name: "Off", exact: true })
+            .isChecked(),
+          true,
+        );
+      }
+    }
+    assert.deepEqual(b.errors, []);
+  });
 
 await test("command completions align descriptions and use the muted color in both frontends", async (t) => {
   const f = await fixture(t);
@@ -174,8 +349,8 @@ await test("frontend landings create, reopen and archive sessions without crossi
       );
       assert.equal(await page.locator("#session-filter, #picker").count(), 0);
       assert.equal(await page.locator("#app-header .landing-navigation").count(), 1);
-      for (const route of ["settings", "activity"])
-        assert.equal(await page.locator(`a[href="/${frontend}/${route}"]`).isVisible(), true);
+      assert.equal(await page.locator(`a[href="/${frontend}/settings"]`).isVisible(), true);
+      assert.equal(await page.locator(`a[href="/${frontend}/activity"]`).count(), 0);
       assert.equal(await page.locator(`a[href="/${frontend}/auth"]`).count(), 0);
       for (const route of ["repository", "history"])
         assert.equal(
@@ -205,7 +380,9 @@ await test("frontend landings create, reopen and archive sessions without crossi
       await page.goto(b.base + landing);
       await page.locator(`#session-list a[href="/${frontend}/sessions/${id}"]`).waitFor();
       await page.goto(`${b.base}/${frontend}/settings`);
-      await page.locator('#global-settings select[name="hideThinkingBlock"]').selectOption("true");
+      await page
+        .locator('#settings form[data-autosave] input[name="hideThinkingBlock"][value="true"]')
+        .check();
       await waitFor(async () => settings.read().values.hideThinkingBlock === true);
       await page.getByRole("link", { name: "Sessions", exact: true }).click();
       await page.locator("#landing").waitFor();
@@ -544,7 +721,9 @@ await test("Elm default model reselection preserves saved thinking overrides", a
   assert.equal(await thinking.inputValue(), "high");
   release.resolve();
   await b.page.waitForFunction(
-    () => document.querySelector(".save-status")?.textContent === "Saved",
+    () =>
+      document.querySelector("#settings form[data-autosave]")?.getAttribute("aria-busy") ===
+      "false",
   );
   assert.equal(settings.read().modelThinkingLevels[key], "high");
   assert.deepEqual(b.errors, []);

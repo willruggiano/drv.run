@@ -123,9 +123,9 @@ class AppPage {
   private async ready(panel: Presentation["panel"]) {
     const selector = {
       conversation: "#conversation-scroll",
-      settings: "#preferences",
+      settings: '#settings[data-layout="stacked"]',
       context: "#context-view",
-      defaults: "#global-preferences",
+      defaults: '#settings:not([data-layout="stacked"])',
     }[panel];
     await this.page.wait(
       `!!document.querySelector(${JSON.stringify(selector)})?.checkVisibility()${panel === "defaults" ? "" : " && document.querySelector('#connection')?.textContent === 'Connected'"}`,

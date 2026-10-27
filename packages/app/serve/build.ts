@@ -19,7 +19,6 @@ export async function buildAssets(source: string, destination: string): Promise<
       "htmx/client.ts",
       "htmx/morph.ts",
       "highlight.ts",
-      "htmx/activity.ts",
       "styles.css",
       "worker.js",
     ].map((file) => join(source, file)),

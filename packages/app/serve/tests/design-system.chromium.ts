@@ -45,7 +45,7 @@ await test("design-system showcase works over HTTP and from disk at every breakp
   }
   for (const [id, close, open] of [
     ["picker", "Close sessions", "Open sessions"],
-    ["preferences", "Close settings", "Open settings"],
+    ["settings", "Close settings", "Open settings"],
     ["usage-dialog", "Close statistics", "Open statistics"],
   ]) {
     await showcase.getByRole("button", { name: close, exact: true }).click();

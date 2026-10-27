@@ -161,8 +161,10 @@ function enhance(root: ParentNode) {
     }
   }
   for (const name of Object.keys(localPreferences)) {
-    const preference = document.querySelector<HTMLSelectElement>(`[data-preference=${name}]`);
-    if (preference) preference.value = String(document.body.classList.contains(name));
+    for (const preference of document.querySelectorAll<HTMLInputElement>(
+      `[data-preference=${name}]`,
+    ))
+      preference.checked = preference.value === String(document.body.classList.contains(name));
   }
   enhanceCommands();
   localStatus();

@@ -224,7 +224,9 @@ await test("HTML session autosaves drain before navigation, retain drafts and re
   await page.locator('[name="name"]').fill("Retry this change.");
   await returnToConversation(page);
   await page.waitForFunction(
-    () => document.querySelector<HTMLFormElement>("#session-settings")?.dataset.failed === "true",
+    () =>
+      document.querySelector<HTMLFormElement>("#settings form[data-autosave]")?.dataset.failed ===
+      "true",
   );
   assert.equal(new URL(page.url()).pathname, path + "/settings");
   assert.equal((await sessionInfo(session)).name, "Persist before leaving.");
@@ -251,7 +253,7 @@ await test("HTML shared defaults persist and do not change existing conversation
   await page.goto(base + "/htmx/settings");
   await page.selectOption('[name="defaultThinkingLevel"]', "low");
   await waitFor(async () => store.read().values.defaultThinkingLevel === "low");
-  await page.selectOption('[name="hideThinkingBlock"]', "true");
+  await page.locator('[name="hideThinkingBlock"][value="true"]').check();
   await waitFor(async () => store.read().values.hideThinkingBlock === true);
   await page.selectOption('[name="model"]', modelKey({ provider: "plain", modelId: "plain" }));
   await waitFor(async () => store.read().model?.provider === "plain");

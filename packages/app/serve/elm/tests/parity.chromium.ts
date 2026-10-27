@@ -220,10 +220,10 @@ await test("conversation frontend visual parity", { timeout: 60000 }, async (t) 
           path: join(b.screenshots, `${frontend}-${width}-conversation.png`),
         });
       await page.locator("#footer-model").click();
-      await page.locator('#session-settings input[name="name"]').waitFor();
+      await page.locator('#settings form[data-autosave] input[name="name"]').waitFor();
       await compare(
         "settings",
-        "#preferences, #session-settings, #session-settings label:not([hidden]), #composer-shell",
+        "#settings, #settings form[data-autosave], #settings form[data-autosave] label:not([hidden]), #composer-shell",
       );
       assert.equal(await documentHandle.evaluate((doc) => doc === window.document), true);
       assert.equal(await page.locator("#prompt").inputValue(), "A retained draft");
@@ -278,7 +278,7 @@ await test(
     });
     await page.locator("#latest").waitFor();
     await page.locator("#footer-model").click();
-    await page.locator('#session-settings input[name="name"]').fill("First name");
+    await page.locator('#settings form[data-autosave] input[name="name"]').fill("First name");
     const received = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     t.after(() => release.resolve());
@@ -294,7 +294,7 @@ await test(
     });
     await page.locator("#thinking").selectOption("low");
     await received.promise;
-    await page.locator('#session-settings input[name="name"]').fill("Second name");
+    await page.locator('#settings form[data-autosave] input[name="name"]').fill("Second name");
     await page.locator("#close-view").click();
     assert.equal(new URL(page.url()).pathname, path + "/settings");
     release.resolve();
@@ -314,7 +314,7 @@ await test(
     await page.route("**/settings", (route) =>
       route.request().method() === "POST" ? route.fulfill({ status: 503 }) : route.continue(),
     );
-    await page.locator('#session-settings input[name="name"]').fill("Retry name");
+    await page.locator('#settings form[data-autosave] input[name="name"]').fill("Retry name");
     await page.locator("#close-view").click();
     await page.getByRole("button", { name: "Retry saving settings" }).waitFor();
     assert.equal(new URL(page.url()).pathname, path + "/settings");
@@ -439,7 +439,7 @@ await test(
     const path = conversationURL(session, undefined, "elm");
     await page.setViewportSize({ width: 1440, height: 900 });
     for (const [panel, selector] of [
-      ["settings", '#session-settings input[name="name"]'],
+      ["settings", '#settings form[data-autosave] input[name="name"]'],
       ["context", "#context-view[data-tokens]"],
       ["branches", "#tree-rows a"],
       ["tree", "#tree-view"],

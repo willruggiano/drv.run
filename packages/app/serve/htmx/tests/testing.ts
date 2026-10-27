@@ -14,7 +14,7 @@ export async function returnToConversation(page: Page): Promise<void> {
 
 export async function openGlobalSettings(page: Page): Promise<void> {
   await page.goto(new URL("/htmx/settings", page.url()).href);
-  await page.locator("#global-preferences").waitFor();
+  await page.locator("#settings").waitFor();
 }
 
 export async function submitCommand(page: Page, command: string): Promise<void> {

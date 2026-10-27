@@ -279,11 +279,27 @@ body.stacked-layout {
 .bottom-align :is(#main-area > #transcript, #conversation-scroll) > :first-child { margin-top: auto; }
 .bottom-align :is(#main-area > #transcript, #conversation-scroll) > * { flex: none; }
 .pane { grid-row: 1; min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 12px max(20px, calc((100% - 820px)/2)) 20px; }
-:is(#preferences, #global-preferences, #new-options) label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: start; gap: 16px; margin: 0; padding: 2px 0; }
-:is(#preferences, #global-preferences, #new-options) label > span { margin: 0; padding: 7px 0; font-size: 12px; text-align: left; }
-:is(#preferences, #global-preferences, #new-options) label > :is(input, select, textarea) { min-width: 0; width: 100%; padding: 6px 0; background: transparent; border-color: transparent; border-radius: 0; text-align: right; }
-:is(#preferences, #global-preferences, #new-options) select { appearance: none; text-align-last: right; }
-:is(#preferences, #global-preferences, #new-options) option { background: var(--surface); }
+:is(#settings, #new-options) :is(label:not(.toggle-option), .setting-row) { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; margin: 0; padding: 2px 0; }
+:is(#settings, #new-options) :is(label:not(.toggle-option), .setting-row) > span { margin: 0; padding: 0; font-size: 12px; color: var(--muted); text-align: left; }
+:is(#settings, #new-options) label:not(.toggle-option) > :is(input, select, textarea) { min-width: 0; width: auto; max-width: min(45vw, 24rem); padding: 0; background: transparent; border-color: transparent; border-radius: 0; text-align: right; }
+:is(#settings, #new-options) label:not(.toggle-option) > :is(input, select) { height: 28px; min-height: 28px; }
+:is(#settings, #new-options) select { appearance: none; text-align-last: right; }
+:is(#settings, #new-options) option { background: var(--surface); }
+#settings label > input[type=number] { width: 8ch; }
+#new-options label:not(.toggle-option) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: start; }
+#new-options label:not(.toggle-option) > span { padding: 7px 0; }
+#new-options label:not(.toggle-option) > :is(input, select) { width: 100%; max-width: none; height: auto; min-height: 30px; padding: 6px 0; }
+.setting-toggle { display: flex; justify-self: end; border-radius: 6px; background: var(--surface); }
+.toggle-option { position: relative; cursor: pointer; }
+.toggle-option input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.toggle-option span { display: grid; place-items: center; min-width: 44px; min-height: 28px; margin: 0; font-size: 12px; line-height: 1; text-align: center; color: var(--muted); }
+.toggle-option:first-child span { border-radius: 6px 0 0 6px; }
+.toggle-option:last-child span { border-radius: 0 6px 6px 0; }
+.toggle-option input:checked + span { background: var(--hover); color: var(--fg); }
+.toggle-option input[value=true]:checked + span { background: var(--primary); color: var(--on-primary); font-weight: 600; }
+.toggle-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle-option input:disabled { cursor: default; }
+.toggle-option input:disabled + span { opacity: .4; }
 .pane textarea { min-height: 44px; }
 .settings-group + .settings-group, #app-settings { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .settings-group h2 { font-size: 13px; margin: 0 0 4px; }
@@ -301,15 +317,15 @@ body.stacked-layout {
 #queue:empty { display: none; }
 .pane .actions { margin: 16px 0; }
 #sessions, #recent-sessions { max-height: none; overflow: visible; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
-:is(#landing, #preferences.pane) { display: flex; flex-direction: column; }
-:is(#landing, #preferences.pane) > div { width: 100%; max-width: 560px; margin: auto; }
-#session-settings label { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 8px 0; }
-#session-settings label > span { grid-row: 2; padding: 0; font-size: 11px; color: var(--muted); }
-#session-settings label > :is(input, select) { grid-row: 1; padding: 0; min-height: 32px; font-size: 16px; text-align: left; }
-#session-settings select { text-align-last: left; }
-#preferences #close-view { display: flex; flex-shrink: 0; align-items: center; justify-content: center; margin: 0 0 12px auto; color: var(--muted); width: 44px; height: 44px; }
-#preferences #close-view:hover { color: var(--fg); }
-#preferences #close-view .glyph { width: 14px; height: 14px; }
+:is(#landing, #settings[data-layout=stacked]) { display: flex; flex-direction: column; }
+:is(#landing, #settings[data-layout=stacked]) > div { width: 100%; max-width: 560px; margin: auto; }
+#settings[data-layout=stacked] {
+  & label { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 8px 0; }
+  & label > span { grid-row: 2; font-size: 11px; }
+  & label > :is(input, select) { grid-row: 1; width: 100%; max-width: none; height: auto; min-height: 32px; font-size: 16px; text-align: left; }
+  & select { text-align-last: left; }
+  & #close-view { display: flex; flex-shrink: 0; align-items: center; justify-content: center; margin: 0 0 12px auto; }
+}
 #landing .session { padding-inline: 0; }
 #recent-title { margin: 0 0 12px; font-size: 16px; font-weight: 500; }
 #recent-empty { margin: 10px; color: var(--muted); font-size: 13px; }
@@ -377,16 +393,17 @@ body.stacked-layout {
   .stacked-layout #app-footer { grid-area: 3 / 1 / auto / -1; }
 }
 
+#page:has(#settings, #context-view) #close-view { position: static; width: 44px; height: 44px; color: var(--muted); }
+#page:has(#settings, #context-view) #close-view:hover { color: var(--fg); }
+#page:has(#settings, #context-view) #close-view .glyph { width: 14px; height: 14px; }
+
 /* Panel headers stay outside the scrolling pane; body owns the safe-area insets. */
-#page:has(#global-preferences, #context-view, #inbox) {
+#page:has(#settings:not([data-layout=stacked]), #context-view) {
   & #app-header > .bar { display: flex; border-bottom: 0; }
   & .header-title { padding: 0; min-height: 0; color: var(--muted); }
-  & #close-view { position: static; width: 44px; height: 44px; color: var(--muted); }
-  & #close-view:hover { color: var(--fg); }
-  & #close-view .glyph { width: 14px; height: 14px; }
 }
 @media (min-width: 1200px) {
-  .stacked-layout #page:has(#global-preferences, #context-view, #inbox) {
+  .stacked-layout #page:has(#settings:not([data-layout=stacked]), #context-view) {
     grid-template-rows: auto minmax(0, 1fr) auto auto;
     & #app-header { grid-area: 1 / 1 / auto / -1; }
     & #main-area { grid-row: 2; }
@@ -448,7 +465,6 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 .transcript-image { cursor: zoom-in; }
 #image-dialog img { display: block; max-height: 75dvh; margin: auto; }
 #image-dialog { width: fit-content; max-width: 95vw; }
-.save-status { font-size: 11px; color: var(--muted); }
 .pane > h1 { display: none; }
 .enhanced [data-autosave]:not([data-failed=true]) > button { display: none; }
 #session-list { display: grid; gap: 4px; }
@@ -475,8 +491,6 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 @media (any-pointer: coarse) { .bar > .icon, .bar .header-title { min-height: 44px; } }
 
 @media (min-width: 651px) and (hover: hover) and (pointer: fine) { .bar > .icon, .bar .header-title { min-height: 30px; } .compose-box > .actions > a.icon { width: 32px; height: 32px; } }
-
-.save-status:empty { display: none; }
 
 .enhanced button.native-only, html:not(.enhanced) .enhanced-only { display: none; }
 
@@ -528,7 +542,6 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 .frontend-chooser { margin: auto; display: grid; gap: 8px; }
 
 .creation-options { border: 0; padding: 0; margin: 0; min-width: 0; }
-.activity-body { white-space: pre-wrap; }
 
 /* Explorer panes replace the main view and composer, not the desktop navigation. */
 pi-tree { display: contents; }
@@ -568,7 +581,10 @@ pi-tree .branch-row a[data-selected=true]:not([aria-current=true]) { background:
 .landing-navigation .icon { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; color: var(--muted); border-radius: 6px; }
 .landing-navigation .icon:hover { color: var(--fg); background: var(--hover); }
 @media (min-width: 1200px) { .landing-navigation { position: fixed; top: env(safe-area-inset-top); right: env(safe-area-inset-right); } }
-#authorization { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+#authorization, push-settings:defined { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+push-settings { display: block; }
+push-settings p { margin: 8px 0; font-size: 12px; }
+#push-error { color: var(--danger); }
 .provider-authorization { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 12px 0; }
 .provider-authorization > :not(h3, .actions) { grid-column: 1 / -1; }
 .provider-authorization + .provider-authorization { border-top: 1px solid var(--line); }

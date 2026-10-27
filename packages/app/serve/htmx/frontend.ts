@@ -1,3 +1,4 @@
+import type { Notifications } from "../notifications.ts";
 import { authSection } from "./auth.ts";
 import type { ProxyAuthorization } from "../auth.ts";
 import { BranchTree, type Branch } from "../branches.ts";
@@ -107,7 +108,7 @@ export function htmlPage(
   const head = h`<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>${title}</title><meta name="htmx-config" content='{"history":true,"mode":"same-origin"}'><link rel="manifest" href="/htmx/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles.css"><script src="/htmx/vendor.js"></script><script src="/htmx/sse.js" defer></script><script src="/htmx/morph.js" defer></script><script type="module" src="/htmx/client.js"></script></head>`;
   const header =
     !sessionHeader && title === "Sessions"
-      ? h`<header id="app-header"><nav class="landing-navigation" aria-label="Global"><a class="icon" href="/htmx/activity" aria-label="Activity" title="Activity">${icon("bell")}</a><a class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a></nav>${requestError}</header>`
+      ? h`<header id="app-header"><nav class="landing-navigation" aria-label="Global"><a class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a></nav>${requestError}</header>`
       : h`<header id="app-header"><div class="bar"><h1>${heading}</h1>${!sessionHeader && (back || title !== "Sessions") ? h`<a id="close-view" class="icon" href="${back ?? "/htmx/"}" data-return aria-label="${back ? "Conversation" : "Sessions"}" title="${back ? "Return to conversation" : "Return to sessions"}">${icon("close")}</a>` : h`<a id="menu-toggle" class="icon" href="/htmx/settings" aria-label="Global settings" title="Global settings">${icon("settings")}</a>`}</div>${branches}${sessionName === undefined ? requestError : ""}</header>`;
   return renderHTML(
     h`<!doctype html><html lang="en">${head}<body class="stacked-layout bottom-align"><main id="page" data-view="${conversation ? "conversation" : "panel"}" hx-history-elt hx-boost:inherited="true" hx-target:inherited="#page" hx-select:inherited="#page" hx-swap:inherited="outerHTML" hx-sync:inherited="#page:replace">${sessionName === undefined && (title === "Session settings" || title === "Conversation tree" || title === "Session tree") ? requestError : header}${sessionName !== undefined ? requestError : ""}${content}</main></body></html>`,
@@ -566,6 +567,7 @@ export async function hypermedia(
   authorization: ProxyAuthorization,
   signal: AbortSignal,
   settings?: GlobalSettingsStore,
+  notifications?: Notifications,
 ): Promise<void> {
   // htmx 4 boosts forms into history even when HX-Reswap is none. Only the
   // explicit HX-Location redirect may navigate after a mutation.
@@ -645,7 +647,7 @@ export async function hypermedia(
     if (request.method === "GET") {
       html(
         response,
-        h`<main id="main-area"><section id="global-preferences" class="pane">${globalForm(await sessions.catalog(context), settings?.read(), url.searchParams.get("model") ?? undefined, settingsPath)}${await authSection(authorization, signal)}</section></main>`,
+        h`<main id="main-area"><section id="settings" class="pane" aria-label="Global settings">${globalForm(await sessions.catalog(context), settings?.read(), url.searchParams.get("model") ?? undefined, settingsPath)}<push-settings public-key="${notifications?.publicKey ?? ""}"></push-settings>${await authSection(authorization, signal)}</section></main>`,
         200,
         undefined,
         "Global settings",
@@ -704,7 +706,7 @@ export async function hypermedia(
         conversation,
         settings,
         context,
-        h`<section id="preferences" class="pane" aria-label="Session settings"><a id="close-view" class="icon" href="${path}" data-return aria-label="Conversation" title="Return to conversation">${icon("close")}</a><div>${sessionForm(path, catalog, info)}</div></section>`,
+        h`<section id="settings" class="pane" data-layout="stacked" aria-label="Session settings"><a id="close-view" class="icon" href="${path}" data-return aria-label="Conversation" title="Return to conversation">${icon("close")}</a><div>${sessionForm(path, catalog, info)}</div></section>`,
       ),
     );
     return;
@@ -967,16 +969,6 @@ async function metadataHTML(
     : h``;
   const newSession = h`${info.binding && info.model ? h`<form method="post" action="/htmx/" data-command="new"><input type="hidden" name="id" value="${id}" data-command-request><input type="hidden" name="requestId" value="${id}" data-command-request>${hidden("target", targetKey(info.binding))}${hidden("model", modelKey(info.model))}${hidden("thinkingLevel", info.thinkingLevel)}${hidden("baseDirectory", info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/") ? info.cwd.slice(info.directoryRoot.length + 1) : "")}<button>New session</button></form>` : ""}`;
   return h`<section id="session-meta" data-name="${info.name || "Untitled session"}" data-hide-thinking="${display?.hideThinkingBlock === true}" data-hide-images="${display?.["terminal.showImages"] === false}"><div id="bottom-line" aria-label="Conversation statistics"><div class="footer-row">${sessionsLink}${instance}${statistics}<div class="footer-model-context">${model}${dot}${contextUsage}</div>${collapse}</div></div>${inspection.scheduling === "paused" && (inspection.tasks.length > 0 || inspection.submissions.length > 0) ? action(`${path}/resume`, "Resume interrupted execution", "resume") : ""}${newSession}</section>`;
-}
-
-export function activityPage(response: ServerResponse): void {
-  html(
-    response,
-    h`<main id="main-area"><section class="pane"><h1>Activity</h1><p id="connection">Connecting…</p><button id="enable-push" type="button">Enable push on this device</button><button id="disable-push" type="button">Disable push on this device</button><p id="push-status" role="status"></p><h2>Current status</h2><div id="sources"></div><h2>Inbox</h2><div id="inbox"></div><script type="module" src="/htmx/activity.js"></script></section></main>`,
-    200,
-    undefined,
-    "Activity",
-  );
 }
 
 export function errorPage(

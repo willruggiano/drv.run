@@ -173,39 +173,11 @@ export class Notifications {
     if (this.stopping) await observer.close();
   }
 
+  get publicKey(): string | null {
+    return this.config.push && this.key ? vapidPublic(this.key) : null;
+  }
+
   async route(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-    if (request.method === "GET" && url.pathname === "/activity/events") {
-      const selected = url.searchParams.has("item")
-        ? Number(url.searchParams.get("item"))
-        : undefined;
-      if (selected !== undefined && (!Number.isSafeInteger(selected) || selected < 1))
-        throw new FormError(400, "Invalid activity ID.");
-      response.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-store",
-        "X-Accel-Buffering": "no",
-      });
-      const send = () => {
-        if (response.destroyed) return;
-        if (response.writableLength > 1024 * 1024) {
-          response.destroy();
-          return;
-        }
-        response.write(
-          `data: ${JSON.stringify({ sources: this.activity.sources(), history: this.activity.history(100, selected), publicKey: this.key ? vapidPublic(this.key) : null })}\n\n`,
-        );
-      };
-      const release = this.activity.watch(send);
-      const timer = setInterval(() => {
-        if (!response.destroyed) response.write(": keepalive\n\n");
-      }, 20_000);
-      response.once("close", () => {
-        release();
-        clearInterval(timer);
-      });
-      send();
-      return;
-    }
     if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
     if (
       request.headers.origin !== url.origin ||
@@ -227,13 +199,12 @@ export class Notifications {
       throw new FormError(400, "Invalid JSON.");
     }
     const data = object(input);
-    if (url.pathname === "/activity/read") this.activity.read(numeric(data.id));
-    else if (url.pathname === "/activity/subscribe") {
+    if (url.pathname === "/settings/push/subscribe") {
       if (!this.config.push) throw new FormError(409, "Push is disabled by host policy.");
       const subscription = pushSubscription(data, this.config.push.origins);
       await pushTarget(subscription.endpoint, this.config.push.origins);
       this.activity.subscribe(subscription.endpoint, subscription);
-    } else if (url.pathname === "/activity/unsubscribe") {
+    } else if (url.pathname === "/settings/push/unsubscribe") {
       if (typeof data.endpoint !== "string" || data.endpoint.length > 4096)
         throw new TypeError("Invalid endpoint.");
       this.activity.unsubscribe(data.endpoint);
