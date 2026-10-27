@@ -2,60 +2,55 @@
 
 # Todos
 
-- Usability improvements:
-  - [ ] Automate the host deployment
-  - [ ] git push (depends on mitm)
-  - [ ] Scratchpad off to the side on desktop
-  - [ ] Executable specs / RLM
-  - [ ] `/cd` and `/rename` commands
-  - [ ] Project management features, or integrate Linear (via mcp?)
-  - [ ] Nicer way to build to system and user llms.txt files (eg. to incorporate
-        more specific toolchain guidance: "use fd over find, rg over grep, eza
-        over ls")
-- SDLC improvements:
-  - [ ] See above "Nicer way to..."
-  - [ ] Related to^ we should prepend to `XDG_CONFIG_DIRS` and export using our
-        devshell, which will automatically cause that file to pick up _project
-        specific llm guidance_, in addition to /etc/llms.txt
-  - [ ] Move everything in the justfile to nix, delete justfile
-  - [ ] Formalize project package definition (run unit tests in checkPhase,
-        export benchmarks, integration tests, and nixos vm tests via
-        passthru.{bench,tests}) -> generate the flake `checks` as function of
-        its `packages`.
+## Security
+
 - [ ] [[security.md]]
 - [ ] Reject host-local addresses in the proxy’s existing pre-connect policy
 - [ ] Host resource limits <-> bounded vm creation ("run as many as can fit")
-- [ ] Automate/declarative guest port exposure / service publishing (proof of
-      concept nixos test in tests/nixos/port-forwarding.nix)
 - [ ] HTTP proxy/egress control (ie. http proxy on the host controls network
       accesss from the guest)
-- [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
-      insight into pre/start/post activation timing, including cold and warm
-      boots on flake's of varying (closure) size
 - [ ] Add an owner-scoped host command that obtains the guest connection FD from
       systemd-ssh-proxy
       (github:systemd/systemd/v261.2/src/ssh-generator/ssh-proxy.c) and copies
       bytes bidirectionally between that FD and the SSH exec channel’s
       stdin/stdout.
-- [ ] Clients should not need such an elaborate ssh client config? eg.
-      `RemoteCommand`
-- [ ] Great practical test (and also something I want badly!):
-  ```sh
-  ssh drv.run github:willruggiano/neovim.drv -c \
-    pi '
-      Implement a simple review plugin for neovim: `nvim +Review`.
-      The plugin should add all staged and unstaged changes to the quickfix
-      list. Each quickfix list entry is one hunk. It should present with a
-      scratch buffer that lists all of the changes, output straight from a
-      suitable git command, not editable, ensure the output contains enough of
-      the filenames such that `gf` works. Visiting a file should display it in
-      readonly, diff mode. One window with inline diffs. Lastly, it should be
-      possible to comment on files/buffers (hijack the builtin op-pending `gc`
-      to add a comment, use vim.ui.input to collect) as marks/virtual-text,
-      delete comments, and yank a comment/all buffer comments/all comments across
-      all buffers to clipboard. These are the only features. Write tests.
-    '
-  ```
+- [ ] <https://github.com/cloud-hypervisor/cloud-hypervisor/pull/9041> and
+      <https://pwn.ai/blog/pwnescape>
+
+## Usability
+
+- [ ] Automate the host deployment
+- [ ] Scratchpad off to the side on desktop
+- [ ] Executable specs / RLM
+- [ ] Project management features, or integrate Linear (via mcp?)
+- [ ] Automate/declarative guest port exposure / service publishing (proof of
+      concept nixos test in tests/nixos/port-forwarding.nix)
+
+## SDLC
+
+- [ ] Move everything in the justfile to nix, delete justfile
+- [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
+      insight into pre/start/post activation timing, including cold and warm
+      boots on flake's of varying (closure) size
+
+## Codebase architecture
+
+- [ ] Formalize project package definition (run unit tests in checkPhase, export
+      benchmarks, integration tests, and nixos vm tests via
+      passthru.{bench,tests}) -> generate the flake `checks` as function of its
+      `packages`.
+
+References:
+
+- <https://github.com/mattpocock/skills/tree/main/skills/engineering/improve-codebase-architecture>
+- <https://github.com/sverweij/dependency-cruiser>
+- <https://elm-lang.org/docs> and <https://guide.elm-lang.org/>
+- <https://github.com/sporto/elm-patterns>
+- <https://package.elm-lang.org/help/design-guidelines>
+- <https://github.com/ricardocasares/skills/tree/main/skills/elm/elm-patterns>
+
+## Watchlist
+
 - [ ] Keep an eye on the early unmount warnings:
   ```text
   vm-test-run-host-basic> host # [ 58.260810] microvm-run[1272]: [ OK ] Stopped target Local File Systems.
@@ -85,15 +80,6 @@
   vm-test-run-host-basic> host # [ 58.329048] microvm-run[1272]: Unmounting /persist...
   vm-test-run-host-basic> host # [ 58.334465] microvm-run[1272]: [ OK ] Unmounted /persist.
   ```
-
-## Low priority ideas
-
-- [ ] Implement a [headlong] inspired RLM using pi-durable. There are two
-      primary things to determine here: (1) the model-code-model loop (the core
-      RLM machinery), and (2) trajectory projection (ie. context). The latter
-      will be quite interesting as both a context/fork problem (to implement
-      "context as a projection of trajectory") and a compaction problem (to
-      implement "tiered context compaction").
 
 ## Stuff to look into
 
