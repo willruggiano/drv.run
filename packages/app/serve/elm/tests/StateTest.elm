@@ -1,5 +1,7 @@
 module StateTest exposing (tests)
 
+import Autosave
+import Browser
 import Dict
 import Expect
 import Http
@@ -254,9 +256,9 @@ tests =
                         Main.update (Main.EditSetting Panel.Name "Second") saving |> Tuple.first
 
                     acknowledged =
-                        Main.update (Main.SettingsSaved base.epoch { initial | name = "First" } (Ok True)) newer |> Tuple.first
+                        Main.update (Main.SettingsSaved base.epoch (Ok True)) newer |> Tuple.first
                 in
-                Expect.equal ( Just "Second", Just "First", Just "Second" ) ( Maybe.map .name acknowledged.settings, Maybe.map .name acknowledged.savedSettings, Maybe.map .name acknowledged.saving )
+                Expect.equal ( Just "Second", Just "Second", Just False ) ( Maybe.map (Autosave.current >> .name) acknowledged.settings, Maybe.andThen Autosave.pending acknowledged.settings |> Maybe.map .name, Maybe.map Autosave.canLeave acknowledged.settings )
         , test "late panel loads and saves cannot replace another route's state" <|
             \_ ->
                 let
@@ -271,7 +273,69 @@ tests =
                 in
                 Expect.all
                     (List.map (\msg _ -> Expect.equal current (Main.update msg current |> Tuple.first))
-                        [ Main.SettingsLoaded 1 (Ok stale), Main.SettingsSaved 1 stale (Ok True), Main.Directories 1 0 (Ok [ "old" ]) ]
+                        [ Main.SettingsLoaded 1 (Ok stale), Main.SettingsSaved 1 (Ok True), Main.Directories 1 0 (Ok [ "old" ]) ]
                     )
                     ()
+        , test "settings failure invalidates the baseline even after reverting the edit" <|
+            \_ ->
+                let
+                    base =
+                        Main.initModel "/sessions/test/conversations/1/settings" "nonce"
+
+                    initial =
+                        { name = "Initial", model = "model", target = "target", thinking = "off", directory = "", models = [], targets = [] }
+
+                    failed =
+                        Main.update (Main.SettingsLoaded base.epoch (Ok initial)) base
+                            |> Tuple.first
+                            |> Main.update (Main.EditSetting Panel.Name "Changed")
+                            |> Tuple.first
+                            |> Main.update Main.SaveSettings
+                            |> Tuple.first
+                            |> Main.update (Main.EditSetting Panel.Name "Initial")
+                            |> Tuple.first
+                            |> Main.update (Main.SettingsSaved base.epoch (Err Http.NetworkError))
+                            |> Tuple.first
+
+                    retried =
+                        Main.update Main.SaveSettings failed |> Tuple.first
+                in
+                Expect.equal
+                    ( Just False, Just False, Just "Initial" )
+                    ( Maybe.map Autosave.canLeave failed.settings, Maybe.map Autosave.busy failed.settings, Maybe.andThen Autosave.pending retried.settings |> Maybe.map .name )
+        , test "settings navigation waits for the last captured save" <|
+            \_ ->
+                case Url.fromString "http://localhost/sessions/other/conversations/1" of
+                    Nothing ->
+                        Expect.fail "Invalid URL"
+
+                    Just url ->
+                        let
+                            base =
+                                Main.initModel "/sessions/test/conversations/1/settings" "nonce"
+
+                            initial =
+                                { name = "Initial", model = "model", target = "target", thinking = "off", directory = "", models = [], targets = [] }
+
+                            waiting =
+                                Main.update (Main.SettingsLoaded base.epoch (Ok initial)) base
+                                    |> Tuple.first
+                                    |> Main.update (Main.EditSetting Panel.Name "First")
+                                    |> Tuple.first
+                                    |> Main.update Main.SaveSettings
+                                    |> Tuple.first
+                                    |> Main.update (Main.EditSetting Panel.Name "Second")
+                                    |> Tuple.first
+                                    |> Main.update (Main.UrlRequested (Browser.Internal url))
+                                    |> Tuple.first
+
+                            draining =
+                                Main.update (Main.SettingsSaved base.epoch (Ok True)) waiting |> Tuple.first
+
+                            settled =
+                                Main.update (Main.SettingsSaved base.epoch (Ok True)) draining |> Tuple.first
+                        in
+                        Expect.equal
+                            ( ( Just (Browser.Internal url), Just (Browser.Internal url) ), ( Nothing, Just True ) )
+                            ( ( waiting.nextNavigation, draining.nextNavigation ), ( settled.nextNavigation, Maybe.map Autosave.canLeave settled.settings ) )
         ]

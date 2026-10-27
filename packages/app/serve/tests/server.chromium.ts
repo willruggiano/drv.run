@@ -837,6 +837,17 @@ await test("Elm default model reselection preserves saved thinking overrides", a
       "false",
   );
   assert.equal(settings.read().modelThinkingLevels[key], "high");
+  await b.page.unroute(b.base + "/settings");
+  await b.page.route(b.base + "/settings", (route) =>
+    route.request().method() === "POST" ? route.fulfill({ status: 503 }) : route.continue(),
+  );
+  await thinking.selectOption("low");
+  await b.page.locator('#settings form[data-failed="true"]').waitFor();
+  assert.equal(await thinking.inputValue(), "low");
+  assert.equal(settings.read().modelThinkingLevels[key], "high");
+  await b.page.unroute(b.base + "/settings");
+  await b.page.getByRole("button", { name: "Retry", exact: true }).click();
+  await waitFor(async () => settings.read().modelThinkingLevels[key] === "low");
   assert.deepEqual(b.errors, []);
 });
 

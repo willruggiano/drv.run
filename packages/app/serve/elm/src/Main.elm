@@ -1,5 +1,6 @@
 port module Main exposing (Draft, Model, Msg(..), acknowledge, draftDecoder, initModel, main, update)
 
+import Autosave
 import Browser
 import Browser.Navigation as Nav
 import Composer
@@ -135,6 +136,20 @@ loadPanel model =
             Cmd.none
 
 
+saveSettings : ( Autosave.State Panel.Settings, Maybe Panel.Settings ) -> Model -> ( Model, Cmd Msg )
+saveSettings ( settings, pending ) model =
+    let
+        updated =
+            { model | settings = Just settings }
+    in
+    case pending of
+        Just values ->
+            ( { updated | error = "" }, Http.post { url = model.path ++ "/settings", body = Panel.settingsBody values, expect = Http.expectJson (SettingsSaved model.epoch) (D.field "saved" D.bool) } )
+
+        Nothing ->
+            ( updated, Cmd.none )
+
+
 navigate : String -> Model -> ( Model, Cmd Msg )
 navigate path model =
     ( model, Maybe.map (\key -> Nav.pushUrl key path) model.key |> Maybe.withDefault Cmd.none )
@@ -196,9 +211,7 @@ type alias Model =
     , searchIndex : Int
     , confirmation : Maybe Confirmation
     , pane : Pane
-    , settings : Maybe Panel.Settings
-    , savedSettings : Maybe Panel.Settings
-    , saving : Maybe Panel.Settings
+    , settings : Maybe (Autosave.State Panel.Settings)
     , nextNavigation : Maybe Browser.UrlRequest
     , directories : List String
     , directoryRequest : Int
@@ -240,7 +253,7 @@ type Msg
     | SettingsLoaded Int (Result Http.Error Panel.Settings)
     | EditSetting Panel.Field String
     | SaveSettings
-    | SettingsSaved Int Panel.Settings (Result Http.Error Bool)
+    | SettingsSaved Int (Result Http.Error Bool)
     | Directories Int Int (Result Http.Error (List String))
     | CloseImage
     | Collapse
@@ -274,8 +287,6 @@ initModel path nonce =
     , confirmation = confirmationFor path
     , pane = Tuple.second (route path)
     , settings = Nothing
-    , savedSettings = Nothing
-    , saving = Nothing
     , nextNavigation = Nothing
     , directories = []
     , directoryRequest = 0
@@ -467,7 +478,7 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         UrlRequested requestUrl ->
-            if model.pane == Preferences && (model.saving /= Nothing || model.settings /= model.savedSettings) then
+            if model.pane == Preferences && (Maybe.map Autosave.canLeave model.settings == Just False) then
                 update SaveSettings { model | nextNavigation = Just requestUrl }
 
             else
@@ -519,8 +530,6 @@ update msg model =
                         , completions = Nothing
                         , completionRequest = model.completionRequest + 1
                         , settings = Nothing
-                        , savedSettings = Nothing
-                        , saving = Nothing
                         , nextNavigation = Nothing
                         , directories = []
                         , directoryRequest = model.directoryRequest + 1
@@ -1062,7 +1071,7 @@ update msg model =
             else
                 case result of
                     Ok settings ->
-                        ( { model | settings = Just settings, savedSettings = Just settings }, Cmd.none )
+                        ( { model | settings = Just (Maybe.map (Autosave.load settings) model.settings |> Maybe.withDefault (Autosave.init settings)) }, Cmd.none )
 
                     Err error ->
                         ( { model | error = httpError error }, Cmd.none )
@@ -1070,10 +1079,10 @@ update msg model =
         EditSetting field str ->
             let
                 updated =
-                    { model | settings = Maybe.map (Panel.edit field str) model.settings, error = "", directories = [], directoryRequest = model.directoryRequest + 1 }
+                    { model | settings = Maybe.map (Autosave.edit (Panel.edit field str)) model.settings, error = "", directories = [], directoryRequest = model.directoryRequest + 1 }
             in
             if field == Panel.Directory then
-                ( updated, Http.get { url = model.path ++ "/directories?target=" ++ Url.percentEncode (Maybe.map .target updated.settings |> Maybe.withDefault "") ++ "&directory=" ++ Url.percentEncode str, expect = Http.expectJson (Directories model.epoch updated.directoryRequest) (D.list D.string) } )
+                ( updated, Http.get { url = model.path ++ "/directories?target=" ++ Url.percentEncode (Maybe.map (Autosave.current >> .target) updated.settings |> Maybe.withDefault "") ++ "&directory=" ++ Url.percentEncode str, expect = Http.expectJson (Directories model.epoch updated.directoryRequest) (D.list D.string) } )
 
             else if List.member field [ Panel.Target, Panel.Model, Panel.Thinking ] then
                 update SaveSettings updated
@@ -1091,39 +1100,40 @@ update msg model =
         SaveSettings ->
             case model.settings of
                 Just settings ->
-                    if model.saving /= Nothing || model.savedSettings == Just settings then
-                        ( model, Cmd.none )
-
-                    else
-                        ( { model | saving = Just settings, error = "" }, Http.post { url = model.path ++ "/settings", body = Panel.settingsBody settings, expect = Http.expectJson (SettingsSaved model.epoch settings) (D.field "saved" D.bool) } )
+                    saveSettings (Autosave.start settings) model
 
                 Nothing ->
                     ( model, Cmd.none )
 
-        SettingsSaved epoch settings result ->
+        SettingsSaved epoch result ->
             if epoch /= model.epoch then
                 ( model, Cmd.none )
 
             else
-                case result of
-                    Ok True ->
-                        let
-                            updated =
-                                { model | saving = Nothing, savedSettings = Just settings }
-                        in
-                        if updated.settings /= updated.savedSettings then
-                            update SaveSettings updated
+                case model.settings of
+                    Nothing ->
+                        ( model, Cmd.none )
 
-                        else
-                            case updated.nextNavigation of
-                                Just destination ->
-                                    update (UrlRequested destination) { updated | nextNavigation = Nothing }
+                    Just settings ->
+                        case result of
+                            Ok True ->
+                                let
+                                    ( updated, command ) =
+                                        saveSettings (Autosave.succeed settings) model
+                                in
+                                if Maybe.map Autosave.canLeave updated.settings == Just True then
+                                    case updated.nextNavigation of
+                                        Just destination ->
+                                            update (UrlRequested destination) { updated | nextNavigation = Nothing }
 
-                                Nothing ->
-                                    ( updated, Cmd.none )
+                                        Nothing ->
+                                            ( updated, command )
 
-                    _ ->
-                        ( { model | saving = Nothing, error = "Settings were not saved. Your changes are retained; retry saving.", savedSettings = Nothing }, Cmd.none )
+                                else
+                                    ( updated, command )
+
+                            _ ->
+                                ( { model | settings = Just (Autosave.fail Autosave.ForgetBaseline settings), error = "Settings were not saved. Your changes are retained; retry saving." }, Cmd.none )
 
         CloseImage ->
             ( { model | image = Nothing }, Cmd.none )
@@ -1483,7 +1493,7 @@ view model =
                     section [ id "settings", class "pane", attribute "data-layout" "stacked", attribute "aria-label" "Session settings" ]
                         [ a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Icon.view "close" ]
                         , div []
-                            [ Maybe.map (Panel.settingsView EditSetting SaveSettings (model.saving /= Nothing) model.directories) model.settings |> Maybe.withDefault (p [ attribute "role" "status" ] [ text "Loading settings…" ])
+                            [ Maybe.map (\settings -> Panel.settingsView EditSetting SaveSettings (Autosave.busy settings) model.directories (Autosave.current settings)) model.settings |> Maybe.withDefault (p [ attribute "role" "status" ] [ text "Loading settings…" ])
                             , if model.error /= "" then
                                 button [ onClick SaveSettings ] [ text "Retry saving settings" ]
 

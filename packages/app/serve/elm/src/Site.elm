@@ -1,5 +1,6 @@
 port module Site exposing (main)
 
+import Autosave
 import Browser
 import Browser.Navigation as Nav
 import Composer
@@ -56,9 +57,7 @@ type alias Model =
     , files : List { file : File, url : String }
     , creationOptions : Dict String String
     , missingFiles : Bool
-    , values : Dict String String
-    , saved : Dict String String
-    , saving : Maybe (Dict String String)
+    , defaults : Autosave.State (Dict String String)
     , next : Maybe String
     , pending : Maybe (List Http.Part)
     , busy : Bool
@@ -167,9 +166,7 @@ main =
                         , creationOptions = field "options" (D.dict D.string) Dict.empty
                         , files = []
                         , missingFiles = (url.path == "/") && field "missingFiles" D.bool False
-                        , values = Dict.empty
-                        , saved = Dict.empty
-                        , saving = Nothing
+                        , defaults = Autosave.init Dict.empty
                         , next = Nothing
                         , pending = Nothing
                         , busy = False
@@ -269,6 +266,20 @@ rememberOverride values catalog =
             catalog
 
 
+saveDefaults : ( Autosave.State (Dict String String), Maybe (Dict String String) ) -> Model -> ( Model, Cmd Msg )
+saveDefaults ( defaults, pending ) model =
+    let
+        updated =
+            { model | defaults = defaults }
+    in
+    case pending of
+        Just values ->
+            ( { updated | error = "" }, Http.post { url = "/settings", body = Http.multipartBody (parts values), expect = Http.expectWhatever Saved } )
+
+        Nothing ->
+            ( updated, Cmd.none )
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
@@ -297,7 +308,7 @@ update msg model =
                                         )
 
                                 _ ->
-                                    model.values
+                                    Autosave.current model.defaults
 
                         restored =
                             case page of
@@ -317,8 +328,7 @@ update msg model =
                         updated =
                             { model
                                 | page = restored
-                                , values = values
-                                , saved = values
+                                , defaults = Autosave.load values model.defaults
                                 , error = ""
                             }
                     in
@@ -371,7 +381,7 @@ update msg model =
                         Browser.External value ->
                             value
             in
-            if model.saving /= Nothing || model.values /= model.saved then
+            if not (Autosave.canLeave model.defaults) then
                 update Save { model | next = Just url }
 
             else
@@ -418,60 +428,51 @@ update msg model =
         EditDefault key str ->
             let
                 values =
-                    Dict.insert key str model.values
+                    Dict.insert key str (Autosave.current model.defaults)
 
-                updated =
-                    { model
-                        | values =
-                            case model.page of
-                                Defaults catalog _ ->
-                                    if key == "model" then
-                                        Dict.insert "modelThinkingLevel" (override (Maybe.map (\pending -> rememberOverride pending catalog) model.saving |> Maybe.withDefault catalog) str) values
+                selected =
+                    case model.page of
+                        Defaults catalog _ ->
+                            if key == "model" then
+                                Dict.insert "modelThinkingLevel" (override (Maybe.map (\pending -> rememberOverride pending catalog) (Autosave.pending model.defaults) |> Maybe.withDefault catalog) str) values
 
-                                    else
-                                        values
+                            else
+                                values
 
-                                _ ->
-                                    values
-                    }
+                        _ ->
+                            values
             in
-            update Save updated
+            update Save { model | defaults = Autosave.edit (always selected) model.defaults }
 
         Save ->
-            if model.saving /= Nothing || model.values == model.saved then
-                ( model, Cmd.none )
-
-            else
-                ( { model | saving = Just model.values, error = "" }, Http.post { url = "/settings", body = Http.multipartBody (parts model.values), expect = Http.expectWhatever Saved } )
+            saveDefaults (Autosave.start model.defaults) model
 
         Saved result ->
             case result of
                 Err error ->
-                    ( { model | saving = Nothing, error = message error }, Cmd.none )
+                    ( { model | defaults = Autosave.fail Autosave.KeepBaseline model.defaults, error = message error }, Cmd.none )
 
                 Ok () ->
                     let
-                        saved =
-                            Maybe.withDefault model.saved model.saving
-
-                        updated =
+                        acknowledged =
                             { model
-                                | saved = saved
-                                , saving = Nothing
-                                , page =
-                                    case model.page of
-                                        Defaults catalog auth ->
+                                | page =
+                                    case ( model.page, Autosave.pending model.defaults ) of
+                                        ( Defaults catalog auth, Just saved ) ->
                                             Defaults (rememberOverride saved catalog) auth
 
                                         _ ->
                                             model.page
                             }
+
+                        ( updated, command ) =
+                            saveDefaults (Autosave.succeed model.defaults) acknowledged
                     in
-                    if updated.values /= updated.saved then
-                        update Save updated
+                    if Autosave.canLeave updated.defaults then
+                        ( updated, Maybe.map Nav.load model.next |> Maybe.withDefault Cmd.none )
 
                     else
-                        ( updated, Maybe.map Nav.load model.next |> Maybe.withDefault Cmd.none )
+                        ( updated, command )
 
         Create ->
             if model.busy then
@@ -844,7 +845,7 @@ view model =
                                     (if model.pending /= Nothing then
                                         Create
 
-                                     else if model.values /= model.saved then
+                                     else if Autosave.dirty model.defaults then
                                         Save
 
                                      else
@@ -867,7 +868,7 @@ defaultsView : Model -> Catalog -> List (Html Msg)
 defaultsView model catalog =
     let
         current key =
-            Dict.get key model.values |> Maybe.withDefault ""
+            Dict.get key (Autosave.current model.defaults) |> Maybe.withDefault ""
 
         choice selected key title =
             option [ value key, A.selected (selected == key) ] [ text title ]
@@ -929,7 +930,7 @@ defaultsView model catalog =
         form
             [ attribute "data-autosave" ""
             , attribute "aria-busy"
-                (if model.saving /= Nothing then
+                (if Autosave.busy model.defaults then
                     "true"
 
                  else
