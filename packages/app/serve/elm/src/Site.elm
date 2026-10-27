@@ -158,7 +158,7 @@ main =
                         , page = Loading
                         , error = ""
                         , text =
-                            if List.member url.path [ "/elm", "/elm/" ] then
+                            if url.path == "/" then
                                 field "text" D.string ""
 
                             else
@@ -166,7 +166,7 @@ main =
                         , creation = field "creation" D.string ""
                         , creationOptions = field "options" (D.dict D.string) Dict.empty
                         , files = []
-                        , missingFiles = List.member url.path [ "/elm", "/elm/" ] && field "missingFiles" D.bool False
+                        , missingFiles = (url.path == "/") && field "missingFiles" D.bool False
                         , values = Dict.empty
                         , saved = Dict.empty
                         , saving = Nothing
@@ -190,7 +190,7 @@ main =
 
 loadAuth : Cmd Msg
 loadAuth =
-    Http.get { url = "/elm/settings?data&auth", expect = Http.expectJson AuthLoaded authDecoder }
+    Http.get { url = "/settings?data&auth", expect = Http.expectJson AuthLoaded authDecoder }
 
 
 load : Model -> Cmd Msg
@@ -398,7 +398,7 @@ update msg model =
                     , Cmd.batch
                         [ persist updated
                         , if field == Panel.Directory then
-                            Http.get { url = "/elm/directories?target=" ++ Url.percentEncode catalog.options.target ++ "&directory=" ++ Url.percentEncode str, expect = Http.expectJson (Directories updated.directoryRequest) (D.list D.string) }
+                            Http.get { url = "/directories?target=" ++ Url.percentEncode catalog.options.target ++ "&directory=" ++ Url.percentEncode str, expect = Http.expectJson (Directories updated.directoryRequest) (D.list D.string) }
 
                           else
                             Cmd.none
@@ -442,7 +442,7 @@ update msg model =
                 ( model, Cmd.none )
 
             else
-                ( { model | saving = Just model.values, error = "" }, Http.post { url = "/elm/settings", body = Http.multipartBody (parts model.values), expect = Http.expectWhatever Saved } )
+                ( { model | saving = Just model.values, error = "" }, Http.post { url = "/settings", body = Http.multipartBody (parts model.values), expect = Http.expectWhatever Saved } )
 
         Saved result ->
             case result of
@@ -484,7 +484,7 @@ update msg model =
                 ( { model | error = "Command is not available here." }, Cmd.none )
 
             else if String.trim model.text == "/sessions" then
-                ( model, Nav.load "/elm" )
+                ( model, Nav.load "/" )
 
             else
                 case model.page of
@@ -506,7 +506,7 @@ update msg model =
                                     )
                                     model.pending
                         in
-                        ( { model | busy = True, pending = Just body, completions = False, error = "" }, Cmd.batch [ persist model, Http.post { url = "/elm", body = Http.multipartBody body, expect = Http.expectJson Created (D.field "path" D.string) } ] )
+                        ( { model | busy = True, pending = Just body, completions = False, error = "" }, Cmd.batch [ persist model, Http.post { url = "/", body = Http.multipartBody body, expect = Http.expectJson Created (D.field "path" D.string) } ] )
 
                     _ ->
                         ( model, Cmd.none )
@@ -624,7 +624,7 @@ update msg model =
         Incoming payload ->
             case D.decodeValue (D.field "kind" D.string) payload of
                 Ok "home" ->
-                    update (Navigate (Browser.External "/elm")) model
+                    update (Navigate (Browser.External "/")) model
 
                 Ok "files" ->
                     case D.decodeValue (D.field "value" (D.list File.decoder)) payload of
@@ -804,7 +804,7 @@ view model =
                                         )
                                     , div [ id "previews" ] (List.indexedMap (\index item -> button [ A.type_ "button", A.disabled (model.pending /= Nothing), onClick (Remove index), attribute "aria-label" ("Remove " ++ File.name item.file) ] [ Html.img [ A.src item.url, A.alt (File.name item.file) ] [] ]) model.files)
                                     ]
-                                    (div [ class "actions" ] [ button [ id "input-toggle", class "icon enhanced-only", A.type_ "button", attribute "aria-label" "Upload attachments", A.disabled (model.pending /= Nothing), onClick PickFiles ] [ text "+" ], span [ class "spacer" ] [], button [ id "create", class "icon", attribute "aria-label" "Create session", A.title "New session", A.disabled (model.busy || catalog.options.model == "" || catalog.options.target == "") ] [ Transcript.icon "send" ] ])
+                                    (div [ class "actions" ] [ button [ id "input-toggle", class "icon", A.type_ "button", attribute "aria-label" "Upload attachments", A.disabled (model.pending /= Nothing), onClick PickFiles ] [ text "+" ], span [ class "spacer" ] [], button [ id "create", class "icon", attribute "aria-label" "Create session", A.title "New session", A.disabled (model.busy || catalog.options.model == "" || catalog.options.target == "") ] [ Transcript.icon "send" ] ])
                                 ]
                             ]
                         , if model.missingFiles then
@@ -825,7 +825,7 @@ view model =
                 Landing _ ->
                     [ header [ id "app-header" ]
                         [ Html.nav [ class "landing-navigation", attribute "aria-label" "Global" ]
-                            [ a [ class "icon", href "/elm/settings", attribute "aria-label" "Global settings", A.title "Global settings" ] [ Transcript.icon "settings" ]
+                            [ a [ class "icon", href "/settings", attribute "aria-label" "Global settings", A.title "Global settings" ] [ Transcript.icon "settings" ]
                             ]
                         ]
                     ]
@@ -839,7 +839,7 @@ view model =
                             [ h1 [] [ span [ class "header-title" ] [ text title ] ]
                             , icon "close"
                                 "Sessions"
-                                "/elm"
+                                "/"
                             ]
                         ]
                     ]
@@ -992,7 +992,7 @@ authView busy auth =
         action operation attributes content =
             form
                 [ onSubmit
-                    (Action ("/elm/settings/auth/" ++ auth.id ++ "/" ++ operation))
+                    (Action ("/settings/auth/" ++ auth.id ++ "/" ++ operation))
                 ]
                 [ button (A.disabled busy :: attributes) content ]
     in

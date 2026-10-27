@@ -158,7 +158,7 @@ markdown source =
         ( end, nodes ) =
             List.foldl step ( 0, [] ) fences
     in
-    div [ class "text" ] (nodes ++ paragraphs (String.dropLeft end source))
+    div [ class "text", attribute "data-source" source ] (nodes ++ paragraphs (String.dropLeft end source))
 
 
 toolView : (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> String -> Html msg

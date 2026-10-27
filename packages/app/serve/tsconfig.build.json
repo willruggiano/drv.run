@@ -8,5 +8,5 @@
     "outDir": "dist",
     "declaration": true
   },
-  "include": ["*.ts", "htmx/*.ts", "elm/*.ts"]
+  "include": ["*.ts", "elm/*.ts"]
 }

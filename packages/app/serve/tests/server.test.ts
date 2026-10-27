@@ -1,3 +1,4 @@
+import { command } from "./testing.ts";
 import { Sessions } from "../sessions.ts";
 import * as runtime from "../sessions.ts";
 import assert from "node:assert/strict";
@@ -5,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { request } from "node:http";
+import { createServer, request } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,7 +20,7 @@ import { readHistory, fixture, model } from "./sessions-testing.ts";
 import { checkCLI, chromiumExecutable, directoryFixture, serve, post } from "./testing.ts";
 import { GlobalSettingsStore, httpServer } from "../server.ts";
 import { conversationURL } from "../presentation.ts";
-import { modelKey, targetKey } from "../htmx/forms.ts";
+import { modelKey, targetKey } from "./testing.ts";
 import { benchmarkFixture, benchmarkOptions } from "../benchmark.ts";
 import { buildAssets } from "../build.ts";
 
@@ -200,14 +202,13 @@ await test("HTTP disconnect does not abort work; reconnect includes history and 
   const base = await serve(t, f.sessions);
   const id = randomUUID();
   assert.equal(
-    (await post(base + "/htmx/", { id, target: targetKey(f.binding), model: modelKey(model) }))
-      .status,
-    303,
+    (await post(base + "/", { id, target: targetKey(f.binding), model: modelKey(model) })).status,
+    200,
   );
   const session = await f.sessions.get(id);
   const url = base + conversationURL(session);
   const data = { content: "Work", requestId: "retryable-input", whenBusy: "reject" };
-  assert.equal((await post(url + "/submit", data)).status, 303);
+  assert.equal((await command(url, "submit", data)).status, 200);
   await started.promise;
   const views: Awaited<ReturnType<typeof session.root.watch>>[] = [];
   const conversation = session.harness.conversation.bind(session.harness);
@@ -252,7 +253,7 @@ await test("HTTP disconnect does not abort work; reconnect includes history and 
   assert.deepEqual(await view.closed, { reason: "cancelled" });
   assert(subscriptions.length > 0);
   assert(subscriptions.every((subscription) => subscription.closed));
-  assert.equal((await post(url + "/submit", data)).status, 303);
+  assert.equal((await command(url, "submit", data)).status, 200);
   finish.resolve();
   await session.root.waitForIdle(context);
   const reconnected = await fetch(url + "/export");
@@ -273,14 +274,14 @@ await test("HTML HTTP validates origins, IDs, methods, malformed forms and reque
   const base = await serve(t, f.sessions);
   assert.equal(
     (
-      await fetch(base + "/htmx/", {
+      await fetch(base + "/", {
         headers: { Origin: "https://untrusted.example" },
       })
     ).status,
     403,
   );
   const rebinding = await new Promise<number | undefined>((resolve, reject) => {
-    const req = request(base + "/htmx/", { headers: { Host: "untrusted.example" } }, (response) => {
+    const req = request(base + "/", { headers: { Host: "untrusted.example" } }, (response) => {
       response.resume();
       resolve(response.statusCode);
     });
@@ -290,15 +291,15 @@ await test("HTML HTTP validates origins, IDs, methods, malformed forms and reque
   assert.equal(rebinding, 403);
   assert.equal(
     (
-      await fetch(base + "/htmx/", {
+      await fetch(base + "/", {
         headers: { "Sec-Fetch-Site": "cross-site" },
       })
     ).status,
     403,
   );
-  assert.equal((await fetch(base + "/htmx/")).status, 200);
-  assert.equal((await fetch(base + "/htmx/sessions/" + randomUUID())).status, 404);
-  const malformed = await fetch(base + "/htmx/", {
+  assert.equal((await fetch(base + "/")).status, 200);
+  assert.equal((await fetch(base + "/sessions/" + randomUUID())).status, 404);
+  const malformed = await fetch(base + "/", {
     method: "POST",
     headers: { Origin: base, "Content-Type": "multipart/form-data" },
     body: "missing boundary",
@@ -316,8 +317,8 @@ await test("HTML HTTP validates origins, IDs, methods, malformed forms and reque
   assert.equal((await send(new URLSearchParams())).status, 400);
   assert.equal((await send("{}", "application/json")).status, 415);
   assert.equal((await send(new URLSearchParams({ name: "a".repeat(129 * 1024) }))).status, 413);
-  assert.equal((await fetch(base + conversationURL(session) + "/abort")).status, 405);
-  assert.equal((await fetch(base + "/htmx/manifest.webmanifest")).status, 200);
+  assert.equal((await fetch(base + conversationURL(session) + "/command")).status, 405);
+  assert.equal((await fetch(base + "/manifest.webmanifest")).status, 200);
   const icon = await fetch(base + "/icon.svg");
   assert.equal(icon.status, 200);
   assert.equal((await f.sessions.catalog()).sessions.length, 1);
@@ -328,7 +329,7 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
   const base = await serve(t, f.sessions, undefined, "0.0.0.0");
   const port = new URL(base).port;
   for (const address of ["127.0.0.1", "127.0.0.2"]) {
-    const url = `http://${address}:${port}/htmx/`;
+    const url = `http://${address}:${port}/`;
     assert.equal(
       (await fetch(url, { headers: { Origin: `http://${address}:${port}` } })).status,
       200,
@@ -356,7 +357,7 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
       assert.equal(code, 403);
     }
   }
-  assert.equal((await fetch(`http://localhost:${port}/htmx/`)).status, 200);
+  assert.equal((await fetch(`http://localhost:${port}/`)).status, 200);
 });
 
 await test("built browser assets preserve module formats and selected highlight languages", async (t) => {
@@ -370,7 +371,7 @@ await test("built browser assets preserve module formats and selected highlight 
     ["styles.css"],
   );
   const scope: { Elm?: { Main?: { init?: unknown } } } = {};
-  runInNewContext(await readFile(join(assets, "elm/main.js"), "utf8"), scope);
+  runInNewContext(await readFile(join(assets, "main.js"), "utf8"), scope);
   assert.equal(typeof scope.Elm?.Main?.init, "function");
   const { default: highlighter }: { default: typeof import("highlight.js") } = await import(
     pathToFileURL(join(assets, "highlight.js")).href
@@ -397,24 +398,11 @@ await test("built browser assets preserve module formats and selected highlight 
     assert.equal(highlighter.getLanguage(alias), highlighter.getLanguage(name));
   const f = await fixture(t);
   const base = await serve(t, f.sessions, assets);
-  for (const file of [
-    "elm/main.js",
-    "elm/client.js",
-    "elm/site.js",
-    "elm/sw.js",
-    "htmx/client.js",
-    "htmx/morph.js",
-    "htmx/vendor.js",
-    "htmx/sse.js",
-    "htmx/sw.js",
-  ]) {
+  for (const file of ["main.js", "client.js", "site.js", "sw.js"]) {
     const asset = await fetch(`${base}/${file}`);
     assert.equal(asset.status, 200);
     assert.equal(asset.headers.get("content-type"), "text/javascript; charset=utf-8");
-    assert.equal(
-      asset.headers.get("service-worker-allowed"),
-      file.endsWith("/sw.js") ? "/" + file.split("/")[0] : null,
-    );
+    assert.equal(asset.headers.get("service-worker-allowed"), null);
     assert.deepEqual(Buffer.from(await asset.arrayBuffer()), await readFile(join(assets, file)));
   }
   const response = await fetch(`${base}/highlight.js`);
@@ -428,14 +416,12 @@ await test("built browser assets preserve module formats and selected highlight 
 
 await test("renderer benchmark validates options and builds deterministic paired history", () => {
   const options = benchmarkOptions([]);
-  assert.equal(options.frontend, "hypermedia");
-  assert.equal(benchmarkOptions(["--frontend", "hypermedia"]).frontend, "hypermedia");
   assert.equal(options.runs, 3);
   assert.equal(options.turns, 200);
   assert.equal(options.cpuRate, 1);
   assert.equal(options.entries, 600);
   assert.equal(options.memory, false);
-  const exact = benchmarkOptions(["--frontend", "hypermedia", "--entries", "2000", "--memory"]);
+  const exact = benchmarkOptions(["--entries", "2000", "--memory"]);
   assert.equal(exact.entries, 2000);
   assert.equal(exact.turns, 667);
   assert.equal(exact.memory, true);
@@ -456,11 +442,11 @@ await test("renderer benchmark validates options and builds deterministic paired
     ["--turns", "-1"],
     ["--turns", "10001"],
     ["--turns", "NaN"],
-    ["--frontend", "hypermedia", "--entries", "0"],
-    ["--frontend", "hypermedia", "--entries", "30001"],
-    ["--frontend", "hypermedia", "--entries", "1.5"],
-    ["--frontend", "hypermedia", "--entries", "NaN"],
-    ["--frontend", "hypermedia", "--entries", "2000", "--turns", "200"],
+    ["--entries", "0"],
+    ["--entries", "30001"],
+    ["--entries", "1.5"],
+    ["--entries", "NaN"],
+    ["--entries", "2000", "--turns", "200"],
     ["--cpu-rate", "0.5"],
     ["--cpu-rate", "Infinity"],
     ["--profile-dir", "profiles"],
@@ -516,60 +502,54 @@ await test("exact-size benchmark history retains complete tool pairs and text-on
 });
 
 await test("rename commands update session metadata from a branch without model input", async (t) => {
-  for (const frontend of ["htmx", "elm"] as const) {
-    await t.test(frontend, async (t) => {
-      const f = await fixture(t);
-      const session = await f.create();
-      const other = await f.create();
-      await session.root.submit({ type: "write", entry: { kind: "test", data: {} } }, context);
-      const history = await readHistory(session.root);
-      const branch = await session.root.fork(
-        history.at(-1)!.id,
-        { ownership: { kind: "ownerless" } },
-        context,
-      );
-      const info = await runtime.sessionInfo(session, branch);
-      const base = await serve(t, f.sessions);
-      const path = conversationURL(session, branch.id);
-      const submit = (fields: Record<string, string>) =>
-        frontend === "htmx"
-          ? post(base + path + "/rename", fields)
-          : post(base + path.replace("/htmx", "/elm") + "/command", {
-              command: "rename",
-              requestId: randomUUID(),
-              revision: randomUUID(),
-              ...fields,
-            });
-      const success = frontend === "htmx" ? 303 : 200;
-      assert.equal((await submit({ argument: "  Counter cleanup  " })).status, success);
-      assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
-      assert.equal((await runtime.sessionInfo(session, branch)).name, "Counter cleanup");
-      for (const argument of ["a".repeat(121), "line\nbreak", "null\0byte", "delete\x7f"]) {
-        assert.equal((await submit({ argument })).status, 400);
-        assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
-      }
-      const empty: Record<string, string>[] = [{ argument: "" }, { argument: "   " }, {}];
-      for (const fields of empty) {
-        assert.equal((await submit(fields)).status, success);
-        assert.equal((await runtime.sessionInfo(session)).name, "");
-      }
-      const name = "x".repeat(120);
-      assert.equal((await submit({ argument: `  ${name}  ` })).status, success);
-      assert.equal((await runtime.sessionInfo(session)).name, name);
-      assert.equal((await runtime.sessionInfo(other)).name, "");
-      assert.deepEqual(await runtime.sessionInfo(session, branch), { ...info, name });
-      assert.deepEqual(await readHistory(session.root), history);
-      assert.deepEqual(await readHistory(branch), history);
-      assert.equal(f.faux.state.callCount, 0);
-      await f.reopen();
-      const restored = await f.sessions.get(session.id);
-      assert.equal((await runtime.sessionInfo(restored)).name, name);
-      assert.equal(
-        (await f.sessions.catalog()).sessions.find((item) => item.id === session.id)?.name,
-        name,
-      );
+  const f = await fixture(t);
+  const session = await f.create();
+  const other = await f.create();
+  await session.root.submit({ type: "write", entry: { kind: "test", data: {} } }, context);
+  const history = await readHistory(session.root);
+  const branch = await session.root.fork(
+    history.at(-1)!.id,
+    { ownership: { kind: "ownerless" } },
+    context,
+  );
+  const info = await runtime.sessionInfo(session, branch);
+  const base = await serve(t, f.sessions);
+  const path = conversationURL(session, branch.id);
+  const submit = (fields: Record<string, string>) =>
+    post(base + path + "/command", {
+      command: "rename",
+      requestId: randomUUID(),
+      revision: randomUUID(),
+      ...fields,
     });
+  const success = 200;
+  assert.equal((await submit({ argument: "  Counter cleanup  " })).status, success);
+  assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
+  assert.equal((await runtime.sessionInfo(session, branch)).name, "Counter cleanup");
+  for (const argument of ["a".repeat(121), "line\nbreak", "null\0byte", "delete\x7f"]) {
+    assert.equal((await submit({ argument })).status, 400);
+    assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
   }
+  const empty: Record<string, string>[] = [{ argument: "" }, { argument: "   " }, {}];
+  for (const fields of empty) {
+    assert.equal((await submit(fields)).status, success);
+    assert.equal((await runtime.sessionInfo(session)).name, "");
+  }
+  const name = "x".repeat(120);
+  assert.equal((await submit({ argument: `  ${name}  ` })).status, success);
+  assert.equal((await runtime.sessionInfo(session)).name, name);
+  assert.equal((await runtime.sessionInfo(other)).name, "");
+  assert.deepEqual(await runtime.sessionInfo(session, branch), { ...info, name });
+  assert.deepEqual(await readHistory(session.root), history);
+  assert.deepEqual(await readHistory(branch), history);
+  assert.equal(f.faux.state.callCount, 0);
+  await f.reopen();
+  const restored = await f.sessions.get(session.id);
+  assert.equal((await runtime.sessionInfo(restored)).name, name);
+  assert.equal(
+    (await f.sessions.catalog()).sessions.find((item) => item.id === session.id)?.name,
+    name,
+  );
 });
 
 await test("conversation controls validate input and keep forks scoped to their session", async (t) => {
@@ -589,49 +569,52 @@ await test("conversation controls validate input and keep forks scoped to their 
   };
   for (const [action, data] of [
     ["submit", { content: "No", requestId: randomUUID(), whenBusy: "invalid" }],
-    ["submit", { content: "No", whenBusy: "reject" }],
+    ["submit", { content: "No", requestId: "", whenBusy: "reject" }],
     ["settings", { ...settings, thinkingLevel: "invalid" }],
-    ["cancel", { id: "wrong" }],
-    ["fork", { at: "-1" }],
+    ["cancel", { argument: "wrong" }],
   ] as const)
-    assert.equal((await post(`${url}/${action}`, data)).status, 400);
-  assert.equal((await post(`${url}/settings`, settings)).status, 303);
+    assert.equal(
+      (await (action === "settings" ? post(`${url}/settings`, data) : command(url, action, data)))
+        .status,
+      400,
+    );
+  assert.equal((await post(`${url}/settings`, settings)).status, 200);
   assert.equal((await session.root.agent(context)).instructions, "Keep configured instructions.");
   for (const name of ["a".repeat(121), "line\nbreak"])
     assert.equal((await post(`${url}/settings`, { ...settings, name })).status, 400);
   const renamed = await post(`${url}/settings`, { ...settings, name: "  Counter cleanup  " });
-  assert.equal(renamed.status, 303);
+  assert.equal(renamed.status, 200);
   assert.equal((await runtime.sessionInfo(session)).name, "Counter cleanup");
   assert.equal((await f.sessions.catalog()).sessions[0].name, "Counter cleanup");
   assert.deepEqual(await readHistory(session.root), history);
-  assert.equal(
-    (await fetch(base + `/htmx/sessions/${session.id}/conversations/not-an-id`)).status,
-    404,
+  assert.equal((await fetch(base + `/sessions/${session.id}/conversations/not-an-id`)).status, 404);
+  assert.equal((await fetch(base + `/sessions/${session.id}/conversations/9999999`)).status, 404);
+  const branch = await session.root.fork(
+    history.at(-1)!.id,
+    { ownership: { kind: "ownerless" } },
+    context,
   );
-  assert.equal(
-    (await fetch(base + `/htmx/sessions/${session.id}/conversations/9999999`)).status,
-    404,
-  );
-  const forkResponse = await post(`${url}/fork`, { at: String(history.at(-1)!.id) });
-  assert.equal(forkResponse.status, 303);
-  const forkPath = forkResponse.headers.get("location");
-  assert(forkPath);
-  const branch = await runtime.getConversation(session, Number(forkPath.split("/").at(-1)));
+  const forkPath = conversationURL(session, branch.id);
   assert.deepEqual(await readHistory(branch), history);
   assert.equal((await fetch(`${url}/branches`)).status, 200);
   assert.equal(
-    (await post(base + forkPath + "/reset", { argument: "Carry this forward." })).status,
-    303,
+    (await command(base + forkPath, "reset", { argument: "Carry this forward." })).status,
+    200,
   );
   assert.equal((await branch.context(context)).messages.length, 1);
   assert.deepEqual(await readHistory(session.root), history);
   const exported = await (await fetch(base + forkPath + "/export")).json();
   assert.equal(exported.length, history.length + 1);
-  assert.equal((await post(base + forkPath + "/compact", {})).status, 303);
+  assert.equal((await command(base + forkPath, "compact", {})).status, 200);
   await session.harness.waitForIdle(context);
   assert.equal((await session.harness.inspect(context)).tasks.length, 0);
-  const manifest = await (await fetch(base + "/htmx/manifest.webmanifest")).json();
+  const manifest = await (await fetch(base + "/manifest.webmanifest")).json();
   assert.equal(manifest.display, "standalone");
+  assert.equal(manifest.id, "/");
+  assert.equal(manifest.scope, "/");
+  assert.equal(manifest.start_url, "/");
+  for (const path of ["/elm", "/elm/", "/elm/main.js", "/elm/manifest.webmanifest"])
+    assert.equal((await fetch(base + path, { redirect: "manual" })).status, 404);
   assert.deepEqual(
     manifest.icons.map((icon: { sizes: string }) => icon.sizes),
     ["192x192", "512x512"],
@@ -668,7 +651,7 @@ await test("external origin validates preserved Host and browser Origin without 
   const send = (headers: Record<string, string>, submit = false) =>
     new Promise<number | undefined>((resolve, reject) => {
       const req = request(
-        base + path + (submit ? "/submit" : ""),
+        base + path + (submit ? "/command" : ""),
         {
           method: submit ? "POST" : "GET",
           headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
@@ -679,7 +662,11 @@ await test("external origin validates preserved Host and browser Origin without 
         },
       );
       req.once("error", reject);
-      req.end(submit ? new URLSearchParams(data).toString() : undefined);
+      req.end(
+        submit
+          ? new URLSearchParams({ command: "submit", revision: "revision", ...data }).toString()
+          : undefined,
+      );
     });
   const headers = { Host: new URL(origin).host, Origin: origin };
   assert.equal(await send({ Host: headers.Host }), 200);
@@ -709,11 +696,11 @@ await test("external origin validates preserved Host and browser Origin without 
   assert.equal(await send({ Host: headers.Host }, true), 403);
   assert.deepEqual(await readHistory(session.root), []);
   f.faux.setResponses([fauxAssistantMessage("Done.")]);
-  assert.equal(await send(headers, true), 303);
+  assert.equal(await send(headers, true), 200);
   await session.root.waitForIdle(context);
   const history = await readHistory(session.root);
   assert(history.some((entry) => entry.kind === "pi.user"));
-  assert.equal(await send(headers, true), 303);
+  assert.equal(await send(headers, true), 200);
   assert.deepEqual(await readHistory(session.root), history);
   assert.equal(f.faux.state.callCount, 1);
 });
@@ -723,7 +710,7 @@ await test("forwarded headers cannot bypass origin checks", async (t) => {
   const base = await serve(t, f.sessions);
   const status = (headers: Record<string, string>) =>
     new Promise<number | undefined>((resolve, reject) => {
-      const req = request(base + "/htmx/", { headers }, (response) => {
+      const req = request(base + "/", { headers }, (response) => {
         response.resume();
         resolve(response.statusCode);
       });
@@ -778,9 +765,8 @@ await test(
       t.after(() => controller.abort());
       const resource =
         operation === "directories"
-          ? "/htmx/directories?" +
-            new URLSearchParams({ target: targetKey(f.binding), baseDirectory: "" })
-          : conversationURL(session) + "/completions?kind=path";
+          ? "/directories?" + new URLSearchParams({ target: targetKey(f.binding), directory: "" })
+          : conversationURL(session) + "/completions?text=@&caret=1";
       const pending = fetch(base + resource, { signal: controller.signal });
       const rejected = assert.rejects(pending, { name: "AbortError" });
       const running = await entered.promise;
@@ -847,13 +833,10 @@ await test("app settings persist and drive live Durable policy", async (t) => {
     ["retry.enabled", "not-a-boolean"],
     ["model", "missing"],
   ]) {
-    assert.equal(
-      (await post(base + "/htmx/settings", { ...globalForm(), [key]: value })).status,
-      400,
-    );
+    assert.equal((await post(base + "/settings", { ...globalForm(), [key]: value })).status, 400);
     assert.deepEqual(get(), before);
   }
-  const result = await post(base + "/htmx/settings", {
+  const result = await post(base + "/settings", {
     ...globalForm(),
     model: modelKey(model),
     modelThinkingLevel: "high",
@@ -866,7 +849,7 @@ await test("app settings persist and drive live Durable policy", async (t) => {
     hideThinkingBlock: "true",
     "terminal.showImages": "false",
   });
-  assert.equal(result.status, 303);
+  assert.equal(result.status, 200);
   const persisted = (await GlobalSettingsStore.open(path)).read();
   assert.equal(persisted.values.defaultThinkingLevel, "low");
   assert.equal(persisted.modelThinkingLevels[`${model.provider}/${model.modelId}`], "high");
@@ -890,7 +873,7 @@ await test("app settings persist and drive live Durable policy", async (t) => {
   assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "medium");
   const create = async (thinkingLevel?: string) => {
     const id = randomUUID();
-    const response = await post(base + "/htmx/", {
+    const response = await post(base + "/", {
       id,
       target: targetKey(f.binding),
       model: modelKey(model),
@@ -899,10 +882,10 @@ await test("app settings persist and drive live Durable policy", async (t) => {
     return { id, response };
   };
   const created = await create();
-  assert.equal(created.response.status, 303);
+  assert.equal(created.response.status, 200);
   assert.equal((await runtime.sessionInfo(await sessions.get(created.id))).thinkingLevel, "high");
   const override = await create("off");
-  assert.equal(override.response.status, 303);
+  assert.equal(override.response.status, 200);
   assert.equal((await runtime.sessionInfo(await sessions.get(override.id))).thinkingLevel, "off");
   assert.equal((await create("invalid")).response.status, 400);
   // Durable stores the explicit value; forms constrain it to the selected model.
@@ -914,17 +897,17 @@ await test("app settings persist and drive live Durable policy", async (t) => {
     model: modelKey(model),
     thinkingLevel: "high",
   });
-  assert.equal(configured.status, 303);
+  assert.equal(configured.status, 200);
   assert.equal((await runtime.sessionInfo(current)).thinkingLevel, "high");
   assert.equal(
     (
-      await post(base + "/htmx/settings", {
+      await post(base + "/settings", {
         ...globalForm(),
         model: modelKey(model),
         modelThinkingLevel: "",
       })
     ).status,
-    303,
+    200,
   );
   assert.equal((await sessions.catalog()).models[0].defaultThinkingLevel, "low");
   // Verify the actual generation receives the policy, not only our settings object.
@@ -1095,4 +1078,56 @@ await test("Durable scans preserve filters, pages, and cursor ordering defaults"
     scans.conversations.items.map((conversation) => conversation.id),
     [session.root.id],
   );
+});
+
+await test("server registers built-in models from environment credentials without a local execution target", async (t) => {
+  for (const host of [undefined, "127.0.0.2"]) {
+    await t.test(host ?? "default host", async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), "serve-startup-"));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const address = host ?? "127.0.0.1";
+      const reservation = createServer();
+      await new Promise<void>((resolve) => reservation.listen(0, address, resolve));
+      const port = (reservation.address() as AddressInfo).port;
+      await new Promise<void>((resolve) => reservation.close(() => resolve()));
+      const child = spawn(
+        process.execPath,
+        [
+          // The fixture has an empty inventory; use a fixed instance-owner identity.
+          "--import",
+          'data:text/javascript,import { mock } from "node:test"; mock.method(process, "getuid", () => 1000);',
+          fileURLToPath(new URL("../server.ts", import.meta.url)),
+        ],
+        {
+          env: {
+            ...process.env,
+            HOST: host,
+            PORT: String(port),
+            HOME: directory,
+            XDG_STATE_HOME: join(directory, "state"),
+            PATH: "",
+            ANTHROPIC_API_KEY: "test-only-api-key",
+          },
+          stdio: ["ignore", "ignore", "pipe"],
+        },
+      );
+      await checkCLI(
+        child,
+        `http://${address}:${port}/?data=1`,
+        (response) =>
+          response.json() as Promise<{
+            sessions: unknown[];
+            targets: unknown[];
+            models: { key: string }[];
+            target: string;
+          }>,
+        async (catalog) => {
+          assert.deepEqual(catalog.sessions, []);
+          assert.deepEqual(catalog.targets, []);
+          assert.equal(catalog.target, "");
+          assert(catalog.models.some(({ key }) => JSON.parse(key)[0] === "anthropic"));
+        },
+      );
+    });
+  }
 });

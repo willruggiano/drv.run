@@ -25,8 +25,8 @@ export async function pages(
   notifications?: Notifications,
 ): Promise<boolean> {
   const path = url.pathname;
-  const landing = path === "/elm" || path === "/elm/";
-  const archive = /^\/elm\/sessions\/([^/]+)\/archive$/.exec(path);
+  const landing = path === "/";
+  const archive = /^\/sessions\/([^/]+)\/archive$/.exec(path);
   if (archive) {
     if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
     await form(request);
@@ -34,7 +34,7 @@ export async function pages(
     json(response, { saved: true });
     return true;
   }
-  if (path === "/elm/directories") {
+  if (path === "/directories") {
     if (request.method !== "GET") throw new FormError(405, "Method not allowed.");
     const target = (await sessions.catalog(context)).targets.find(
       (item) =>
@@ -48,7 +48,7 @@ export async function pages(
     );
     return true;
   }
-  const authAction = /^\/elm\/settings\/auth\/(github|openai)\/(login|logout)$/.exec(path);
+  const authAction = /^\/settings\/auth\/(github|openai)\/(login|logout)$/.exec(path);
   if (authAction) {
     if (request.method !== "POST") throw new FormError(405, "Method not allowed.");
     await form(request);
@@ -61,12 +61,12 @@ export async function pages(
     json(response, { saved: true });
     return true;
   }
-  if (!landing && path !== "/elm/settings") return false;
+  if (!landing && path !== "/settings") return false;
   if (request.method === "POST") {
     const data = await form(request, 8 * 1024 * 1024);
     if (landing) {
       const session = await createSession(data, sessions, context);
-      json(response, { path: conversationURL(session, undefined, "elm") });
+      json(response, { path: conversationURL(session) });
     } else {
       if (!settings) throw new FormError(503, "Shared settings are not configured.");
       await saveGlobalSettings(data, sessions, settings, context);
@@ -80,7 +80,7 @@ export async function pages(
     return true;
   }
   const providers =
-    path === "/elm/settings"
+    path === "/settings"
       ? await Promise.all(
           authorizationProviders.map(async ({ id, label }) => {
             const auth = await authorization.status(signal, id);
@@ -137,7 +137,7 @@ export async function pages(
       return item ? JSON.stringify([item.provider, item.target]) : "";
     })(),
     sessions: catalog.sessions.slice(0, 5).map((item) => ({
-      path: `/elm/sessions/${item.id}`,
+      path: `/sessions/${item.id}`,
       title: item.name || "Untitled session",
       date: new Date(item.created).toISOString().slice(0, 10),
       environment: item.binding

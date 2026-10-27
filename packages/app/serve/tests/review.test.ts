@@ -17,7 +17,7 @@ import { createBashTool, createReadTool, createWriteTool } from "@earendil-works
 import { endReview, startReview } from "../review.ts";
 import { Environment } from "../sessions.ts";
 import { code, exists, fixture, readHistory, waitFor } from "./sessions-testing.ts";
-import { post, serve } from "./testing.ts";
+import { command, serve } from "./testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 const call = (name: string, args: JsonObject) =>
@@ -38,18 +38,18 @@ await test("HTTP review commands select conversations without submitting slash t
         : session.root;
       const before = await readHistory(original);
       const base = await serve(t, f.sessions);
-      const resource = `${base}/htmx/sessions/${session.id}/conversations`;
-      const submit = (id: number, operation: string) => post(`${resource}/${id}/${operation}`, {});
-      assert.equal((await submit(original.id, "end-review")).status, 409);
+      const resource = `${base}/sessions/${session.id}/conversations`;
+      const submit = (id: number, operation: string) => command(`${resource}/${id}`, operation);
+      assert.equal((await submit(original.id, "endreview")).status, 409);
       f.faux.setResponses([fauxAssistantMessage("No findings.")]);
       const response = await submit(original.id, "review");
-      assert.equal(response.status, 303);
-      const result = response.headers.get("location");
+      assert.equal(response.status, 200);
+      const result = (await response.json()).path;
       const state = await session.harness.snapshot(Review, original.id, context);
       assert(state?.active !== undefined);
       assert(Number.isSafeInteger(state.active));
       assert.notEqual(state.active, original.id);
-      assert.equal((await submit(original.id, "review")).headers.get("location"), result);
+      assert.equal((await (await submit(original.id, "review")).json()).path, result);
       const review = await session.harness.conversation(state.active, context);
       assert(review);
       await review.waitForIdle(context);
@@ -68,11 +68,11 @@ await test("HTTP review commands select conversations without submitting slash t
         original: original.id,
       });
       f.faux.setResponses([fauxAssistantMessage("Received review.")]);
-      const ended = await submit(review.id, "end-review");
-      assert.equal(ended.status, 303);
+      const ended = await submit(review.id, "endreview");
+      assert.equal(ended.status, 200);
       const destination = conversationURL(session, original.id);
-      assert.equal(ended.headers.get("location"), destination);
-      assert.equal((await submit(review.id, "end-review")).headers.get("location"), destination);
+      assert.equal((await ended.json()).path, destination);
+      assert.equal((await (await submit(review.id, "endreview")).json()).path, destination);
       await original.waitForIdle(context);
       const reports = (await readHistory(original)).filter((entry) => entry.kind === "app.review");
       assert.equal(reports.length, 1);
@@ -107,10 +107,10 @@ await test("HTTP review scopes compose the review input and retries preserve the
         },
       ]);
       const base = await serve(t, f.sessions);
-      const url = base + conversationURL(session) + "/review";
-      const response = await post(url, { scope: input });
-      assert.equal(response.status, 303);
-      const result = response.headers.get("location");
+      const url = base + conversationURL(session);
+      const response = await command(url, "review", { argument: input });
+      assert.equal(response.status, 200);
+      const result = (await response.json()).path;
       const state = await session.harness.snapshot(Review, session.root.id, context);
       assert(state?.active !== undefined);
       const review = await session.harness.conversation(state.active, context);
@@ -118,9 +118,9 @@ await test("HTTP review scopes compose the review input and retries preserve the
       assert.equal(result, conversationURL(session, review.id));
       await review.waitForIdle(context);
       const before = await readHistory(review);
-      const retry = await post(url, { scope: "a different scope" });
-      assert.equal(retry.status, 303);
-      assert.equal(retry.headers.get("location"), result);
+      const retry = await command(url, "review", { argument: "a different scope" });
+      assert.equal(retry.status, 200);
+      assert.equal((await retry.json()).path, result);
       assert.deepEqual(await readHistory(review), before);
       assert.deepEqual(await readHistory(session.root), []);
       assert.equal(f.faux.state.callCount, 1);

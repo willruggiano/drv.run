@@ -80,33 +80,29 @@ await test("settings subscriptions retain the same-origin boundary and Activity 
   const address = server.address();
   assert(address && typeof address === "object");
   const base = `http://127.0.0.1:${address.port}`;
-  for (const frontend of ["elm", "htmx"]) {
-    for (const path of ["activity", "activity/events", "activity/read", "activity/subscribe"])
-      assert.equal((await fetch(`${base}/${frontend}/${path}`)).status, 404);
-    const sessions = await fetch(`${base}/${frontend}/sessions`, { redirect: "manual" });
-    assert.equal(sessions.status, 303);
-    assert.equal(sessions.headers.get("Location"), `/${frontend}/`);
-    const endpoint = "https://push.example/device";
-    const subscription = { endpoint };
-    activity.subscribe(endpoint, subscription);
-    const write = (origin?: string) =>
-      fetch(`${base}/${frontend}/settings/push/unsubscribe`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) },
-        body: JSON.stringify({ endpoint }),
-      });
-    assert.equal((await write()).status, 403);
-    assert.equal((await write("https://attacker.example")).status, 403);
-    assert.deepEqual(activity.subscriptions(), [subscription]);
-    assert.equal((await write(base)).status, 204);
-    assert.deepEqual(activity.subscriptions(), []);
-    const response = await fetch(`${base}/${frontend}/settings/push/subscribe`, {
+
+  for (const path of ["activity", "activity/events", "activity/read", "activity/subscribe"])
+    assert.equal((await fetch(`${base}/${path}`)).status, 404);
+  const endpoint = "https://push.example/device";
+  const subscription = { endpoint };
+  activity.subscribe(endpoint, subscription);
+  const write = (origin?: string) =>
+    fetch(`${base}/settings/push/unsubscribe`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Origin: base },
-      body: "{}",
+      headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) },
+      body: JSON.stringify({ endpoint }),
     });
-    assert.equal(response.status, 409);
-  }
+  assert.equal((await write()).status, 403);
+  assert.equal((await write("https://attacker.example")).status, 403);
+  assert.deepEqual(activity.subscriptions(), [subscription]);
+  assert.equal((await write(base)).status, 204);
+  assert.deepEqual(activity.subscriptions(), []);
+  const response = await fetch(`${base}/settings/push/subscribe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: base },
+    body: "{}",
+  });
+  assert.equal(response.status, 409);
 });
 await test("push failures are retried finitely and never erase accepted activity", async (t) => {
   let now = 1000;

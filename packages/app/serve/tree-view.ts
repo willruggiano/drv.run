@@ -9,7 +9,7 @@ function decode(source: string): TreeData {
     !["branches", "entries"].includes(String(value.kind)) ||
     !("path" in value) ||
     typeof value.path !== "string" ||
-    !/^\/(elm|htmx)\/sessions\/[^/]+\/conversations\/\d+$/.test(value.path) ||
+    !/^\/sessions\/[^/]+\/conversations\/\d+$/.test(value.path) ||
     !("nodes" in value) ||
     !Array.isArray(value.nodes)
   )
@@ -35,8 +35,7 @@ function decode(source: string): TreeData {
       typeof node.current !== "boolean" ||
       !(
         node.path === null ||
-        (typeof node.path === "string" &&
-          /^\/(elm|htmx)\/sessions\/[^/]+\/conversations\/\d+$/.test(node.path))
+        (typeof node.path === "string" && /^\/sessions\/[^/]+\/conversations\/\d+$/.test(node.path))
       )
     )
       throw new Error("Invalid tree node");
@@ -53,7 +52,7 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, className: strin
   return node;
 }
 
-/** Both frontends own the value attribute; this element owns its search, selection and DOM. */
+/** Elm owns the value attribute; this element owns its search, selection and DOM. */
 class TreeExplorer extends HTMLElement {
   static observedAttributes = ["value"];
   private data?: TreeData;
@@ -68,7 +67,7 @@ class TreeExplorer extends HTMLElement {
   }
   connectedCallback() {
     if (!this.initialized) {
-      this.innerHTML = `<main id="main-area"><section id="tree-view" class="pane" aria-label="Tree"><div id="tree-rows"></div><p id="tree-empty" hidden>No matches.</p></section></main><footer id="app-footer" class="composer-area"><div class="composer-shell"><div class="compose-box"><form id="tree-composer" hx-boost="false"><textarea id="prompt" rows="2" tabindex="1" autocomplete="off" aria-label="Search tree"></textarea></form><div class="actions"><a id="tree-close" class="icon" data-return aria-label="Close tree" title="Close tree"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"></path></svg></a><select id="tree-filter" class="submission-mode" aria-label="Entry filter"><option value="all">All entries</option><option value="no-tools">No tools</option><option value="user-only">User only</option></select><output id="tree-count" aria-live="polite"></output><span class="spacer"></span><button id="tree-prev" class="icon" type="button" aria-label="Previous entry">↑</button><button id="tree-next" class="icon" type="button" aria-label="Next entry">↓</button></div></div></div><a id="tree-sessions" data-command="sessions" hidden></a><p id="tree-error" role="alert" hidden>Tree unavailable. Close and reopen to retry.</p></footer>`;
+      this.innerHTML = `<main id="main-area"><section id="tree-view" class="pane" aria-label="Tree"><div id="tree-rows"></div><p id="tree-empty" hidden>No matches.</p></section></main><footer id="app-footer" class="composer-area"><div class="composer-shell"><div class="compose-box"><form id="tree-composer"><textarea id="prompt" rows="2" tabindex="1" autocomplete="off" aria-label="Search tree"></textarea></form><div class="actions"><a id="tree-close" class="icon" data-return aria-label="Close tree" title="Close tree"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"></path></svg></a><select id="tree-filter" class="submission-mode" aria-label="Entry filter"><option value="all">All entries</option><option value="no-tools">No tools</option><option value="user-only">User only</option></select><output id="tree-count" aria-live="polite"></output><span class="spacer"></span><button id="tree-prev" class="icon" type="button" aria-label="Previous entry">↑</button><button id="tree-next" class="icon" type="button" aria-label="Next entry">↓</button></div></div></div><a id="tree-sessions" data-command="sessions" hidden></a><p id="tree-error" role="alert" hidden>Tree unavailable. Close and reopen to retry.</p></footer>`;
       this.node("prompt").addEventListener("input", () => this.render());
       this.node("tree-filter").addEventListener("change", () => this.render());
       this.node("tree-prev").onclick = () => this.move(-1);
@@ -117,9 +116,7 @@ class TreeExplorer extends HTMLElement {
         this.selected = data.nodes.find((node) => node.current)?.id;
       }
       if (this.selected === undefined) this.selected = data.nodes.find((node) => node.current)?.id;
-      this.node<HTMLAnchorElement>("tree-sessions").href = data.path.startsWith("/elm/")
-        ? "/elm"
-        : "/htmx/";
+      this.node<HTMLAnchorElement>("tree-sessions").href = "/";
       const branches = data.kind === "branches";
       this.node<HTMLAnchorElement>("tree-close").href = data.path;
       this.node("tree-filter").hidden = branches;

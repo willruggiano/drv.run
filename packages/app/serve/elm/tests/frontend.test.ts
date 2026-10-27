@@ -59,7 +59,7 @@ await test("Elm command boundary enforces origins, methods, identities and durab
   const f = await fixture(t);
   const session = await f.create();
   const base = await serve(t, f.sessions);
-  const url = base + conversationURL(session, undefined, "elm") + "/command";
+  const url = base + conversationURL(session) + "/command";
   const fields = {
     command: "submit",
     requestId: "input-1",
@@ -89,9 +89,9 @@ await test("Elm command boundary enforces origins, methods, identities and durab
   assert.deepEqual(await readHistory(session.root), records);
   assert.equal(f.faux.state.callCount, 1);
   assert.equal((await post(base, { ...fields, command: "unknown" })).status, 400);
-  const catalog = await fetch(base + "/elm?data=1");
+  const catalog = await fetch(base + "/?data=1");
   const data = await catalog.json();
-  assert.equal(data.sessions[0].path, `/elm/sessions/${session.id}`);
+  assert.equal(data.sessions[0].path, `/sessions/${session.id}`);
   assert.equal(data.sessions[0].title, "Untitled session");
 });
 
@@ -101,10 +101,7 @@ await test("Elm receipts acknowledge admission without mutating state or exposin
   const other = await f.create();
   const base = await serve(t, f.sessions);
   const url = (id: string) =>
-    base +
-    conversationURL(session, undefined, "elm") +
-    "/receipt?requestId=" +
-    encodeURIComponent(id);
+    base + conversationURL(session) + "/receipt?requestId=" + encodeURIComponent(id);
   assert.equal((await fetch(url(""))).status, 400);
   assert.deepEqual(await (await fetch(url("missing"))).json(), { accepted: false });
   f.faux.setResponses([fauxAssistantMessage("Received")]);
@@ -121,7 +118,7 @@ await test("Elm receipts acknowledge admission without mutating state or exposin
   assert.deepEqual(await (await fetch(url("stable-id"))).json(), { accepted: true });
   assert.deepEqual(
     await (
-      await fetch(base + conversationURL(other, undefined, "elm") + "/receipt?requestId=stable-id")
+      await fetch(base + conversationURL(other, undefined) + "/receipt?requestId=stable-id")
     ).json(),
     { accepted: false },
   );
@@ -151,7 +148,7 @@ await test("Elm rejects invalid multipart attachments without admitting inputs",
       data.append("images", new Blob([new Uint8Array(size)], { type }), `file${i}`);
     assert.equal(
       (
-        await fetch(base + conversationURL(session, undefined, "elm") + "/command", {
+        await fetch(base + conversationURL(session) + "/command", {
           method: "POST",
           headers: { Origin: base },
           body: data,
@@ -205,10 +202,9 @@ await test("Elm releases early-disconnected watches and bounds pending entries d
       }
       t.mock.method(session.harness, "conversation", async () => session.root);
       const abort = new AbortController();
-      const response = fetch(
-        `http://127.0.0.1:${address.port}${conversationURL(session, undefined, "elm")}/events`,
-        { signal: abort.signal },
-      );
+      const response = fetch(`http://127.0.0.1:${address.port}${conversationURL(session)}/events`, {
+        signal: abort.signal,
+      });
       const rejected = assert.rejects(response);
       await acquired.promise;
       if (stage === "watch") abort.abort();
@@ -224,11 +220,11 @@ await test("Elm releases early-disconnected watches and bounds pending entries d
     });
 });
 
-await test("Elm session settings use the same validation and persistence as native forms", async (t) => {
+await test("Elm session settings validate and persist form data", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   const base = await serve(t, f.sessions);
-  const path = base + conversationURL(session, undefined, "elm");
+  const path = base + conversationURL(session);
   const catalog = await f.sessions.catalog(BACKGROUND_CONTEXT);
   const model = catalog.models[0];
   const target = catalog.targets[0];

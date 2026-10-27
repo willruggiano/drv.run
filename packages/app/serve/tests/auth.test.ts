@@ -88,20 +88,20 @@ await test("settings auth is unauthenticated but mutations require same-origin P
     undefined,
     control.authorization,
   );
-  const page = await fetch(base + "/htmx/settings");
+  const page = await fetch(base + "/settings");
   assert.equal(page.status, 200);
   assert.equal(page.headers.get("cache-control"), "no-store");
   await page.body?.cancel();
   for (const [path, options, code] of [
-    ["/htmx/settings/auth/github/login", { method: "GET" }, 405],
-    ["/htmx/settings/auth/github/login", { method: "POST" }, 403],
+    ["/settings/auth/github/login", { method: "GET" }, 405],
+    ["/settings/auth/github/login", { method: "POST" }, 403],
     [
-      "/htmx/settings/auth/github/login",
+      "/settings/auth/github/login",
       { method: "POST", headers: { Origin: "http://attacker.invalid" } },
       403,
     ],
-    ["/htmx/settings/auth/github/logout", { method: "POST", headers: { Origin: "null" } }, 403],
-    ["/htmx/settings", { method: "DELETE", headers: { Origin: base } }, 405],
+    ["/settings/auth/github/logout", { method: "POST", headers: { Origin: "null" } }, 403],
+    ["/settings", { method: "DELETE", headers: { Origin: base } }, 405],
   ] as const) {
     const response = await fetch(base + path, options);
     assert.equal(response.status, code);
@@ -110,7 +110,7 @@ await test("settings auth is unauthenticated but mutations require same-origin P
   }
   const rebound = await new Promise<number | undefined>((resolve, reject) => {
     const call = request(
-      base + "/htmx/settings/auth/github/login",
+      base + "/settings/auth/github/login",
       { method: "POST", headers: { Origin: base, Host: "attacker.invalid" } },
       (response) => {
         response.resume();
@@ -122,14 +122,14 @@ await test("settings auth is unauthenticated but mutations require same-origin P
   });
   assert.equal(rebound, 403);
   assert.equal((await control.authorization.status()).state, "not-enrolled");
-  const enrolled = await post(base + "/htmx/settings/auth/github/login?user=bob", { user: "bob" });
-  assert.equal(enrolled.status, 303);
-  assert.equal(enrolled.headers.get("location"), "/htmx/settings#authorization");
+  const enrolled = await post(base + "/settings/auth/github/login?user=bob", { user: "bob" });
+  assert.equal(enrolled.status, 200);
+  assert.deepEqual(await enrolled.json(), { saved: true });
   assert.equal((await control.authorization.status()).userId, 1);
   assert.equal((await control.authorization.status()).state, "authorizing");
   control.approve();
-  const removed = await post(base + "/htmx/settings/auth/github/logout", {});
-  assert.equal(removed.status, 303);
+  const removed = await post(base + "/settings/auth/github/logout", {});
+  assert.equal(removed.status, 200);
   assert.equal((await control.authorization.status()).state, "not-enrolled");
 });
 
@@ -230,67 +230,62 @@ await test("OpenAI token retrieval rejects invalid, expired, missing and cancell
   await assert.rejects(f.authorization.status(undefined, "openai"));
 });
 
-for (const frontend of ["htmx", "elm"] as const)
-  await test(`${frontend}: OpenAI enrollment is owner-bound and never exposes the token endpoint to HTTP`, async (t) => {
-    const f = await fixture(t);
-    const control = await authorizationFixture(t);
-    const base = await serve(
-      t,
-      f.sessions,
-      undefined,
-      "127.0.0.1",
-      undefined,
-      undefined,
-      control.authorization,
-    );
-    for (const [path, options, expected] of [
-      [`/${frontend}/auth`, {}, 404],
-      [`/${frontend}/auth/openai/login`, { method: "POST", headers: { Origin: base } }, 404],
-      [`/${frontend}/settings/auth/openai/token`, {}, 404],
-      [
-        `/${frontend}/settings/auth/openai/token`,
-        { method: "POST", headers: { Origin: base } },
-        404,
-      ],
-      [`/${frontend}/settings/auth/openai/login`, { method: "POST" }, 403],
-      [
-        `/${frontend}/settings/auth/openai/login`,
-        { method: "POST", headers: { Origin: "https://attacker.invalid" } },
-        403,
-      ],
-    ] as const) {
-      const response = await fetch(base + path, options);
-      assert.equal(response.status, expected);
-      await response.body?.cancel();
-    }
-    assert.equal(control.calls.length, 0);
-    const enrolled = await post(`${base}/${frontend}/settings/auth/openai/login?user=bob`, {
-      user: "bob",
-    });
-    assert.equal(enrolled.status, frontend === "htmx" ? 303 : 200);
-    await enrolled.body?.cancel();
-    assert.equal((await control.authorization.status(undefined, "openai")).state, "authorizing");
-    assert.equal((await control.authorization.status()).state, "not-enrolled");
-    control.approve("openai");
-    if (frontend === "elm") {
-      const response = await fetch(base + "/elm/settings?data");
-      const data = (await response.json()) as { kind: string; providers: unknown[] };
-      assert.equal(data.kind, "settings");
-      assert.deepEqual(data.providers[0], {
-        id: "openai",
-        label: "OpenAI",
-        state: "usable",
-        identity: "account-alice",
-        failed: false,
-        device: null,
-      });
-    }
-    const removed = await post(`${base}/${frontend}/settings/auth/openai/logout`, {});
-    assert.equal(removed.status, frontend === "htmx" ? 303 : 200);
-    await removed.body?.cancel();
-    assert.equal((await control.authorization.status(undefined, "openai")).state, "not-enrolled");
-    assert.equal(
-      control.calls.some((call) => call.path === "/openai/token"),
-      false,
-    );
+await test(`elm: OpenAI enrollment is owner-bound and never exposes the token endpoint to HTTP`, async (t) => {
+  const f = await fixture(t);
+  const control = await authorizationFixture(t);
+  const base = await serve(
+    t,
+    f.sessions,
+    undefined,
+    "127.0.0.1",
+    undefined,
+    undefined,
+    control.authorization,
+  );
+  for (const [path, options, expected] of [
+    [`/auth`, {}, 404],
+    [`/auth/openai/login`, { method: "POST", headers: { Origin: base } }, 404],
+    [`/settings/auth/openai/token`, {}, 404],
+    [`/settings/auth/openai/token`, { method: "POST", headers: { Origin: base } }, 404],
+    [`/settings/auth/openai/login`, { method: "POST" }, 403],
+    [
+      `/settings/auth/openai/login`,
+      { method: "POST", headers: { Origin: "https://attacker.invalid" } },
+      403,
+    ],
+  ] as const) {
+    const response = await fetch(base + path, options);
+    assert.equal(response.status, expected);
+    await response.body?.cancel();
+  }
+  assert.equal(control.calls.length, 0);
+  const enrolled = await post(`${base}/settings/auth/openai/login?user=bob`, {
+    user: "bob",
   });
+  assert.equal(enrolled.status, 200);
+  await enrolled.body?.cancel();
+  assert.equal((await control.authorization.status(undefined, "openai")).state, "authorizing");
+  assert.equal((await control.authorization.status()).state, "not-enrolled");
+  control.approve("openai");
+
+  const response = await fetch(base + "/settings?data");
+  const data = (await response.json()) as { kind: string; providers: unknown[] };
+  assert.equal(data.kind, "settings");
+  assert.deepEqual(data.providers[0], {
+    id: "openai",
+    label: "OpenAI",
+    state: "usable",
+    identity: "account-alice",
+    failed: false,
+    device: null,
+  });
+
+  const removed = await post(`${base}/settings/auth/openai/logout`, {});
+  assert.equal(removed.status, 200);
+  await removed.body?.cancel();
+  assert.equal((await control.authorization.status(undefined, "openai")).state, "not-enrolled");
+  assert.equal(
+    control.calls.some((call) => call.path === "/openai/token"),
+    false,
+  );
+});

@@ -69,9 +69,7 @@ export function pushMessage(item: ActivityItem): PushMessage {
     activity: item.id,
     title: previewText(title, 192),
     body: previewText(body, 2048, true),
-    url: conversation
-      ? `/sessions/${source.incarnation}/conversations/${conversation}`
-      : "/sessions",
+    url: conversation ? `/sessions/${source.incarnation}/conversations/${conversation}` : "/",
     tag: `drv-run-${createHash("sha256").update(identity).digest("hex")}`,
     timestamp: item.received,
     icon: "/icon-192.png",

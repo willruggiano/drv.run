@@ -28,8 +28,6 @@ import { httpServer } from "./server.ts";
 import { buildAssets } from "./build.ts";
 
 const usage = `Usage: node packages/app/serve/benchmark.ts [options]
-  --frontend hypermedia|elm
-                 Measure real page/SSE delivery (default hypermedia)
   --runs N       Fresh browser launches (default 3, maximum 100)
   --turns N      History turns, each with a user, assistant and tool result (default 200)
   --entries N    Exact history size (mutually exclusive with --turns)
@@ -57,7 +55,6 @@ export function benchmarkOptions(args: string[]) {
   const { values } = parseArgs({
     args,
     options: {
-      frontend: { type: "string" },
       runs: { type: "string", default: "3" },
       turns: { type: "string" },
       entries: { type: "string" },
@@ -70,8 +67,6 @@ export function benchmarkOptions(args: string[]) {
       help: { type: "boolean", default: false },
     },
   });
-  const frontend = values.frontend ?? "hypermedia";
-  assert(frontend === "hypermedia" || frontend === "elm", "--frontend must be hypermedia or elm");
   assert(values.profile || values["profile-dir"] === undefined, "--profile-dir requires --profile");
   const number = (value: string, name: string, max: number, integer = true) => {
     const result = Number(value);
@@ -93,7 +88,6 @@ export function benchmarkOptions(args: string[]) {
       ? number(values.turns ?? "200", "--turns", 10_000) * 3
       : number(values.entries, "--entries", 30_000);
   return {
-    frontend,
     entries,
     memory: values.memory,
     runs: number(values.runs, "--runs", 100),
@@ -297,7 +291,6 @@ async function pageWorkload(
   sessions: Sessions,
   base: string,
   entries: number,
-  frontend: string,
   disconnect: () => void,
   bytesWritten: () => number,
   stage: <T>(phase: ProfilePhase, action: () => Promise<T>) => Promise<T>,
@@ -318,7 +311,7 @@ async function pageWorkload(
     }, context),
   );
   await page.addInitScript(
-    ({ entries, frontend }) => {
+    ({ entries }) => {
       window.__piBenchmarkObserve = (expected) =>
         new Promise<number>((resolve, reject) => {
           const start = expected.busy === undefined ? 0 : performance.now();
@@ -374,20 +367,18 @@ async function pageWorkload(
       window.__piBenchmarkComplete = window.__piBenchmarkObserve({});
       window.__piBenchmarkStreamReady = undefined;
       document.addEventListener(
-        frontend === "elm" ? "elm:rendered" : "htmx:sse:after:message",
+        "elm:rendered",
         () => {
           window.__piBenchmarkStreamReady = performance.now();
         },
         { once: true },
       );
     },
-    { entries, frontend },
+    { entries },
   );
   const initialBefore = bytesWritten();
   const initialMs = await stage("initial", async () => {
-    await page.goto(
-      base + conversationURL(session, undefined, frontend === "elm" ? "elm" : "htmx"),
-    );
+    await page.goto(base + conversationURL(session));
     await page.waitForFunction(() => window.__piBenchmarkStreamReady !== undefined);
     const elapsed = await page.evaluate(() => window.__piBenchmarkComplete);
     // Drain the initial event handler and resulting layout before token timing.
@@ -462,11 +453,11 @@ async function pageWorkload(
       ),
   );
   const reconnectBefore = bytesWritten();
-  const reconnectMs = await page.evaluate(async (frontend) => {
+  const reconnectMs = await page.evaluate(async () => {
     const start = performance.now();
     const completed = new Promise<number>((resolve) => {
       document.addEventListener(
-        frontend === "elm" ? "elm:rendered" : "htmx:sse:after:message",
+        "elm:rendered",
         () => {
           document.getElementById("transcript")!.getBoundingClientRect();
           resolve(performance.now() - start);
@@ -476,7 +467,7 @@ async function pageWorkload(
     });
     await window.__piBenchmarkDisconnect();
     return completed;
-  }, frontend);
+  });
   const reconnectBytes = bytesWritten() - reconnectBefore;
   const archives = [];
   for (const kind of ["pi.reset", "pi.compaction"]) {
@@ -524,29 +515,21 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
   let sessions: Sessions | undefined;
   let server: ReturnType<typeof httpServer> | undefined;
   try {
-    if (existsSync(join(options.assets, "htmx/client.ts")))
+    if (existsSync(join(options.assets, "elm/client.ts")))
       await buildAssets(options.assets, directory);
     else
       for (const file of [
-        "elm/main.js",
-        "elm/client.js",
+        "main.js",
+        "client.js",
+        "site.js",
+        "sw.js",
         "highlight.js",
         "styles.css",
-        "htmx/client.js",
-        "htmx/sw.js",
         "icon-192.png",
         "icon-512.png",
-        "htmx/vendor.js",
-        "htmx/sse.js",
-        "htmx/morph.js",
-      ]) {
-        await mkdir(dirname(join(directory, file)), { recursive: true });
+      ])
         await copyFile(join(options.assets, file), join(directory, file));
-      }
-    const client = await readFile(
-      join(directory, options.frontend === "elm" ? "elm/main.js" : "htmx/client.js"),
-      "utf8",
-    );
+    const client = await readFile(join(directory, "main.js"), "utf8");
     const css = await readFile(join(directory, "styles.css"), "utf8");
     const highlighter = await readFile(join(directory, "highlight.js"), "utf8");
     const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -648,7 +631,6 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
           sessions,
           base,
           options.entries,
-          options.frontend,
           () => {
             for (const stream of streams) stream.destroy();
           },
@@ -666,12 +648,11 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
     return {
       schemaVersion: 2,
       benchmark: "serve.render",
-      frontend: options.frontend,
       units: "ms",
       measurement: {
         initial:
           "Navigation start to first transcript layout; excludes later client initialization",
-        firstUpdate: "Navigation start to the first SSE update applied by the selected frontend",
+        firstUpdate: "Navigation start to the first SSE update applied by the frontend",
         includes: [
           "page-loading",
           "commit",
@@ -704,13 +685,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       },
       assets: Object.fromEntries(
         await Promise.all(
-          [
-            ...(options.frontend === "elm"
-              ? ["elm/main.js", "elm/client.js"]
-              : ["htmx/vendor.js", "htmx/sse.js", "htmx/client.js", "htmx/morph.js"]),
-            "styles.css",
-            "highlight.js",
-          ].map(async (file) => [
+          ["main.js", "client.js", "site.js", "styles.css", "highlight.js"].map(async (file) => [
             file,
             { bytes: (await readFile(join(directory, file))).byteLength },
           ]),
@@ -719,7 +694,6 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       source: {
         clientSha256: hash(client),
         cssSha256: hash(css),
-        htmxSha256: hash(await readFile(join(directory, "htmx/vendor.js"), "utf8")),
         highlighterSha256: hash(highlighter),
       },
       workload: {

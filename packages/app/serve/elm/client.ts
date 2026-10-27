@@ -134,7 +134,7 @@ try {
   if (saved && typeof saved === "object")
     for (const [key, value] of Object.entries(saved))
       if (
-        key.startsWith("/elm/sessions/") &&
+        key.startsWith("/sessions/") &&
         typeof value === "number" &&
         Number.isFinite(value) &&
         value >= 0

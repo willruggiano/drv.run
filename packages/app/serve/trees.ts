@@ -157,11 +157,10 @@ export function conversationTree(
   session: Session,
   current: ConversationId,
   branches: Branch[],
-  frontend: "elm" | "htmx",
 ): TreeData {
   return {
     kind: "branches",
-    path: conversationURL(session, current, frontend),
+    path: conversationURL(session, current),
     nodes: branches.map((branch) => ({
       id: branch.id,
       parent: branch.parent,
@@ -171,7 +170,7 @@ export function conversationTree(
       timestamp: branch.activity,
       active: false,
       current: branch.id === current,
-      path: conversationURL(session, branch.id, frontend),
+      path: conversationURL(session, branch.id),
     })),
   };
 }

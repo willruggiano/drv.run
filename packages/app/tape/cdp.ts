@@ -198,6 +198,8 @@ export async function launch(directory: string, signal: AbortSignal) {
       "--disable-extensions",
       "--disable-dev-shm-usage",
       "--disable-gpu",
+      // Repaint full tiles: incremental rasterization changes retained DOM edge pixels.
+      "--disable-partial-raster",
       "--font-render-hinting=none",
       "--force-color-profile=srgb",
       // Root cannot use Chromium's sandbox. Non-root runs retain it.

@@ -275,7 +275,7 @@ await test("guest previews preserve original text, urgency and replacement ident
   const preview = pushMessage(item);
   assert.equal(preview.title, "Build failed");
   assert.equal(preview.body, "Original error\nSecond line");
-  assert.equal(preview.url, "/sessions");
+  assert.equal(preview.url, "/");
   assert.equal(preview.timestamp, 1234);
   assert.equal(preview.requireInteraction, true);
   assert.equal(preview.silent, false);

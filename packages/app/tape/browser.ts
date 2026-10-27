@@ -7,8 +7,6 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { LiveState } from "@earendil-works/pi-durable";
 import { httpServer, GlobalSettingsStore } from "serve/server";
 import { conversationURL } from "serve/presentation";
-import { message } from "serve/htmx/render";
-import { renderHTML } from "serve/html";
 import { Page, launch, record } from "./cdp.ts";
 import { apply, openState } from "./state.ts";
 import { digest, PresentationDoc, viewer, type Tape, type Presentation } from "./model.ts";
@@ -111,7 +109,7 @@ class AppPage {
       source: `
       document.addEventListener("DOMContentLoaded", () => {
         const style = document.createElement("style");
-        style.textContent = "*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }";
+        style.textContent = "*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; -webkit-tap-highlight-color: transparent !important; }";
         document.head.append(style);
       });
     `,
@@ -123,9 +121,9 @@ class AppPage {
   private async ready(panel: Presentation["panel"]) {
     const selector = {
       conversation: "#conversation-scroll",
-      settings: '#settings[data-layout="stacked"]',
+      settings: '#settings[data-layout="stacked"] form[data-autosave]',
       context: "#context-view",
-      defaults: '#settings:not([data-layout="stacked"])',
+      defaults: '#settings:not([data-layout="stacked"]) form[data-autosave]',
     }[panel];
     await this.page.wait(
       `!!document.querySelector(${JSON.stringify(selector)})?.checkVisibility()${panel === "defaults" ? "" : " && document.querySelector('#connection')?.textContent === 'Connected'"}`,
@@ -209,7 +207,7 @@ class AppPage {
         // The mobile conversation has no global-settings control. Use the
         // standalone page URL rather than activating a hidden control.
         const navigation = await this.page.send("Page.navigate", {
-          url: `${this.base}/htmx/settings`,
+          url: `${this.base}/settings`,
         });
         assert(!navigation.errorText, navigation.errorText);
       }
@@ -225,32 +223,16 @@ class AppPage {
   }
   async capture(path: string, output: LiveState) {
     if (this.selected === "conversation") {
-      const expected = output.generation?.message
-        ? renderHTML(message(output.generation.message, undefined, false, false))
-        : "";
+      const expected =
+        output.generation?.message?.content.flatMap((part) =>
+          part.type === "text" ? [part.text] : [],
+        ) ?? [];
       await this.page.wait(
-        `(() => {
-          const expected = document.createElement('template');
-          expected.innerHTML = ${JSON.stringify(expected)};
-          const live = document.querySelector('#live');
-          if (!live) return false;
-          const blocks = root => Array.from(root.querySelectorAll('.text'), node => {
-            const block = node.cloneNode(true);
-            // Ignore client enhancement, but preserve Markdown structure and
-            // every text block when acknowledging the production renderer.
-            block.querySelectorAll('pre > code').forEach(code => {
-              code.removeAttribute('data-highlighted');
-              code.textContent = code.textContent;
-            });
-            return block;
-          });
-          const actual = blocks(live), wanted = blocks(expected.content);
-          return actual.length === wanted.length &&
-            wanted.every((block, index) => block.isEqualNode(actual[index]));
-        })()`,
+        `JSON.stringify(Array.from(document.querySelectorAll('#live .text'), node => node.getAttribute('data-source'))) === ${JSON.stringify(JSON.stringify(expected))}`,
         "live document rendered",
       );
     }
+    await this.page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
     await this.page.evaluate(`(async () => {
       await document.fonts.ready;
       await Promise.all(Array.from(document.images, image => image.decode()));
@@ -259,7 +241,6 @@ class AppPage {
       if (scroll) scroll.scrollTop = scroll.scrollHeight;
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     })()`);
-    await this.page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
     this.check();
     const { data } = await this.page.send("Page.captureScreenshot", {
       format: "png",

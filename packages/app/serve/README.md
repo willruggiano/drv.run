@@ -8,25 +8,6 @@ There are no command-line options. `HOST` defaults to `127.0.0.1`; `PORT`
 defaults to `8080`. The server is unauthenticated. Execution uses drv.run guests
 only; there is no local execution target.
 
-## Keyboard shortcuts
-
-<!-- FIXME: this should just be generated -->
-
-`ctrl+k` opens Sessions. Outside text fields and native selects, `t` opens the
-target selector, `m` opens the model selector, and `n` creates a session using
-the selected target/model. `/` focuses the session filter. `esc` dismisses the
-dialog. `ctrl+j/k` moves to the next/previous filtered session (wrapping at the
-ends); `enter` opens it. The same keys navigate menu items, select options, and
-conversation search matches when those controls have focus.
-
-Focused browser tests (with Chromium on PATH):
-
-<!-- FIXME: why do we need NODE_OPTIONS? -->
-
-```sh
-NODE_OPTIONS=--conditions=development node --test packages/app/serve/tests/key-mappings.chromium.ts
-```
-
 ## Base directory
 
 <!-- FIXME: Move to a new public/configuration.md file -->
@@ -75,71 +56,9 @@ NODE_OPTIONS=--conditions=development node --test packages/app/serve/tests/compl
 
 ## Benchmarks
 
-“Minified” uses esbuild 0.27.2. Deltas are relative to the unminified build at
-`9c18629`.
-
-### Rendering
-
-Medians from three fresh browsers: Chromium 153, Linux ARM64/Cortex-A76, 2
-available CPUs, no throttling, 390×844 mobile viewport. Each run uses 200 turns
-(600 entries), 40 streaming updates and 10 busy/idle transitions.
-
-| Revision |   Initial (ms) | Start streaming (ms) | Stream update (ms) | Busy/idle (ms) |
-| -------- | -------------: | -------------------: | -----------------: | -------------: |
-| Minified | 318.80 (+1.3%) |        12.10 (+0.8%) |       8.55 (-4.5%) | 10.00 (+11.1%) |
-| 9c18629  |         314.70 |                12.00 |               8.95 |           9.00 |
-
-Includes JSON parsing, rendering and synchronous layout; excludes asset loading,
-network and completed paint. Timing samples are unprofiled; small differences
-between these runs are not evidence of a rendering speedup.
-
 ```sh
 nix run .#app.bench.render > benchmark.json
 ```
 
 Add `-- --profile` for a separate diagnostic run with CPU profiles and browser
 traces; artifact paths appear in the JSON report.
-
-### Frontend delivery baseline
-
-Production frontend sources: `7d9a1b02`. Medians from three fresh browsers per
-frontend, run sequentially without competing tests: Chromium 153.0.8010.47, Node
-24.20.0, Linux ARM64/Cortex-A76, 4 available CPUs, no throttling, 390×844 mobile
-viewport. Same 200 turns (600 entries), 40 streaming updates and 10 busy/idle
-transitions as the renderer workload above.
-
-| Frontend | Initial (ms) | Start streaming (ms) | Stream update (ms) | Busy/idle (ms) | HTTP bytes/update |
-| -------- | -----------: | -------------------: | -----------------: | -------------: | ----------------: |
-| Original |       758.90 |                51.20 |              54.35 |          48.00 |         635,177.0 |
-| htmx POC |       740.20 |                93.00 |              59.50 |          65.40 |             821.5 |
-
-Initial time runs from navigation start to transcript layout. Updates include
-Durable commits, browser-control transport, real HTTP/SSE delivery, rendering
-and synchronous layout; they exclude completed paint. These are not comparable
-to the renderer-only timings above. CDP network observation waits for the first
-SSE frame, then stops before streaming measurements. CPU profiles and traces
-remain confined to separate diagnostic runs.
-
-Bytes count actual server socket writes: HTTP response headers, bodies and chunk
-framing, including supplementary reads; not TCP/IP overhead. No compression is
-configured. Per-update ranges were 634,280–636,074 bytes (original) and
-373–1,270 bytes (POC). Median initial delivery, including assets and the first
-SSE frame, was 1,433,490 and 7,253,776 bytes respectively. The POC currently
-retransmits history on first connect.
-
-```sh
-NODE_OPTIONS=--conditions=development node packages/app/serve/benchmark.ts --frontend original > original.json
-NODE_OPTIONS=--conditions=development node packages/app/serve/benchmark.ts --frontend hypermedia > hypermedia.json
-```
-
-Reports contain every timing and byte sample. Omitting `--frontend` retains the
-renderer-only benchmark; `--profile` also works with either frontend.
-
-### Asset size
-
-Served bytes before HTTP compression, including license notices.
-
-| Revision |   Client JS (B) | Highlighter JS (B) |         CSS (B) | Service worker (B) |        Total (B) |
-| -------- | --------------: | -----------------: | --------------: | -----------------: | ---------------: |
-| Minified | 38,186 (-48.7%) |    60,653 (-61.7%) | 14,759 (-14.5%) |       669 (-34.0%) | 114,267 (-54.5%) |
-| 9c18629  |          74,504 |            158,216 |          17,258 |              1,014 |          250,992 |

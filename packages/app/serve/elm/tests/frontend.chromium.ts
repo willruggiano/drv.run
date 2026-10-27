@@ -72,7 +72,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    const path = conversationURL(session, undefined, "elm");
+    const path = conversationURL(session);
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(b.base + path);
     await page.waitForFunction(
@@ -139,7 +139,7 @@ await test(
       const browserContext = await b.browser.newContext({ locale, timezoneId });
       const page = await browserContext.newPage();
       page.on("pageerror", (error) => b.errors.push(error));
-      await page.goto(b.base + conversationURL(session, undefined, "elm"));
+      await page.goto(b.base + conversationURL(session));
       await page.waitForFunction(() => customElements.get("elm-time") !== undefined);
       const results = await page.evaluate(() => {
         const node = document.createElement("elm-time");
@@ -187,7 +187,7 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.setViewportSize({ width: 1440, height: 900 });
-    const path = conversationURL(first, undefined, "elm");
+    const path = conversationURL(first, undefined);
     await page.goto(b.base + path);
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
@@ -287,7 +287,7 @@ await test(
     await waitFor(async () => (await height()) === multiline);
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "Other conversation" }).click();
-    await page.waitForURL(b.base + conversationURL(second, undefined, "elm"));
+    await page.waitForURL(b.base + conversationURL(second, undefined));
     await prompt.fill("short");
     await fits();
     assert((await height()) < multiline);
@@ -331,7 +331,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    const path = conversationURL(session, undefined, "elm");
+    const path = conversationURL(session);
     await page.goto(b.base + path);
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
@@ -392,14 +392,14 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.setViewportSize({ width: 1000, height: 900 });
-    await page.goto(b.base + conversationURL(first, undefined, "elm"));
+    await page.goto(b.base + conversationURL(first, undefined));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
     await page.locator("#prompt").fill("First draft");
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "Second" }).click();
-    await page.waitForURL(b.base + conversationURL(second, undefined, "elm"));
+    await page.waitForURL(b.base + conversationURL(second, undefined));
     await page.locator("#prompt").fill("Second draft");
     await page.goBack();
     await page.locator("#landing").waitFor();
@@ -486,7 +486,7 @@ await test(
     await page.route("**/events", (route) =>
       route.fulfill({ contentType: "text/event-stream", body: 'data: {"version":999}\n\n' }),
     );
-    await page.goto(b.base + conversationURL(session, undefined, "elm"));
+    await page.goto(b.base + conversationURL(session));
     await page.getByRole("button", { name: "Reconnect", exact: true }).waitFor();
     await page.unroute("**/events");
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
@@ -532,7 +532,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + conversationURL(session, undefined, "elm"));
+    await page.goto(b.base + conversationURL(session));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -580,7 +580,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + conversationURL(session, undefined, "elm"));
+    await page.goto(b.base + conversationURL(session));
     await page.locator("#prompt").fill("Start a cancellable tool");
     await page.locator("#send").click();
     await page.locator('.tool-call[data-state="running"]').waitFor();
@@ -626,7 +626,7 @@ await test(
     const server = await streamServer(t, f.sessions, b.assets);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(server.base + conversationURL(session, undefined, "elm"));
+    await page.goto(server.base + conversationURL(session));
     const select = async (file: string) => {
       const chooser = page.waitForEvent("filechooser");
       await page.getByRole("button", { name: "Upload attachments" }).click();
@@ -691,7 +691,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + conversationURL(session, undefined, "elm"));
+    await page.goto(b.base + conversationURL(session));
     await page.locator("#prompt").fill("Not admitted");
     const chooser = page.waitForEvent("filechooser");
     await page.getByRole("button", { name: "Upload attachments" }).click();
@@ -769,7 +769,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + conversationURL(restored, undefined, "elm"));
+    await page.goto(b.base + conversationURL(restored, undefined));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -822,7 +822,7 @@ await test(
     const page = b.page;
     await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
     // Exercise the adapter's port interface without a second workflow model or network timing.
-    await page.route("**/elm/main.js", (route) =>
+    await page.route("**/main.js", (route) =>
       route.fulfill({ contentType: "text/javascript", body: "" }),
     );
     await page.addInitScript(() => {
@@ -888,7 +888,7 @@ await test(
         },
       });
     });
-    await page.goto(b.base + conversationURL(session, undefined, "elm"));
+    await page.goto(b.base + conversationURL(session));
     await page.waitForFunction(() => window.elmTransportTest.ready);
     await page.clock.pauseAt(new Date("2026-01-01T01:00:00Z"));
     const control = await page.evaluateHandle(() => window.elmTransportTest);
@@ -901,7 +901,7 @@ await test(
       await page.clock.runFor(1);
       assert.equal(await count(), before + 1);
     };
-    await control.evaluate((test) => test.request({ path: "/elm/first", epoch: 1 }));
+    await control.evaluate((test) => test.request({ path: "/first", epoch: 1 }));
     await fail();
     assert.equal(await control.evaluate((test) => test.sources[0].closed), true);
     // Duplicate errors and queued data from a closed source cannot schedule or dispatch work.
@@ -940,10 +940,10 @@ await test(
 
     await fail();
     const beforeNavigation = await count();
-    await control.evaluate((test) => test.request({ path: "/elm/second", epoch: 2 }));
+    await control.evaluate((test) => test.request({ path: "/second", epoch: 2 }));
     await page.clock.runFor(60000);
     assert.equal(await count(), beforeNavigation + 1);
-    assert.equal(await control.evaluate((test) => test.sources.at(-1)!.url), "/elm/second/events");
+    assert.equal(await control.evaluate((test) => test.sources.at(-1)!.url), "/second/events");
     const beforeLate = await control.evaluate((test) => test.received.length);
     await control.evaluate((test) => {
       for (const old of test.sources.slice(0, -1)) {
@@ -961,7 +961,7 @@ await test(
     await page.clock.runFor(60000);
     assert.equal(await count(), beforeStop);
 
-    await control.evaluate((test) => test.request({ path: "/elm/second", epoch: 3 }));
+    await control.evaluate((test) => test.request({ path: "/second", epoch: 3 }));
     await fail();
     const beforeHide = await count();
     await page.evaluate(() =>
@@ -978,7 +978,7 @@ await test(
       payload: null,
     });
     // Elm owns restoration; its new epoch starts a fresh subscription immediately.
-    await control.evaluate((test) => test.request({ path: "/elm/second", epoch: 4 }));
+    await control.evaluate((test) => test.request({ path: "/second", epoch: 4 }));
     await control.evaluate((test) => test.sources.at(-1)!.fail(true));
     const beforeTerminal = await count();
     await page.clock.runFor(60000);
@@ -988,7 +988,7 @@ await test(
       epoch: 4,
       payload: null,
     });
-    await control.evaluate((test) => test.request({ path: "/elm/second", epoch: 5 }));
+    await control.evaluate((test) => test.request({ path: "/second", epoch: 5 }));
     assert.equal(await count(), beforeTerminal + 1);
     await fail();
     await retryAfter(150);
@@ -1011,7 +1011,7 @@ await test(
       attempts++;
       return route.fulfill({ status: 204 });
     });
-    await page.goto(b.base + conversationURL(session, undefined, "elm"));
+    await page.goto(b.base + conversationURL(session));
     await page.getByRole("button", { name: "Reconnect", exact: true }).waitFor();
     assert.equal(attempts, 1);
     await page.locator("#prompt").fill("Retained after terminal failure");
@@ -1100,7 +1100,7 @@ await test(
     const watches = observeWatches(t, session);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(server.base + conversationURL(session, undefined, "elm"));
+    await page.goto(server.base + conversationURL(session));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -1192,7 +1192,7 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.setViewportSize({ width: 1000, height: 900 });
-    await page.goto(server.base + conversationURL(first, undefined, "elm"));
+    await page.goto(server.base + conversationURL(first, undefined));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -1211,7 +1211,7 @@ await test(
     await received.promise;
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "Second" }).click();
-    await page.waitForURL(server.base + conversationURL(second, undefined, "elm"));
+    await page.waitForURL(server.base + conversationURL(second, undefined));
     await page.locator("#prompt").fill("Second draft");
     await waitFor(
       async () => firstWatches.size === 0 && secondWatches.size === 1 && server.streams.size === 1,
@@ -1221,7 +1221,7 @@ await test(
     assert.deepEqual(await readHistory(second.root), []);
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "First" }).click();
-    await page.waitForURL(server.base + conversationURL(first, undefined, "elm"));
+    await page.waitForURL(server.base + conversationURL(first, undefined));
     await page.unrouteAll({ behavior: "wait" });
     await waitFor(async () => firstWatches.size === 1 && secondWatches.size === 0);
     assert.equal(await page.locator("#session-list").count(), 0);
@@ -1272,7 +1272,7 @@ await test(
           };
         } else sessionStorage.setItem("pi.elm.drafts", "{");
       }, mode);
-      await page.goto(b.base + conversationURL(session, undefined, "elm"));
+      await page.goto(b.base + conversationURL(session));
       await page.waitForFunction(
         () => document.querySelector("#connection")?.textContent === "Connected",
       );
@@ -1358,7 +1358,7 @@ await test(
     const b = await browserFixture(t, f.sessions);
     const page = b.page;
     page.setDefaultTimeout(10000);
-    await page.goto(b.base + conversationURL(session, undefined, "elm"));
+    await page.goto(b.base + conversationURL(session));
     for (const [count, size, type] of [
       [5, 1, "image/png"],
       [1, 5 * 1024 * 1024 + 1, "image/png"],
@@ -1461,7 +1461,7 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.setViewportSize({ width: 1000, height: 900 });
-    await page.goto(b.base + conversationURL(session, undefined, "elm"));
+    await page.goto(b.base + conversationURL(session));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
@@ -1579,7 +1579,7 @@ await test(
     await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#latest")?.hidden);
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "Other" }).click();
-    await page.waitForURL(b.base + conversationURL(other, undefined, "elm"));
+    await page.waitForURL(b.base + conversationURL(other, undefined));
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );

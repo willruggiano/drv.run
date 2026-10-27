@@ -3,11 +3,8 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { Conversation, Cursor, EntryRecord, SubmissionId } from "@earendil-works/pi-durable";
 import type { Session } from "./sessions.ts";
 
-export const conversationURL = (
-  session: Session,
-  id = session.root.id,
-  frontend: "elm" | "htmx" = "htmx",
-) => `/${frontend}/sessions/${session.id}/conversations/${id}`;
+export const conversationURL = (session: Session, id = session.root.id) =>
+  `/sessions/${session.id}/conversations/${id}`;
 
 export type Call = { id: string; name: string; arguments: Record<string, unknown> };
 export type Result = { entry: number; message: Extract<Message, { role: "toolResult" }> };

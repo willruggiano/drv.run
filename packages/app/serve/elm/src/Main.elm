@@ -81,7 +81,7 @@ route path =
             String.split "/" path
 
         pane =
-            case List.drop 6 parts |> List.head of
+            case List.drop 5 parts |> List.head of
                 Just "settings" ->
                     Preferences
 
@@ -97,7 +97,7 @@ route path =
                 _ ->
                     Conversation
     in
-    ( String.join "/" (List.take 6 parts), pane )
+    ( String.join "/" (List.take 5 parts), pane )
 
 
 connect : Model -> Cmd Msg
@@ -472,13 +472,13 @@ update msg model =
             else
                 case requestUrl of
                     Browser.Internal url ->
-                        if url.path == "/elm" || url.path == "/elm/" then
+                        if url.path == "/" then
                             update OpenSessions model
 
                         else if String.endsWith "/export" url.path then
                             ( model, browser (E.object [ ( "kind", E.string "download" ), ( "url", E.string url.path ) ]) )
 
-                        else if String.startsWith "/elm/sessions/" url.path then
+                        else if String.startsWith "/sessions/" url.path then
                             ( model, Maybe.map (\key -> Nav.pushUrl key (url.path ++ (Maybe.map ((++) "?") url.query |> Maybe.withDefault "") ++ (Maybe.map ((++) "#") url.fragment |> Maybe.withDefault ""))) model.key |> Maybe.withDefault Cmd.none )
 
                         else
@@ -1037,7 +1037,7 @@ update msg model =
             ( { model | searchIndex = index }, highlight { model | searchIndex = index } )
 
         OpenSessions ->
-            ( model, Nav.load "/elm" )
+            ( model, Nav.load "/" )
 
         EditConfirmation str ->
             ( { model | confirmation = Maybe.map (\confirmation -> { confirmation | argument = str }) model.confirmation }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
@@ -1456,7 +1456,7 @@ view model =
                             "ready"
                         )
                     ]
-                    [ button [ id "input-toggle", class "icon enhanced-only", A.type_ "button", attribute "aria-label" "Upload attachments", onClick PickFiles ] [ text "+" ]
+                    [ button [ id "input-toggle", class "icon", A.type_ "button", attribute "aria-label" "Upload attachments", onClick PickFiles ] [ text "+" ]
                     , span [ class "spacer" ] []
                     , if busy then
                         button [ class "submission-mode", A.type_ "button", A.disabled disabled, onClick (Send "steer") ] [ text "Steer" ]
@@ -1519,7 +1519,7 @@ view model =
             section [ id "session-meta" ]
                 [ Composer.metadata
                     { label = "Conversation statistics"
-                    , before = [ a [ id "footer-sessions", class "icon footer-chevron", href "/elm", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ] ]
+                    , before = [ a [ id "footer-sessions", class "icon footer-chevron", href "/", attribute "aria-label" "Sessions", A.title "Sessions" ] [ Transcript.icon "chevron-left" ] ]
                     , instance = span [ id "footer-instance" ] [ text state.metadata.instance ]
                     , statistics = [ a [ id "footer-stats", href (model.path ++ "/context"), attribute "aria-label" "Context" ] (List.map (\( name, str ) -> span [ id name ] [ text str ]) [ ( "footer-input", "↑" ++ state.metadata.input ), ( "footer-output", "↓" ++ state.metadata.output ), ( "footer-read", "R" ++ state.metadata.read ), ( "footer-hit", state.metadata.hit ), ( "footer-cost", "$" ++ state.metadata.cost ) ]) ]
                     , model = a [ id "footer-model", class "model-summary", href (model.path ++ "/settings"), attribute "aria-label" "Model and thinking settings" ] [ span [ class "model-name" ] [ text state.metadata.model ], dot, span [ class "model-effort" ] [ text state.metadata.thinking ] ]
@@ -1669,7 +1669,7 @@ view model =
                             span [ class "header-title" ] [ text "Context" ]
 
                           else
-                            a [ id "conversation-title", class "header-title", href "/elm", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
+                            a [ id "conversation-title", class "header-title", href "/", preventDefaultOn "click" (D.succeed ( OpenSessions, True )) ]
                                 [ text
                                     state.metadata.title
                                 ]
@@ -1678,7 +1678,7 @@ view model =
                         a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Transcript.icon "close" ]
 
                       else
-                        a [ id "menu-toggle", class "icon", href "/elm/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
+                        a [ id "menu-toggle", class "icon", href "/settings", attribute "aria-label" "Global settings" ] [ Transcript.icon "settings" ]
                     ]
                 , if model.pane == Conversation || exploring then
                     branchHeader model.path state.metadata.branches

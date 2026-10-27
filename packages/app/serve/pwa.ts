@@ -1,4 +1,3 @@
-export const frontendRoot = location.pathname.startsWith("/elm") ? "/elm" : "/htmx";
 interface InstallPromptEvent extends Event {
   prompt(): Promise<void>;
 }
@@ -54,33 +53,11 @@ let worker: Promise<ServiceWorkerRegistration> | undefined;
 export function registerWorker(): Promise<ServiceWorkerRegistration> {
   if (!("serviceWorker" in navigator))
     return Promise.reject(new Error("Service workers are unavailable."));
-  worker ??= register();
+  worker ??= navigator.serviceWorker.register("/sw.js", { scope: "/" });
   return worker;
 }
-function register(): Promise<ServiceWorkerRegistration> {
-  return navigator.serviceWorker.getRegistrations().then(async (workers) => {
-    // Retire the obsolete root-scoped worker without touching the other frontend.
-    // Unregistering afterward could also remove its pending replacement.
-    await Promise.all(
-      workers
-        .filter((item) =>
-          [item.active, item.waiting, item.installing].some(
-            (worker) =>
-              worker &&
-              (new URL(worker.scriptURL).pathname === "/sw.js" ||
-                (new URL(worker.scriptURL).pathname === "/htmx/sw.js" &&
-                  new URL(item.scope).pathname === "/") ||
-                (new URL(worker.scriptURL).pathname === `${frontendRoot}/sw.js` &&
-                  new URL(item.scope).pathname !== frontendRoot)),
-          ),
-        )
-        .map((item) => item.unregister()),
-    );
-    return navigator.serviceWorker.register(`${frontendRoot}/sw.js`, { scope: frontendRoot });
-  });
-}
 async function pushPost(path: string, value: unknown): Promise<void> {
-  const response = await fetch(`${frontendRoot}/settings/push/${path}`, {
+  const response = await fetch(`/settings/push/${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(value),
@@ -134,7 +111,7 @@ async function enablePush(enabled: boolean, publicKey: string | null): Promise<s
   }
   return enabled ? "Push enabled on this device." : "Push disabled on this device.";
 }
-// Both frontends leave this element's controls and device-local state to the browser.
+// Elm leaves this element's controls and device-local state to the browser.
 class PushSettings extends HTMLElement {
   private enabled: boolean | undefined;
   private busy = false;

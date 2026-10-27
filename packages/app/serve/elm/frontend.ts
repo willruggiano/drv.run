@@ -76,24 +76,6 @@ export type DisplayTool = {
   written: string;
   notice: string;
 };
-const commands = new Set([
-  "sessions",
-  "new",
-  "search",
-  "compact",
-  "reset",
-  "stop",
-  "resume",
-  "settings",
-  "model",
-  "fork",
-  "tree",
-  "export",
-  "cd",
-  "rename",
-  "review",
-  "endreview",
-]);
 function message(value: Message): DisplayMessage {
   const blocks: Block[] =
     typeof value.content === "string"
@@ -402,7 +384,7 @@ function json(response: ServerResponse, value: unknown) {
 export function elmDocument(response: ServerResponse, site = false): void {
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   response.end(
-    `<!doctype html><html lang="en" class="enhanced"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>Pi</title><link rel="icon" href="/icon.svg"><link rel="manifest" href="/elm/manifest.webmanifest"><link rel="stylesheet" href="/styles.css"><script src="/elm/main.js" defer></script><script src="/elm/${site ? "site" : "client"}.js" type="module"></script></head><body class="stacked-layout bottom-align"><div id="elm"></div></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#151719"><title>Pi</title><link rel="icon" href="/icon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/styles.css"><script src="/main.js" defer></script><script src="/${site ? "site" : "client"}.js" type="module"></script></head><body class="stacked-layout bottom-align"><div id="elm"></div></body></html>`,
   );
 }
 export async function elmFrontend(
@@ -413,16 +395,16 @@ export async function elmFrontend(
   context: Context,
   settings?: GlobalSettingsStore,
 ): Promise<void> {
-  const root = /^\/elm\/sessions\/([^/]+)$/.exec(url.pathname);
+  const root = /^\/sessions\/([^/]+)$/.exec(url.pathname);
   if (root && request.method === "GET") {
     response.writeHead(303, {
-      Location: conversationURL(await sessions.get(root[1]), undefined, "elm"),
+      Location: conversationURL(await sessions.get(root[1])),
     });
     response.end();
     return;
   }
   const match =
-    /^\/elm\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|reset|compact|export|directories|archive))?$/.exec(
+    /^\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|reset|compact|export|directories|archive))?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -555,7 +537,7 @@ export async function elmFrontend(
             token.query,
             (await session.harness.snapshot(Review, conversation.id, context))?.original !==
               undefined,
-          ).filter((item) => commands.has(item.value.trim().slice(1)))
+          )
         : token?.kind === "directory"
           ? (await completeWorkingDirectories(session, token.query, conversation, context)).map(
               directoryCompletion,
@@ -685,16 +667,16 @@ export async function elmFrontend(
           }
           const tree = (await branches.read(context)).map((branch) => ({
             ...branch,
-            path: `${conversationURL(session, branch.id, "elm")}`,
+            path: conversationURL(session, branch.id),
           }));
           const explorer: TreeData | undefined = sessionTree
             ? {
                 kind: "entries",
-                path: conversationURL(session, conversation.id, "elm"),
+                path: conversationURL(session, conversation.id),
                 nodes: await sessionTree.read(conversation.id, context),
               }
             : url.searchParams.get("pane") === "branches"
-              ? conversationTree(session, conversation.id, tree, "elm")
+              ? conversationTree(session, conversation.id, tree)
               : undefined;
           const frame = projector.project(
             current,
@@ -781,7 +763,7 @@ export async function elmFrontend(
     }))
       creation.set(key, value);
     const created = await createSession(creation, sessions, context);
-    json(response, { requestId, revision, path: conversationURL(created, undefined, "elm") });
+    json(response, { requestId, revision, path: conversationURL(created) });
     return;
   } else if (command === "abort") await conversation.abort(context);
   else if (command === "resume") session.harness.resume();
@@ -807,7 +789,7 @@ export async function elmFrontend(
       command === "review"
         ? await startReview(session, conversation, context, argument || undefined)
         : await endReview(session, conversation, context);
-    json(response, { requestId, revision, path: `${conversationURL(session, result.id, "elm")}` });
+    json(response, { requestId, revision, path: conversationURL(session, result.id) });
     return;
   } else throw new FormError(400, "Unsupported command.");
   json(response, { requestId, revision });

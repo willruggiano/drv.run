@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -62,6 +63,19 @@ export function post(url: string, data: Record<string, string> | FormData) {
     headers: { Origin: new URL(url).origin },
     body: data instanceof FormData ? data : new URLSearchParams(data),
     redirect: "manual",
+  });
+}
+
+export const modelKey = (model: { provider: string; modelId: string }) =>
+  JSON.stringify([model.provider, model.modelId]);
+export const targetKey = (target: { provider: string; target: string }) =>
+  JSON.stringify([target.provider, target.target]);
+export function command(url: string, operation: string, data: Record<string, string> = {}) {
+  return post(url + "/command", {
+    command: operation,
+    requestId: randomUUID(),
+    revision: randomUUID(),
+    ...data,
   });
 }
 

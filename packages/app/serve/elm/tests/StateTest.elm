@@ -18,7 +18,7 @@ tests =
             \_ ->
                 let
                     model =
-                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
+                        Main.initModel "/sessions/test/conversations/1" "nonce"
 
                     ( edited, _ ) =
                         Main.update (Main.Edit "original") model
@@ -43,7 +43,7 @@ tests =
             \_ ->
                 let
                     model =
-                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
+                        Main.initModel "/sessions/test/conversations/1" "nonce"
 
                     ( edited, _ ) =
                         Main.update (Main.Edit "original") model
@@ -52,7 +52,7 @@ tests =
                         Main.update (Main.Send "reject") edited
 
                     other =
-                        { submitted | path = "/elm/sessions/other/conversations/1" }
+                        { submitted | path = "/sessions/other/conversations/1" }
 
                     ( newer, _ ) =
                         Main.update (Main.Edit "other draft") other
@@ -124,7 +124,7 @@ tests =
             \_ ->
                 let
                     base =
-                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
+                        Main.initModel "/sessions/test/conversations/1" "nonce"
 
                     submitted =
                         Main.update (Main.Edit "first") base |> Tuple.first |> Main.update (Main.Send "reject") |> Tuple.first
@@ -146,9 +146,9 @@ tests =
             \_ ->
                 let
                     base =
-                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
+                        Main.initModel "/sessions/test/conversations/1" "nonce"
                 in
-                case Url.fromString "http://localhost/elm/sessions/other/conversations/1" of
+                case Url.fromString "http://localhost/sessions/other/conversations/1" of
                     Nothing ->
                         Expect.fail "Invalid fixture URL"
 
@@ -190,7 +190,7 @@ tests =
             \_ ->
                 let
                     base =
-                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
+                        Main.initModel "/sessions/test/conversations/1" "nonce"
 
                     requested =
                         Main.update (Main.Caret 0) base |> Tuple.first
@@ -214,7 +214,7 @@ tests =
             \_ ->
                 let
                     base =
-                        Main.initModel "/elm/sessions/test/conversations/1" "nonce"
+                        Main.initModel "/sessions/test/conversations/1" "nonce"
 
                     edited =
                         Main.update (Main.Edit "draft") base |> Tuple.first
@@ -222,7 +222,7 @@ tests =
                     collapsed =
                         Main.update Main.Collapse edited |> Tuple.first
                 in
-                case Url.fromString "http://localhost/elm/sessions/test/conversations/1/settings" of
+                case Url.fromString "http://localhost/sessions/test/conversations/1/settings" of
                     Nothing ->
                         Expect.fail "Invalid test URL"
 
@@ -236,7 +236,7 @@ tests =
             \_ ->
                 let
                     base =
-                        Main.initModel "/elm/sessions/test/conversations/1/settings" "nonce"
+                        Main.initModel "/sessions/test/conversations/1/settings" "nonce"
 
                     initial =
                         { name = "Initial", model = "model", target = "target", thinking = "off", directory = "", models = [], targets = [] }
@@ -261,7 +261,7 @@ tests =
             \_ ->
                 let
                     base =
-                        Main.initModel "/elm/sessions/other/conversations/1/settings" "nonce"
+                        Main.initModel "/sessions/other/conversations/1/settings" "nonce"
 
                     current =
                         { base | epoch = 2 }

@@ -93,7 +93,7 @@ await test("HTTP path completion uses the session workspace and validates paths"
   const base = await serve(t, f.sessions);
   const complete = (query: string) =>
     fetch(
-      `${base}${conversationURL(session)}/completions?kind=path&query=${encodeURIComponent(query)}`,
+      `${base}${conversationURL(session)}/completions?${new URLSearchParams({ text: `@${query}`, caret: String(query.length + 1) })}`,
     );
   assert.equal((await complete("")).status, 200);
   assert.deepEqual(await completePaths(session, ""), ["space name.txt", "src/"]);
@@ -108,7 +108,8 @@ await test("HTTP path completion uses the session workspace and validates paths"
   // A missing integration must not fall back to reading the web server's cwd.
   const unavailableBase = await serve(t, f.sessions);
   assert.equal(
-    (await fetch(`${unavailableBase}${conversationURL(session)}/completions?kind=path`)).status,
+    (await fetch(`${unavailableBase}${conversationURL(session)}/completions?text=@&caret=1`))
+      .status,
     409,
   );
 });
