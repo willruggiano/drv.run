@@ -50,7 +50,7 @@ import {
 import { Review } from "harness";
 import { startReview, endReview } from "../review.ts";
 import type { ContextInspection } from "../inspection.ts";
-import { thinkingLevels } from "../settings.ts";
+import { selectionOptions, directoryCompletions } from "../settings.ts";
 import {
   completionToken,
   commandCompletions,
@@ -429,79 +429,21 @@ export async function elmFrontend(
   if (request.method === "GET" && operation === "panel") {
     const pane = url.searchParams.get("view");
     if (pane === "settings") {
-      const catalog = await sessions.catalog(context);
-      const info = await sessionInfo(session, conversation, catalog.targets, context);
-      const modelKey = (item: { provider: string; modelId: string }) =>
-        JSON.stringify([item.provider, item.modelId]);
-      const targetKey = (item: { provider: string; target: string }) =>
-        JSON.stringify([item.provider, item.target]);
-      const model = info.model ? modelKey(info.model) : "";
-      const target = info.binding ? targetKey(info.binding) : "";
-      json(response, {
-        name: info.name,
-        model,
-        target,
-        thinking: info.thinkingLevel,
-        directory:
-          info.directoryRoot && info.cwd.startsWith(info.directoryRoot + "/")
-            ? info.cwd.slice(info.directoryRoot.length + 1)
-            : "",
-        models: [
-          ...(!catalog.models.some((item) => modelKey(item) === model) && info.model
-            ? [
-                {
-                  key: model,
-                  label: `${info.model.modelId} (unavailable, keep)`,
-                  summary: info.model.modelId,
-                  levels: thinkingLevels,
-                  default: "off",
-                },
-              ]
-            : []),
-          ...catalog.models.map((item) => ({
-            key: modelKey(item),
-            label: `${item.provider} / ${item.name}`,
-            summary: item.modelId,
-            levels: item.thinkingLevels,
-            default: item.defaultThinkingLevel,
-          })),
-        ],
-        targets: [
-          ...(!catalog.targets.some((item) => targetKey(item) === target) && info.binding
-            ? [
-                {
-                  key: target,
-                  label: `${info.binding.target} (unavailable, keep)`,
-                  summary: info.binding.provider === "local" ? "local" : info.binding.target,
-                  disabled: false,
-                  root: info.directoryRoot ?? "",
-                  cwd: info.cwd,
-                },
-              ]
-            : []),
-          ...catalog.targets.map((item) => ({
-            key: targetKey(item),
-            label: item.label,
-            summary: item.provider === "local" ? "local" : item.target,
-            disabled: !item.available && targetKey(item) !== target,
-            root: item.directoryRoot ?? "",
-            cwd: item.cwd,
-          })),
-        ],
-      });
+      const choices = await sessions.choices(context);
+      const info = await sessionInfo(session, conversation, choices.targets, context);
+      json(response, selectionOptions(choices, info));
     } else throw new FormError(400, "Unknown panel.");
     return;
   }
   if (request.method === "GET" && operation === "directories") {
-    const target = ((await sessions.options.targets?.(context)) ?? []).find(
-      (item) =>
-        JSON.stringify([item.provider, item.target]) === url.searchParams.get("target") &&
-        item.available,
-    );
-    if (!target) throw new FormError(409, "Execution target is unavailable.");
     json(
       response,
-      await sessions.completeDirectories(target, url.searchParams.get("directory") ?? "", context),
+      await directoryCompletions(
+        sessions,
+        url.searchParams.get("target"),
+        url.searchParams.get("directory") ?? "",
+        context,
+      ),
     );
     return;
   }

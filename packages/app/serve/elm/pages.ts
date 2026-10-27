@@ -6,7 +6,13 @@ import type { Notifications } from "../notifications.ts";
 import type { Sessions } from "../sessions.ts";
 import { form, FormError, createSession, saveGlobalSettings } from "../forms.ts";
 import { conversationURL, compactTokens } from "../presentation.ts";
-import { settingFields, thinkingLevels } from "../settings.ts";
+import {
+  settingFields,
+  thinkingLevels,
+  selectionOptions,
+  modelKey,
+  directoryCompletions,
+} from "../settings.ts";
 import { elmDocument } from "./frontend.ts";
 
 function json(response: ServerResponse, value: unknown) {
@@ -36,15 +42,14 @@ export async function pages(
   }
   if (path === "/directories") {
     if (request.method !== "GET") throw new FormError(405, "Method not allowed.");
-    const target = (await sessions.catalog(context)).targets.find(
-      (item) =>
-        JSON.stringify([item.provider, item.target]) === url.searchParams.get("target") &&
-        item.available,
-    );
-    if (!target) throw new FormError(409, "Execution target is unavailable.");
     json(
       response,
-      await sessions.completeDirectories(target, url.searchParams.get("directory") ?? "", context),
+      await directoryCompletions(
+        sessions,
+        url.searchParams.get("target"),
+        url.searchParams.get("directory") ?? "",
+        context,
+      ),
     );
     return true;
   }
@@ -107,38 +112,15 @@ export async function pages(
     json(response, providers);
     return true;
   }
-  const catalog = await sessions.catalog(context);
-  const key = (item: { provider: string; modelId: string }) =>
-    JSON.stringify([item.provider, item.modelId]);
+  const catalog = landing
+    ? await sessions.catalog(context)
+    : { ...(await sessions.choices(context)), sessions: [] };
   const preferences = settings?.read();
   json(response, {
     kind: landing ? "landing" : "settings",
     providers,
     publicKey: notifications?.publicKey ?? "",
-    models: catalog.models.map((item) => ({
-      key: key(item),
-      label: `${item.provider} / ${item.name}`,
-      summary: item.modelId,
-      levels: item.thinkingLevels,
-      default: item.defaultThinkingLevel,
-    })),
-    targets: catalog.targets.map((item) => ({
-      key: JSON.stringify([item.provider, item.target]),
-      label: item.label,
-      summary: item.provider === "local" ? "local" : item.target,
-      disabled: !item.available,
-      root: item.directoryRoot ?? "",
-      cwd: item.cwd,
-    })),
-    model: catalog.defaultModel
-      ? key(catalog.defaultModel)
-      : catalog.models[0]
-        ? key(catalog.models[0])
-        : "",
-    target: (() => {
-      const item = catalog.targets.find((item) => item.available);
-      return item ? JSON.stringify([item.provider, item.target]) : "";
-    })(),
+    ...selectionOptions(catalog),
     sessions: catalog.sessions.slice(0, 5).map((item) => ({
       path: `/sessions/${item.id}`,
       title: item.name || "Untitled session",
@@ -161,7 +143,7 @@ export async function pages(
     })),
     overrides: preferences?.modelThinkingLevels ?? {},
     levels: thinkingLevels,
-    defaultModel: preferences?.model ? key(preferences.model) : "",
+    defaultModel: preferences?.model ? modelKey(preferences.model) : "",
   });
 
   return true;

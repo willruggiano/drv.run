@@ -1,9 +1,15 @@
+import assert from "node:assert/strict";
 import type { Context } from "@earendil-works/chord/context";
 import type { Conversation } from "@earendil-works/pi-durable";
 import { sessionInfo, rename, selectEnvironment, type Sessions, type Session } from "./sessions.ts";
 import type { GlobalSettingsStore } from "./server.ts";
-import { SessionError } from "./sessions.ts";
-import { settingFields, thinkingLevels } from "./settings.ts";
+import {
+  settingFields,
+  modelKey,
+  targetKey,
+  resolveSelection,
+  type Selection,
+} from "./settings.ts";
 import type { IncomingMessage } from "node:http";
 import type { UserInput } from "@earendil-works/pi-durable";
 
@@ -78,50 +84,28 @@ export async function saveSessionSettings(
   conversation: Conversation,
   context: Context,
 ): Promise<void> {
-  const modelKey = (model: { provider: string; modelId: string }) =>
-    JSON.stringify([model.provider, model.modelId]);
-  const targetKey = (target: { provider: string; target: string }) =>
-    JSON.stringify([target.provider, target.target]);
-  const thinking = (value: string) => thinkingLevels.find((level) => level === value);
-  const optional = (data: FormData, key: string) => (data.has(key) ? field(data, key) : "");
-  const catalog = await sessions.catalog(context);
-  const current = await sessionInfo(session, conversation, catalog.targets, context);
+  const choices = await sessions.choices(context);
+  const current = await sessionInfo(session, conversation, choices.targets, context);
   const name = field(data, "name", 120);
-  const targetValue = field(data, "target", 8192),
-    modelValue = field(data, "model", 1024);
-  const target = catalog.targets.find((item) => targetKey(item) === targetValue && item.available);
-  const model = catalog.models.find((item) => modelKey(item) === modelValue);
-  const level = optional(data, "thinkingLevel");
-  if (level && !thinking(level)) throw new FormError(400, "Invalid thinking level.");
-  if (!model && (!current.model || modelKey(current.model) !== modelValue))
-    throw new FormError(409, "Model is unavailable.");
-  if (!target && (!current.binding || targetKey(current.binding) !== targetValue))
-    throw new FormError(409, "Target is unavailable.");
-  const baseDirectory = optional(data, "baseDirectory");
-  const currentBase =
-    current.directoryRoot && current.cwd.startsWith(current.directoryRoot + "/")
-      ? current.cwd.slice(current.directoryRoot.length + 1)
-      : "";
-  if (!target && baseDirectory !== currentBase) throw new FormError(409, "Target is unavailable.");
-  const cwd = target?.directoryRoot
-    ? await sessions.baseDirectory(target, baseDirectory)
-    : (target?.cwd ?? current.cwd);
+  const selected = selection(data);
+  const { target, model, thinkingLevel, cwd } = resolveSelection(
+    sessions,
+    choices,
+    selected,
+    current,
+  );
   // Validate every field before persisting any part of the form.
   if (Array.from(name).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))
     throw new FormError(400, "Invalid session name.");
   if (
     target &&
-    (!current.binding || targetKey(current.binding) !== targetValue || current.cwd !== cwd)
+    (!current.binding || targetKey(current.binding) !== selected.target || current.cwd !== cwd)
   )
     await selectEnvironment(session, { ...target, cwd }, conversation);
   await conversation.configure(
     {
       ...(model ? { model: { provider: model.provider, modelId: model.modelId } } : {}),
-      ...(model
-        ? { thinkingLevel: sessions.resolveThinking(model, thinking(level)) }
-        : level
-          ? { thinkingLevel: thinking(level) }
-          : {}),
+      ...(thinkingLevel ? { thinkingLevel } : {}),
       cwd,
     },
     context,
@@ -130,26 +114,23 @@ export async function saveSessionSettings(
 }
 
 const optional = (data: FormData, key: string) => (data.has(key) ? field(data, key) : "");
-const thinking = (value: string) => thinkingLevels.find((level) => level === value);
-const modelKey = (model: { provider: string; modelId: string }) =>
-  JSON.stringify([model.provider, model.modelId]);
+function selection(data: FormData): Selection {
+  return {
+    model: field(data, "model", 1024),
+    target: field(data, "target", 8192),
+    thinkingLevel: optional(data, "thinkingLevel"),
+    baseDirectory: optional(data, "baseDirectory"),
+  };
+}
 export async function createSession(
   data: FormData,
   sessions: Sessions,
   context: Context,
 ): Promise<Session> {
-  const catalog = await sessions.catalog(context);
-  const target = catalog.targets.find(
-    (target) =>
-      JSON.stringify([target.provider, target.target]) === field(data, "target", 8192) &&
-      target.available,
-  );
-  const model = catalog.models.find(
-    (model) => JSON.stringify([model.provider, model.modelId]) === field(data, "model", 1024),
-  );
-  if (!target || !model) throw new SessionError("unavailable", "Target or model is unavailable.");
-  const level = optional(data, "thinkingLevel");
-  if (level && !thinking(level)) throw new FormError(400, "Invalid thinking level.");
+  const choices = await sessions.choices(context);
+  const selected = selection(data);
+  const { target, model, thinkingLevel } = resolveSelection(sessions, choices, selected);
+  assert(target && model, "Creation requires available selections.");
   let content = await inputContent(data);
   if (data.has("command")) {
     if (
@@ -162,12 +143,12 @@ export async function createSession(
   }
   const requestId = content === undefined ? undefined : field(data, "requestId", 200);
   if (requestId !== undefined && !requestId.trim()) throw new FormError(400, "Missing request ID.");
-  const baseDirectory = optional(data, "baseDirectory");
+  const baseDirectory = selected.baseDirectory;
   const session = await sessions.create(
     field(data, "id", 36),
     target,
     { provider: model.provider, modelId: model.modelId },
-    thinking(level),
+    thinkingLevel,
     target.directoryRoot ? baseDirectory : baseDirectory || undefined,
   );
   if (content !== undefined)
@@ -188,7 +169,7 @@ export async function saveGlobalSettings(
       throw new FormError(400, "Invalid boolean setting.");
     values[item.key] = "choices" in item ? value : value === "true";
   }
-  const model = (await sessions.catalog(context)).models.find(
+  const model = (await sessions.choices(context)).models.find(
     (model) => modelKey(model) === optional(data, "model"),
   );
   if (optional(data, "model") && !model) throw new FormError(400, "Model is unavailable.");

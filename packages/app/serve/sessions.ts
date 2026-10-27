@@ -78,9 +78,8 @@ export type ContextStatus = {
   /** Last completed response in the current context/model; not a live token estimate. */
   lastResponse: { tokens: number; cacheHit: number | null; entry: number } | null;
 };
-export type Catalog = {
+export type Choices = {
   targets: ExecutionTarget[];
-  sessions: (SessionInfo & { context: ContextStatus })[];
   models: {
     provider: string;
     modelId: string;
@@ -89,6 +88,9 @@ export type Catalog = {
     defaultThinkingLevel: ModelThinkingLevel;
   }[];
   defaultModel?: ModelRef;
+};
+export type Catalog = Choices & {
+  sessions: (SessionInfo & { context: ContextStatus })[];
 };
 export type SessionOptions = {
   directory: string;
@@ -235,32 +237,15 @@ export class Sessions {
     return sessions;
   }
 
-  async catalog(context = BACKGROUND_CONTEXT): Promise<Catalog> {
-    context.abortSignal?.throwIfAborted();
-    const names = await readdir(this.options.directory);
+  /** Discover execution and model choices without opening saved sessions. */
+  async choices(context = BACKGROUND_CONTEXT): Promise<Choices> {
     context.abortSignal?.throwIfAborted();
     const targets = (await this.options.targets?.(context)) ?? [];
+    const models = await this.options.models.getAvailable();
     context.abortSignal?.throwIfAborted();
-    const sessions = await Promise.all(
-      names
-        .filter((name) => name.endsWith(".sqlite") && uuid.test(name.slice(0, -7)))
-        .map(async (name) => {
-          const session = await awaitWithContext(this.get(name.slice(0, -7)), context);
-          const watch = await session.root.watch(context);
-          try {
-            return {
-              ...(await sessionInfo(session, session.root, targets, context)),
-              context: contextStatus(session, watch.value),
-            };
-          } finally {
-            await watch.stop();
-          }
-        }),
-    );
     return {
       targets,
-      sessions: sessions.sort((a, b) => b.created - a.created),
-      models: (await this.options.models.getAvailable()).map((model) => ({
+      models: models.map((model) => ({
         provider: model.provider,
         modelId: model.id,
         name: model.name,
@@ -269,6 +254,36 @@ export class Sessions {
       })),
       defaultModel: this.options.defaults?.model,
     };
+  }
+
+  /** Open persisted harnesses and attach their observers, without starting model work. */
+  async openAll(context = BACKGROUND_CONTEXT): Promise<Session[]> {
+    context.abortSignal?.throwIfAborted();
+    const names = await readdir(this.options.directory);
+    context.abortSignal?.throwIfAborted();
+    return Promise.all(
+      names
+        .filter((name) => name.endsWith(".sqlite") && uuid.test(name.slice(0, -7)))
+        .map((name) => awaitWithContext(this.get(name.slice(0, -7)), context)),
+    );
+  }
+
+  async catalog(context = BACKGROUND_CONTEXT): Promise<Catalog> {
+    const choices = await this.choices(context);
+    const sessions = await Promise.all(
+      (await this.openAll(context)).map(async (session) => {
+        const watch = await session.root.watch(context);
+        try {
+          return {
+            ...(await sessionInfo(session, session.root, choices.targets, context)),
+            context: contextStatus(session, watch.value),
+          };
+        } finally {
+          await watch.stop();
+        }
+      }),
+    );
+    return { ...choices, sessions: sessions.sort((a, b) => b.created - a.created) };
   }
 
   async baseDirectory(

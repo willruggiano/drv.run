@@ -648,3 +648,33 @@ await test("a submission enables eligible work in other conversations of the sam
   assert.equal(f.faux.state.callCount, 3);
   assert.equal((await restored.harness.inspect(context)).tasks.length, 0);
 });
+
+await test("choices do not open persisted sessions; explicit bootstrap attaches each session once", async (t) => {
+  const f = await fixture(t);
+  const ids = [(await f.create()).id, (await f.create()).id].sort((a, b) => a.localeCompare(b));
+  const attached: string[] = [];
+  await f.reopen({
+    onSession: (session) => {
+      attached.push(session.id);
+    },
+  });
+  const choices = await f.sessions.choices();
+  assert.equal(choices.targets.length, 1);
+  assert.equal(choices.models.length, 1);
+  assert.equal(f.sessions.opened.size, 0);
+  assert.equal(attached.length, 0);
+  for (let i = 0; i < 2; i++) {
+    const sessions = await f.sessions.openAll();
+    assert.deepEqual(
+      sessions.map((session) => session.id).sort((a, b) => a.localeCompare(b)),
+      ids,
+    );
+    assert.deepEqual(
+      attached.sort((a, b) => a.localeCompare(b)),
+      ids,
+    );
+    for (const session of sessions)
+      assert.equal((await session.harness.inspect(context)).scheduling, "paused");
+  }
+  assert.equal(f.faux.state.callCount, 0);
+});

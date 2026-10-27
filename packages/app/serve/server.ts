@@ -432,7 +432,7 @@ export async function main(): Promise<void> {
   const origin = process.env.ORIGIN;
   let server: ReturnType<typeof httpServer>;
   try {
-    if (notifications) await sessions.catalog();
+    if (notifications) await sessions.openAll();
     server = httpServer(sessions, host, undefined, settings, origin, authorization, notifications);
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
