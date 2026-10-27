@@ -8,6 +8,10 @@
       url = "github:serokell/deploy-rs/45ba3f8c5cb28396fff71671806e2550b464ac86";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    disko = {
+      url = "github:nix-community/disko/cedd626e11b635470fa6f9fdb8ad79b0075dd7f9";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     sops-nix = {
       url = "github:Mic92/sops-nix/ee48786c6f9160d2c1a084aac841f68195b8420c";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -23,6 +27,7 @@
     self,
     drv-run,
     deploy-rs,
+    disko,
     nixos-hardware,
     nixpkgs,
     sops-nix,
@@ -89,9 +94,45 @@
       };
     });
 
-    checks =
-      eachSystem (pkgs:
-        deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy);
+    checks = eachSystem (pkgs:
+      deploy-rs.lib.${pkgs.stdenv.hostPlatform.system}.deployChecks self.deploy
+      // {
+        storage-layout = let
+          inherit (nixpkgs) lib;
+          host = self.nixosConfigurations.rock5b.config;
+          disk = host.disko.devices.disk.main;
+        in
+          assert lib.assertMsg (
+            builtins.attrNames host.disko.devices.disk
+            == ["main"]
+            && disk.device == "/dev/nvme0n1"
+            && disk.content.type == "gpt"
+            && disk.content.partitions.ESP.start == "16M"
+            && disk.content.partitions.ESP.size == "500M"
+            && disk.content.partitions.root.size == "100%"
+          ) "Disko must provision only NVMe using the Radxa GPT layout.";
+          assert lib.assertMsg (
+            builtins.attrNames host.fileSystems
+            == ["/" "/boot"]
+            && host.fileSystems."/".device == disk.content.partitions.root.device
+            && host.fileSystems."/".fsType == "bcachefs"
+            && host.fileSystems."/boot".device == disk.content.partitions.ESP.device
+            && host.fileSystems."/boot".fsType == "vfat"
+            && host.boot.loader.systemd-boot.enable
+            && !host.boot.loader.generic-extlinux-compatible.enable
+            && !host.boot.growPartition
+            && !host.disko.imageBuilder.useVirtualDevices
+          ) "The host and image builder must support the Radxa bcachefs/ESP layout, without MMC mounts.";
+            pkgs.runCommand "rock5b-storage-layout" {nativeBuildInputs = [pkgs.kmod];} ''
+              for module in bcachefs 9p; do
+                modprobe --show-depends \
+                  --dirname ${host.disko.imageBuilder.kernelPackages.kernel.modules} \
+                  --set-version ${host.boot.kernelPackages.kernel.modDirVersion} \
+                  "$module" >/dev/null
+              done
+              touch "$out"
+            '';
+      });
 
     deploy.nodes.rock5b = {
       hostname = "rock5b";
@@ -259,14 +300,13 @@
 
       rock5b = {
         config,
-        lib,
         pkgs,
-        modulesPath,
         ...
       }: {
         imports = [
           nixos-hardware.nixosModules.rock-5b
-          (modulesPath + "/installer/sd-card/sd-image.nix")
+          disko.nixosModules.disko
+          "${nixos-hardware}/radxa/disko.nix"
         ];
 
         nixpkgs.hostPlatform = "aarch64-linux";
@@ -276,36 +316,42 @@
             assertion = pkgs.stdenv.hostPlatform.system == "aarch64-linux";
             message = "ROCK 5B requires aarch64-linux.";
           }
-          {
-            # Match nixos-hardware's 16 MiB firmware backoff before the ESP:
-            # https://github.com/NixOS/nixos-hardware/blob/4bc63156b109ee7b4103e3ec30565c8c92bde435/rockchip/disko.nix#L28-L32
-            assertion = config.sdImage.firmwarePartitionOffset >= 16;
-            message = "ROCK 5B SPL/U-Boot require at least 16 MiB before the first partition.";
-          }
         ];
 
-        boot = {
-          loader = {
-            grub.enable = false;
-            systemd-boot.enable = false;
-            generic-extlinux-compatible.enable = true;
-          };
-          initrd = {
-            systemd.enable = true;
-            availableKernelModules = ["dw_mmc_rockchip" "sdhci_of_dwcmshc"];
-          };
-          # The Radxa profile enables bcachefs; this image only uses ext4/vfat:
-          # https://github.com/NixOS/nixos-hardware/blob/4bc63156b109ee7b4103e3ec30565c8c92bde435/radxa/default.nix#L15-L22
-          supportedFilesystems.bcachefs = lib.mkForce false;
-          # The SD-image expander mistakes the device minor number for the partition number:
-          # https://github.com/NixOS/nixpkgs/blob/a32edd7654519351e48e80372a928df336394670/nixos/modules/installer/sd-card/sd-image.nix#L400-L406
-          # growPartition parses the partition suffix instead, handling mmcblk1p2 correctly:
-          # https://github.com/NixOS/nixpkgs/blob/a32edd7654519351e48e80372a928df336394670/nixos/modules/system/boot/grow-partition.nix#L47-L58
-          growPartition = true;
+        boot.initrd = {
+          systemd.enable = true;
+          availableKernelModules = ["dw_mmc_rockchip" "sdhci_of_dwcmshc" "nvme"];
         };
 
-        fileSystems."/".autoResize = true;
-        hardware.deviceTree.name = "rockchip/rk3588-rock-5b.dtb";
+        disko = {
+          checkScripts = true;
+          devices.disk.main = {
+            device = "/dev/nvme0n1";
+            imageSize = "16G";
+          };
+          imageBuilder = {
+            useVirtualDevices = false;
+            # Disko includes kernel.modules in the builder VM's module tree.
+            # bcachefs is an out-of-tree module in the pinned nixpkgs.
+            kernelPackages =
+              config.boot.kernelPackages
+              // {
+                kernel =
+                  config.boot.kernelPackages.kernel
+                  // {
+                    modules = pkgs.aggregateModules [
+                      config.boot.kernelPackages.kernel.modules
+                      config.boot.bcachefs.modulePackage
+                    ];
+                  };
+              };
+          };
+        };
+
+        hardware = {
+          enableAllHardware = true;
+          deviceTree.name = "rockchip/rk3588-rock-5b.dtb";
+        };
 
         networking = {
           hostName = "rock5b";
@@ -319,31 +365,6 @@
         systemd.network.networks."10-ethernet" = {
           matchConfig.Name = "en* eth*";
           networkConfig.DHCP = "ipv4";
-        };
-
-        image.baseName = "rock5b";
-        sdImage = {
-          firmwarePartitionOffset = 16;
-          expandOnBoot = false;
-          # In this image, U-Boot/extlinux reads /boot on the bootable root partition:
-          # https://github.com/NixOS/nixpkgs/blob/a32edd7654519351e48e80372a928df336394670/nixos/modules/installer/sd-card/sd-image.nix#L171-L178
-          # https://github.com/NixOS/nixpkgs/blob/a32edd7654519351e48e80372a928df336394670/nixos/modules/installer/sd-card/sd-image.nix#L330-L339
-          populateFirmwareCommands = "";
-          populateRootCommands = ''
-            mkdir -p ./files/boot
-            ${config.boot.loader.generic-extlinux-compatible.populateCmd} \
-              -c ${config.system.build.toplevel} -d ./files/boot
-          '';
-          # Offsets from nixos-hardware's Rockchip firmware installation hook:
-          # https://github.com/NixOS/nixos-hardware/blob/4bc63156b109ee7b4103e3ec30565c8c92bde435/rockchip/default.nix#L34-L39
-          postBuildCommands = let
-            firmware = config.hardware.rockchip.platformFirmware;
-          in ''
-            test "$(stat -c %s ${firmware}/idbloader.img)" -le $(((16384 - 64) * 512))
-            test "$(stat -c %s ${firmware}/u-boot.itb)" -le $((${toString config.sdImage.firmwarePartitionOffset} * 1024 * 1024 - 16384 * 512))
-            dd if=${firmware}/idbloader.img of="$img" bs=512 seek=64 conv=notrunc
-            dd if=${firmware}/u-boot.itb of="$img" bs=512 seek=16384 conv=notrunc
-          '';
         };
       };
 
