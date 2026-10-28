@@ -32,6 +32,47 @@ await test("the frontend uses only the shared stylesheet", async (t) => {
   assert.deepEqual(b.errors, []);
 });
 
+await test("focus outlines are suppressed unless a control explicitly opts in", async (t) => {
+  const f = await directoryFixture(t, "/workspace");
+  const { page, base, screenshots, errors } = await browserFixture(
+    t,
+    f.sessions,
+    undefined,
+    undefined,
+    new GlobalSettingsStore({ model }),
+  );
+  await page.goto(base);
+  await page.locator("#base-directory").waitFor();
+  await page.keyboard.press("Tab");
+  for (const selector of ["#prompt", "#create", ".landing-navigation a", "#base-directory"]) {
+    const control = page.locator(selector).first();
+    await control.focus();
+    assert.equal(await control.evaluate((node) => node.matches(":focus-visible")), true);
+    assert.equal(await control.evaluate((node) => getComputedStyle(node).outlineStyle), "none");
+  }
+  if (screenshots) await page.screenshot({ path: join(screenshots, "mobile-cwd-focused.png") });
+
+  // Selectors and toggles explicitly put their focus indicator on a visible label.
+  await page.locator("#models").focus();
+  assert.equal(
+    await page
+      .locator("label:has(#models)")
+      .evaluate((node) => getComputedStyle(node).outlineStyle),
+    "solid",
+  );
+  await page.goto(base + "/settings");
+  const toggle = page.locator(".toggle-option input").first();
+  await toggle.focus();
+  assert.equal(await toggle.evaluate((node) => getComputedStyle(node).outlineStyle), "none");
+  assert.equal(
+    await page
+      .locator(".toggle-option input:focus-visible + span")
+      .evaluate((node) => getComputedStyle(node).outlineStyle),
+    "solid",
+  );
+  assert.deepEqual(errors, []);
+});
+
 await test("global and session settings share one container and autosave form without status output", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
