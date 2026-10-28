@@ -89,7 +89,6 @@
 
     devShells = eachSystem (pkgs: let
       inherit (self.devShells.${pkgs.stdenv.hostPlatform.system}) toolchain;
-      pkgs' = pkgs.extend self.overlays.dev;
       llms = pkgs.writeTextFile {
         name = "llms.txt";
         destination = "/llms.txt";
@@ -196,6 +195,7 @@
           runHook postCheck
         '';
       };
+      pkgs' = pkgs.extend self.overlays.dev;
     in {
       default = pkgs.mkShell {
         inherit (toolchain) npmDeps npmRoot;
@@ -207,20 +207,6 @@
         packages = [pkgs'.treefmt-wrapped];
       };
       toolchain = pkgs.mkShell {
-        passthru = {inherit llms;};
-        shellHook = ''
-          export XDG_CONFIG_DIRS="${llms}:''${XDG_CONFIG_DIRS:-/etc/xdg}"
-          linkNodeModulesHook
-          for workspace in ${lib.concatStringsSep " " (lib.importJSON ./packages/app/package.json).workspaces}; do
-            ln -sfn "../$workspace" "$npmRoot/node_modules/$workspace"
-          done
-          export ELM_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/drv-run-${builtins.baseNameOf pkgs.app.elmHome}"
-          if [ ! -d "$ELM_HOME" ]; then
-            mkdir -p "$ELM_HOME"
-            cp -R ${pkgs.app.elmHome}/. "$ELM_HOME/"
-            chmod -R u+w "$ELM_HOME"
-          fi
-        '';
         nativeBuildInputs = [pkgs.systemd.dev pkgs.importNpmLock.hooks.linkNodeModulesHook];
         npmDeps = pkgs.app.nodeModules;
         npmRoot = "packages/app";
@@ -257,7 +243,6 @@
           libnotify
           man
           markdownlint-cli2
-          nix
           nix-eval-jobs
           nix-fast-build
           nix-update
@@ -268,6 +253,7 @@
           patch
           pkg-config
           procps
+          pueue
           (python3.withPackages (ps: [ps.mitmproxy ps.tornado]))
           ripgrep
           ruff
@@ -283,6 +269,20 @@
           which
           zmx
         ]);
+        passthru = {inherit llms;};
+        shellHook = ''
+          export XDG_CONFIG_DIRS="${llms}:''${XDG_CONFIG_DIRS:-/etc/xdg}"
+          linkNodeModulesHook
+          for workspace in ${lib.concatStringsSep " " (lib.importJSON ./packages/app/package.json).workspaces}; do
+            ln -sfn "../$workspace" "$npmRoot/node_modules/$workspace"
+          done
+          export ELM_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/drv-run-${builtins.baseNameOf pkgs.app.elmHome}"
+          if [ ! -d "$ELM_HOME" ]; then
+            mkdir -p "$ELM_HOME"
+            cp -R ${pkgs.app.elmHome}/. "$ELM_HOME/"
+            chmod -R u+w "$ELM_HOME"
+          fi
+        '';
       };
     });
 

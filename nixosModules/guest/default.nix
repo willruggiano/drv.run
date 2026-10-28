@@ -53,7 +53,7 @@
     drv.run -> ${inputs.self.outPath}
     impermanence -> ${inputs.impermanence.outPath}
     microvm.nix -> ${inputs.microvm.outPath}
-    nix -> ${pkgs.nix.doc}
+    nix -> ${config.nix.package.doc}
     nixpkgs -> ${inputs.nixpkgs.outPath}
                `-- docs -> /doc
                `-- nixos manual -> /nixos/doc/manual
@@ -78,6 +78,7 @@
       }
     ];
     users.root = {
+      # FIXME: Do we actually *depend* on this or is it slop?
       directories = [
         {
           directory = ".local/state/nix";
@@ -87,11 +88,14 @@
     };
   };
   microvm = {
-    mem = lib.mkDefault (3 * 1024);
-    storeOnDisk = true;
+    # 8G x 4vCPU seems like a reasonable default
+    mem = lib.mkDefault (8 * 1024); # MiB
+    vcpu = lib.mkDefault 4;
+
     # Fresh guests can share cached pages of the immutable guest closure image.
+    storeOnDisk = true;
     storeDiskDirect = false;
-    vcpu = lib.mkDefault 2;
+
     volumes = [
       {
         image = "state.img";
@@ -114,13 +118,20 @@
         size = 0;
       }
     ];
+
+    # drv.run employs a readable lower and writable upper as the guest
+    # /nix/store, which... I'm not sold on but it's fine for now.
     writableStoreOverlay = lib.mkDefault "/nix/.rw-store";
   };
+
   networking = {
     firewall.enable = true;
+    # TODO: it'd be nice if this could be the instance ID instead?
     hostName = "guest";
     useDHCP = false;
   };
+
+  # n.b. also see the common options declared in nixosModules/nix.nix
   nix = {
     enable = true;
     registry.nixpkgs.flake = nixpkgs;
@@ -130,9 +141,15 @@
       flake-registry = "";
     };
   };
+  # drv.run's overlay carries additional nixpkgs-less packages (eg. subtrace) in
+  # addition to patched dependencies (eg. systemd +bpf +vmlinux.h)
   nixpkgs.overlays = [self.overlays.default];
+
   programs.git = {
     enable = true;
+    # Address your git repos the same as your flakes!
+    # nix flake show github:willruggiano/drv.run
+    # jj git clone github:willruggiano/drv.run
     config.url = {
       "https://codeberg.org/".insteadOf = "codeberg:";
       "https://git.sr.ht/".insteadOf = "sourcehut:";
@@ -140,6 +157,9 @@
       "https://gitlab.com/".insteadOf = "gitlab:";
     };
   };
+
+  # ssh is one of drv.run's **core dependencies**, so much so in fact that one
+  # of our mottos is "ssh all the way down" :)
   services.openssh = {
     enable = true;
     generateHostKeys = false;
