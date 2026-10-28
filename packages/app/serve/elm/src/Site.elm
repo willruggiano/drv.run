@@ -7,7 +7,7 @@ import Composer
 import Dict exposing (Dict)
 import File exposing (File)
 import File.Select
-import Html exposing (Html, a, button, div, footer, form, h1, h2, header, input, label, main_, option, p, section, select, span, text)
+import Html exposing (Html, a, button, div, footer, form, h2, header, input, label, main_, option, p, section, select, span, text)
 import Html.Attributes as A exposing (attribute, class, href, id, value)
 import Html.Events exposing (onCheck, onClick, onInput, onSubmit, preventDefaultOn)
 import Http
@@ -823,12 +823,8 @@ view model =
 
                 _ ->
                     [ header [ id "app-header" ]
-                        [ div [ class "bar" ]
-                            [ h1 [] [ span [ class "header-title" ] [ text title ] ]
-                            , icon "close"
-                                "Sessions"
-                                "/"
-                            ]
+                        [ Html.nav [ class "landing-navigation", attribute "aria-label" "Global" ]
+                            [ icon "close" "Sessions" "/" ]
                         ]
                     ]
              )
@@ -920,8 +916,7 @@ defaultsView model catalog =
         preference key title =
             toggle key title (\_ -> [ attribute "data-preference" key ])
     in
-    [ h1 [] [ text "Global settings" ]
-    , if catalog.configured then
+    [ if catalog.configured then
         form
             [ attribute "data-autosave" ""
             , attribute "aria-busy"

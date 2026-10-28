@@ -899,6 +899,7 @@ await test(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
     assert.equal((await restored.harness.inspect(context)).scheduling, "paused");
+    assert.equal(await page.locator("#session-meta ~ button").count(), 0);
     await page.locator("#prompt").fill("/resume");
     await page.locator("#send").click();
     await page.waitForFunction(

@@ -1532,11 +1532,6 @@ view model =
                     , Maybe.map confirmationComposer model.confirmation |> Maybe.withDefault composer
                     ]
                 , metadata
-                , if state.metadata.resume then
-                    button [ onClick (Command "resume" "") ] [ text "Resume interrupted execution" ]
-
-                  else
-                    text ""
                 , p [ id "connection", class "sr-only", attribute "role" "status" ] [ text connection ]
                 ]
             , div [ id "search-bar", hidden (model.search == Nothing) ]

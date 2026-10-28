@@ -61,6 +61,49 @@ await test(
   },
 );
 
+await test(
+  "global settings close button aligns with its opener on desktop and mobile",
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t);
+    const { browser, base } = await browserFixture(t, f.sessions);
+    for (const viewport of [
+      { width: 1440, height: 900 },
+      { width: 900, height: 900 },
+      { width: 390, height: 844 },
+    ]) {
+      const browserContext = await browser.newContext({
+        viewport,
+        isMobile: viewport.width === 390,
+        hasTouch: viewport.width === 390,
+      });
+      try {
+        const page = await browserContext.newPage();
+        page.setDefaultTimeout(10000);
+        await page.goto(base);
+        const opener = page.getByRole("link", { name: "Global settings", exact: true });
+        await opener.waitFor();
+        const openerBounds = await opener.boundingBox();
+        assert(openerBounds);
+        await opener.click();
+        await page.locator("#settings").waitFor();
+        const close = page.locator("#close-view");
+        assert.deepEqual(await close.boundingBox(), openerBounds);
+        assert.equal(await page.getByRole("heading", { level: 1 }).count(), 0);
+        await page.locator("#main-area").evaluate((node) => {
+          node.scrollTop = node.scrollHeight;
+        });
+        assert.deepEqual(await close.boundingBox(), openerBounds);
+        await close.click();
+        await opener.waitFor();
+        assert.deepEqual(await opener.boundingBox(), openerBounds);
+      } finally {
+        await browserContext.close();
+      }
+    }
+  },
+);
+
 await test("rename completes and updates the session title in the frontend", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
