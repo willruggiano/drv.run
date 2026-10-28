@@ -281,6 +281,8 @@ body.stacked-layout {
 .bottom-align :is(#main-area > #transcript, #conversation-scroll) > :first-child { margin-top: auto; }
 .bottom-align :is(#main-area > #transcript, #conversation-scroll) > * { flex: none; }
 .pane { grid-row: 1; min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 12px max(20px, calc((100% - 820px)/2)) 20px; }
+/* Global settings only scroll vertically, including WebKit's elastic overscroll. */
+#settings:not([data-layout=stacked]) { overflow-x: hidden; overscroll-behavior-x: none; }
 #settings :is(label:not(.toggle-option), .setting-row) { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; margin: 0; padding: 2px 0; }
 #settings :is(label:not(.toggle-option), .setting-row) > span { margin: 0; padding: 0; font-size: 12px; color: var(--muted); text-align: left; }
 #settings label:not(.toggle-option) > :is(input, select, textarea) { min-width: 0; width: auto; max-width: min(45vw, 24rem); padding: 0; background: transparent; border-color: transparent; border-radius: 0; text-align: right; }

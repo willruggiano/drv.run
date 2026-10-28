@@ -71,6 +71,49 @@ await test("global and session settings share one container and autosave form wi
   assert.deepEqual(b.errors, []);
 });
 
+await test("global settings scroll only vertically on mobile", async (t) => {
+  const f = await fixture(t);
+  const { page, base } = await browserFixture(
+    t,
+    f.sessions,
+    undefined,
+    undefined,
+    new GlobalSettingsStore({ model }),
+  );
+  await page.goto(base + "/settings");
+  await page.locator("#settings form[data-autosave]").waitFor();
+  for (const viewport of [
+    { width: 320, height: 568 },
+    { width: 390, height: 844 },
+    { width: 844, height: 390 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const scroll = await page.locator("#settings").evaluate((node) => {
+      const style = getComputedStyle(node);
+      node.scrollLeft = 100;
+      node.scrollTop = 100;
+      return {
+        overflowX: style.overflowX,
+        overscrollX: style.overscrollBehaviorX,
+        overflowY: style.overflowY,
+        fits: node.scrollWidth === node.clientWidth,
+        left: node.scrollLeft,
+        top: node.scrollTop,
+        documentFits: document.documentElement.scrollWidth === window.innerWidth,
+      };
+    });
+    assert.deepEqual(scroll, {
+      overflowX: "hidden",
+      overscrollX: "none",
+      overflowY: "auto",
+      fits: true,
+      left: 0,
+      top: 100,
+      documentFits: true,
+    });
+  }
+});
+
 await test(`elm: settings toggles persist, support keyboards and use composer colors`, async (t) => {
   const f = await fixture(t);
   const settings = new GlobalSettingsStore({ model });
