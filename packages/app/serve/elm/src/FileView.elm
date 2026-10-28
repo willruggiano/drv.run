@@ -17,7 +17,7 @@ port fileIncoming : (D.Value -> msg) -> Sub msg
 
 
 type alias Flags =
-    { path : String, source : String, conversation : String, embedded : Bool, fragment : String }
+    { path : String, source : String, conversation : String, fragment : String }
 
 
 type alias Model =
@@ -78,14 +78,10 @@ main =
 view : Model -> Html Msg
 view model =
     div []
-        [ if model.flags.embedded then
-            text ""
-
-          else
-            header [ class "bar" ]
-                [ a [ href model.flags.conversation ] [ text "Conversation" ]
-                , h1 [] [ text model.flags.path ]
-                ]
+        [ header [ class "bar" ]
+            [ a [ href model.flags.conversation ] [ text "Conversation" ]
+            , h1 [] [ text model.flags.path ]
+            ]
         , if model.error == "" then
             text ""
 

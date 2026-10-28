@@ -137,8 +137,8 @@ inline context source =
                     destination =
                         String.slice (index + 2) -1 match
 
-                    link href =
-                        a [ A.href href, A.target "_blank", A.rel "noopener noreferrer" ] [ text label ]
+                    link href title =
+                        a [ A.href href, A.title title, A.target "_blank", A.rel "noopener noreferrer" ] [ text label ]
 
                     parts =
                         String.split "#" destination
@@ -160,7 +160,7 @@ inline context source =
                         text match
 
                     else
-                        link destination
+                        link destination destination
 
                 else if String.startsWith "//" destination || Regex.contains (regex "^[A-Za-z][A-Za-z0-9+.-]*:") destination then
                     text match
@@ -175,14 +175,7 @@ inline context source =
                                 imageView context.hideImages label (context.path ++ "/file?path=" ++ Url.percentEncode path)
 
                             else
-                                let
-                                    href =
-                                        context.path ++ "/file?path=" ++ Url.percentEncode path ++ fragment
-                                in
-                                span [ class "file-reference" ]
-                                    [ link href
-                                    , Html.node "elm-file" [ attribute "src" href, attribute "label" label ] []
-                                    ]
+                                link (context.path ++ "/file?path=" ++ Url.percentEncode path ++ fragment) path
 
                         Nothing ->
                             text match
@@ -198,7 +191,7 @@ inline context source =
 
 codeView : Syntax.Model -> String -> String -> Html msg
 codeView syntax language source =
-    pre [ class "code-container", attribute "data-language" (Syntax.language language) ] [ code [] (Syntax.view syntax language source) ]
+    pre [ attribute "data-language" (Syntax.language language) ] [ code [] (Syntax.view syntax language source) ]
 
 
 markdown : Context -> String -> Html msg
@@ -248,6 +241,14 @@ toolView context toggle opened tools key =
                 isOpen =
                     Dict.get key opened |> Maybe.withDefault (tool.state == "failed")
 
+                resultBlock block =
+                    case ( String.split "." tool.name |> List.reverse |> List.head, block ) of
+                        ( Just "write", Code source ) ->
+                            div [ class "text" ] [ text source ]
+
+                        _ ->
+                            blockView context toggle opened tools block
+
                 disclosure name label content default =
                     let
                         k =
@@ -269,7 +270,7 @@ toolView context toggle opened tools key =
                         span [ class "tool-duration" ] [ text tool.duration ]
                     ]
                 , div [ class "tool-result" ]
-                    (List.map (blockView context toggle opened tools) tool.blocks
+                    (List.map resultBlock tool.blocks
                         ++ [ if tool.notice == "" then
                                 text ""
 
@@ -300,7 +301,7 @@ toolView context toggle opened tools key =
                                 text ""
 
                              else
-                                disclosure "written" "Written content" (codeView context.syntax (Syntax.fromPath tool.path) tool.written) False
+                                codeView context.syntax (Syntax.fromPath tool.path) tool.written
                            ]
                     )
                 ]

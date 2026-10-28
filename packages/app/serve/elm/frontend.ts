@@ -157,7 +157,6 @@ export async function elmFrontend(
       path,
       source: source.replace(/\r\n?/g, "\n"),
       conversation: conversationURL(session, conversation.id),
-      embedded: url.searchParams.get("inline") === "1",
     }).replaceAll("<", "\\u003c");
     fileResponse(
       request,

@@ -61,17 +61,17 @@ tests =
             \_ ->
                 render "[Transcript.elm:217](packages/app/serve/elm/src/Transcript.elm#L217)"
                     |> Query.find [ S.tag "a" ]
-                    |> Query.has [ S.attribute (A.href "/sessions/test/conversations/1/file?path=packages%2Fapp%2Fserve%2Felm%2Fsrc%2FTranscript.elm#L217"), S.attribute (A.target "_blank"), S.attribute (A.rel "noopener noreferrer") ]
-        , test "source citations include an inline preview with the same line anchor" <|
+                    |> Query.has [ S.attribute (A.href "/sessions/test/conversations/1/file?path=packages%2Fapp%2Fserve%2Felm%2Fsrc%2FTranscript.elm#L217"), S.attribute (A.target "_blank"), S.attribute (A.rel "noopener noreferrer"), S.attribute (A.title "packages/app/serve/elm/src/Transcript.elm") ]
+        , test "source citations do not create inline previews" <|
             \_ ->
-                render "[Reader contract](reader.d.ts#L45)"
-                    |> Query.find [ S.tag "elm-file" ]
-                    |> Query.has [ S.attribute (A.attribute "src" "/sessions/test/conversations/1/file?path=reader.d.ts#L45"), S.attribute (A.attribute "label" "Reader contract") ]
+                render "Before ([projection](stream.ts), [renderer](Transcript.elm)) after."
+                    |> Query.findAll [ S.tag "elm-file" ]
+                    |> Query.count (Expect.equal 0)
         , test "absolute source links encode filename fragments" <|
             \_ ->
                 render "[Source](/tmp/a%23b.ts#L2)"
                     |> Query.find [ S.tag "a" ]
-                    |> Query.has [ S.attribute (A.href "/sessions/test/conversations/1/file?path=%2Ftmp%2Fa%23b.ts#L2") ]
+                    |> Query.has [ S.attribute (A.href "/sessions/test/conversations/1/file?path=%2Ftmp%2Fa%23b.ts#L2"), S.attribute (A.title "/tmp/a#b.ts") ]
         , test "external links retain their URL" <|
             \_ ->
                 render "[Docs](https://example.com/docs#anchor)"

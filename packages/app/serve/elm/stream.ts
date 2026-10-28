@@ -90,8 +90,12 @@ function tool(call: Call, result: Result | undefined, live: LiveState | undefine
     name === "bash"
       ? `$ ${typeof args.command === "string" ? args.command.trim() : "Shell command"}`
       : `${({ read: "Read", write: "Write", edit: "Edit", grep: "Search", find: "Find", ls: "List" } as Record<string, string>)[name] ?? call.name}${typeof args.path === "string" ? ` · ${args.path}` : ""}`;
+  const written =
+    result && !result.message.isError && name === "write" && typeof args.content === "string"
+      ? args.content
+      : "";
   const command =
-    name === "bash"
+    name === "bash" || written !== ""
       ? label
       : name === "write" && typeof args.content === "string"
         ? `${label}\n${args.content}`
@@ -138,10 +142,7 @@ function tool(call: Call, result: Result | undefined, live: LiveState | undefine
     details: typeof patch === "string" ? patch : metadata ? JSON.stringify(metadata, null, 2) : "",
     patch: typeof patch === "string",
     path: typeof args.path === "string" ? args.path : "",
-    written:
-      result && !result.message.isError && name === "write" && typeof args.content === "string"
-        ? args.content
-        : "",
+    written,
     notice:
       slot?.droppedBytes || slot?.droppedLines
         ? `Output truncated: ${slot.droppedBytes ?? 0} bytes / ${slot.droppedLines ?? 0} lines omitted.`

@@ -518,96 +518,49 @@ await test(
       await imagePreview.getByRole("button", { name: "Collapse Screenshot" }).click();
       await imagePreview.locator("img").waitFor({ state: "detached" });
       assert.equal(await imagePreview.getByRole("link").count(), 0);
-      assert.equal(
-        await imagePreview.locator(".file-toggle").textContent(),
-        await page.locator("#transcript elm-file:not([image]) .file-toggle").textContent(),
-      );
       await imagePreview.getByRole("button", { name: "Expand Screenshot" }).click();
       await imagePreview.locator("img").waitFor();
-      const preview = page.locator("#transcript elm-file:not([image])");
-      assert.equal(await preview.locator("iframe").count(), 0);
-      await preview.getByRole("button", { name: "Expand Source:50" }).click();
-      const frame = preview.frameLocator("iframe");
-      await frame.locator("#file-source code .shj-syn-kwd").first().waitFor();
-      assert.equal(await frame.locator("#file-source code").textContent(), sourceLines.join("\n"));
-      assert.equal(await frame.locator("header").count(), 0);
-      assert.equal(await frame.locator("#file-source script").count(), 0);
-      assert.equal(await frame.locator(":target").getAttribute("id"), "L50");
-      assert.equal(
-        await frame.locator("#L50").evaluate((node) => {
-          const rect = node.getBoundingClientRect();
-          return rect.top >= 0 && rect.bottom <= innerHeight;
-        }),
-        true,
-      );
-      assert.equal(
-        await preview.locator("iframe").getAttribute("sandbox"),
-        "allow-same-origin allow-scripts",
-      );
       const sourceLink = page.getByRole("link", { name: "Source:50", exact: true });
-      const linkColor = await sourceLink.evaluate((node) => getComputedStyle(node).color);
+      assert.equal(await sourceLink.getAttribute("title"), sourceName);
+      assert.equal(
+        await page.locator("#transcript iframe, #transcript elm-file:not([image])").count(),
+        0,
+      );
       const mutedColor = await page
         .locator("#transcript .message-time")
         .first()
         .evaluate((node) => getComputedStyle(node).color);
-      assert.notEqual(linkColor, mutedColor);
-      for (const item of [imagePreview, preview]) {
-        assert.equal(
-          await item.locator("summary").evaluate((node) => getComputedStyle(node).color),
-          linkColor,
-        );
-        assert.equal(
-          await item.locator(".file-toggle").evaluate((node) => getComputedStyle(node).color),
-          mutedColor,
-        );
-      }
-      assert.equal(
-        await imagePreview.locator(".file-toggle").textContent(),
-        await preview.locator(".file-toggle").textContent(),
-      );
-      assert.equal(
-        await imagePreview.locator(".file-toggle").evaluate((node) => {
-          const label = node.previousSibling;
-          if (!(label instanceof Text)) return false;
-          const range = document.createRange();
-          range.selectNodeContents(label);
-          return node.getBoundingClientRect().left >= range.getBoundingClientRect().right;
-        }),
-        true,
-      );
-      const labelBounds = await sourceLink.boundingBox();
-      const toggleBounds = await preview.locator(".file-toggle").boundingBox();
-      assert(labelBounds && toggleBounds);
-      assert(toggleBounds.x >= labelBounds.x + labelBounds.width);
-      assert.equal(
-        (await imagePreview.locator(".file-toggle").boundingBox())?.width,
-        toggleBounds.width,
-      );
-      if (b.screenshots)
-        await page.screenshot({
-          path: join(b.screenshots, `elm-${viewport.width}-file-preview.png`),
-        });
-      // Unrelated transcript updates must not reload or collapse the open preview.
-      const originalFrame = await preview.locator("iframe").elementHandle();
+      const openLink = imagePreview.getByRole("link", { name: "Open in new tab", exact: true });
+      assert.equal(await openLink.textContent(), "Open in new tab");
+      assert.equal(await openLink.evaluate((node) => getComputedStyle(node).color), mutedColor);
+      const imageBounds = await imagePreview.locator("img").boundingBox();
+      const contentBounds = await imagePreview.locator(".file-preview-content").boundingBox();
+      const openBounds = await openLink.boundingBox();
+      assert(imageBounds && contentBounds && openBounds);
+      assert.equal(imageBounds.y, contentBounds.y);
+      assert(openBounds.y >= imageBounds.y + imageBounds.height);
+      assert(Math.abs(openBounds.x + openBounds.width - contentBounds.x - contentBounds.width) < 1);
+      // Metadata updates must not replace the image or add preview controls to citations.
+      const originalImage = await imagePreview.locator("img").elementHandle();
       await settings.update({ values: { hideThinkingBlock: viewport.width === 390 } }, f.sessions);
       await page
         .locator(viewport.width === 390 ? "#page.hide-thinking" : "#page:not(.hide-thinking)")
         .waitFor();
       assert.equal(
-        await preview
-          .locator("iframe")
-          .evaluate((node, original) => node === original, originalFrame),
+        await imagePreview
+          .locator("img")
+          .evaluate((node, original) => node === original, originalImage),
         true,
       );
-      await originalFrame?.dispose();
+      await originalImage?.dispose();
       const opened = page.waitForEvent("popup");
-      await preview.getByRole("link", { name: "Open in new tab", exact: true }).click();
+      await sourceLink.click();
       const source = await opened;
       await source.waitForLoadState();
       assert.equal(new URL(source.url()).hash, "#L50");
       assert.equal(new URL(source.url()).searchParams.get("path"), sourceName);
       assert.equal(await source.locator("#file-source code").textContent(), sourceLines.join("\n"));
-      assert((await source.locator("#file-source .shj-syn-kwd").count()) > 0);
+      await source.locator("#file-source .shj-syn-kwd").first().waitFor();
       assert.equal(await source.locator("#file-source script").count(), 0);
       assert.equal(await source.evaluate(() => Object.hasOwn(globalThis, "executed")), false);
       assert.equal(await source.locator(":target").getAttribute("id"), "L50");
@@ -619,9 +572,6 @@ await test(
         true,
       );
       await source.close();
-      await preview.getByRole("button", { name: "Collapse Source:50" }).click();
-      await preview.locator("iframe").waitFor({ state: "detached" });
-      assert.equal(await preview.getByRole("link").count(), 0);
     }
     await settings.update({ values: { "terminal.showImages": false } }, f.sessions);
     await page.locator("#transcript img.transcript-image").waitFor({ state: "detached" });
@@ -709,7 +659,7 @@ await test(
 );
 
 await test(
-  "inline citations preview images, highlighted contracts and file errors on demand",
+  "Markdown citations remain inline, expose file paths and open only in new tabs",
   { timeout: 45000 },
   async (t) => {
     const f = await fixture(t);
@@ -727,7 +677,7 @@ await test(
           kind: "pi.assistant",
           model: [
             fauxAssistantMessage(
-              "[Reader contract](reader.d.ts#L3) [Screenshot](shot.png) [Missing](missing.ts)",
+              "Before ([Reader contract](reader.d.ts#L3), [Screenshot](shot.png), [Missing](missing.ts)) after.",
             ),
           ],
         }),
@@ -741,12 +691,24 @@ await test(
       if (new URL(request.url()).pathname.endsWith("/file")) requests.push(request.url());
     });
     await page.goto(b.base + conversationURL(session));
-    const reader = page.locator('elm-file[label="Reader contract"]');
-    await reader.getByRole("button", { name: "Expand Reader contract" }).waitFor();
-    assert.equal(await page.locator("elm-file iframe").count(), 0);
+    const reader = page.getByRole("link", { name: "Reader contract", exact: true });
+    await reader.waitFor();
+    assert.equal(
+      await page.locator("#transcript elm-file, #transcript iframe, #transcript details").count(),
+      0,
+    );
     assert.deepEqual(requests, []);
-    await reader.getByRole("button", { name: "Expand Reader contract" }).press("Enter");
-    const source = reader.frameLocator("iframe");
+    assert.equal(await reader.getAttribute("title"), "reader.d.ts");
+    assert.equal(await reader.getAttribute("target"), "_blank");
+    assert.equal(await reader.getAttribute("rel"), "noopener noreferrer");
+    assert.equal(await reader.evaluate((node) => getComputedStyle(node).display), "inline");
+    assert.equal(
+      await page.locator("#transcript .text p").textContent(),
+      "Before (Reader contract, Screenshot, Missing) after.",
+    );
+    const opened = page.waitForEvent("popup");
+    await reader.press("Enter");
+    const source = await opened;
     await source.locator("#file-source .shj-syn-cmnt").first().waitFor();
     assert.equal(await source.locator("#file-source code").textContent(), contract);
     assert.equal(
@@ -763,30 +725,28 @@ await test(
         ),
       true,
     );
-    await reader.getByRole("button", { name: "Collapse Reader contract" }).press("Space");
-    await reader.locator("iframe").waitFor({ state: "detached" });
+    await source.close();
     const updated = "export type Reader = { close(): void };\n";
     await writeFile(join(f.workspace, "reader.d.ts"), updated);
-    await reader.getByRole("button", { name: "Expand Reader contract" }).click();
-    await source.locator("#file-source code").waitFor();
-    assert.equal(await source.locator("#file-source code").textContent(), updated);
-    const image = page.locator('elm-file[label="Screenshot"]');
-    await image.getByRole("button", { name: "Expand Screenshot" }).click();
-    await image.frameLocator("iframe").locator("img").waitFor();
-    assert.equal(
-      await image
-        .frameLocator("iframe")
-        .locator("img")
-        .evaluate((node: HTMLImageElement) => node.complete && node.naturalWidth > 0),
-      true,
-    );
-    assert.equal(
-      await image.getByRole("link", { name: "Open in new tab" }).getAttribute("target"),
-      "_blank",
-    );
-    const missing = page.locator('elm-file[label="Missing"]');
-    await missing.getByRole("button", { name: "Expand Missing" }).click();
-    await missing.frameLocator("iframe").getByRole("heading", { name: "Request failed" }).waitFor();
+    const reopened = page.waitForEvent("popup");
+    await reader.click();
+    const fresh = await reopened;
+    await fresh.locator("#file-source code").waitFor();
+    assert.equal(await fresh.locator("#file-source code").textContent(), updated);
+    await fresh.close();
+    const openedImage = page.waitForEvent("popup");
+    await page.getByRole("link", { name: "Screenshot", exact: true }).click();
+    const image = await openedImage;
+    await image.waitForFunction(() => {
+      const img = document.querySelector("img");
+      return img?.complete && img.naturalWidth > 0;
+    });
+    await image.close();
+    const openedError = page.waitForEvent("popup");
+    await page.getByRole("link", { name: "Missing", exact: true }).click();
+    const missing = await openedError;
+    await missing.getByRole("heading", { name: "Request failed" }).waitFor();
+    await missing.close();
     assert.deepEqual(b.errors, []);
   },
 );
@@ -844,8 +804,18 @@ await test(
     await requested.promise;
     const tool = page.locator('[data-call-id="write-ts"]');
     await tool.locator(":scope > summary").click();
-    await tool.getByText("Written content", { exact: true }).click();
     const written = tool.locator('pre[data-language="ts"] code');
+    assert.equal(await tool.locator("details").count(), 0);
+    assert.equal(await tool.locator(".tool-result > .text").textContent(), "Written");
+    assert.equal(await tool.locator("pre").count(), 1);
+    assert.equal(
+      await written.evaluate((node) => getComputedStyle(node.parentElement!).display),
+      "block",
+    );
+    assert.equal(
+      await tool.locator(":scope > summary elm-command").getAttribute("source"),
+      "Write · source.ts",
+    );
     assert.equal(await written.textContent(), content);
     assert.equal(await written.locator("span").count(), 0);
     const assistant = fauxAssistantMessage("");
@@ -890,12 +860,13 @@ await test(
     assert.equal(await page.evaluate(() => Object.hasOwn(globalThis, "executed")), false);
     const unhighlighted = page.locator('[data-call-id="write-nix"]');
     await unhighlighted.locator(":scope > summary").click();
-    await unhighlighted.getByText("Written content", { exact: true }).click();
     assert.equal(
       await unhighlighted.locator('pre[data-language="plain"] code').last().textContent(),
       plain,
     );
     assert.equal(await unhighlighted.locator("code span").count(), 0);
+    assert.equal(await unhighlighted.locator(".tool-result > .text").textContent(), "Written");
+    assert.equal(await unhighlighted.locator("pre").count(), 1);
     // The current tokenized node belongs to Elm, and survives unrelated updates.
     const node = await written.locator(".shj-syn-kwd").first().elementHandle();
     assert(node);

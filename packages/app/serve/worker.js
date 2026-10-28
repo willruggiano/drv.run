@@ -1,5 +1,5 @@
 // Cache only public assets, never pages or SSE.
-const CACHE = "pi-shell-v10";
+const CACHE = "pi-shell-v11";
 const SHELL = ["/manifest.webmanifest", "/styles.css", "/icon-192.png", "/icon-512.png", "/highlight.js", "/main.js", "/site.js", "/client.js", "/file.js"];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));
