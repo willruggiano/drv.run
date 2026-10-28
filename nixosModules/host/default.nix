@@ -235,7 +235,12 @@ in {
       };
       drvrun = pkgs.writeShellApplication {
         name = "drv.run";
-        runtimeInputs = [pkgs.coreutils pkgs.util-linux config.systemd.package];
+        runtimeInputs = with pkgs; [
+          config.systemd.package
+          coreutils
+          e2fsprogs
+          util-linux
+        ];
         text =
           lib.replaceStrings
           ["@launcher@" "@owners@"]

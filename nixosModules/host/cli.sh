@@ -12,6 +12,7 @@ usage() {
     '       drv.run stop [-u <user>] --all|<instance>' \
     '       drv.run reset [-u <user>] --all|<instance>' \
     '       drv.run clean [-u <user>] --all|<instance>' \
+    '       drv.run grow <instance>' \
     'Without -u, target all configured instance owners.' \
     'stop stops instances via systemd and retains their state.' \
     'reset clears the failed state of instances via systemd.' \
@@ -33,7 +34,7 @@ fi
 (($# > 0)) || invalid
 action=$1
 shift
-[[ $action == list || $action == stop || $action == reset || $action == clean ]] || invalid
+[[ $action == list || $action == stop || $action == reset || $action == clean || $action == grow ]] || invalid
 owners=(@owners@)
 if [[ ${1:-} == -u ]]; then
   (($# >= 2)) && [[ -n $2 ]] || invalid
@@ -54,6 +55,7 @@ if [[ $action == list ]]; then
 else
   (($# == 1)) || invalid
   target=$1
+  [[ $action != grow || $target != --all ]] || invalid
   if [[ $target != --all ]]; then
     target=${target#drv.run.}
     [[ $target =~ ^[a-zA-Z0-9]+$ ]] || invalid
@@ -86,6 +88,22 @@ for owner in "${owners[@]}"; do
       if [[ $action == clean ]]; then
         # Use exact names: stopped instances may be unloaded by systemd.
         systemctl --user --machine="$owner@.host" clean --what=state "$unit"
+      elif [[ $action == grow ]]; then
+        read -r -p "New total size for $owner/$instance (e.g. 64G): " size </dev/tty
+        bytes=$(numfmt --from=iec "$size")
+        systemctl --user --machine="$owner@.host" stop "$unit"
+        # shellcheck disable=SC2016
+        runuser --user "$owner" -- env -u XDG_STATE_HOME PATH="$PATH" "$BASH" -euc '
+          disk="$(systemd-path user-state-private)/drv.run/$1/state.img"
+          (( $2 > $(stat -c %s -- "$disk") )) || { echo "Size must increase" >&2; exit 1; }
+          backup=$(mktemp -d "${disk}.backup.XXXXXXXX")
+          cp --reflink=auto --sparse=always -- "$disk" "$backup/state.img"
+          echo "Backup: $backup/state.img" >&2
+          e2fsck -fp "$disk" || test "$?" -eq 1
+          truncate -s "$2" -- "$disk"
+          resize2fs "$disk"
+        ' -- "$target" "$bytes"
+        systemctl --user --machine="$owner@.host" start "$unit"
       elif [[ $action == reset ]]; then
         systemctl --user --machine="$owner@.host" reset-failed "$unit"
       else
