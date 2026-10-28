@@ -32,8 +32,9 @@ await test("the frontend uses only the shared stylesheet", async (t) => {
   assert.deepEqual(b.errors, []);
 });
 
-await test("focus outlines are suppressed unless a control explicitly opts in", async (t) => {
+await test("focus does not add outlines or decoration to controls", async (t) => {
   const f = await directoryFixture(t, "/workspace");
+  await f.create();
   const { page, base, screenshots, errors } = await browserFixture(
     t,
     f.sessions,
@@ -44,6 +45,19 @@ await test("focus outlines are suppressed unless a control explicitly opts in", 
   await page.goto(base);
   await page.locator("#base-directory").waitFor();
   await page.keyboard.press("Tab");
+  const box = page.locator(".compose-box");
+  await page.locator("#base-directory").focus();
+  const border = await box.evaluate((node) => getComputedStyle(node).borderColor);
+  await page.locator("#prompt").focus();
+  assert.equal(await box.evaluate((node) => getComputedStyle(node).borderColor), border);
+  const archive = page.locator(".session-archive").first();
+  const appearance = (node: Element) => {
+    const style = getComputedStyle(node);
+    return { color: style.color, opacity: style.opacity, outline: style.outlineStyle };
+  };
+  const unfocused = await archive.evaluate(appearance);
+  await archive.focus();
+  assert.deepEqual(await archive.evaluate(appearance), unfocused);
   for (const selector of ["#prompt", "#create", ".landing-navigation a", "#base-directory"]) {
     const control = page.locator(selector).first();
     await control.focus();
@@ -52,14 +66,20 @@ await test("focus outlines are suppressed unless a control explicitly opts in", 
   }
   if (screenshots) await page.screenshot({ path: join(screenshots, "mobile-cwd-focused.png") });
 
-  // Selectors and toggles explicitly put their focus indicator on a visible label.
-  await page.locator("#models").focus();
-  assert.equal(
-    await page
-      .locator("label:has(#models)")
-      .evaluate((node) => getComputedStyle(node).outlineStyle),
-    "solid",
-  );
+  for (const selector of ["#targets", "#models", "#thinking"]) {
+    await page.locator(selector).focus();
+    assert.equal(
+      await page.locator(selector).evaluate((node) => getComputedStyle(node).outlineStyle),
+      "none",
+    );
+    assert.equal(
+      await page
+        .locator(`label:has(${selector})`)
+        .evaluate((node) => getComputedStyle(node).outlineStyle),
+      "none",
+    );
+  }
+  if (screenshots) await page.screenshot({ path: join(screenshots, "mobile-select-focused.png") });
   await page.goto(base + "/settings");
   const toggle = page.locator(".toggle-option input").first();
   await toggle.focus();
@@ -68,8 +88,9 @@ await test("focus outlines are suppressed unless a control explicitly opts in", 
     await page
       .locator(".toggle-option input:focus-visible + span")
       .evaluate((node) => getComputedStyle(node).outlineStyle),
-    "solid",
+    "none",
   );
+  if (screenshots) await page.screenshot({ path: join(screenshots, "mobile-toggle-focused.png") });
   assert.deepEqual(errors, []);
 });
 

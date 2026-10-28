@@ -23,7 +23,6 @@
   --activity-bg: #202b25;
   --notice-bg: #252b28;
   --warning-bg: #3a3020;
-  --border-focus: #607e6c;
   --primary: #b4d4be;
   --on-primary: #17251d;
   --shadow: #0006;
@@ -52,7 +51,7 @@ button, select, textarea, input { font: inherit; color: inherit; border: 1px sol
 button, select { min-height: 30px; padding: 3px 9px; }
 button { cursor: pointer; } button:hover { background: var(--hover); }
 button:disabled { opacity: .4; cursor: default; }
-/* Focus outlines are opt-in through control-specific rules below. */
+/* Suppress native focus outlines on all controls. */
 :focus { outline: none; }
 .icon { min-width: 32px; padding: 3px 6px; background: transparent; border-color: transparent; }
 .bar { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
@@ -117,7 +116,7 @@ img { max-width: 100%; height: auto; } summary { cursor: pointer; padding: 3px 0
 #notice, #recovery, #activity { padding: 6px max(20px, calc((100% - 820px)/2)); font-size: 12px; background: var(--activity-bg); }
 #notice { cursor: pointer; background: var(--notice-bg); } #recovery { background: var(--warning-bg); } .error { color: var(--danger); }
 #composer { padding: 8px max(20px, calc((100% - 820px)/2)) 14px; }
-.compose-box { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 4px; } .compose-box:focus-within { border-color: var(--border-focus); }
+.compose-box { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 4px; }
 textarea { display: block; width: 100%; resize: vertical; padding: 8px 10px; max-height: 30dvh; min-height: 64px; }
 #prompt { resize: none; min-height: 42px; max-height: 25dvh; background: transparent; border: none; }
 .actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; } .compose-box > .actions { margin: 0; } .spacer { flex: 1; }
@@ -299,7 +298,6 @@ body.stacked-layout {
 .toggle-option:last-child span { border-radius: 0 6px 6px 0; }
 .toggle-option input:checked + span { background: var(--hover); color: var(--fg); }
 .toggle-option input[value=true]:checked + span { background: var(--primary); color: var(--on-primary); font-weight: 600; }
-.toggle-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 .toggle-option input:disabled { cursor: default; }
 .toggle-option input:disabled + span { opacity: .4; }
 .pane textarea { min-height: 44px; }
@@ -481,7 +479,7 @@ elm-file summary::-webkit-details-marker { display: none; }
 .session-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .session-row > .session { flex: 1; }
 .session-archive { color: var(--muted); flex: none; opacity: .6; }
-.session-archive:hover, .session-archive:focus-visible { color: var(--fg); opacity: 1; }
+.session-archive:hover { color: var(--fg); opacity: 1; }
 .session-archive .glyph { width: 14px; height: 14px; }
 .session { display: block; border: 1px solid transparent; border-radius: 6px; color: inherit; }
 .session:hover { background: var(--hover); }
@@ -493,7 +491,6 @@ elm-file summary::-webkit-details-marker { display: none; }
 .selector-summary :is(input, select) { field-sizing: content; min-width: 0; max-width: 100%; min-height: 24px; padding: 0; border: 0; background: transparent; font: inherit; color: inherit; text-overflow: ellipsis; }
 .selector-summary select, .selector-summary input:not(:focus) { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .selector-summary input:focus + .selector-value { display: none; }
-.selector-summary label:has(select:focus-visible) { outline: 2px solid var(--primary); outline-offset: -2px; }
 .selector-summary .selector-value { margin: 0; font: inherit; color: inherit; overflow: hidden; text-overflow: ellipsis; }
 #footer-model.selector-summary { min-height: 24px; }
 /* Keep the actual controls above iOS's focus-zoom threshold, not the summaries. */
