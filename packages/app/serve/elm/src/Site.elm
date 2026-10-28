@@ -106,7 +106,7 @@ catalogDecoder : D.Decoder Catalog
 catalogDecoder =
     D.succeed Catalog
         |> andMap
-            (D.map4 (\model target models targets -> { name = "", model = model, target = target, thinking = "", directory = "", models = models, targets = targets })
+            (D.map4 (\model target models targets -> withTargetDirectory { name = "", model = model, target = target, thinking = "", directory = "", models = models, targets = targets })
                 (D.field "model" D.string)
                 (D.field "target" D.string)
                 (D.field "models" (D.list Panel.modelOptionDecoder))
@@ -203,6 +203,31 @@ load model =
                    )
         , expect = Http.expectJson Loaded pageDecoder
         }
+
+
+withTargetDirectory : Panel.Settings -> Panel.Settings
+withTargetDirectory options =
+    { options | directory = List.filter (.key >> (==) options.target) options.targets |> List.head |> Maybe.map .cwd |> Maybe.withDefault "" }
+
+
+
+-- The cwd is editable as a full path; the server's base-directory API is root-relative.
+
+
+baseDirectory : Panel.Settings -> String
+baseDirectory options =
+    let
+        root =
+            List.filter (.key >> (==) options.target) options.targets |> List.head |> Maybe.map .root |> Maybe.withDefault ""
+    in
+    if root == "" || options.directory == root then
+        ""
+
+    else if String.startsWith (root ++ "/") options.directory then
+        String.dropLeft (String.length root + 1) options.directory
+
+    else
+        options.directory
 
 
 optionValues : Panel.Settings -> Dict String String
@@ -319,8 +344,19 @@ update msg model =
 
                                         get key fallback =
                                             Dict.get key model.creationOptions |> Maybe.withDefault fallback
+
+                                        selection =
+                                            { options | model = get "model" options.model, target = get "target" options.target, thinking = get "thinking" options.thinking, directory = get "directory" options.directory }
                                     in
-                                    Landing { catalog | options = { options | model = get "model" options.model, target = get "target" options.target, thinking = get "thinking" options.thinking, directory = get "directory" options.directory } }
+                                    Landing
+                                        { catalog
+                                            | options =
+                                                if selection.directory == "" then
+                                                    withTargetDirectory selection
+
+                                                else
+                                                    selection
+                                        }
 
                                 _ ->
                                     page
@@ -400,6 +436,12 @@ update msg model =
                     let
                         options =
                             Panel.edit field str catalog.options
+                                |> (if field == Panel.Target then
+                                        withTargetDirectory
+
+                                    else
+                                        identity
+                                   )
 
                         updated =
                             { model | page = Landing { catalog | options = options }, creationOptions = optionValues options, directories = [], directoryRequest = model.directoryRequest + 1 }
@@ -408,7 +450,7 @@ update msg model =
                     , Cmd.batch
                         [ persist updated
                         , if field == Panel.Directory then
-                            Http.get { url = "/directories?target=" ++ Url.percentEncode catalog.options.target ++ "&directory=" ++ Url.percentEncode str, expect = Http.expectJson (Directories updated.directoryRequest) (D.list D.string) }
+                            Http.get { url = "/directories?target=" ++ Url.percentEncode catalog.options.target ++ "&directory=" ++ Url.percentEncode (baseDirectory options), expect = Http.expectJson (Directories updated.directoryRequest) (D.list D.string) }
 
                           else
                             Cmd.none
@@ -492,7 +534,7 @@ update msg model =
                     Landing catalog ->
                         let
                             values =
-                                Dict.fromList [ ( "id", model.creation ), ( "requestId", model.creation ), ( "target", catalog.options.target ), ( "model", catalog.options.model ), ( "thinkingLevel", catalog.options.thinking ), ( "baseDirectory", catalog.options.directory ), ( "content", model.text ) ]
+                                Dict.fromList [ ( "id", model.creation ), ( "requestId", model.creation ), ( "target", catalog.options.target ), ( "model", catalog.options.model ), ( "thinkingLevel", catalog.options.thinking ), ( "baseDirectory", baseDirectory catalog.options ), ( "content", model.text ) ]
 
                             body =
                                 Maybe.withDefault

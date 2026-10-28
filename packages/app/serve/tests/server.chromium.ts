@@ -354,14 +354,25 @@ await test("landing composer matches conversation summaries and geometry without
       const thinking = page.getByRole("combobox", { name: "Thinking", exact: true });
       const environment = page.getByRole("combobox", { name: "Environment", exact: true });
       const directory = page.getByRole("combobox", { name: "Base directory", exact: true });
+      assert.equal(await directory.inputValue(), f.binding.cwd);
+      assert.equal(await directory.getAttribute("placeholder"), "/workspace");
+      assert.equal(await directory.evaluate((node) => node.matches(":placeholder-shown")), false);
       // Environment and cwd remain editable on mobile, before a session exists.
       await environment.selectOption(JSON.stringify(["local", f.workspace]));
       await environment.selectOption(JSON.stringify([f.binding.provider, f.binding.target]));
-      await directory.fill("drv.run");
+      assert.equal(await directory.inputValue(), f.binding.cwd);
+      await directory.fill(join(f.binding.cwd, "drv"));
+      const completion = page.locator("#directories option").first();
+      await completion.waitFor({ state: "attached" });
+      assert.equal(await completion.getAttribute("value"), join(f.binding.cwd, "drv.run") + "/");
+      await directory.fill(join(f.binding.cwd, "drv.run"));
       await directory.blur();
-      assert.equal(await directory.inputValue(), "drv.run");
+      assert.equal(await directory.inputValue(), join(f.binding.cwd, "drv.run"));
       await directory.fill("");
-      await directory.blur();
+      assert.equal(await directory.evaluate((node) => node.matches(":placeholder-shown")), true);
+      await page.reload();
+      await directory.waitFor();
+      assert.equal(await directory.inputValue(), f.binding.cwd);
       await models.selectOption(JSON.stringify([model.provider, model.modelId]));
       await page.waitForFunction(
         () => document.querySelector<HTMLSelectElement>("#thinking")?.selectedOptions.length === 1,
@@ -445,8 +456,16 @@ await test("landing composer matches conversation summaries and geometry without
             assert.deepEqual(actual, expected, `${selector} at ${width}px`);
           }
         }
-        for (const control of [models, thinking, environment, directory])
+        for (const control of [models, thinking, environment, directory]) {
           assert.equal(await control.isVisible(), true);
+          if (hasTouch || width <= 650) {
+            // iOS checks the control's font size, including before focus.
+            assert.equal(await control.evaluate((node) => getComputedStyle(node).fontSize), "16px");
+            await control.focus();
+            assert.equal(await control.evaluate((node) => getComputedStyle(node).fontSize), "16px");
+            await control.blur();
+          }
+        }
         const box = await page.locator("#composer-shell .compose-box").boundingBox();
         const selectedModel = await models.boundingBox();
         const selectedThinking = await thinking.boundingBox();
@@ -527,7 +546,7 @@ await test("landing composer matches conversation summaries and geometry without
         await page.locator("#footer-model .model-effort .selector-value").textContent(),
         "high",
       );
-      await directory.fill("drv.run");
+      await directory.fill(join(f.binding.cwd, "drv.run"));
       await directory.blur();
       assert.equal(
         await page.locator("#footer-instance label:last-child .selector-value").textContent(),
@@ -537,7 +556,7 @@ await test("landing composer matches conversation summaries and geometry without
       await page.waitForFunction(
         () => document.querySelector<HTMLSelectElement>("#thinking")?.value === "high",
       );
-      assert.equal(await directory.inputValue(), "drv.run");
+      assert.equal(await directory.inputValue(), join(f.binding.cwd, "drv.run"));
       assert.equal(await models.inputValue(), JSON.stringify([model.provider, model.modelId]));
       f.faux.setResponses([fauxAssistantMessage("Reviewed.")]);
       await page.getByRole("button", { name: "Create session", exact: true }).click();
@@ -552,6 +571,27 @@ await test("landing composer matches conversation summaries and geometry without
   }
 
   assert.deepEqual(b.errors, []);
+});
+
+await test("landing cwd submits the root once and still accepts relative paths", async (t) => {
+  const f = await directoryFixture(t);
+  await mkdir(join(f.workspace, "nested"));
+  const { page, base } = await browserFixture(t, f.sessions);
+  for (const directory of [f.binding.cwd, "", "nested"]) {
+    await page.goto(base);
+    const input = page.getByRole("combobox", { name: "Base directory", exact: true });
+    await input.fill(directory);
+    await page.locator("#prompt").fill("Check cwd");
+    f.faux.setResponses([fauxAssistantMessage("Checked.")]);
+    await page.getByRole("button", { name: "Create session", exact: true }).click();
+    await page.waitForURL(new RegExp(`/sessions/.*/conversations/`));
+    const session = await f.sessions.get(new URL(page.url()).pathname.split("/")[2]);
+    await session.root.waitForIdle(BACKGROUND_CONTEXT);
+    assert.equal(
+      (await sessionInfo(session)).cwd,
+      directory === "nested" ? join(f.binding.cwd, directory) : f.binding.cwd,
+    );
+  }
 });
 
 await test("the landing creates, reopens and archives sessions", async (t) => {

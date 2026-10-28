@@ -495,6 +495,10 @@ elm-file summary::-webkit-details-marker { display: none; }
 .selector-summary label:has(select:focus-visible) { outline: 2px solid var(--primary); outline-offset: -2px; }
 .selector-summary .selector-value { margin: 0; font: inherit; color: inherit; overflow: hidden; text-overflow: ellipsis; }
 #footer-model.selector-summary { min-height: 24px; }
+/* Keep the actual controls above iOS's focus-zoom threshold, not the summaries. */
+@media (max-width: 650px), (any-pointer: coarse) {
+  .selector-summary :is(input, select) { font-size: 16px; }
+}
 .selector-summary option { background: var(--surface); }
 .selector-summary label:hover { color: var(--fg); }
 .selector-summary input::placeholder { color: var(--muted); opacity: 1; }

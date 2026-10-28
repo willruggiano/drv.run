@@ -192,7 +192,7 @@ optionFields compact change save directories settings =
                     [ id "base-directory"
                     , A.name "baseDirectory"
                     , A.maxlength 4096
-                    , A.placeholder (root ++ " (default)")
+                    , A.placeholder "/workspace"
                     , A.list "directories"
                     , value settings.directory
                     , onInput (change Directory)
@@ -206,6 +206,9 @@ optionFields compact change save directories settings =
                                     (if settings.directory == "" then
                                         root
 
+                                     else if String.startsWith "/" settings.directory then
+                                        settings.directory
+
                                      else
                                         root ++ "/" ++ settings.directory
                                     )
@@ -216,7 +219,23 @@ optionFields compact change save directories settings =
                             []
                        )
                 )
-    , directories = Html.datalist [ id "directories" ] (List.map (\path -> option [ value path ] []) directories)
+    , directories =
+        Html.datalist [ id "directories" ]
+            (List.map
+                (\path ->
+                    option
+                        [ value
+                            (if compact then
+                                root ++ "/" ++ path
+
+                             else
+                                path
+                            )
+                        ]
+                        []
+                )
+                directories
+            )
     }
 
 
