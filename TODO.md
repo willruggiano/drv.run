@@ -25,6 +25,8 @@
 - [ ] Project management features, or integrate Linear (via mcp?)
 - [ ] Automate/declarative guest port exposure / service publishing (proof of
       concept nixos test in tests/nixos/port-forwarding.nix)
+- [ ] Potentially configure [pueue](https://github.com/Nukesor/pueue) as a
+      standalone service?
 
 ## SDLC
 
