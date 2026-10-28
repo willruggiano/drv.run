@@ -364,7 +364,6 @@
         # (some lines down) an assistant (pi) over private https that executes
         # tools and runs code in a nixos microvm!
         services.drv-run = {
-          notifications.enable = true;
           guest.extraModules = [
             {
               microvm.vcpu = 4;
@@ -407,6 +406,7 @@
 
         # Configure our homegrown pi-based frontend application and serve it over
         # tailscale dns. Access it on your phone from anywhere!
+        services.drv-run.notifications.enable = true;
         services.pi = {
           enable = true;
           notifications = {

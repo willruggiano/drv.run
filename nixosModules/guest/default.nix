@@ -89,7 +89,7 @@
   microvm = {
     mem = lib.mkDefault (3 * 1024);
     storeOnDisk = true;
-    # Fresh Guests can share cached pages of the immutable Guest closure image.
+    # Fresh guests can share cached pages of the immutable guest closure image.
     storeDiskDirect = false;
     vcpu = lib.mkDefault 2;
     volumes = [
@@ -97,22 +97,21 @@
         image = "state.img";
         label = "drv-run-state";
         mountPoint = "/persist";
-        fsType = "ext4";
-        size = 16 * 1024;
-        # The worker only formats a new sparse file, whose unwritten bytes are zero.
-        mkfsExtraArgs = ["-E" "assume_storage_prezeroed=1"];
         autoCreate = false;
+        fsType = "ext4";
+        mkfsExtraArgs = ["-E" "assume_storage_prezeroed=1"];
         size = lib.mkDefault (50 * 1024); # MiB
       }
       {
+        # TODO: Explain the weird looking settings please!
         image = "environment.erofs";
-        fsType = "erofs";
         label = null;
-        mountPoint = null;
-        size = 0;
+        fsType = "erofs";
         autoCreate = false;
-        readOnly = true;
         direct = false;
+        mountPoint = null;
+        readOnly = true;
+        size = 0;
       }
     ];
     writableStoreOverlay = lib.mkDefault "/nix/.rw-store";
@@ -135,9 +134,9 @@
   programs.git = {
     enable = true;
     config.url = {
-      "https://github.com/".insteadOf = "github:";
-      "https://git.sr.ht/".insteadOf = "sourcehut:";
       "https://codeberg.org/".insteadOf = "codeberg:";
+      "https://git.sr.ht/".insteadOf = "sourcehut:";
+      "https://github.com/".insteadOf = "github:";
       "https://gitlab.com/".insteadOf = "gitlab:";
     };
   };
