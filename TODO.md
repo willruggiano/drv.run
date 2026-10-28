@@ -29,9 +29,8 @@
 ## SDLC
 
 - [ ] Move everything in the justfile to nix, delete justfile
-- [ ] Start collecting telemetry (otel-cli, otel-desktop-viewer) to get better
-      insight into pre/start/post activation timing, including cold and warm
-      boots on flake's of varying (closure) size
+- [ ] Use legit telemetry tooling (otel-cli, otel-desktop-viewer) instead of
+      homegrown slop, eg. [`timings.sh`](nixosModules/timing.sh)
 
 ## Codebase architecture
 
