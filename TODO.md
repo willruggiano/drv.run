@@ -20,13 +20,16 @@
 ## Usability
 
 - [ ] Automate the host deployment
-- [ ] Scratchpad off to the side on desktop
+- [ ] Scratchpad off to the side on desktop (maybe use tldraw?)
 - [ ] Executable specs / RLM
 - [ ] Project management features, or integrate Linear (via mcp?)
 - [ ] Automate/declarative guest port exposure / service publishing (proof of
       concept nixos test in tests/nixos/port-forwarding.nix)
 - [ ] Potentially configure [pueue](https://github.com/Nukesor/pueue) as a
-      standalone service?
+      standalone service? This would replace zmx.
+- [ ] Modal browser UX: esc -> "normal", j/k navigate the transcript, space ->
+      expand/collapse transcript item, gf -> fork, i (anywhere) -> return to
+      "insert" and focus the input
 
 ## SDLC
 
@@ -40,6 +43,23 @@
       benchmarks, integration tests, and nixos vm tests via
       passthru.{bench,tests}) -> generate the flake `checks` as function of its
       `packages`.
+- [ ] Split packages/app into:
+  - packages/www: elm frontend
+    - make idiomatic Elm/eliminate most of the typescript
+    - <https://elm-lang.org/docs>
+    - <https://guide.elm-lang.org/>
+    - <https://github.com/sporto/elm-patterns>
+    - <https://package.elm-lang.org/help/design-guidelines>
+    - <https://github.com/ricardocasares/skills/tree/main/skills/elm/elm-patterns>
+    - <https://github.com/elm/package.elm-lang.org/tree/master>
+  - packages/durable/api: typescript backend providing session apis and durable
+    rpc-like apis
+  - packages/durable/harness: basically the existing packages/app/harness
+    verbatim, but as a standalone package/library
+  - n.b. packages/durable is NOT its own package, it is just organizational and
+    should nothing more than the two sub-directories above, and, if apropo, a
+    tests sub-directory for integration tests + a default.nix for the test
+    derivation via `pkgs.callPackage ./packages/durable`, if apropo
 
 References:
 
