@@ -11,7 +11,7 @@
     if part number nvme 0 ${host.disko.devices.disk.main.content.partitions.ESP.label} nvme_esp; then
       if load nvme 0:''${nvme_esp} ''${kernel_addr_r} /EFI/BOOT/BOOTAA64.EFI; then
         setenv bootargs
-        bootefi ''${kernel_addr_r} - ''${fdtcontroladdr}
+        bootefi ''${kernel_addr_r} ''${fdtcontroladdr}
       fi
     fi
     echo NVMe EFI boot failed
