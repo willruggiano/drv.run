@@ -47,6 +47,8 @@ References:
 - <https://github.com/sporto/elm-patterns>
 - <https://package.elm-lang.org/help/design-guidelines>
 - <https://github.com/ricardocasares/skills/tree/main/skills/elm/elm-patterns>
+- <https://github.com/elm/package.elm-lang.org/tree/master>: reference, frontend
+  implemented in Elm (interesting to us), backend in Haskell (not as much)
 
 ## Watchlist
 
