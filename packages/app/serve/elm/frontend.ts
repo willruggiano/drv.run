@@ -1,10 +1,12 @@
 import type { GlobalSettingsStore } from "../server.ts";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Context } from "@earendil-works/chord/context";
+import { withoutAbortSignal, type Context } from "@earendil-works/chord/context";
+import { FileError, getOrThrow } from "@earendil-works/pi-durable/env";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import {
   getConversation,
+  environment,
   sessionInfo,
   completePaths,
   completeWorkingDirectories,
@@ -59,7 +61,7 @@ export async function elmFrontend(
     return;
   }
   const match =
-    /^\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|reset|compact|export|directories|archive))?$/.exec(
+    /^\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|reset|compact|export|directories|archive|file|image))?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -79,6 +81,83 @@ export async function elmFrontend(
       ["settings", "context", "branches", "tree", "reset", "compact"].includes(operation))
   ) {
     elmDocument(response);
+    return;
+  }
+  if (request.method === "GET" && (operation === "file" || operation === "image")) {
+    const paths = url.searchParams.getAll("path");
+    const path = paths[0];
+    if (paths.length !== 1 || !path) throw new FormError(400, "Invalid file path.");
+    for (const character of path) {
+      const code = character.charCodeAt(0);
+      if (code < 32 || code === 127) throw new FormError(400, "Invalid file path.");
+    }
+    const env = await environment(session, conversation, context);
+    let bytes: Buffer;
+    try {
+      const reader = getOrThrow(await env.openBinaryReader(path, undefined, context));
+      try {
+        const before = getOrThrow(await reader.info(context));
+        bytes = Buffer.from(getOrThrow(await reader.read(0, before.size + 1, context)));
+        const after = getOrThrow(await reader.info(context));
+        if (
+          bytes.length !== before.size ||
+          after.size !== before.size ||
+          after.mtimeMs !== before.mtimeMs
+        )
+          throw new FormError(409, "File changed while reading; reload to retry.");
+      } finally {
+        await reader.close(withoutAbortSignal(context));
+      }
+    } catch (error) {
+      if (!(error instanceof FileError)) throw error;
+      throw new FormError(
+        error.code === "not_found" ? 404 : error.code === "permission_denied" ? 403 : 400,
+        error.message,
+      );
+    }
+    // Only passive raster formats are served as images, irrespective of the file extension.
+    const mime = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      ? "image/png"
+      : bytes.subarray(0, 3).equals(Buffer.from([255, 216, 255]))
+        ? "image/jpeg"
+        : ["GIF87a", "GIF89a"].includes(bytes.toString("latin1", 0, 6))
+          ? "image/gif"
+          : bytes.toString("latin1", 0, 4) === "RIFF" && bytes.toString("latin1", 8, 12) === "WEBP"
+            ? "image/webp"
+            : undefined;
+    if (mime) {
+      response.writeHead(200, { "Content-Type": mime });
+      response.end(bytes);
+      return;
+    }
+    if (operation === "image") throw new FormError(415, "Expected a PNG, JPEG, GIF or WebP image.");
+    let source: string;
+    try {
+      source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new FormError(415, "Expected a UTF-8 text file.");
+    }
+    for (const character of source) {
+      const code = character.charCodeAt(0);
+      if ((code < 32 && ![9, 10, 12, 13].includes(code)) || code === 127)
+        throw new FormError(415, "Expected a UTF-8 text file.");
+    }
+    const lines = source.split(/\r?\n/);
+    const escape = (text: string) =>
+      text
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    response.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    });
+    response.end(
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(path)}</title><link rel="stylesheet" href="/styles.css"></head><body class="file-viewer"><header class="bar"><a href="${escape(conversationURL(session, conversation.id))}">Conversation</a><h1>${escape(path)}</h1></header><main><pre id="file-source"><code>${lines.map((line, index) => `<span class="source-line" id="L${index + 1}"><a class="line-number" href="#L${index + 1}" aria-label="Line ${index + 1}">${index + 1}</a><span>${escape(line)}</span></span>`).join("")}</code></pre></main></body></html>`,
+    );
     return;
   }
   if (request.method === "GET" && operation === "panel") {

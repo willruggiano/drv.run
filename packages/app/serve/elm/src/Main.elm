@@ -1301,7 +1301,7 @@ view model =
             button [ class "icon", A.type_ "button", attribute "aria-label" label, A.title label, onClick action ] [ Icon.view name ]
 
         message msg =
-            Transcript.viewMessage Toggle opened state.tools True msg
+            Transcript.viewMessage model.path Toggle opened state.tools True msg
 
         live =
             section [ id "live", attribute "aria-label" "Live output" ]
@@ -1337,7 +1337,7 @@ view model =
                             (message item)
                     )
                     state.live.messages
-                    ++ List.map (Transcript.blockView Toggle opened state.tools << Protocol.ToolRef) state.live.tools
+                    ++ List.map (Transcript.blockView model.path Toggle opened state.tools << Protocol.ToolRef) state.live.tools
                     ++ List.map
                         (\item ->
                             let
@@ -1386,7 +1386,7 @@ view model =
                                               else
                                                 button [ class "icon", attribute "aria-label" "Cancel queued message", onClick (Command "cancel" (String.fromInt item.id)) ] [ text "×" ]
                                             ]
-                                        , div [] (List.map (Transcript.blockView Toggle opened state.tools) item.blocks)
+                                        , div [] (List.map (Transcript.blockView model.path Toggle opened state.tools) item.blocks)
                                         ]
                                 )
                                 state.queue
@@ -1511,7 +1511,7 @@ view model =
                     text ""
 
         body =
-            [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy6 viewTranscript opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
+            [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy7 viewTranscript model.path opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
             , queue
             , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
                 [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
@@ -1760,9 +1760,9 @@ branchPanel path branches =
         [ Html.ul [ id "branch-tree" ] (rows Nothing) ]
 
 
-viewTranscript : Dict String Bool -> String -> Maybe Int -> Dict Int Protocol.Entry -> Dict String Protocol.Tool -> Dict String Int -> Html Msg
-viewTranscript =
-    Transcript.transcript Toggle
+viewTranscript : String -> Dict String Bool -> String -> Maybe Int -> Dict Int Protocol.Entry -> Dict String Protocol.Tool -> Dict String Int -> Html Msg
+viewTranscript path =
+    Transcript.transcript path Toggle
 
 
 highlight : Model -> Cmd Msg

@@ -454,6 +454,12 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 #search { width: 100%; }
 #page:has(#search-bar:not([hidden])) .composer-shell { visibility: hidden; }
 .search-current { background: var(--search-current); outline: 1px solid var(--search-border); }
+body.file-viewer { display: block; height: auto; }
+.file-viewer > header { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+#file-source { margin: 0; border: 0; overflow: visible; }
+.source-line { display: flex; min-height: 1.6em; scroll-margin-top: 60px; }
+.source-line:target { background: var(--search-current); outline: 1px solid var(--search-border); }
+.line-number { flex: none; min-width: 5ch; margin-right: 2ch; text-align: right; color: var(--muted); user-select: none; }
 .transcript-image { cursor: zoom-in; }
 #image-dialog img { display: block; max-height: 75dvh; margin: auto; }
 #image-dialog { width: fit-content; max-width: 95vw; }

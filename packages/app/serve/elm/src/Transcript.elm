@@ -10,6 +10,7 @@ import Json.Decode as D
 import Json.Encode as E
 import Protocol exposing (Block(..), Boundary(..), Entry, Message, State, Tool)
 import Regex
+import Url
 
 
 commandLabel : String -> Html msg
@@ -50,11 +51,11 @@ regex source =
     Regex.fromString source |> Maybe.withDefault Regex.never
 
 
-inline : String -> List (Html msg)
-inline source =
+inline : String -> String -> List (Html msg)
+inline conversationPath source =
     let
         matches =
-            Regex.find (regex "(`[^`]+`|\\*\\*[^*]+\\*\\*|\\[[^\\]]+\\]\\(https?://[^\\s)]+\\))") source
+            Regex.find (regex "(`[^`]+`|\\*\\*[^*]+\\*\\*|!?\\[[^\\]\\n]*\\]\\([^\\s)]+\\))") source
 
         part match =
             if String.startsWith "`" match then
@@ -67,8 +68,66 @@ inline source =
                 let
                     index =
                         String.indexes "](" match |> List.head |> Maybe.withDefault 0
+
+                    image =
+                        String.startsWith "!" match
+
+                    label =
+                        String.slice
+                            (if image then
+                                2
+
+                             else
+                                1
+                            )
+                            index
+                            match
+
+                    destination =
+                        String.slice (index + 2) -1 match
+
+                    link href =
+                        a [ A.href href, A.target "_blank", A.rel "noopener noreferrer" ] [ text label ]
+
+                    parts =
+                        String.split "#" destination
+
+                    fragment =
+                        case List.drop 1 parts of
+                            [ line ] ->
+                                if Regex.contains (regex "^L[1-9][0-9]*$") line then
+                                    "#" ++ line
+
+                                else
+                                    ""
+
+                            _ ->
+                                ""
                 in
-                a [ A.href (String.slice (index + 2) -1 match), A.target "_blank", A.rel "noopener noreferrer" ] [ text (String.slice 1 index match) ]
+                if Url.fromString destination /= Nothing then
+                    if image then
+                        text match
+
+                    else
+                        link destination
+
+                else if String.startsWith "//" destination || Regex.contains (regex "^[A-Za-z][A-Za-z0-9+.-]*:") destination then
+                    text match
+
+                else
+                    case List.head parts |> Maybe.andThen Url.percentDecode of
+                        Just path ->
+                            if path == "" then
+                                text match
+
+                            else if image then
+                                img [ class "transcript-image", A.alt label, A.src (conversationPath ++ "/image?path=" ++ Url.percentEncode path) ] []
+
+                            else
+                                link (conversationPath ++ "/file?path=" ++ Url.percentEncode path ++ fragment)
+
+                        Nothing ->
+                            text match
 
         step match ( offset, parts ) =
             ( match.index + String.length match.match, parts ++ [ text (String.slice offset match.index source), part match.match ] )
@@ -84,8 +143,8 @@ codeView language source =
     Html.node "elm-code" [ class "code-container", attribute "language" language, attribute "source" source ] []
 
 
-markdown : String -> Html msg
-markdown source =
+markdown : String -> String -> Html msg
+markdown conversationPath source =
     let
         paragraphs str =
             Regex.split (regex "\\n\\n+") str
@@ -101,10 +160,10 @@ markdown source =
                                     content =
                                         List.drop 1 match.submatches |> List.head |> Maybe.andThen identity |> Maybe.withDefault ""
                                 in
-                                Html.node ("h" ++ String.fromInt (String.length hashes + 1)) [] (inline content)
+                                Html.node ("h" ++ String.fromInt (String.length hashes + 1)) [] (inline conversationPath content)
 
                             Nothing ->
-                                p [] (inline paragraph)
+                                p [] (inline conversationPath paragraph)
                     )
 
         fences =
@@ -126,8 +185,8 @@ markdown source =
     div [ class "text", attribute "data-source" source ] (nodes ++ paragraphs (String.dropLeft end source))
 
 
-toolView : (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> String -> Html msg
-toolView toggle opened tools key =
+toolView : String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> String -> Html msg
+toolView conversationPath toggle opened tools key =
     case Dict.get key tools of
         Nothing ->
             text ""
@@ -158,7 +217,7 @@ toolView toggle opened tools key =
                         span [ class "tool-duration" ] [ text tool.duration ]
                     ]
                 , div [ class "tool-result" ]
-                    (List.map (blockView toggle opened tools) tool.blocks
+                    (List.map (blockView conversationPath toggle opened tools) tool.blocks
                         ++ [ if tool.notice == "" then
                                 text ""
 
@@ -195,11 +254,11 @@ toolView toggle opened tools key =
                 ]
 
 
-blockView : (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Block -> Html msg
-blockView toggle opened tools block =
+blockView : String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Block -> Html msg
+blockView conversationPath toggle opened tools block =
     case block of
         Text str ->
-            Html.Lazy.lazy markdown str
+            Html.Lazy.lazy2 markdown conversationPath str
 
         Thinking str ->
             div [ class "thinking" ] [ text str ]
@@ -211,11 +270,11 @@ blockView toggle opened tools block =
             img [ class "transcript-image", A.alt "Attachment", A.src ("data:" ++ mime ++ ";base64," ++ data) ] []
 
         ToolRef key ->
-            toolView toggle opened tools key
+            toolView conversationPath toggle opened tools key
 
 
-viewMessage : (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Bool -> Message -> List (Html msg)
-viewMessage toggle opened tools showHeader message =
+viewMessage : String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Bool -> Message -> List (Html msg)
+viewMessage conversationPath toggle opened tools showHeader message =
     (if showHeader then
         [ header []
             [ span [ class "speaker" ]
@@ -237,7 +296,7 @@ viewMessage toggle opened tools showHeader message =
      else
         []
     )
-        ++ List.map (blockView toggle opened tools) message.blocks
+        ++ List.map (blockView conversationPath toggle opened tools) message.blocks
         ++ (if message.error == "" then
                 []
 
@@ -300,8 +359,8 @@ entrySearch tools entry =
 presentation only: neither Elm nor a browser adapter reparents completed nodes.
 A boundary contributes a header and a trailing region around its archived rows.
 -}
-transcript : (String -> Bool -> msg) -> Dict String Bool -> String -> Maybe Int -> Dict Int Entry -> Dict String Tool -> Dict String Int -> Html msg
-transcript toggle opened query selected entriesById tools durations =
+transcript : String -> (String -> Bool -> msg) -> Dict String Bool -> String -> Maybe Int -> Dict Int Entry -> Dict String Tool -> Dict String Int -> Html msg
+transcript conversationPath toggle opened query selected entriesById tools durations =
     let
         entries =
             Dict.values entriesById
@@ -468,7 +527,7 @@ transcript toggle opened query selected entriesById tools durations =
                     ]
 
                 content =
-                    List.concatMap (viewMessage toggle opened tools True) entry.messages
+                    List.concatMap (viewMessage conversationPath toggle opened tools True) entry.messages
 
                 contextOpen =
                     isExpanded entry.id
@@ -503,7 +562,7 @@ transcript toggle opened query selected entriesById tools durations =
                                     span [ id ("duration-" ++ key), class "tool-duration", attribute "data-duration-ms" (String.fromInt ms), A.title ("Duration: " ++ String.fromInt ms ++ "ms") ] [ text label ]
                             ]
                         , if entry.boundary == Compact then
-                            div [ class "compaction-summary" ] (List.concatMap (viewMessage toggle opened tools False) entry.messages)
+                            div [ class "compaction-summary" ] (List.concatMap (viewMessage conversationPath toggle opened tools False) entry.messages)
 
                           else
                             text ""

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { browserFixture } from "../../tests/browser-testing.ts";
@@ -8,7 +9,8 @@ import { LiveDoc, type TaskId, type CompactionResult } from "@earendil-works/pi-
 import { fixture, readHistory, waitFor } from "../../tests/sessions-testing.ts";
 import { conversationURL } from "../../presentation.ts";
 import { Review } from "harness";
-import { rename, sessionInfo, inspectContext } from "../../sessions.ts";
+import { GlobalSettingsStore } from "../../server.ts";
+import { changeDirectory, rename, sessionInfo, inspectContext } from "../../sessions.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -404,6 +406,119 @@ await test(
       (await session.harness.snapshot(Review, session.root.id, context))?.active,
       undefined,
     );
+    assert.deepEqual(b.errors, []);
+  },
+);
+
+await test(
+  "Markdown guest images and source citations render without model reads on mobile and desktop",
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const settings = new GlobalSettingsStore();
+    const b = await browserFixture(t, f.sessions, undefined, undefined, settings);
+    const { page } = b;
+    page.setDefaultTimeout(10000);
+    const path = conversationURL(session);
+    const image = await readFile(new URL("../../icon-192.png", import.meta.url));
+    await writeFile(join(f.workspace, "shot #1?.png"), image);
+    const sourceName = "source <&>.ts";
+    const sourceLines = Array.from(
+      { length: 100 },
+      (_, index) => `const value${index + 1} = ${index + 1};`,
+    );
+    sourceLines[49] = '<script>globalThis.executed = true</script> & "quotes"';
+    await writeFile(join(f.workspace, sourceName), sourceLines.join("\n"));
+    const text = `![Screenshot](shot%20%231%3F.png)\n\n[Source:50](${encodeURIComponent(sourceName)}#L50)\n\n[Docs](https://example.com/docs)`;
+    const assistant = fauxAssistantMessage("");
+    const liveMessage = (text: string) => ({
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text }],
+      api: assistant.api,
+      provider: assistant.provider,
+      model: assistant.model,
+      usage: assistant.usage,
+      stopReason: assistant.stopReason,
+      timestamp: assistant.timestamp,
+    });
+    await session.root.commit(async (tx) => {
+      (await tx.doc(LiveDoc, session.root.id)).generation = {
+        attempt: 1,
+        message: liveMessage("![Screenshot](shot%20%231%3F.png"),
+      };
+    }, context);
+    await page.goto(b.base + path);
+    await page.locator("#live .text").waitFor();
+    assert.equal(await page.locator("#live img").count(), 0);
+    await session.root.commit(async (tx) => {
+      (await tx.doc(LiveDoc, session.root.id)).generation = {
+        attempt: 1,
+        message: liveMessage(text),
+      };
+    }, context);
+    await page.waitForFunction(() => {
+      const image = document.querySelector<HTMLImageElement>("#live img.transcript-image");
+      return image?.complete && image.naturalWidth > 0;
+    });
+    await session.root.commit(async (tx) => {
+      delete (await tx.doc(LiveDoc, session.root.id)).generation;
+      await tx.appendEntry(session.root.id, {
+        kind: "pi.assistant",
+        model: [fauxAssistantMessage(text)],
+      });
+    }, context);
+    const history = await readHistory(session.root);
+    const modelContext = await session.root.context(context);
+    for (const viewport of [
+      { width: 390, height: 844 },
+      { width: 1440, height: 900 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.waitForFunction(() => {
+        const image = document.querySelector<HTMLImageElement>("#transcript img.transcript-image");
+        return image?.complete && image.naturalWidth > 0;
+      });
+      const imageElement = page.locator("#transcript img.transcript-image");
+      assert.equal(await imageElement.getAttribute("alt"), "Screenshot");
+      await imageElement.click();
+      await page.waitForFunction(
+        () => document.querySelector<HTMLDialogElement>("#image-dialog")?.open === true,
+      );
+      await page.getByRole("button", { name: "Close image", exact: true }).click();
+      const opened = page.waitForEvent("popup");
+      await page.getByRole("link", { name: "Source:50", exact: true }).click();
+      const source = await opened;
+      await source.waitForLoadState();
+      assert.equal(new URL(source.url()).hash, "#L50");
+      assert.equal(new URL(source.url()).searchParams.get("path"), sourceName);
+      assert.equal(await source.locator("#L50 > span").textContent(), sourceLines[49]);
+      assert.equal(await source.locator("#file-source script").count(), 0);
+      assert.equal(await source.evaluate(() => Object.hasOwn(globalThis, "executed")), false);
+      assert.equal(await source.locator(":target").getAttribute("id"), "L50");
+      assert.equal(
+        await source.locator("#L50").evaluate((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.top >= 0 && rect.bottom <= innerHeight;
+        }),
+        true,
+      );
+      await source.close();
+    }
+    await settings.update({ values: { "terminal.showImages": false } }, f.sessions);
+    await page.locator("#transcript img.transcript-image").waitFor({ state: "hidden" });
+    await settings.update({ values: { "terminal.showImages": true } }, f.sessions);
+    await page.locator("#transcript img.transcript-image").waitFor({ state: "visible" });
+    assert.deepEqual(await readHistory(session.root), history);
+    assert.deepEqual(await session.root.context(context), modelContext);
+    // Existing citations resolve relative to the current cwd, not the application server's cwd.
+    await mkdir(join(f.workspace, "nested"));
+    await writeFile(join(f.workspace, "nested", sourceName), "Different cwd");
+    await changeDirectory(session, "nested", session.root, context);
+    const source = await b.browserContext.newPage();
+    await source.goto(`${b.base}${path}/file?path=${encodeURIComponent(sourceName)}`);
+    assert.equal(await source.locator("#L1 > span").textContent(), "Different cwd");
+    await source.close();
     assert.deepEqual(b.errors, []);
   },
 );

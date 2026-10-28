@@ -1138,3 +1138,81 @@ await test("server registers built-in models from environment credentials withou
     });
   }
 });
+
+await test("conversation file previews read the bound environment without changing model context", async (t) => {
+  const f = await fixture(t);
+  class ObservedEnv extends NodeExecutionEnv {
+    opened = 0;
+    closed = 0;
+    override async openBinaryReader(...args: Parameters<NodeExecutionEnv["openBinaryReader"]>) {
+      const result = await super.openBinaryReader(...args);
+      if (result.ok) {
+        this.opened++;
+        const close = result.value.close.bind(result.value);
+        result.value.close = async (context) => {
+          await close(context);
+          this.closed++;
+        };
+      }
+      return result;
+    }
+  }
+  const env = new ObservedEnv({ cwd: f.workspace });
+  await f.reopen({ env: () => env });
+  const session = await f.create();
+  const base = await serve(t, f.sessions);
+  const url = base + conversationURL(session);
+  const image = await readFile(new URL("../icon-192.png", import.meta.url));
+  await writeFile(join(f.workspace, "image.bin"), image);
+  await writeFile(join(f.workspace, "source.ts"), "export const value = 1;\n");
+  await writeFile(
+    join(f.workspace, "active.svg"),
+    '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+  );
+  await writeFile(join(f.workspace, "binary"), new Uint8Array([0, 255]));
+  const largeImage = Buffer.concat([image, Buffer.alloc(10 * 1024 * 1024)]);
+  await writeFile(join(f.workspace, "large-image.bin"), largeImage);
+  await writeFile(join(f.workspace, "large-text"), "a".repeat(1024 * 1024 + 1));
+  await writeFile(join(f.workspace, "many-lines"), "\n".repeat(20_000));
+  const before = await readHistory(session.root);
+  const modelContext = await session.root.context(context);
+  for (const [path, expected] of [
+    ["image.bin", image],
+    [join(f.workspace, "image.bin"), image],
+    ["large-image.bin", largeImage],
+  ] as const) {
+    for (const operation of ["image", "file"]) {
+      const response = await fetch(`${url}/${operation}?path=${encodeURIComponent(path)}`);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("Content-Type"), "image/png");
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), expected);
+    }
+  }
+  for (const path of ["source.ts", "large-text", "many-lines"]) {
+    const source = await fetch(`${url}/file?path=${path}`);
+    assert.equal(source.status, 200);
+    assert.equal(source.headers.get("Content-Type"), "text/html; charset=utf-8");
+    await source.arrayBuffer();
+  }
+  for (const [suffix, status] of [
+    ["image?path=source.ts", 415],
+    ["image?path=active.svg", 415],
+    ["file?path=binary", 415],
+    ["file?path=missing", 404],
+    ["file?path=.", 400],
+    ["file", 400],
+    ["file?path=%00", 400],
+    ["file?path=source.ts&path=image.bin", 400],
+  ] as const) {
+    assert.equal((await fetch(`${url}/${suffix}`)).status, status, suffix);
+  }
+  assert.equal(
+    (await fetch(`${url}/image?path=image.bin`, { headers: { Origin: "https://other.example" } }))
+      .status,
+    403,
+  );
+  assert.equal(env.opened, env.closed);
+  assert(env.opened > 0);
+  assert.deepEqual(await readHistory(session.root), before);
+  assert.deepEqual(await session.root.context(context), modelContext);
+});
