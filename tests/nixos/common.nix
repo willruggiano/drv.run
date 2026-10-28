@@ -22,9 +22,7 @@ in {
         assert select.select([machine.shell], [], [], 15 * 60)[0], machine.name
         machine.wait_for_unit("multi-user.target")
   '';
-  defaults = {nodes, ...}: {
-    # Auxiliary nodes need the same udev symlink-path fix as the host.
-    systemd.package = lib.mkDefault nodes.host.systemd.package;
+  defaults = {
     virtualisation.memorySize = lib.mkDefault 512;
     virtualisation.cores = 2;
     virtualisation.graphics = false;

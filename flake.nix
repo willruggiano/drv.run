@@ -57,6 +57,7 @@
           bench
           mitm-proxy
           subtrace
+          systemd
           ;
       };
       # n.b. this is for packages only necessary for development and should not
@@ -78,6 +79,8 @@
       environment-image = environmentImage.artifact;
       llms-snapshot = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
       mitm-proxy-tests = pkgs.mitm-proxy;
+      ssh-exposure = self.packages.${pkgs.stdenv.hostPlatform.system}.ssh-exposure;
+      nixos-ssh-exposure = self.packages.${pkgs.stdenv.hostPlatform.system}.ssh-exposure.tests;
       nixos-environment-image = environmentImage.integration;
       nixos-mitm-proxy-tests = pkgs.mitm-proxy.tests;
       nixos-notifications = import ./tests/nixos/notifications.nix {

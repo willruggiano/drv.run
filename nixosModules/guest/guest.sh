@@ -10,6 +10,9 @@ fi
 test -f "$ready"
 
 case ${SSH_ORIGINAL_COMMAND:-} in
+@sftp-pattern@)
+  exec @sftp-command@
+  ;;
 'nix-daemon --stdio')
   exec nix-daemon --stdio
   ;;

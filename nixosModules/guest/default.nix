@@ -24,6 +24,10 @@
       assertion = config.microvm.storeOnDisk && config.microvm.registerClosure && config.nix.enable && config.microvm.writableStoreOverlay != null;
       message = "drv.run environment images require a registered generic store and a private writable overlay.";
     }
+    {
+      assertion = lib.hasPrefix "/" config.services.openssh.sftpServerExecutable;
+      message = "drv.run's SSH command dispatcher requires an external SFTP server.";
+    }
   ];
 
   boot = {
@@ -187,8 +191,10 @@
         pkgs.writeShellApplication {
           name = "ssh-guest";
           runtimeInputs = [config.nix.package pkgs.coreutils];
-          text = lib.replaceStrings ["@command@" "@notifications-stream@"] [
+          text = lib.replaceStrings ["@command@" "@sftp-pattern@" "@sftp-command@" "@notifications-stream@"] [
             (lib.getExe command)
+            (lib.escapeShellArg (lib.concatStringsSep " " ([config.services.openssh.sftpServerExecutable] ++ config.services.openssh.sftpFlags)))
+            (lib.escapeShellArgs ([config.services.openssh.sftpServerExecutable] ++ config.services.openssh.sftpFlags))
             (
               if config.services.drv-run.notifications.enable
               then "exec ${pkgs.app}/bin/notify-stream /run/user/0/drv-run-notifications/events.sock"

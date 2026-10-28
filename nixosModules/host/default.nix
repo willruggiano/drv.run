@@ -78,7 +78,7 @@
     ];
     text =
       lib.replaceStrings
-      ["@proxy@" "@runner@" "@create-volumes@" "@mitm-proxy-seed@" "@image-expression@" "@timing@" "@notification-seed@"]
+      ["@proxy@" "@runner@" "@create-volumes@" "@mitm-proxy-seed@" "@image-expression@" "@timing@" "@notification-seed@" "@owner-keys@"]
       [
         "${config.systemd.package}/lib/systemd/systemd-ssh-proxy"
         (toString guest.config.microvm.declaredRunner)
@@ -98,6 +98,18 @@
             cat /proc/sys/kernel/random/uuid > "$RUNTIME_DIRECTORY/notification-incarnation"
             cp "$RUNTIME_DIRECTORY/notification-incarnation" "$staging/notification-incarnation"
           fi
+        '')
+        (lib.optionalString (config.services.drv-run.ssh.owners != {}) ''
+          case $(id -u) in
+            ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _: let
+            user = config.users.users.${name};
+            keys = pkgs.writeText "drv-run-ssh-${name}-keys" (lib.concatStringsSep "\n" (
+                user.openssh.authorizedKeys.keys ++ map builtins.readFile user.openssh.authorizedKeys.keyFiles
+              )
+              + "\n");
+          in ''${toString user.uid}) cat ${keys} >> "$RUNTIME_DIRECTORY/authorized-keys" ;;'')
+          config.services.drv-run.ssh.owners)}
+          esac
         '')
       ]
       (builtins.readFile ./pre.sh);
@@ -120,7 +132,7 @@
     text = lib.replaceStrings ["@timing@"] [(builtins.readFile ../timing.sh)] (builtins.readFile ./command.sh);
   };
 in {
-  imports = [../nix.nix ./network.nix ./mitm-proxy.nix self.nixosModules.pi];
+  imports = [../nix.nix ./network.nix ./mitm-proxy.nix ./ssh.nix self.nixosModules.pi];
 
   options.services.drv-run.notifications.enable = lib.mkEnableOption "instance-bound guest D-Bus notifications for services.pi.user";
 

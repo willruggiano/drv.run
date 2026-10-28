@@ -111,3 +111,43 @@ await test("notification streaming does not require a prepared environment", (t)
   assert.equal(existsSync(join(directory, "stream-opened")), true);
   assert.equal(existsSync(join(directory, "ready")), false);
 });
+
+for (const ready of [false, true]) {
+  test(`SFTP ${ready ? "bypasses nix develop" : "requires guest readiness"}`, (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "sftp-dispatch-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const bin = join(directory, "bin");
+    mkdirSync(bin);
+    if (ready) writeFileSync(join(directory, "ready"), "");
+    writeFileSync(join(bin, "nix"), `#!${bash}\ntouch "$FIXTURE/nix-invoked"\nexit 2\n`, {
+      mode: 0o755,
+    });
+    const server = join(bin, "sftp-server");
+    writeFileSync(
+      server,
+      `#!${bash}\nset -euo pipefail\ntest "$1" = -u\ntest "$2" = 0077\ntouch "$FIXTURE/sftp-opened"\n`,
+      { mode: 0o755 },
+    );
+    const guest = readFileSync(
+      new URL("../../nixosModules/guest/guest.sh", import.meta.url),
+      "utf8",
+    )
+      .replace("ready=/run/drv-run-environment/ready", 'ready="$FIXTURE/ready"')
+      .replace("profile=/nix/var/nix/profiles/project", 'profile="$FIXTURE/missing-profile"')
+      .replace("@sftp-pattern@", "'test-sftp -u 0077'")
+      .replace("@sftp-command@", `${server} -u 0077`);
+    const result = spawnSync("bash", ["-c", guest], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        FIXTURE: directory,
+        SSH_ORIGINAL_COMMAND: "test-sftp -u 0077",
+      },
+      stdio: "ignore",
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, ready ? 0 : 1);
+    assert.equal(existsSync(join(directory, "sftp-opened")), ready);
+    assert.equal(existsSync(join(directory, "nix-invoked")), false);
+  });
+}

@@ -81,6 +81,7 @@ ln -s "$STATE_DIRECTORY/host-key" "$RUNTIME_DIRECTORY/host-key"
 ssh-keygen -q -t ed25519 -N '' -f "$RUNTIME_DIRECTORY/client-key"
 chmod 0600 "$RUNTIME_DIRECTORY/client-key"
 cp "$RUNTIME_DIRECTORY/client-key.pub" "$RUNTIME_DIRECTORY/authorized-keys"
+@owner-keys@
 printf '%s %s\n' "$name" "$(ssh-keygen -y -f "$STATE_DIRECTORY/host-key")" \
   >"$RUNTIME_DIRECTORY/known_hosts"
 staging=$(mktemp -d "$RUNTIME_DIRECTORY/seed.XXXXXXXX")

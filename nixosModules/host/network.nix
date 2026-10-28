@@ -1,7 +1,6 @@
 {
   config,
   lib,
-  pkgs,
   ...
 }: let
   cfg = config.services.drv-run.network;
@@ -21,15 +20,6 @@
     in
       first > 0 && first < 224 && first != 127 && !(first == 169 && builtins.elemAt parts 1 == 254));
   dnsSet = lib.concatStringsSep ", " cfg.dnsServers;
-  kernel = config.boot.kernelPackages.kernel;
-  vmlinuxHeader =
-    pkgs.runCommand "nsresourced-vmlinux.h-${kernel.version}" {
-      nativeBuildInputs = [pkgs.bpftools];
-    } ''
-      mkdir -p "$out"
-      bpftool btf dump file ${kernel.dev}/vmlinux format c > "$out/vmlinux.h"
-      test -s "$out/vmlinux.h"
-    '';
 in {
   options.services.drv-run.network = {
     uplink = lib.mkOption {
@@ -56,6 +46,10 @@ in {
         message = "drv.run requires networkd and table-scoped nftables updates with forward filtering.";
       }
       {
+        assertion = config.systemd.package.withNsresourced;
+        message = "drv.run requires systemd with nsresourced BPF support; apply drv.run.overlays.default.";
+      }
+      {
         assertion = builtins.elem "bpf" config.security.lsm;
         message = "drv.run nsresourced requires BPF LSM.";
       }
@@ -72,25 +66,6 @@ in {
     };
     security.polkit.enable = true;
     systemd = {
-      # nsresourced needs HAVE_VMLINUX_H in addition to generic BPF support.
-      # Keep this override Host-local, not in the kernel's package set.
-      package = (pkgs.systemd.override {withLibBPF = true;}).overrideAttrs (old: {
-        # Match config_get_stats_by_path's resolved paths. Using the original
-        # symlink paths makes udev reload its rules continuously on NixOS.
-        postPatch =
-          old.postPatch
-          + ''
-            substituteInPlace src/udev/udev-rules.c \
-              --replace-fail 'hashmap_put_stats_by_path(&rules->stats_by_path, c->original_path, &c->st)' \
-                             'hashmap_put_stats_by_path(&rules->stats_by_path, c->result, &c->st)'
-          '';
-        mesonFlags =
-          old.mesonFlags
-          ++ [
-            (lib.mesonOption "vmlinux-h" "provided")
-            (lib.mesonOption "vmlinux-h-path" "${vmlinuxHeader}/vmlinux.h")
-          ];
-      });
       additionalUpstreamSystemUnits = ["systemd-nsresourced.service" "systemd-nsresourced.socket"];
       sockets.systemd-nsresourced = {
         overrideStrategy = "asDropin";
