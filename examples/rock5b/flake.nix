@@ -511,10 +511,7 @@
           }
         ];
 
-        boot.initrd = {
-          systemd.enable = true;
-          availableKernelModules = ["dw_mmc_rockchip" "sdhci_of_dwcmshc" "nvme"];
-        };
+        boot.initrd.availableKernelModules = ["dw_mmc_rockchip" "sdhci_of_dwcmshc" "nvme"];
 
         disko = {
           checkScripts = true;
