@@ -60,6 +60,8 @@ button:disabled { opacity: .4; cursor: default; }
 #menu-toggle { flex-shrink: 0; margin-left: auto; }
 h1 { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar h1 { display: flex; align-items: center; gap: 8px; }
+.bar:has(#reconnect) .header-title { align-content: center; }
+#reconnect { flex-shrink: 0; color: var(--danger); }
 #transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; padding: 12px max(20px, calc((100% - 820px)/2)); }
 article { padding: 14px 0; scroll-margin: 16px; } article + article { border-top: 1px solid var(--surface-subtle); }
 article > header { position: relative; color: var(--accent); font-size: 11px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; min-height: 24px; }
@@ -346,7 +348,7 @@ body.stacked-layout {
 #close-view { margin-left: auto; }
 #menu-toggle { margin-left: 0; }
 @media (max-width: 650px) {
-  .stacked-layout #app-header > .bar { display: none; }
+  .stacked-layout #app-header > .bar:not(:has(#reconnect)) { display: none; }
   .pane { padding: 8px 16px 16px; }
   #new-options { padding: 0 16px; }
   #session-filter-bar, #search-bar { padding: 6px 10px 4px; }
@@ -537,7 +539,7 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 
 /* Explorer panes replace the main view and composer, not the desktop navigation. */
 pi-tree { display: contents; }
-@media (max-width: 1199px) { #page:has(pi-tree) > #app-header { display: none; } }
+@media (max-width: 1199px) { #page:has(pi-tree) > #app-header:not(:has(#reconnect)) { display: none; } }
 .stacked-layout #page:has(pi-tree) { grid-template-rows: minmax(0, 1fr) auto auto; }
 .stacked-layout pi-tree #main-area { grid-row: 1; }
 .stacked-layout pi-tree #app-footer { grid-row: 2; }

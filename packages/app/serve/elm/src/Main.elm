@@ -1571,20 +1571,20 @@ view model =
         exploring =
             model.pane == Tree || model.pane == Branches
 
-        requestError =
-            p [ id "request-error", attribute "role" "alert" ]
-                [ text model.error
-                , case model.connection of
-                    Broken _ ->
-                        button [ onClick Retry ] [ text "Reconnect" ]
+        needsReconnect =
+            case model.connection of
+                Broken _ ->
+                    True
 
-                    _ ->
-                        text ""
-                ]
+                _ ->
+                    False
+
+        requestError =
+            p [ id "request-error", attribute "role" "alert" ] [ text model.error ]
 
         pageHeader =
             header [ id "app-header" ]
-                [ div [ class "bar", hidden (model.pane == Preferences) ]
+                [ div [ class "bar", hidden (model.pane == Preferences && not needsReconnect) ]
                     [ h1 []
                         [ if model.pane == Context then
                             span [ class "header-title" ] [ text "Context" ]
@@ -1594,6 +1594,12 @@ view model =
                                 [ text
                                     state.metadata.title
                                 ]
+                        , case model.connection of
+                            Broken reason ->
+                                button [ id "reconnect", A.type_ "button", A.title reason, onClick Retry ] [ text "Reconnect" ]
+
+                            _ ->
+                                text ""
                         ]
                     , if model.pane == Context then
                         a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Icon.view "close" ]

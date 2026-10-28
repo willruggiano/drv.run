@@ -810,14 +810,34 @@ await test(
       return route.fulfill({ status: 204 });
     });
     await page.goto(b.base + conversationURL(session));
-    await page.getByRole("button", { name: "Reconnect", exact: true }).waitFor();
+    const reconnect = page
+      .locator("#app-header h1")
+      .getByRole("button", { name: "Reconnect", exact: true });
+    await reconnect.waitFor();
     assert.equal(attempts, 1);
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const titleBounds = await page.locator("#conversation-title").boundingBox();
+      const reconnectBounds = await reconnect.boundingBox();
+      assert(titleBounds && reconnectBounds);
+      assert(reconnectBounds.x >= titleBounds.x + titleBounds.width);
+      assert(
+        Math.abs(
+          reconnectBounds.y + reconnectBounds.height / 2 - titleBounds.y - titleBounds.height / 2,
+        ) < 1,
+      );
+      assert(reconnectBounds.x + reconnectBounds.width <= width);
+      assert.equal(await page.locator("#request-error").isVisible(), false);
+      if (b.screenshots)
+        await page.screenshot({ path: join(b.screenshots, `elm-reconnect-${width}.png`) });
+    }
     await page.locator("#prompt").fill("Retained after terminal failure");
     await page.unroute("**/events");
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
     await page.waitForFunction(
       () => document.querySelector("#connection")?.textContent === "Connected",
     );
+    assert.equal(await reconnect.count(), 0);
     assert.equal(await page.locator("#prompt").inputValue(), "Retained after terminal failure");
     assert.deepEqual(b.errors, []);
   },
