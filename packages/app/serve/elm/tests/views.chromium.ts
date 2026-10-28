@@ -91,10 +91,9 @@ await test("rename completes and updates the session title in the frontend", asy
   const invalid = `/rename ${"x".repeat(121)}`;
   await page.fill("#prompt", invalid);
   await page.press("#prompt", "Control+Enter");
-  await page.waitForFunction(() => !!document.querySelector("#request-error")?.textContent);
+  await page.waitForFunction(() => !!document.querySelector("#composer-error")?.textContent);
   assert.equal(await page.inputValue("#prompt"), invalid);
   assert.equal((await sessionInfo(session)).name, name);
-  await page.getByRole("button", { name: "Keep draft; dismiss uncertain command" }).click();
   await page.fill("#prompt", "/rename");
   await page.locator("#send").click();
   await waitFor(async () => (await sessionInfo(session)).name === "");

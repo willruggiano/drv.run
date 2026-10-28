@@ -138,12 +138,105 @@ tests =
                     Just pending ->
                         let
                             newer =
-                                Main.update Main.DismissPending submitted |> Tuple.first |> Main.update (Main.Edit "second") |> Tuple.first |> Main.update (Main.Send "reject") |> Tuple.first
+                                Main.update (Main.Acknowledged base.path pending (Err Http.NetworkError)) submitted |> Tuple.first |> Main.update (Main.Edit "second") |> Tuple.first |> Main.update (Main.Send "reject") |> Tuple.first
 
                             failed =
                                 { newer | error = "New operation error", confirmation = (Main.initModel (base.path ++ "/reset") "nonce").confirmation }
                         in
                         Expect.all [ \_ -> Expect.equal failed (Main.update (Main.Acknowledged base.path pending (Ok ( pending.identity, pending.revision ))) failed |> Tuple.first), \_ -> Expect.equal failed (Main.update (Main.Acknowledged base.path pending (Err Http.NetworkError)) failed |> Tuple.first) ] ()
+        , test "editing preserves an error until a new submission replaces the failed operation" <|
+            \_ ->
+                let
+                    base =
+                        Main.initModel "/sessions/test/conversations/1" "nonce"
+
+                    submitted =
+                        Main.update (Main.Edit "original") base |> Tuple.first |> Main.update (Main.Send "reject") |> Tuple.first
+                in
+                case Dict.get base.path submitted.drafts |> Maybe.andThen .pending of
+                    Nothing ->
+                        Expect.fail "Missing pending request"
+
+                    Just pending ->
+                        let
+                            failed =
+                                Main.update (Main.Acknowledged base.path pending (Err (Http.BadStatus 503))) submitted |> Tuple.first
+
+                            edited =
+                                Main.update (Main.Edit "updated") failed |> Tuple.first
+
+                            next =
+                                Main.update (Main.Send "reject") edited |> Tuple.first
+
+                            identity model =
+                                Dict.get base.path model.drafts |> Maybe.andThen .pending |> Maybe.map .identity
+                        in
+                        Expect.all
+                            [ \_ -> Expect.equal (Dict.get base.path failed.drafts |> Maybe.andThen .pending) (Dict.get base.path edited.drafts |> Maybe.andThen .pending)
+                            , \_ -> Expect.notEqual (identity failed) (identity next)
+                            , \_ -> Expect.equal next (Main.update (Main.Send "reject") next |> Tuple.first)
+                            , \_ -> Expect.equal "" next.error
+                            ]
+                            ()
+        , test "Send retries unchanged failed input with its original identity and mode" <|
+            \_ ->
+                let
+                    base =
+                        Main.initModel "/sessions/test/conversations/1" "nonce"
+
+                    submitted =
+                        Main.update (Main.Edit "original") base |> Tuple.first |> Main.update (Main.Send "steer") |> Tuple.first
+                in
+                case Dict.get base.path submitted.drafts |> Maybe.andThen .pending of
+                    Nothing ->
+                        Expect.fail "Missing pending request"
+
+                    Just pending ->
+                        let
+                            retried =
+                                Main.update (Main.Acknowledged base.path pending (Err Http.NetworkError)) submitted |> Tuple.first |> Main.update (Main.Send "reject") |> Tuple.first
+                        in
+                        Expect.equal (Just pending) (Dict.get base.path retried.drafts |> Maybe.andThen .pending)
+        , test "client errors survive editing and clear on submission" <|
+            \_ ->
+                let
+                    base =
+                        Main.initModel "/sessions/test/conversations/1" "nonce"
+
+                    failed =
+                        Main.update (Main.Edit "/unsupported") base |> Tuple.first |> Main.update (Main.Send "reject") |> Tuple.first
+
+                    edited =
+                        Main.update (Main.Edit "valid input") failed |> Tuple.first
+
+                    submitted =
+                        Main.update (Main.Send "reject") edited |> Tuple.first
+                in
+                Expect.all [ \_ -> Expect.notEqual "" failed.error, \_ -> Expect.equal failed.error edited.error, \_ -> Expect.equal "" submitted.error ] ()
+        , test "Send checks an attachment-only restored request without resending it as text" <|
+            \_ ->
+                case D.decodeString Main.draftDecoder "{\"text\":\"\",\"revision\":\"r1\",\"missingFiles\":true,\"pending\":{\"identity\":\"r1:submit\",\"revision\":\"r1\",\"text\":\"\",\"mode\":\"reject\",\"command\":\"submit\",\"argument\":\"\",\"clear\":true,\"missingFiles\":true}}" of
+                    Err error ->
+                        Expect.fail (D.errorToString error)
+
+                    Ok draft ->
+                        let
+                            base =
+                                Main.initModel "/sessions/test/conversations/1" "nonce"
+
+                            checking =
+                                Main.update (Main.Send "reject") { base | drafts = Dict.singleton base.path draft } |> Tuple.first
+                        in
+                        case Dict.get base.path checking.drafts |> Maybe.andThen .pending of
+                            Nothing ->
+                                Expect.fail "Missing original request"
+
+                            Just pending ->
+                                let
+                                    acknowledged =
+                                        Main.update (Main.Receipt base.path pending (Ok True)) checking |> Tuple.first
+                                in
+                                Expect.equal ( ( True, "r1:submit" ), Just Nothing ) ( ( pending.missingFiles, pending.identity ), Dict.get base.path acknowledged.drafts |> Maybe.map .pending )
         , test "navigation ends composition and invalidates completion callbacks" <|
             \_ ->
                 let

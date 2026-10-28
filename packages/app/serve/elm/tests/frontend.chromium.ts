@@ -365,16 +365,112 @@ await test(
       await route.abort("connectionfailed");
     });
     await page.locator("#send").click();
-    await page.getByRole("button", { name: "Retry original input" }).waitFor();
+    await page.locator("#composer-error").waitFor();
     await session.root.waitForIdle(context);
     const before = await readHistory(session.root);
     await page.unroute("**/command");
     await page.reload();
-    await page.getByRole("button", { name: "Retry original input" }).click();
+    await page.locator("#send").click();
     await page.waitForFunction(
       () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
     );
     assert.deepEqual(await readHistory(session.root), before);
+    assert.deepEqual(b.errors, []);
+  },
+);
+
+await test(
+  "Elm shows request errors above the composer until the next submission",
+  { timeout: 45000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const b = await browserFixture(t, f.sessions);
+    const page = b.page;
+    page.setDefaultTimeout(10000);
+    await page.goto(b.base + conversationURL(session));
+    await page.waitForFunction(
+      () => document.querySelector("#connection")?.textContent === "Connected",
+    );
+    const box = page.locator("#composer-shell > .compose-box");
+    const error = page.locator("#composer-error");
+    const requestId = page.locator("#composer-error-request-id");
+    const pendingIdentity = () =>
+      page.evaluate(
+        () =>
+          JSON.parse(sessionStorage.getItem("pi.elm.drafts")!)[location.pathname].pending
+            .identity as string,
+      );
+    const borderIsRed = () =>
+      box.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const errorStyle = getComputedStyle(document.getElementById("composer-error")!);
+        return style.borderTopColor === errorStyle.color;
+      });
+    await page.route("**/command", (route) => route.fulfill({ status: 503 }));
+    await page.locator("#prompt").fill("Summarize the changes in this session.");
+    await page.locator("#send").click();
+    await error.waitFor();
+    const originalId = await pendingIdentity();
+    assert.equal(await requestId.textContent(), `RequestId: ${originalId}`);
+    assert.equal(await error.locator("button").count(), 0);
+    assert.equal(await page.locator("#request-error").isVisible(), false);
+    assert.equal(await borderIsRed(), true);
+    assert.equal(
+      await requestId.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const parent = getComputedStyle(element.parentElement!);
+        return (
+          Number.parseFloat(style.fontSize) < Number.parseFloat(parent.fontSize) &&
+          style.color !== parent.color
+        );
+      }),
+      true,
+    );
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const errorBounds = await error.boundingBox();
+      const boxBounds = await box.boundingBox();
+      assert(errorBounds && boxBounds);
+      assert(errorBounds.y + errorBounds.height <= boxBounds.y);
+      assert.equal(errorBounds.x, boxBounds.x);
+      assert.equal(errorBounds.width, boxBounds.width);
+      if (b.screenshots)
+        await page.screenshot({ path: join(b.screenshots, `elm-composer-error-${width}.png`) });
+    }
+    await page.locator("#prompt").fill("Summarize only the UI changes.");
+    assert.equal(await error.isVisible(), true);
+    assert.equal(await requestId.textContent(), `RequestId: ${originalId}`);
+    assert.equal(await borderIsRed(), true);
+    await page.unroute("**/command");
+    const received = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    await page.route("**/command", async (route) => {
+      received.resolve();
+      await release.promise;
+      await route.fulfill({ status: 400 });
+    });
+    await page.locator("#send").click();
+    await received.promise;
+    await error.waitFor({ state: "hidden" });
+    assert.equal(await error.isVisible(), false);
+    assert.equal(await borderIsRed(), false);
+    release.resolve();
+    await error.waitFor();
+    const editedId = await pendingIdentity();
+    assert.notEqual(editedId, originalId);
+    assert.equal(await requestId.textContent(), `RequestId: ${editedId}`);
+    assert.equal(await borderIsRed(), true);
+    await page.unroute("**/command");
+    f.faux.setResponses([fauxAssistantMessage("The UI changes are complete.")]);
+    await page.locator("#send").click();
+    await page.waitForFunction(
+      () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
+    );
+    assert.equal(await error.isVisible(), false);
+    assert.equal(await requestId.count(), 0);
+    assert.equal(await borderIsRed(), false);
     assert.deepEqual(b.errors, []);
   },
 );
@@ -621,7 +717,7 @@ await test(
 );
 
 await test(
-  "Elm recovers an acknowledged image submission after reload without losing a newer draft",
+  "Elm retains a newer image draft after losing an acknowledgement and reloading",
   { timeout: 45000 },
   async (t) => {
     const f = await fixture(t);
@@ -659,7 +755,7 @@ await test(
     await select("icon-512.png");
     await page.waitForFunction(() => document.querySelectorAll("#previews img").length === 2);
     release.resolve();
-    await page.getByRole("button", { name: "Retry original input" }).waitFor();
+    await page.locator("#composer-error").waitFor();
     const pending = await page.evaluate(
       () => JSON.parse(sessionStorage.getItem("pi.elm.drafts")!)[location.pathname].pending,
     );
@@ -673,13 +769,11 @@ await test(
     assert(user && Array.isArray(user.content));
     assert.equal(user.content.filter((part) => part.type === "image").length, 1);
     await page.reload();
-    await page.getByRole("button", { name: "Check original submission" }).click();
-    await page
-      .getByRole("button", { name: "Check original submission" })
-      .waitFor({ state: "detached" });
+    await page.locator("#composer-error").waitFor();
+    assert.equal(await page.locator("#composer-error button").count(), 0);
     assert.equal(await page.locator("#prompt").inputValue(), "Newer image draft");
     assert.deepEqual(await readHistory(session.root), before);
-    await page.getByRole("button", { name: "Discard missing attachments" }).click();
+    await page.getByRole("button", { name: "Remove attachment", exact: true }).click();
     assert.equal(await page.locator("#previews img").count(), 0);
     assert.equal(f.faux.state.callCount, 1);
     assert.deepEqual(b.errors, []);
@@ -703,7 +797,7 @@ await test(
     await page.locator("#previews img").waitFor();
     await page.route("**/command", (route) => route.abort("connectionfailed"));
     await page.locator("#send").click();
-    await page.getByRole("button", { name: "Retry original input" }).waitFor();
+    await page.locator("#composer-error").waitFor();
     const identity = await page.evaluate(
       () =>
         JSON.parse(sessionStorage.getItem("pi.elm.drafts")!)[location.pathname].pending.identity,
@@ -712,9 +806,9 @@ await test(
     const receipt = page.waitForResponse((response) =>
       new URL(response.url()).pathname.endsWith("/receipt"),
     );
-    await page.getByRole("button", { name: "Check original submission" }).click();
+    await page.locator("#send").click();
     assert.deepEqual(await (await receipt).json(), { accepted: false });
-    await page.getByRole("button", { name: "Check original submission" }).waitFor();
+    await page.locator("#composer-error").waitFor();
     assert.equal(
       await page.evaluate(
         () =>
@@ -723,8 +817,7 @@ await test(
       identity,
     );
     assert.deepEqual(await readHistory(session.root), []);
-    await page.getByRole("button", { name: "Keep draft; dismiss uncertain command" }).click();
-    await page.getByRole("button", { name: "Discard missing attachments" }).click();
+    await page.getByRole("button", { name: "Remove attachment", exact: true }).click();
     await page.unroute("**/command");
     await page.route("**/command", async (route) => {
       await route.fetch();
@@ -733,12 +826,12 @@ await test(
     await page.locator("#prompt").fill("/reset Explicit handoff");
     await page.locator("#send").click();
     await page.getByRole("button", { name: "Confirm reset" }).click();
-    await page.getByRole("button", { name: "Keep draft; dismiss uncertain command" }).waitFor();
+    await page.locator("#composer-error").waitFor();
     const before = await readHistory(session.root);
     assert.equal(before.filter((entry) => entry.kind === "pi.reset").length, 1);
     await page.reload();
-    await page.getByRole("button", { name: "Keep draft; dismiss uncertain command" }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Retry original input" }).count(), 0);
+    await page.locator("#composer-error").waitFor();
+    assert.equal(await page.locator("#composer-error button").count(), 0);
     assert.equal(await page.locator("#prompt").inputValue(), "/reset Explicit handoff");
     assert.deepEqual(await readHistory(session.root), before);
     assert.deepEqual(b.errors, []);
@@ -1054,7 +1147,7 @@ await test(
     assert.equal(await page.locator("#session-list").count(), 0);
     // A full document navigation cannot receive the old acknowledgement. Retry
     // reconciles the persisted request identity without another model input.
-    await page.getByRole("button", { name: "Retry original input", exact: true }).click();
+    await page.locator("#send").click();
     await page.waitForFunction(
       () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
     );
@@ -1218,12 +1311,12 @@ await test(
     await page.locator("#previews img").waitFor();
     await page.route("**/command", (route) => route.abort("connectionfailed"));
     await page.locator("#send").click();
-    await page.getByRole("button", { name: "Retry original input" }).waitFor();
+    await page.locator("#composer-error").waitFor();
     assert.equal(await page.locator("#previews img").count(), 1);
     assert.deepEqual(await readHistory(session.root), []);
     await page.unroute("**/command");
     f.faux.setResponses([fauxAssistantMessage("Retried files")]);
-    await page.getByRole("button", { name: "Retry original input" }).click();
+    await page.locator("#send").click();
     await page.waitForFunction(
       () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
     );

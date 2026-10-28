@@ -231,7 +231,6 @@ type Msg
     | Acknowledged String Pending (Result Http.Error ( String, String ))
     | Retry
     | Receipt String Pending (Result Http.Error Bool)
-    | DismissPending
     | PickFiles
     | AddedFiles File (List File)
     | Preview String String String
@@ -377,7 +376,7 @@ changeDraft change model =
             change (draftFor model)
 
         updated =
-            putDraft { draft | revision = model.nonce ++ "." ++ String.fromInt (model.counter + 1) } { model | counter = model.counter + 1, error = "", completions = Nothing, completionRequest = model.completionRequest + 1 }
+            putDraft { draft | revision = model.nonce ++ "." ++ String.fromInt (model.counter + 1) } { model | counter = model.counter + 1, completions = Nothing, completionRequest = model.completionRequest + 1 }
     in
     ( updated, Cmd.batch [ storage updated, browser (E.object [ ( "kind", E.string "resize" ) ]) ] )
 
@@ -410,6 +409,25 @@ request path pending =
     Http.post { url = path ++ "/command", body = body, expect = Http.expectJson (Response path pending) (D.map3 (\identity revision next -> ( identity, revision, next )) (D.field "requestId" D.string) (D.field "revision" D.string) (Protocol.optional "path" D.string)) }
 
 
+waiting : Draft -> Bool
+waiting draft =
+    Maybe.map .status draft.pending == Just Waiting
+
+
+retryInput : Draft -> Maybe Pending
+retryInput draft =
+    case draft.pending of
+        Just pending ->
+            if pending.command == "submit" && pending.revision == draft.revision && not (waiting draft) then
+                Just pending
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
+
+
 submit : String -> String -> String -> Bool -> Model -> ( Model, Cmd Msg )
 submit command argument mode clear model =
     let
@@ -424,44 +442,58 @@ submit command argument mode clear model =
                 draft.revision
 
         pending =
-            { identity = revision ++ ":" ++ command
-            , revision = revision
-            , text = draft.text
-            , files =
-                if command == "submit" then
-                    draft.files
+            case ( command, retryInput draft ) of
+                ( "submit", Just original ) ->
+                    { original | status = Waiting }
 
-                else
-                    []
-            , mode = mode
-            , command = command
-            , argument = argument
-            , clear = clear
-            , status = Waiting
-            , missingFiles = False
-            }
+                _ ->
+                    { identity = revision ++ ":" ++ command
+                    , revision = revision
+                    , text = draft.text
+                    , files =
+                        if command == "submit" then
+                            draft.files
+
+                        else
+                            []
+                    , mode = mode
+                    , command = command
+                    , argument = argument
+                    , clear = clear
+                    , status = Waiting
+                    , missingFiles = False
+                    }
 
         updated =
             putDraft { draft | revision = revision, pending = Just pending } { model | error = "", counter = model.counter + 1, completions = Nothing }
     in
-    if draft.pending /= Nothing then
+    if waiting draft then
         ( model, Cmd.none )
 
     else
-        ( updated, Cmd.batch [ storage updated, request model.path pending ] )
+        ( updated
+        , Cmd.batch
+            [ storage updated
+            , if pending.missingFiles then
+                Http.get { url = model.path ++ "/receipt?requestId=" ++ Url.percentEncode pending.identity, expect = Http.expectJson (Receipt model.path pending) (D.field "accepted" D.bool) }
+
+              else
+                request model.path pending
+            ]
+        )
 
 
 httpError : Http.Error -> String
 httpError error =
     case error of
         Http.BadStatus status ->
-            "Request failed (HTTP " ++ String.fromInt status ++ "). Your draft is retained."
+            "Request failed (HTTP " ++ String.fromInt status ++ ")."
 
         Http.BadBody _ ->
-            "Invalid server response. Your draft is retained."
+            "Invalid server response."
 
         _ ->
-            "Request acknowledgement unavailable. Your draft is retained."
+            "Request acknowledgement unavailable."
 
 
 openConfirmation : ContextAction -> String -> Model -> ( Model, Cmd Msg )
@@ -665,8 +697,8 @@ update msg model =
             if model.composing then
                 ( model, Cmd.none )
 
-            else if (draftFor model).missingFiles then
-                ( { model | error = "Reselect or discard the missing attachments before submitting." }, Cmd.none )
+            else if (draftFor model).missingFiles && retryInput (draftFor model) == Nothing && not (waiting (draftFor model)) then
+                ( { model | error = "Attachments are unavailable after reload. Reselect or remove them before submitting." }, Cmd.none )
 
             else if String.startsWith "/" str then
                 case command of
@@ -721,7 +753,7 @@ update msg model =
                     _ ->
                         ( { model | error = "Unsupported command: " ++ command }, Cmd.none )
 
-            else if str == "" && List.isEmpty (draftFor model).files then
+            else if str == "" && List.isEmpty (draftFor model).files && retryInput (draftFor model) == Nothing then
                 ( model, Cmd.none )
 
             else
@@ -780,11 +812,7 @@ update msg model =
                         | drafts = Dict.insert path updatedDraft model.drafts
                         , error =
                             if path == model.path then
-                                if valid then
-                                    ""
-
-                                else
-                                    message
+                                ""
 
                             else
                                 model.error
@@ -815,7 +843,7 @@ update msg model =
                         reason =
                             case result of
                                 Ok False ->
-                                    "The original submission is not recorded yet. Its files are unavailable after reload; do not resend it as text. Check again, or explicitly dismiss the uncertainty before composing a new input."
+                                    "The original submission is not recorded yet. Attachments are unavailable after reload; reselect or remove them before submitting again."
 
                                 _ ->
                                     "Could not check the original submission. Its outcome remains uncertain."
@@ -825,16 +853,6 @@ update msg model =
 
                     else
                         ( { model | drafts = Dict.insert path { draft | pending = Just { pending | status = Failed reason } } model.drafts }, Cmd.none )
-
-        DismissPending ->
-            let
-                draft =
-                    draftFor model
-
-                updated =
-                    putDraft { draft | pending = Nothing } { model | error = "" }
-            in
-            ( updated, storage updated )
 
         Retry ->
             case model.connection of
@@ -846,29 +864,7 @@ update msg model =
                     ( updated, connect updated )
 
                 _ ->
-                    case (draftFor model).pending of
-                        Nothing ->
-                            ( model, Cmd.none )
-
-                        Just pending ->
-                            if pending.command /= "submit" then
-                                ( { model | error = "This command is not retry-safe. Inspect current state before submitting a new command." }, Cmd.none )
-
-                            else
-                                let
-                                    draft =
-                                        draftFor model
-
-                                    updated =
-                                        putDraft { draft | pending = Just { pending | status = Waiting } } model
-                                in
-                                ( updated
-                                , if pending.missingFiles then
-                                    Http.get { url = model.path ++ "/receipt?requestId=" ++ Url.percentEncode pending.identity, expect = Http.expectJson (Receipt model.path pending) (D.field "accepted" D.bool) }
-
-                                  else
-                                    request model.path pending
-                                )
+                    ( model, Cmd.none )
 
         PickFiles ->
             ( model, File.Select.files [] AddedFiles )
@@ -1243,7 +1239,7 @@ view model =
             state.live.busy
 
         disabled =
-            draft.pending /= Nothing || (String.trim draft.text == "" && List.isEmpty draft.files)
+            waiting draft || (String.trim draft.text == "" && List.isEmpty draft.files && retryInput draft == Nothing)
 
         matches =
             searchMatches model
@@ -1265,40 +1261,26 @@ view model =
                 Broken reason ->
                     reason
 
-        pendingError =
-            draft.pending
-                |> Maybe.map
-                    (\pending ->
+        errorMessage =
+            if model.pane == Conversation && model.error /= "" then
+                model.error
+
+            else
+                case draft.pending of
+                    Just pending ->
                         case pending.status of
                             Failed reason ->
-                                p [ class "error" ]
-                                    [ text reason
-                                    , if pending.command == "submit" then
-                                        span []
-                                            [ button [ onClick Retry ]
-                                                [ text
-                                                    (if pending.missingFiles then
-                                                        "Check original submission"
-
-                                                     else
-                                                        "Retry original input"
-                                                    )
-                                                ]
-                                            , if pending.missingFiles then
-                                                button [ onClick DismissPending ] [ text "Keep draft; dismiss uncertain command" ]
-
-                                              else
-                                                text ""
-                                            ]
-
-                                      else
-                                        button [ onClick DismissPending ] [ text "Keep draft; dismiss uncertain command" ]
-                                    ]
+                                reason
 
                             Waiting ->
-                                text ""
-                    )
-                |> Maybe.withDefault (text "")
+                                ""
+
+                    Nothing ->
+                        if draft.missingFiles then
+                            "Attachments are unavailable after reload. Reselect or remove them before submitting."
+
+                        else
+                            ""
 
         iconButton name label action =
             button [ class "icon", A.type_ "button", attribute "aria-label" label, A.title label, onClick action ] [ Icon.view name ]
@@ -1403,7 +1385,14 @@ view model =
                 , edit = Edit
                 , events = [ keyDown model, on "compositionstart" (D.succeed (Composition True)), on "compositionend" (D.succeed (Composition False)) ]
                 , editingDisabled = False
-                , attachments = List.map (\attachment -> { name = File.name attachment.file, url = attachment.url, remove = RemoveFile attachment.id }) draft.files
+                , attachments =
+                    List.map (\attachment -> { name = File.name attachment.file, url = attachment.url, remove = RemoveFile attachment.id }) draft.files
+                        ++ (if draft.missingFiles then
+                                [ { name = "Unavailable attachments", url = "", remove = DiscardMissingFiles } ]
+
+                            else
+                                []
+                           )
                 , pickFiles = PickFiles
                 , completions = Maybe.map (\completion -> { items = List.map (\item -> { label = item.label, description = item.description }) completion.items, selected = model.completionIndex, choose = ChooseCompletion }) model.completions
                 , submission =
@@ -1433,7 +1422,7 @@ view model =
             in
             form [ class "compose-box", onSubmit ConfirmContext ]
                 [ textarea [ id "prompt", A.rows 2, A.placeholder (instructions ++ "…"), A.maxlength 100000, A.tabindex 1, attribute "aria-label" instructions, A.name "argument", value confirmation.argument, onInput EditConfirmation, keyDown model, on "compositionstart" (D.succeed (Composition True)), on "compositionend" (D.succeed (Composition False)) ] []
-                , div [ class "actions" ] [ a [ class "icon", href model.path, attribute "aria-label" ("Cancel " ++ label), A.title ("Cancel " ++ label), preventDefaultOn "click" (D.succeed ( Dismiss, True )) ] [ Icon.view "close" ], span [ class "spacer" ] [], button [ id "send", class "icon", attribute "aria-label" ("Confirm " ++ label), A.disabled (draft.pending /= Nothing) ] [ Icon.view "check" ] ]
+                , div [ class "actions" ] [ a [ class "icon", href model.path, attribute "aria-label" ("Cancel " ++ label), A.title ("Cancel " ++ label), preventDefaultOn "click" (D.succeed ( Dismiss, True )) ] [ Icon.view "close" ], span [ class "spacer" ] [], button [ id "send", class "icon", attribute "aria-label" ("Confirm " ++ label), A.disabled (waiting draft) ] [ Icon.view "check" ] ]
                 ]
 
         metadata =
@@ -1512,13 +1501,20 @@ view model =
             , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
                 [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
                 , Composer.shell
-                    [ Maybe.map confirmationComposer model.confirmation |> Maybe.withDefault composer
-                    , pendingError
-                    , if draft.missingFiles then
-                        p [ class "notice" ] [ text "Files cannot be restored after reload. Check history before resubmitting an uncertain file request. Reselect files or ", button [ onClick DiscardMissingFiles ] [ text "Discard missing attachments" ] ]
+                    [ p [ id "composer-error", class "error", attribute "role" "alert" ]
+                        [ text errorMessage
+                        , case draft.pending of
+                            Just pending ->
+                                if pending.status == Failed errorMessage then
+                                    Html.small [ id "composer-error-request-id" ] [ text ("RequestId: " ++ pending.identity) ]
 
-                      else
-                        text ""
+                                else
+                                    text ""
+
+                            Nothing ->
+                                text ""
+                        ]
+                    , Maybe.map confirmationComposer model.confirmation |> Maybe.withDefault composer
                     ]
                 , metadata
                 , if state.metadata.resume then
@@ -1580,7 +1576,15 @@ view model =
                     False
 
         requestError =
-            p [ id "request-error", attribute "role" "alert" ] [ text model.error ]
+            p [ id "request-error", attribute "role" "alert" ]
+                [ text
+                    (if model.pane == Conversation then
+                        ""
+
+                     else
+                        model.error
+                    )
+                ]
 
         pageHeader =
             header [ id "app-header" ]
