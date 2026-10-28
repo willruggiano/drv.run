@@ -70,7 +70,8 @@ tests =
                 )
                 [ { name = "creation", submission = Composer.Create (Html.input [ A.id "target" ] []) Create, message = Create }
                 , { name = "ready conversation", submission = Composer.Ready Send, message = Send }
-                , { name = "working conversation", submission = Composer.Working { queue = Queue, steer = Steer, stop = Stop }, message = Queue }
+                , { name = "working conversation", submission = Composer.Working { queue = Queue, steer = Steer, stop = Stop, defaultSteering = False }, message = Queue }
+                , { name = "steering by default", submission = Composer.Working { queue = Queue, steer = Steer, stop = Stop, defaultSteering = True }, message = Steer }
                 ]
             )
         , test "input, keyboard, composition, attachments, and completion dispatch caller messages" <|
@@ -126,14 +127,26 @@ tests =
                     , \_ -> conversation |> Query.hasNot [ S.id "stop" ]
                     ]
                     ()
+        , test "steering default swaps primary and alternate delivery buttons" <|
+            \_ ->
+                let
+                    view =
+                        render { config | submission = Composer.Working { queue = Queue, steer = Steer, stop = Stop, defaultSteering = True } }
+                in
+                Expect.all
+                    [ \_ -> view |> Query.find [ S.id "send" ] |> Event.simulate Event.click |> Event.expect Steer
+                    , \_ -> view |> Query.find [ S.class "submission-mode" ] |> Event.simulate Event.click |> Event.expect Queue
+                    , \_ -> view |> Query.find [ S.id "stop" ] |> Event.simulate Event.click |> Event.expect Stop
+                    ]
+                    ()
         , test "working conversations keep stop available when queue and steer are disabled" <|
             \_ ->
                 let
                     view =
-                        render { config | submission = Composer.Working { queue = Queue, steer = Steer, stop = Stop }, submitDisabled = True }
+                        render { config | submission = Composer.Working { queue = Queue, steer = Steer, stop = Stop, defaultSteering = False }, submitDisabled = True }
 
                     active =
-                        render { config | submission = Composer.Working { queue = Queue, steer = Steer, stop = Stop } }
+                        render { config | submission = Composer.Working { queue = Queue, steer = Steer, stop = Stop, defaultSteering = False } }
                 in
                 Expect.all
                     [ \_ -> view |> Query.find [ S.id "send" ] |> Query.has [ S.disabled True ]

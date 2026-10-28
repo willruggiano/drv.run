@@ -11,7 +11,7 @@ import Task exposing (Task)
 type Submission msg
     = Create (Html msg) msg
     | Ready msg
-    | Working { queue : msg, steer : msg, stop : msg }
+    | Working { queue : msg, steer : msg, stop : msg, defaultSteering : Bool }
 
 
 type alias Config msg =
@@ -39,7 +39,24 @@ view config =
                     { action = action, id = "send", label = "Send", attributes = [ A.type_ "button", onClick action ] }
 
                 Working actions ->
-                    { action = actions.queue, id = "send", label = "Queue", attributes = [ A.type_ "button", onClick actions.queue ] }
+                    let
+                        action =
+                            if actions.defaultSteering then
+                                actions.steer
+
+                            else
+                                actions.queue
+                    in
+                    { action = action
+                    , id = "send"
+                    , label =
+                        if actions.defaultSteering then
+                            "Steer"
+
+                        else
+                            "Queue"
+                    , attributes = [ A.type_ "button", onClick action ]
+                    }
 
         content =
             [ textarea
@@ -101,7 +118,22 @@ view config =
         working =
             case config.submission of
                 Working actions ->
-                    [ button [ class "submission-mode", A.type_ "button", A.disabled config.submitDisabled, onClick actions.steer ] [ text "Steer" ]
+                    let
+                        label =
+                            if actions.defaultSteering then
+                                "Follow up"
+
+                            else
+                                "Steer"
+
+                        action =
+                            if actions.defaultSteering then
+                                actions.queue
+
+                            else
+                                actions.steer
+                    in
+                    [ button [ class "submission-mode", A.type_ "button", A.disabled config.submitDisabled, A.title (label ++ " (Alt+Enter)"), onClick action ] [ text label ]
                     , button [ id "stop", class "icon", A.type_ "button", attribute "aria-label" "Stop", onClick actions.stop ] [ Icon.view "close" ]
                     ]
 
@@ -125,7 +157,7 @@ view config =
                  , span [ class "spacer" ] []
                  ]
                     ++ working
-                    ++ [ button ([ id submit.id, class "icon", A.disabled config.submitDisabled, attribute "aria-label" submit.label ] ++ submit.attributes) [ Icon.view "send" ] ]
+                    ++ [ button ([ id submit.id, class "icon", A.disabled config.submitDisabled, attribute "aria-label" submit.label, A.title (submit.label ++ " (Ctrl/Cmd+Enter)") ] ++ submit.attributes) [ Icon.view "send" ] ]
                 )
 
         box children =

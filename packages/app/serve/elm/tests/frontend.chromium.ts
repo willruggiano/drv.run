@@ -10,7 +10,7 @@ import { browserFixture } from "../../tests/browser-testing.ts";
 import { fixture, readHistory, waitFor } from "../../tests/sessions-testing.ts";
 import { conversationURL } from "../../presentation.ts";
 import { rename, type Sessions, type Session } from "../../sessions.ts";
-import { httpServer } from "../../server.ts";
+import { GlobalSettingsStore, httpServer } from "../../server.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -669,11 +669,12 @@ await test(
     const f = await fixture(t);
     const session = await f.create();
     f.faux.setResponses([
-      fauxAssistantMessage(fauxToolCall("bash", { command: "sleep 30" }), {
+      fauxAssistantMessage(fauxToolCall("bash", { command: "sleep 300" }), {
         stopReason: "toolUse",
       }),
     ]);
-    const b = await browserFixture(t, f.sessions);
+    const settings = new GlobalSettingsStore();
+    const b = await browserFixture(t, f.sessions, undefined, undefined, settings);
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.goto(b.base + conversationURL(session));
@@ -683,24 +684,51 @@ await test(
     await page.locator("#send").click();
     await page.locator('.tool-call[data-state="running"]').waitFor();
     assert.equal(await send.evaluate((node) => node === document.getElementById("send")), true);
-    for (const mode of ["followUp", "steer"]) {
-      await page.locator("#prompt").fill(`Queued ${mode}`);
+    const preferences = await b.browserContext.newPage();
+    t.after(() => preferences.close());
+    preferences.setDefaultTimeout(10000);
+    preferences.on("pageerror", (error) => b.errors.push(error));
+    await preferences.goto(b.base + "/settings");
+    const delivery = preferences.getByLabel("Default delivery mode");
+    assert.equal(await delivery.inputValue(), "follow-up");
+    for (const selected of ["steering", "follow-up"] as const) {
+      await preferences.bringToFront();
+      await delivery.selectOption(selected);
+      await waitFor(async () => settings.read().values.defaultDeliveryMode === selected);
+      const primary = selected === "steering" ? "steer" : "followUp";
+      const alternate = selected === "steering" ? "followUp" : "steer";
+      await page.bringToFront();
       await page
-        .getByRole("button", { name: mode === "steer" ? "Steer" : "Queue", exact: true })
-        .click();
-      await page.locator(`#queue [data-mode="${mode}"]`).waitFor();
-      assert.equal(
-        (await session.harness.snapshot(InboxDoc, session.root.id, context))?.items?.some(
-          (item) => item.mode === mode,
-        ),
-        true,
-      );
-      await page.getByRole("button", { name: "Cancel queued message" }).click();
-      await page.locator("#queue article").waitFor({ state: "detached" });
-      assert.deepEqual(
-        (await session.harness.snapshot(InboxDoc, session.root.id, context))?.items ?? [],
-        [],
-      );
+        .locator(`#send[aria-label="${selected === "steering" ? "Steer" : "Queue"}"]`)
+        .waitFor();
+      if (b.screenshots && selected === "steering") {
+        await preferences.screenshot({ path: join(b.screenshots, "elm-delivery-settings.png") });
+        await page.screenshot({ path: join(b.screenshots, "elm-delivery-steering.png") });
+      }
+      for (const action of [
+        { button: "#send", shortcut: "", mode: primary },
+        { button: "", shortcut: "Control+Enter", mode: primary },
+        { button: "", shortcut: "Meta+Enter", mode: primary },
+        { button: "", shortcut: "Alt+Enter", mode: alternate },
+        { button: ".submission-mode", shortcut: "", mode: alternate },
+      ]) {
+        await page.locator("#prompt").fill(`Queued ${action.mode}`);
+        if (action.button) await page.locator(action.button).click();
+        else await page.locator("#prompt").press(action.shortcut);
+        await page.locator(`#queue [data-mode="${action.mode}"]`).waitFor();
+        assert.deepEqual(
+          (await session.harness.snapshot(InboxDoc, session.root.id, context))?.items?.map(
+            (item) => item.mode,
+          ),
+          [action.mode],
+        );
+        await page.getByRole("button", { name: "Cancel queued message" }).click();
+        await page.locator("#queue article").waitFor({ state: "detached" });
+        assert.deepEqual(
+          (await session.harness.snapshot(InboxDoc, session.root.id, context))?.items ?? [],
+          [],
+        );
+      }
     }
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     await session.root.waitForIdle(context);

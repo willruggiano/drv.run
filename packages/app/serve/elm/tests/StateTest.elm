@@ -4,12 +4,16 @@ import Autosave
 import Browser
 import Dict
 import Expect
+import Html
 import Http
 import Json.Decode as D
+import Json.Encode as E
 import Main
 import Panel
 import Protocol
 import Test exposing (describe, test)
+import Test.Html.Event as Event
+import Test.Html.Query as Query
 import Url
 
 
@@ -237,6 +241,40 @@ tests =
                                         Main.update (Main.Receipt base.path pending (Ok True)) checking |> Tuple.first
                                 in
                                 Expect.equal ( ( True, "r1:submit" ), Just Nothing ) ( ( pending.missingFiles, pending.identity ), Dict.get base.path acknowledged.drafts |> Maybe.map .pending )
+        , describe "delivery shortcuts"
+            (List.concatMap
+                (\delivery ->
+                    List.map
+                        (\shortcut ->
+                            test (delivery.label ++ " " ++ shortcut.name) <|
+                                \_ ->
+                                    let
+                                        base =
+                                            Main.initModel "/sessions/test/conversations/1" "nonce"
+
+                                        state =
+                                            base.state
+
+                                        metadata =
+                                            state.metadata
+
+                                        model =
+                                            { base | state = { state | metadata = { metadata | defaultDeliveryMode = delivery.mode } }, completions = Just { start = 0, end = 1, items = [] } }
+                                    in
+                                    Html.textarea [ Main.keyDown model ] []
+                                        |> Query.fromHtml
+                                        |> Event.simulate (Event.custom "keydown" (E.object [ ( "key", E.string "Enter" ), ( "ctrlKey", E.bool shortcut.ctrl ), ( "metaKey", E.bool shortcut.meta ), ( "altKey", E.bool shortcut.alt ), ( "isComposing", E.bool shortcut.composing ) ]))
+                                        |> Event.expect shortcut.expected
+                        )
+                        [ { name = "Ctrl+Enter", ctrl = True, meta = False, alt = False, composing = False, expected = Main.Send delivery.primary }
+                        , { name = "Cmd+Enter", ctrl = False, meta = True, alt = False, composing = False, expected = Main.Send delivery.primary }
+                        , { name = "Alt+Enter", ctrl = False, meta = False, alt = True, composing = False, expected = Main.Send delivery.alternate }
+                        , { name = "IME Ctrl+Enter", ctrl = True, meta = False, alt = False, composing = True, expected = Main.NoOp }
+                        , { name = "IME Alt+Enter", ctrl = False, meta = False, alt = True, composing = True, expected = Main.NoOp }
+                        ]
+                )
+                [ { label = "steering", mode = Protocol.Steering, primary = "steer", alternate = "followUp" }, { label = "follow-up", mode = Protocol.FollowUp, primary = "followUp", alternate = "steer" } ]
+            )
         , test "navigation ends composition and invalidates completion callbacks" <|
             \_ ->
                 let

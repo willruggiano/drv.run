@@ -580,11 +580,15 @@ await test(
       { kind: "text", text: "Partial 109" },
     ]);
     const waiting = frames.next();
-    await settings.update({ values: { hideThinkingBlock: true } }, f.sessions);
+    await settings.update(
+      { values: { hideThinkingBlock: true, defaultDeliveryMode: "steering" } },
+      f.sessions,
+    );
     const preference = await waiting;
     assert(!preference.done);
     assert.equal(preference.value.sequence, 3);
     assert.equal(preference.value.metadata?.hideThinking, true);
+    assert.equal(preference.value.metadata?.defaultDeliveryMode, "steering");
     assert.equal(preference.value.live, undefined);
     assert.deepEqual(preference.value.entries, []);
   },

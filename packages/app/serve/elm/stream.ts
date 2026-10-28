@@ -13,6 +13,7 @@ import {
   type Conversation,
 } from "@earendil-works/pi-durable";
 import type { GlobalSettingsStore } from "../server.ts";
+import type { SettingValues } from "../settings.ts";
 import { BranchTree, type Branch } from "../branches.ts";
 import { SessionTree, conversationTree, type TreeData } from "../trees.ts";
 import {
@@ -305,6 +306,7 @@ type Metadata = {
   resume: boolean;
   hideThinking?: boolean;
   hideImages?: boolean;
+  defaultDeliveryMode?: SettingValues["defaultDeliveryMode"];
 };
 async function metadata(
   session: Session,
@@ -324,6 +326,7 @@ async function metadata(
       ? (status.lastResponse.tokens / status.window) * 100
       : undefined;
   return {
+    defaultDeliveryMode: settings?.read().values.defaultDeliveryMode ?? "follow-up",
     hideThinking: settings?.read().values.hideThinkingBlock === true,
     hideImages: settings?.read().values["terminal.showImages"] === false,
     branches: [],

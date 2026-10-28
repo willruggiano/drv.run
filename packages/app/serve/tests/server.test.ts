@@ -794,8 +794,11 @@ await test("app settings persist and drive live Durable policy", async (t) => {
   const initial = new GlobalSettingsStore({ model }).read();
   initial.values["compaction.reserveTokens"] = 12345;
   initial.values["retry.maxRetries"] = 7;
-  await writeFile(path, JSON.stringify(initial));
+  const { defaultDeliveryMode, ...values } = initial.values;
+  assert.equal(defaultDeliveryMode, "follow-up");
+  await writeFile(path, JSON.stringify({ ...initial, values }));
   const store = await GlobalSettingsStore.open(path);
+  assert.equal(store.read().values.defaultDeliveryMode, "follow-up");
   const options = store.bind(f.options);
   const sessions = await Sessions.open(options);
   assert.equal(sessions.options.defaults, options.defaults);
@@ -815,6 +818,7 @@ await test("app settings persist and drive live Durable policy", async (t) => {
   const before = get();
   for (const data of [
     { values: { defaultThinkingLevel: "wrong" } },
+    { values: { defaultDeliveryMode: "wrong" } },
     { values: { "retry.enabled": "false" } },
     { values: { "retry.maxRetries": -1 } },
     { values: { shellPath: "/not-allowed" } },
@@ -830,6 +834,7 @@ await test("app settings persist and drive live Durable policy", async (t) => {
   }
   for (const [key, value] of [
     ["defaultThinkingLevel", "wrong"],
+    ["defaultDeliveryMode", "wrong"],
     ["retry.enabled", "not-a-boolean"],
     ["model", "missing"],
   ]) {
@@ -843,6 +848,7 @@ await test("app settings persist and drive live Durable policy", async (t) => {
     defaultThinkingLevel: "low",
     "compaction.enabled": "false",
     "retry.enabled": "false",
+    defaultDeliveryMode: "steering",
     steeringMode: "all",
     followUpMode: "all",
     transport: "sse",
@@ -852,6 +858,7 @@ await test("app settings persist and drive live Durable policy", async (t) => {
   assert.equal(result.status, 200);
   const persisted = (await GlobalSettingsStore.open(path)).read();
   assert.equal(persisted.values.defaultThinkingLevel, "low");
+  assert.equal(persisted.values.defaultDeliveryMode, "steering");
   assert.equal(persisted.modelThinkingLevels[`${model.provider}/${model.modelId}`], "high");
   assert.equal(persisted.values["compaction.reserveTokens"], 12345);
   assert.equal(options.settings?.retry?.enabled, false);

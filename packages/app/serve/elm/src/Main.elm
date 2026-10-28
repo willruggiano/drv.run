@@ -1,4 +1,4 @@
-port module Main exposing (Draft, Model, Msg(..), acknowledge, draftDecoder, initModel, main, update)
+port module Main exposing (Draft, Model, Msg(..), acknowledge, draftDecoder, initModel, keyDown, main, update)
 
 import Autosave
 import Browser
@@ -1150,18 +1150,32 @@ searchMatches model =
             []
 
 
+deliveryModes : Protocol.DeliveryMode -> { primary : String, alternate : String }
+deliveryModes mode =
+    case mode of
+        Protocol.Steering ->
+            { primary = "steer", alternate = "followUp" }
+
+        Protocol.FollowUp ->
+            { primary = "followUp", alternate = "steer" }
+
+
 keyDown : Model -> Html.Attribute Msg
 keyDown model =
+    let
+        modes =
+            deliveryModes model.state.metadata.defaultDeliveryMode
+    in
     preventDefaultOn "keydown"
-        (D.map4
-            (\key ctrl meta composing ->
+        (D.map5
+            (\key ctrl meta alt composing ->
                 if composing then
                     ( NoOp, False )
 
                 else if key == "Escape" then
                     ( Dismiss, True )
 
-                else if model.completions /= Nothing && not (key == "Enter" && (ctrl || meta)) && List.member key [ "ArrowDown", "ArrowUp", "Enter", "Tab" ] then
+                else if model.completions /= Nothing && not (key == "Enter" && (ctrl || meta || alt)) && List.member key [ "ArrowDown", "ArrowUp", "Enter", "Tab" ] then
                     ( if key == "ArrowDown" then
                         CompletionMove 1
 
@@ -1173,16 +1187,16 @@ keyDown model =
                     , True
                     )
 
-                else if key == "Enter" && (ctrl || meta) && model.confirmation /= Nothing then
+                else if key == "Enter" && (ctrl || meta || alt) && model.confirmation /= Nothing then
                     ( ConfirmContext, True )
 
-                else if key == "Enter" && (ctrl || meta) then
+                else if key == "Enter" && (ctrl || meta || alt) then
                     ( Send
-                        (if model.state.live.busy then
-                            "followUp"
+                        (if alt then
+                            modes.alternate
 
                          else
-                            "reject"
+                            modes.primary
                         )
                     , True
                     )
@@ -1193,6 +1207,7 @@ keyDown model =
             (D.field "key" D.string)
             (D.field "ctrlKey" D.bool)
             (D.field "metaKey" D.bool)
+            (D.field "altKey" D.bool)
             (D.field "isComposing" D.bool)
         )
 
@@ -1397,10 +1412,10 @@ view model =
                 , completions = Maybe.map (\completion -> { items = List.map (\item -> { label = item.label, description = item.description }) completion.items, selected = model.completionIndex, choose = ChooseCompletion }) model.completions
                 , submission =
                     if busy then
-                        Composer.Working { queue = Send "followUp", steer = Send "steer", stop = Command "abort" "" }
+                        Composer.Working { queue = Send "followUp", steer = Send "steer", stop = Command "abort" "", defaultSteering = state.metadata.defaultDeliveryMode == Protocol.Steering }
 
                     else
-                        Composer.Ready (Send "reject")
+                        Composer.Ready (Send (deliveryModes state.metadata.defaultDeliveryMode).primary)
                 , submitDisabled = disabled
                 }
 

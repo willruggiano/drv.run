@@ -37,6 +37,12 @@ export const settingFields = [
     group: "Execution",
   },
   {
+    key: "defaultDeliveryMode",
+    label: "Default delivery mode",
+    choices: ["steering", "follow-up"],
+    group: "Execution",
+  },
+  {
     key: "steeringMode",
     label: "Steering delivery",
     choices: ["one-at-a-time", "all"],

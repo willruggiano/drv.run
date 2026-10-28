@@ -29,7 +29,10 @@ import { settingFields, thinkingLevels, type GlobalSettings } from "./settings.t
 
 function parseSettings(value: unknown): GlobalSettings {
   const data = object(value);
-  const values = object(data.values);
+  const values: Record<string, unknown> = {
+    defaultDeliveryMode: "follow-up",
+    ...object(data.values),
+  };
   for (const field of settingFields) {
     const value = values[field.key];
     const valid =
@@ -64,6 +67,7 @@ export class GlobalSettingsStore {
       values: {
         defaultThinkingLevel: DEFAULT_THINKING_LEVEL,
         transport: "auto",
+        defaultDeliveryMode: "follow-up",
         steeringMode: "one-at-a-time",
         followUpMode: "one-at-a-time",
         "compaction.enabled": DEFAULT_COMPACTION_POLICY.enabled,

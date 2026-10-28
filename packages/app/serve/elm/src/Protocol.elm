@@ -1,4 +1,4 @@
-module Protocol exposing (Block(..), Boundary(..), Entry, Frame, Live, Message, Metadata, QueueItem, State, Tool, apply, blockDecoder, empty, frameDecoder, messageText, optional)
+module Protocol exposing (Block(..), Boundary(..), DeliveryMode(..), Entry, Frame, Live, Message, Metadata, QueueItem, State, Tool, apply, blockDecoder, empty, frameDecoder, messageText, optional)
 
 import Dict exposing (Dict)
 import Json.Decode as D exposing (Decoder)
@@ -39,6 +39,11 @@ type alias QueueItem =
     { id : Int, mode : String, blocks : List Block }
 
 
+type DeliveryMode
+    = Steering
+    | FollowUp
+
+
 type alias Metadata =
     { branches : List Panel.Branch
     , durations : Dict String Int
@@ -54,6 +59,7 @@ type alias Metadata =
     , context : String
     , hideThinking : Bool
     , hideImages : Bool
+    , defaultDeliveryMode : DeliveryMode
     , resume : Bool
     , level : String
     , explorer : Maybe D.Value
@@ -77,7 +83,7 @@ empty =
     , live = { busy = False, messages = [], tools = [], notices = [], compactions = [] }
     , inspection = Nothing
     , queue = []
-    , metadata = { explorer = Nothing, branches = [], durations = Dict.empty, title = "Conversation", instance = "", model = "", thinking = "", input = "0", output = "0", read = "0", hit = "CH—", cost = "0.000", context = "—", level = "normal", resume = False, hideThinking = False, hideImages = False }
+    , metadata = { explorer = Nothing, branches = [], durations = Dict.empty, title = "Conversation", instance = "", model = "", thinking = "", input = "0", output = "0", read = "0", hit = "CH—", cost = "0.000", context = "—", level = "normal", resume = False, hideThinking = False, hideImages = False, defaultDeliveryMode = FollowUp }
     }
 
 
@@ -192,6 +198,24 @@ metadataDecoder =
         |> andMap (D.field "context" D.string)
         |> andMap (optional "hideThinking" D.bool |> D.map (Maybe.withDefault False))
         |> andMap (optional "hideImages" D.bool |> D.map (Maybe.withDefault False))
+        |> andMap
+            (optional "defaultDeliveryMode"
+                (D.string
+                    |> D.andThen
+                        (\mode ->
+                            case mode of
+                                "steering" ->
+                                    D.succeed Steering
+
+                                "follow-up" ->
+                                    D.succeed FollowUp
+
+                                _ ->
+                                    D.fail "Invalid default delivery mode"
+                        )
+                )
+                |> D.map (Maybe.withDefault FollowUp)
+            )
         |> andMap (optional "resume" D.bool |> D.map (Maybe.withDefault False))
         |> andMap (D.field "level" D.string)
         |> andMap (optional "explorer" D.value)
