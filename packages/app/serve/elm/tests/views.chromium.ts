@@ -751,6 +751,69 @@ await test(
   },
 );
 
+await test("tool status icons stay pinned when commands expand", { timeout: 45000 }, async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const states = ["completed", "failed"];
+  await session.root.commit(async (tx) => {
+    await tx.appendEntry(session.root.id, {
+      kind: "pi.assistant",
+      model: [
+        fauxAssistantMessage(
+          states.map((id) =>
+            fauxToolCall(
+              "functions.bash",
+              { command: `jj status; ${"jj log; ".repeat(30)}\njj bookmark list` },
+              { id },
+            ),
+          ),
+        ),
+      ],
+    });
+    for (const state of states)
+      await tx.appendEntry(session.root.id, {
+        kind: "pi.tool",
+        model: [
+          {
+            role: "toolResult",
+            toolCallId: state,
+            toolName: "functions.bash",
+            content: [],
+            isError: state === "failed",
+            timestamp: 0,
+          },
+        ],
+      });
+  }, context);
+  const { page, base, errors } = await browserFixture(t, f.sessions);
+  await page.goto(base + conversationURL(session));
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const state of states) {
+      const tool = page.locator(`[data-call-id="${state}"]`);
+      const summary = tool.locator(":scope > summary");
+      const icon = summary.locator(`.tool-status[data-state="${state}"]`);
+      const position = () =>
+        icon.evaluate((node) => {
+          const bounds = node.getBoundingClientRect();
+          const parent = node.parentElement!.getBoundingClientRect();
+          return { x: bounds.x - parent.x, y: bounds.y - parent.y };
+        });
+      if (await tool.evaluate((node) => node.hasAttribute("open"))) await summary.click();
+      const collapsed = await position();
+      const collapsedBounds = await summary.boundingBox();
+      await summary.click();
+      const expandedBounds = await summary.boundingBox();
+      assert(collapsedBounds && expandedBounds);
+      assert(expandedBounds.height > collapsedBounds.height);
+      assert.deepEqual(await position(), collapsed);
+      await summary.click();
+      assert.deepEqual(await position(), collapsed);
+    }
+  }
+  assert.deepEqual(errors, []);
+});
+
 await test(
   "Elm token ports highlight streamed code and Write content without interpreting HTML",
   { timeout: 45000 },
