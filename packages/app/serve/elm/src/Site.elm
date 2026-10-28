@@ -740,7 +740,7 @@ view model =
         content =
             case model.page of
                 Loading ->
-                    [ p [ attribute "role" "status" ] [ text "Loading…" ] ]
+                    []
 
                 Landing catalog ->
                     [ main_ [ id "main-area" ]

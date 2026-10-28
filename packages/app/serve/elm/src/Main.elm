@@ -1489,7 +1489,7 @@ view model =
                     section [ id "settings", class "pane", attribute "data-layout" "stacked", attribute "aria-label" "Session settings" ]
                         [ a [ id "close-view", class "icon", href model.path, attribute "aria-label" "Conversation", A.title "Return to conversation" ] [ Icon.view "close" ]
                         , div []
-                            [ Maybe.map (\settings -> Panel.settingsView EditSetting SaveSettings (Autosave.busy settings) model.directories (Autosave.current settings)) model.settings |> Maybe.withDefault (p [ attribute "role" "status" ] [ text "Loading settings…" ])
+                            [ Maybe.map (\settings -> Panel.settingsView EditSetting SaveSettings (Autosave.busy settings) model.directories (Autosave.current settings)) model.settings |> Maybe.withDefault (text "")
                             , if model.error /= "" then
                                 button [ onClick SaveSettings ] [ text "Retry saving settings" ]
 
@@ -1499,7 +1499,7 @@ view model =
                         ]
 
                 Context ->
-                    Maybe.map Panel.contextView state.inspection |> Maybe.withDefault (section [ id "context-view", class "pane" ] [ text "Loading context…" ])
+                    Maybe.map Panel.contextView state.inspection |> Maybe.withDefault (text "")
 
                 Tree ->
                     text ""
