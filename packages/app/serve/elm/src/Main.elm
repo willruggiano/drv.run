@@ -1430,7 +1430,7 @@ view model =
 
                 instructions =
                     if confirmation.action == Reset then
-                        "Handoff instructions"
+                        "and then"
 
                     else
                         "Compaction instructions"

@@ -302,7 +302,7 @@ await test(
     await fits();
     const commandHeight = await height();
     await page.locator("#send").click();
-    await page.getByRole("textbox", { name: "Handoff instructions", exact: true }).waitFor();
+    await page.getByRole("textbox", { name: "and then", exact: true }).waitFor();
     await prompt.fill("short");
     await waitFor(async () => (await height()) < commandHeight);
     await prompt.fill("one\ntwo\nthree\nfour");
