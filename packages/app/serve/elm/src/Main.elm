@@ -17,6 +17,7 @@ import Json.Decode as D
 import Json.Encode as E
 import Panel
 import Protocol exposing (State)
+import Syntax
 import Task
 import Transcript
 import Url exposing (Url)
@@ -200,6 +201,7 @@ type alias Model =
     , counter : Int
     , drafts : Dict String Draft
     , state : State
+    , rendering : Transcript.Context
     , connection : Connection
     , error : String
     , opened : Dict String (Dict String Bool)
@@ -272,6 +274,7 @@ initModel path nonce =
     , counter = 0
     , drafts = Dict.empty
     , state = Protocol.empty
+    , rendering = { path = Tuple.first (route path), hideImages = False, syntax = Syntax.empty }
     , connection = Connecting
     , error = ""
     , opened = Dict.empty
@@ -551,6 +554,12 @@ update msg model =
 
                             else
                                 Protocol.empty
+                        , rendering =
+                            if path == model.path then
+                                clearSyntax model.rendering
+
+                            else
+                                { path = path, hideImages = False, syntax = Tuple.first (Syntax.sync [] model.rendering.syntax) }
                         , connection = Connecting
                         , error = ""
                         , search = Nothing
@@ -609,13 +618,37 @@ update msg model =
                                                     )
                                                     opened
                                                     state.tools
+
+                                            ( syntax, requests ) =
+                                                Syntax.sync (Transcript.codeSources state) model.rendering.syntax
                                         in
-                                        ( { model | state = state, connection = Connected, opened = Dict.insert model.path defaults model.opened }, browser (E.object [ ( "kind", E.string "rendered" ), ( "epoch", E.int model.epoch ) ]) )
+                                        ( { model | state = state, rendering = { path = model.path, hideImages = state.metadata.hideImages, syntax = syntax }, connection = Connected, opened = Dict.insert model.path defaults model.opened }
+                                        , Cmd.batch
+                                            [ browser (E.object [ ( "kind", E.string "rendered" ), ( "epoch", E.int model.epoch ) ])
+                                            , if List.isEmpty requests then
+                                                Cmd.none
+
+                                              else
+                                                browser (E.object [ ( "kind", E.string "syntax" ), ( "epoch", E.int model.epoch ), ( "requests", E.list Syntax.encodeRequest requests ) ])
+                                            ]
+                                        )
+
+                            "syntax" ->
+                                case Syntax.receive payload model.rendering.syntax of
+                                    Ok syntax ->
+                                        let
+                                            rendering =
+                                                model.rendering
+                                        in
+                                        ( { model | rendering = { rendering | syntax = syntax } }, Cmd.none )
+
+                                    Err _ ->
+                                        ( { model | error = "Syntax highlighting failed." }, Cmd.none )
 
                             "restored" ->
                                 let
                                     updated =
-                                        { model | epoch = model.epoch + 1, connection = Connecting }
+                                        { model | epoch = model.epoch + 1, rendering = clearSyntax model.rendering, connection = Connecting }
                                 in
                                 ( updated, connect updated )
 
@@ -847,7 +880,7 @@ update msg model =
                 Broken _ ->
                     let
                         updated =
-                            { model | epoch = model.epoch + 1, connection = Connecting, error = "" }
+                            { model | epoch = model.epoch + 1, rendering = clearSyntax model.rendering, connection = Connecting, error = "" }
                     in
                     ( updated, connect updated )
 
@@ -1286,7 +1319,7 @@ view model =
             button [ class "icon", A.type_ "button", attribute "aria-label" label, A.title label, onClick action ] [ Icon.view name ]
 
         message msg =
-            Transcript.viewMessage state.metadata.hideImages model.path Toggle opened state.tools True msg
+            Transcript.viewMessage model.rendering Toggle opened state.tools True msg
 
         live =
             section [ id "live", attribute "aria-label" "Live output" ]
@@ -1322,7 +1355,7 @@ view model =
                             (message item)
                     )
                     state.live.messages
-                    ++ List.map (Transcript.blockView state.metadata.hideImages model.path Toggle opened state.tools << Protocol.ToolRef) state.live.tools
+                    ++ List.map (Transcript.blockView model.rendering Toggle opened state.tools << Protocol.ToolRef) state.live.tools
                     ++ List.map
                         (\item ->
                             let
@@ -1371,7 +1404,7 @@ view model =
                                               else
                                                 button [ class "icon", attribute "aria-label" "Cancel queued message", onClick (Command "cancel" (String.fromInt item.id)) ] [ text "×" ]
                                             ]
-                                        , div [] (List.map (Transcript.blockView state.metadata.hideImages model.path Toggle opened state.tools) item.blocks)
+                                        , div [] (List.map (Transcript.blockView model.rendering Toggle opened state.tools) item.blocks)
                                         ]
                                 )
                                 state.queue
@@ -1496,7 +1529,7 @@ view model =
                     text ""
 
         body =
-            [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy8 viewTranscript state.metadata.hideImages model.path opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
+            [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy7 viewTranscript model.rendering opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
             , queue
             , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
                 [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
@@ -1745,9 +1778,14 @@ branchPanel path branches =
         [ Html.ul [ id "branch-tree" ] (rows Nothing) ]
 
 
-viewTranscript : Bool -> String -> Dict String Bool -> String -> Maybe Int -> Dict Int Protocol.Entry -> Dict String Protocol.Tool -> Dict String Int -> Html Msg
-viewTranscript hideImages path =
-    Transcript.transcript hideImages path Toggle
+clearSyntax : Transcript.Context -> Transcript.Context
+clearSyntax rendering =
+    { rendering | syntax = Tuple.first (Syntax.sync [] rendering.syntax) }
+
+
+viewTranscript : Transcript.Context -> Dict String Bool -> String -> Maybe Int -> Dict Int Protocol.Entry -> Dict String Protocol.Tool -> Dict String Int -> Html Msg
+viewTranscript context =
+    Transcript.transcript context Toggle
 
 
 highlight : Model -> Cmd Msg

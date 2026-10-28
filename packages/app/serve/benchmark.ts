@@ -522,6 +522,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
         "main.js",
         "client.js",
         "site.js",
+        "file.js",
         "sw.js",
         "highlight.js",
         "styles.css",
@@ -685,10 +686,9 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
       },
       assets: Object.fromEntries(
         await Promise.all(
-          ["main.js", "client.js", "site.js", "styles.css", "highlight.js"].map(async (file) => [
-            file,
-            { bytes: (await readFile(join(directory, file))).byteLength },
-          ]),
+          ["main.js", "client.js", "site.js", "file.js", "styles.css", "highlight.js"].map(
+            async (file) => [file, { bytes: (await readFile(join(directory, file))).byteLength }],
+          ),
         ),
       ),
       source: {

@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node build.ts dist",
-    "check": "tsc -p tsconfig.json && cd elm && elm-format src tests --validate && elm make src/Main.elm src/Site.elm --optimize --output=/dev/null",
+    "check": "tsc -p tsconfig.json && cd elm && elm-format src tests --validate && elm make src/Main.elm src/Site.elm src/FileView.elm --optimize --output=/dev/null",
     "test:elm": "cd elm && elm-test --seed 1"
   },
   "dependencies": {
@@ -16,9 +16,9 @@
     "@earendil-works/pi-ai": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
     "@earendil-works/pi-env": "1.4.0",
+    "@speed-highlight/core": "2.1.0",
     "dbus-next": "0.10.2",
-    "harness": "0.1.0",
-    "highlight.js": "10.7.3"
+    "harness": "0.1.0"
   },
   "exports": {
     "./*": {

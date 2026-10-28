@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { appendFile, copyFile, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -15,6 +14,7 @@ export async function buildAssets(source: string, destination: string): Promise<
     ...Object.entries({
       client: "elm/client.ts",
       site: "elm/site.ts",
+      file: "elm/file.ts",
       highlight: "highlight.ts",
       styles: "styles.css",
       sw: "worker.js",
@@ -29,10 +29,6 @@ export async function buildAssets(source: string, destination: string): Promise<
   ]);
   if (stderr) process.stderr.write(stderr);
   await buildElm(join(source, "elm"), destination);
-  // Upstream's CommonJS files omit the package-level BSD notice.
-  const require = createRequire(resolve(source, "highlight.ts"));
-  const license = await readFile(require.resolve("highlight.js/LICENSE"), "utf8");
-  await appendFile(join(destination, "highlight.js"), `\n/*! highlight.js\n${license}*/\n`);
   for (const file of ["design-system.html", "icon-192.png", "icon-512.png"])
     await copyFile(join(source, file), join(destination, file));
 }
@@ -44,6 +40,7 @@ async function buildElm(source: string, destination: string): Promise<void> {
       "make",
       "src/Main.elm",
       "src/Site.elm",
+      "src/FileView.elm",
       "--optimize",
       `--output=${resolve(destination, "main.js")}`,
     ],

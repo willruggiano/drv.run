@@ -1,36 +1,15 @@
-// v10 declares subpath modules in its root type definitions.
-import type {} from "highlight.js";
-import core from "highlight.js/lib/core.js";
+import { tokenizeWith } from "@speed-highlight/core/tokenize";
+import * as languages from "@speed-highlight/core/languages";
 
-import bash from "highlight.js/lib/languages/bash.js";
-import css from "highlight.js/lib/languages/css.js";
-import elm from "highlight.js/lib/languages/elm.js";
-import diff from "highlight.js/lib/languages/diff.js";
-import go from "highlight.js/lib/languages/go.js";
-import javascript from "highlight.js/lib/languages/javascript.js";
-import json from "highlight.js/lib/languages/json.js";
-import nix from "highlight.js/lib/languages/nix.js";
-import python from "highlight.js/lib/languages/python.js";
-import rust from "highlight.js/lib/languages/rust.js";
-import sql from "highlight.js/lib/languages/sql.js";
-import typescript from "highlight.js/lib/languages/typescript.js";
-import xml from "highlight.js/lib/languages/xml.js";
+export type SyntaxRequest = { id: number; language: string; source: string };
+export type SyntaxResponse = { id: number; tokens: { text: string; kind: string }[] };
 
-for (const [name, language] of Object.entries({
-  bash,
-  css,
-  diff,
-  elm,
-  go,
-  javascript,
-  json,
-  nix,
-  python,
-  rust,
-  sql,
-  typescript,
-  xml,
-}))
-  core.registerLanguage(name, language);
-
-export default core;
+export function tokenize(requests: SyntaxRequest[]): SyntaxResponse[] {
+  return requests.map(({ id, language, source }) => {
+    const tokens: SyntaxResponse["tokens"] = [];
+    tokenizeWith(source, language, (text, kind) => tokens.push({ text, kind: kind ?? "" }), {
+      languages,
+    });
+    return { id, tokens };
+  });
+}

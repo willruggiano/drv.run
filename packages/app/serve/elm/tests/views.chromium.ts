@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { join } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { browserFixture } from "../../tests/browser-testing.ts";
 import { LiveDoc, type TaskId, type CompactionResult } from "@earendil-works/pi-durable";
 import { fixture, readHistory, waitFor } from "../../tests/sessions-testing.ts";
@@ -528,10 +528,10 @@ await test(
       assert.equal(await preview.locator("iframe").count(), 0);
       await preview.getByRole("button", { name: "Expand Source:50" }).click();
       const frame = preview.frameLocator("iframe");
-      await frame.locator("#file-source code .hljs-keyword").first().waitFor();
+      await frame.locator("#file-source code .shj-syn-kwd").first().waitFor();
       assert.equal(await frame.locator("#file-source code").textContent(), sourceLines.join("\n"));
       assert.equal(await frame.locator("header").count(), 0);
-      assert.equal(await frame.locator("script").count(), 0);
+      assert.equal(await frame.locator("#file-source script").count(), 0);
       assert.equal(await frame.locator(":target").getAttribute("id"), "L50");
       assert.equal(
         await frame.locator("#L50").evaluate((node) => {
@@ -540,7 +540,10 @@ await test(
         }),
         true,
       );
-      assert.equal(await preview.locator("iframe").getAttribute("sandbox"), "allow-same-origin");
+      assert.equal(
+        await preview.locator("iframe").getAttribute("sandbox"),
+        "allow-same-origin allow-scripts",
+      );
       const sourceLink = page.getByRole("link", { name: "Source:50", exact: true });
       const linkColor = await sourceLink.evaluate((node) => getComputedStyle(node).color);
       const mutedColor = await page
@@ -604,7 +607,7 @@ await test(
       assert.equal(new URL(source.url()).hash, "#L50");
       assert.equal(new URL(source.url()).searchParams.get("path"), sourceName);
       assert.equal(await source.locator("#file-source code").textContent(), sourceLines.join("\n"));
-      assert((await source.locator("#file-source .hljs-keyword").count()) > 0);
+      assert((await source.locator("#file-source .shj-syn-kwd").count()) > 0);
       assert.equal(await source.locator("#file-source script").count(), 0);
       assert.equal(await source.evaluate(() => Object.hasOwn(globalThis, "executed")), false);
       assert.equal(await source.locator(":target").getAttribute("id"), "L50");
@@ -744,16 +747,16 @@ await test(
     assert.deepEqual(requests, []);
     await reader.getByRole("button", { name: "Expand Reader contract" }).press("Enter");
     const source = reader.frameLocator("iframe");
-    await source.locator("#file-source .hljs-comment").waitFor();
+    await source.locator("#file-source .shj-syn-cmnt").first().waitFor();
     assert.equal(await source.locator("#file-source code").textContent(), contract);
     assert.equal(
-      await source.locator(".hljs-comment").textContent(),
+      (await source.locator(".shj-syn-cmnt").allTextContents()).join(""),
       "/** A contract\n * spanning lines. */",
     );
     assert.equal(await source.locator(":target").getAttribute("id"), "L3");
     assert.equal(
       await source
-        .locator(".hljs-keyword")
+        .locator(".shj-syn-kwd")
         .first()
         .evaluate(
           (node) => getComputedStyle(node).color !== getComputedStyle(node.parentElement!).color,
@@ -784,6 +787,127 @@ await test(
     const missing = page.locator('elm-file[label="Missing"]');
     await missing.getByRole("button", { name: "Expand Missing" }).click();
     await missing.frameLocator("iframe").getByRole("heading", { name: "Request failed" }).waitFor();
+    assert.deepEqual(b.errors, []);
+  },
+);
+
+await test(
+  "Elm token ports highlight streamed code and Write content without interpreting HTML",
+  { timeout: 45000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const content =
+      "export const markup: string = '<script>globalThis.executed = true</script>';\n";
+    const plain = "{ value = 1; }\n";
+    await session.root.commit(async (tx) => {
+      await tx.appendEntry(session.root.id, {
+        kind: "pi.assistant",
+        model: [
+          fauxAssistantMessage([
+            fauxToolCall("functions.write", { path: "source.ts", content }, { id: "write-ts" }),
+            fauxToolCall(
+              "functions.write",
+              { path: "flake.nix", content: plain },
+              { id: "write-nix" },
+            ),
+          ]),
+        ],
+      });
+      for (const toolCallId of ["write-ts", "write-nix"])
+        await tx.appendEntry(session.root.id, {
+          kind: "pi.tool",
+          model: [
+            {
+              role: "toolResult",
+              toolCallId,
+              toolName: "functions.write",
+              content: [{ type: "text", text: "Written" }],
+              isError: false,
+              timestamp: 0,
+            },
+          ],
+        });
+    }, context);
+    const b = await browserFixture(t, f.sessions);
+    const { page } = b;
+    page.setDefaultTimeout(10000);
+    const requested = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    await page.route("**/highlight.js", async (route) => {
+      requested.resolve();
+      await release.promise;
+      await route.continue();
+    });
+    await page.goto(b.base + conversationURL(session));
+    await requested.promise;
+    const tool = page.locator('[data-call-id="write-ts"]');
+    await tool.locator(":scope > summary").click();
+    await tool.getByText("Written content", { exact: true }).click();
+    const written = tool.locator('pre[data-language="ts"] code');
+    assert.equal(await written.textContent(), content);
+    assert.equal(await written.locator("span").count(), 0);
+    const assistant = fauxAssistantMessage("");
+    for (const text of [
+      "```typescript\nconst",
+      "```typescript\nconst latest: string = 'new';\n``` ",
+    ]) {
+      await session.root.commit(async (tx) => {
+        (await tx.doc(LiveDoc, session.root.id)).generation = {
+          attempt: 1,
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text }],
+            api: assistant.api,
+            provider: assistant.provider,
+            model: assistant.model,
+            usage: assistant.usage,
+            stopReason: assistant.stopReason,
+            timestamp: assistant.timestamp,
+          },
+        };
+      }, context);
+      await page.waitForFunction(
+        (text) => document.querySelector("#live .text")?.getAttribute("data-source") === text,
+        text,
+      );
+    }
+    // Change the subscription epoch while old token requests are still in flight.
+    await page.locator("#footer-context").click();
+    await page.locator("#context-view[data-tokens]").waitFor();
+    await page.goBack();
+    await written.waitFor();
+    release.resolve();
+    await written.locator(".shj-syn-kwd").first().waitFor();
+    await page.locator("#live pre .shj-syn-str").waitFor();
+    assert.equal(
+      await page.locator("#live pre code").textContent(),
+      "const latest: string = 'new';\n",
+    );
+    assert.equal(await written.textContent(), content);
+    assert.equal(await page.locator("#transcript script, #live script").count(), 0);
+    assert.equal(await page.evaluate(() => Object.hasOwn(globalThis, "executed")), false);
+    const unhighlighted = page.locator('[data-call-id="write-nix"]');
+    await unhighlighted.locator(":scope > summary").click();
+    await unhighlighted.getByText("Written content", { exact: true }).click();
+    assert.equal(
+      await unhighlighted.locator('pre[data-language="plain"] code').last().textContent(),
+      plain,
+    );
+    assert.equal(await unhighlighted.locator("code span").count(), 0);
+    // The current tokenized node belongs to Elm, and survives unrelated updates.
+    const node = await written.locator(".shj-syn-kwd").first().elementHandle();
+    assert(node);
+    await page.locator("#prompt").fill("A draft must not reset highlighted code");
+    assert.equal(
+      await written
+        .locator(".shj-syn-kwd")
+        .first()
+        .evaluate((current, original) => current === original, node),
+      true,
+    );
+    await node.dispose();
     assert.deepEqual(b.errors, []);
   },
 );

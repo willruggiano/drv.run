@@ -148,14 +148,14 @@ await session.prompt("Hello");</code></pre></div>
     <div class="ds-panel"><div id="transcript" aria-label="Example conversation">
       <article data-role="user"><header><span class="speaker">You</span><time class="message-time" datetime="2026-10-17T08:59:00Z" title="October 17, 2026, 08:59 UTC">08:59</time></header><div class="text">Update the workspace and run the checks.</div></article>
       <article data-role="assistant" class="trace-continues"><header><span class="speaker">Pi</span><time class="message-time" datetime="2026-10-17T08:59:00Z" title="October 17, 2026, 08:59 UTC">08:59</time></header><div class="thinking">I’ll inspect the files before making a small change.</div><div class="text"><p>Use <code>just check</code> to validate the changes.</p></div>
-        <pre><code><span class="hljs-comment">// Syntax highlighting</span>
-<span class="hljs-keyword">const</span> <span class="hljs-title">message</span> = <span class="hljs-string">"Ready"</span>;
-<span class="hljs-keyword">return</span> <span class="hljs-number">42</span>;</code></pre>
+        <pre><code><span class="shj-syn-cmnt">// Syntax highlighting</span>
+<span class="shj-syn-kwd">const</span> <span class="shj-syn-func">message</span> = <span class="shj-syn-str">"Ready"</span>;
+<span class="shj-syn-kwd">return</span> <span class="shj-syn-num">42</span>;</code></pre>
       </article>
       <article data-role="toolResult">
         <details class="tool-call" data-state="running"><summary><span class="tool-status" data-state="running" role="status" aria-label="Running"><span></span><span style="animation-delay:150ms"></span><span style="animation-delay:300ms"></span><span style="animation-delay:450ms"></span></span><span class="tool-command">bash · just check</span></summary><div class="tool-result"><pre><code>Checking types…</code></pre></div></details>
-        <details class="tool-call" data-state="completed" open><summary><span class="tool-status" data-state="completed">Completed</span><span class="tool-command">edit · client.ts</span><span class="tool-duration">42ms</span></summary><div class="tool-result"><pre><code><span class="hljs-deletion">- const label = "Before";</span>
-<span class="hljs-addition">+ const label = "After";</span></code></pre></div></details>
+        <details class="tool-call" data-state="completed" open><summary><span class="tool-status" data-state="completed">Completed</span><span class="tool-command">edit · client.ts</span><span class="tool-duration">42ms</span></summary><div class="tool-result"><pre><code><span class="shj-syn-deleted">- const label = "Before";</span>
+<span class="shj-syn-insert">+ const label = "After";</span></code></pre></div></details>
         <details class="tool-call" data-state="failed" open><summary><span class="tool-status" data-state="failed">Failed</span><span class="tool-command">bash · missing-command</span><span class="tool-duration">1.2s</span></summary><div class="tool-result"><pre class="error"><code>Command not found · exit 127</code></pre></div></details>
       </article>
       <article data-role="assistant" class="same-speaker trace-continues"><header><span class="speaker">Pi</span><time class="message-time" datetime="2026-10-17T08:59:00Z" title="October 17, 2026, 08:59 UTC">08:59</time></header><details class="tool-call" data-state="completed"><summary><span class="tool-status" data-state="completed">Completed</span><span class="tool-command">read · client.ts</span><span class="tool-duration">0ms</span></summary><div class="tool-result"><pre><code>File contents.</code></pre></div></details></article>

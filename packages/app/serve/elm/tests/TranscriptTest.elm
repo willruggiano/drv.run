@@ -5,6 +5,7 @@ import Expect
 import Html
 import Html.Attributes as A
 import Protocol exposing (Block(..))
+import Syntax
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector as S
@@ -14,7 +15,7 @@ import Url
 
 render : String -> Query.Single ()
 render source =
-    Transcript.blockView False "/sessions/test/conversations/1" (\_ _ -> ()) Dict.empty Dict.empty (Text source)
+    Transcript.blockView { path = "/sessions/test/conversations/1", hideImages = False, syntax = Syntax.empty } (\_ _ -> ()) Dict.empty Dict.empty (Text source)
         |> Query.fromHtml
 
 
@@ -38,7 +39,7 @@ tests =
                     (List.map
                         (\block ->
                             \_ ->
-                                Transcript.blockView True "/sessions/test/conversations/1" (\_ _ -> ()) Dict.empty Dict.empty block
+                                Transcript.blockView { path = "/sessions/test/conversations/1", hideImages = True, syntax = Syntax.empty } (\_ _ -> ()) Dict.empty Dict.empty block
                                     |> List.singleton
                                     |> Html.div []
                                     |> Query.fromHtml
@@ -50,7 +51,7 @@ tests =
                     ()
         , test "structured image blocks use the inline image preview" <|
             \_ ->
-                Transcript.blockView False "/sessions/test/conversations/1" (\_ _ -> ()) Dict.empty Dict.empty (Image "image/png" "AA==")
+                Transcript.blockView { path = "/sessions/test/conversations/1", hideImages = False, syntax = Syntax.empty } (\_ _ -> ()) Dict.empty Dict.empty (Image "image/png" "AA==")
                     |> List.singleton
                     |> Html.div []
                     |> Query.fromHtml

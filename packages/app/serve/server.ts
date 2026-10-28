@@ -296,6 +296,7 @@ export function httpServer(
       response.once("close", () => controller.abort());
       const context = withAbortSignal(controller.signal, BACKGROUND_CONTEXT);
       const types: Record<string, string> = {
+        "file.js": "text/javascript; charset=utf-8",
         "client.js": "text/javascript; charset=utf-8",
         "main.js": "text/javascript; charset=utf-8",
         "site.js": "text/javascript; charset=utf-8",

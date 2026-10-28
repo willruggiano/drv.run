@@ -360,7 +360,7 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
   assert.equal((await fetch(`http://localhost:${port}/`)).status, 200);
 });
 
-await test("built browser assets preserve module formats and selected highlight languages", async (t) => {
+await test("built browser assets preserve module formats and tokenize without a DOM", async (t) => {
   const assets = await mkdtemp(join(tmpdir(), "serve-build-"));
   t.after(() => rm(assets, { recursive: true, force: true }));
   // Production builds inside a package with type=module; Elm still loads as a classic script.
@@ -373,33 +373,26 @@ await test("built browser assets preserve module formats and selected highlight 
   const scope: { Elm?: { Main?: { init?: unknown } } } = {};
   runInNewContext(await readFile(join(assets, "main.js"), "utf8"), scope);
   assert.equal(typeof scope.Elm?.Main?.init, "function");
-  const { default: highlighter }: { default: typeof import("highlight.js") } = await import(
+  const { tokenize }: typeof import("../highlight.ts") = await import(
     pathToFileURL(join(assets, "highlight.js")).href
   );
-  assert.deepEqual(highlighter.listLanguages().sort(), [
-    "bash",
-    "css",
-    "diff",
-    "elm",
-    "go",
-    "javascript",
-    "json",
-    "nix",
-    "python",
-    "rust",
-    "sql",
-    "typescript",
-    "xml",
-  ]);
-  for (const [alias, name] of [
-    ["js", "javascript"],
-    ["ts", "typescript"],
-    ["html", "xml"],
-  ])
-    assert.equal(highlighter.getLanguage(alias), highlighter.getLanguage(name));
+  for (const [language, source] of [
+    ["ts", "export const value: string = '<script>alert(1)</script>';"],
+    ["html", "<style>body { color: red; }</style><script>const x = /foo/;</script>"],
+    ["diff", "-old\n+new\n"],
+  ]) {
+    const [result] = tokenize([{ id: 7, language, source }]);
+    assert.equal(result.id, 7);
+    assert.equal(result.tokens.map((token) => token.text).join(""), source);
+    assert(result.tokens.some((token) => token.kind !== ""));
+  }
+  for (const language of ["nix", "elm", "unknown", "constructor"]) {
+    const [result] = tokenize([{ id: 8, language, source: "unchanged" }]);
+    assert.deepEqual(result.tokens, [{ text: "unchanged", kind: "" }]);
+  }
   const f = await fixture(t);
   const base = await serve(t, f.sessions, assets);
-  for (const file of ["main.js", "client.js", "site.js", "sw.js"]) {
+  for (const file of ["main.js", "client.js", "site.js", "file.js", "sw.js"]) {
     const asset = await fetch(`${base}/${file}`);
     assert.equal(asset.status, 200);
     assert.equal(asset.headers.get("content-type"), "text/javascript; charset=utf-8");

@@ -108,7 +108,7 @@ article.trace-continues {
 pre { white-space: pre; overflow: auto; background: var(--code-bg); padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; tab-size: 2; }
 body.wrap-code pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
 code { font-family: var(--font-mono); } :not(pre) > code { color: var(--code-inline); background: var(--surface-subtle); padding: 1px 4px; border-radius: 3px; }
-.hljs-keyword, .hljs-selector-tag, .hljs-literal { color: var(--syntax-keyword); } .hljs-string, .hljs-attr { color: var(--accent); } .hljs-number, .hljs-built_in { color: var(--warning); } .hljs-title, .hljs-function { color: var(--link); } .hljs-comment { color: var(--syntax-comment); } .hljs-addition { display: inline-block; min-width: 100%; background: var(--diff-add-bg); color: var(--diff-add); } .hljs-deletion { display: inline-block; min-width: 100%; background: var(--diff-remove-bg); color: var(--diff-remove); } .hljs-meta { color: var(--syntax-meta); }
+.shj-syn-kwd, .shj-syn-type, .shj-syn-bool { color: var(--syntax-keyword); } .shj-syn-str, .shj-syn-esc { color: var(--accent); } .shj-syn-num { color: var(--warning); } .shj-syn-class, .shj-syn-func, .shj-syn-section { color: var(--link); } .shj-syn-cmnt { color: var(--syntax-comment); } .shj-syn-insert { background: var(--diff-add-bg); color: var(--diff-add); } .shj-syn-deleted { background: var(--diff-remove-bg); color: var(--diff-remove); } .shj-syn-var, .shj-syn-oper { color: var(--syntax-meta); } .shj-syn-err { color: var(--danger); }
 .transcript-image { display: block; }
 article:has(> elm-file:last-child) { padding-bottom: var(--trace-gap); }
 img { max-width: 100%; height: auto; } summary { cursor: pointer; padding: 3px 0; color: var(--muted); } article details pre { max-height: 360px; }
@@ -454,7 +454,7 @@ article.trace-start > :is(.tool-call, .thinking):is(:first-child, header + *) { 
 #page:has(#search-bar:not([hidden])) .composer-shell { visibility: hidden; }
 .search-current { background: var(--search-current); outline: 1px solid var(--search-border); }
 body.file-viewer { display: block; height: auto; }
-.file-viewer > header { position: sticky; top: 0; z-index: 1; background: var(--bg); }
+.file-viewer header { position: sticky; top: 0; z-index: 1; background: var(--bg); }
 #file-source { position: relative; display: grid; grid-template-columns: max-content max-content; gap: 2ch; margin: 0; border: 0; overflow: visible; line-height: 1.6; }
 #file-source > code { padding: 0; }
 .line-number { display: block; min-width: 5ch; height: 1.6em; text-align: right; color: var(--muted); user-select: none; scroll-margin-top: 60px; }

@@ -1,5 +1,3 @@
-import { extname } from "node:path";
-import highlighter from "../highlight.ts";
 import type { GlobalSettingsStore } from "../server.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -110,7 +108,7 @@ export async function elmFrontend(
   if (request.method === "GET" && operation === "file") {
     response.setHeader(
       "Content-Security-Policy",
-      "default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+      "default-src 'none'; img-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
     );
     const paths = url.searchParams.getAll("path");
     const path = paths[0];
@@ -155,32 +153,17 @@ export async function elmFrontend(
       if ((code < 32 && ![9, 10, 12, 13].includes(code)) || code === 127)
         throw new FormError(415, "Expected a UTF-8 text file.");
     }
-    const lines = source.split(/\r?\n/);
-    const escape = (text: string) =>
-      text
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-    const extension = extname(path).slice(1).toLowerCase();
-    const aliases: Record<string, string> = {
-      mjs: "javascript",
-      cjs: "javascript",
-      mts: "typescript",
-      cts: "typescript",
-      svg: "xml",
-    };
-    const language = Object.hasOwn(aliases, extension) ? aliases[extension] : extension;
-    const highlighted = highlighter.getLanguage(language)
-      ? highlighter.highlight(source, { language, ignoreIllegals: true }).value
-      : escape(source);
-    const embedded = url.searchParams.get("inline") === "1";
+    const flags = JSON.stringify({
+      path,
+      source: source.replace(/\r\n?/g, "\n"),
+      conversation: conversationURL(session, conversation.id),
+      embedded: url.searchParams.get("inline") === "1",
+    }).replaceAll("<", "\\u003c");
     fileResponse(
       request,
       response,
       "text/html; charset=utf-8",
-      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(path)}</title><link rel="stylesheet" href="/styles.css"></head><body class="file-viewer">${embedded ? "" : `<header class="bar"><a href="${escape(conversationURL(session, conversation.id))}">Conversation</a><h1>${escape(path)}</h1></header>`}<main><pre id="file-source"><span class="line-numbers">${lines.map((_, index) => `<a class="line-number" id="L${index + 1}" href="#L${index + 1}" aria-label="Line ${index + 1}">${index + 1}</a>`).join("")}</span><code>${highlighted}</code></pre></main></body></html>`,
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Source</title><link rel="stylesheet" href="/styles.css"><script src="/main.js" defer></script><script src="/file.js" type="module"></script></head><body class="file-viewer"><script type="application/json" id="file-data">${flags}</script></body></html>`,
     );
     return;
   }

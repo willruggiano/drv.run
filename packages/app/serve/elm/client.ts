@@ -1,4 +1,5 @@
 import "../tree-view.ts";
+import type { SyntaxRequest } from "../highlight.ts";
 import { openStream } from "./transport.ts";
 import { installPwa, installPreferences } from "../pwa.ts";
 type App = {
@@ -12,6 +13,7 @@ type App = {
   };
 };
 type BrowserRequest =
+  | { kind: "syntax"; epoch: number; requests: SyntaxRequest[] }
   | { kind: "opened"; value: Record<string, Record<string, boolean>> }
   | { kind: "rendered"; epoch: number }
   | { kind: "download"; url: string }
@@ -49,31 +51,6 @@ class ElmCommand extends HTMLElement {
   }
   private measure() {
     this.dataset.truncated = String(this.text.scrollWidth > this.clientWidth);
-  }
-}
-class ElmCode extends HTMLElement {
-  static observedAttributes = ["language", "source"];
-  connectedCallback() {
-    this.render();
-  }
-  attributeChangedCallback() {
-    if (this.isConnected) this.render();
-  }
-  private render() {
-    const source = this.getAttribute("source") ?? "";
-    const language = this.getAttribute("language") ?? "";
-    const code = document.createElement("code");
-    code.textContent = source;
-    const pre = document.createElement("pre");
-    pre.append(code);
-    this.replaceChildren(pre);
-    if (language) {
-      highlighter ??= import(highlighterURL);
-      void highlighter.then(({ default: hljs }) => {
-        if (code.isConnected && hljs.getLanguage(language))
-          code.innerHTML = hljs.highlight(source, { language, ignoreIllegals: true }).value;
-      });
-    }
   }
 }
 class ElmFile extends HTMLElement {
@@ -177,7 +154,7 @@ class ElmFile extends HTMLElement {
       url.searchParams.set("inline", "1");
       view.title = label;
       view.loading = "lazy";
-      view.setAttribute("sandbox", "allow-same-origin");
+      view.setAttribute("sandbox", "allow-same-origin allow-scripts");
       view.src = url.href;
       this.content.append(link, view);
     }
@@ -214,7 +191,6 @@ class ElmTime extends HTMLElement {
   }
 }
 customElements.define("elm-command", ElmCommand);
-customElements.define("elm-code", ElmCode);
 customElements.define("elm-file", ElmFile);
 customElements.define("elm-time", ElmTime);
 let drafts: unknown = {};
@@ -337,6 +313,25 @@ app.ports.persist.subscribe((value) => {
   }
 });
 app.ports.browser.subscribe((request) => {
+  if (request.kind === "syntax") {
+    highlighter ??= import(highlighterURL);
+    void highlighter
+      .then((module) =>
+        app.ports.incoming.send({
+          kind: "syntax",
+          epoch: request.epoch,
+          payload: module.tokenize(request.requests),
+        }),
+      )
+      .catch(() =>
+        app.ports.incoming.send({
+          kind: "syntax",
+          epoch: request.epoch,
+          payload: { error: "Syntax highlighting failed." },
+        }),
+      );
+    return;
+  }
   if (request.kind === "opened") {
     try {
       sessionStorage.setItem("pi.elm.opened", JSON.stringify(request.value));

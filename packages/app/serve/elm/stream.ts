@@ -49,6 +49,7 @@ export type DisplayTool = {
   blocks: Block[];
   details: string;
   patch: boolean;
+  path: string;
   written: string;
   notice: string;
 };
@@ -136,6 +137,7 @@ function tool(call: Call, result: Result | undefined, live: LiveState | undefine
         : [],
     details: typeof patch === "string" ? patch : metadata ? JSON.stringify(metadata, null, 2) : "",
     patch: typeof patch === "string",
+    path: typeof args.path === "string" ? args.path : "",
     written:
       result && !result.message.isError && name === "write" && typeof args.content === "string"
         ? args.content

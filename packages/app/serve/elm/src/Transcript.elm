@@ -1,4 +1,4 @@
-module Transcript exposing (blockView, commandLabel, entrySearch, toolStatus, transcript, viewMessage)
+module Transcript exposing (Context, blockView, codeSources, commandLabel, entrySearch, toolStatus, transcript, viewMessage)
 
 import Dict exposing (Dict)
 import Html exposing (Html, a, article, button, code, details, div, header, p, pre, span, strong, summary, text)
@@ -10,7 +10,58 @@ import Json.Decode as D
 import Json.Encode as E
 import Protocol exposing (Block(..), Boundary(..), Entry, Message, State, Tool)
 import Regex
+import Syntax
 import Url
+
+
+type alias Context =
+    { path : String, hideImages : Bool, syntax : Syntax.Model }
+
+
+fences : String -> List Regex.Match
+fences =
+    Regex.find (regex "(?:^|\\n)```([^\\n]*)\\n([\\s\\S]*?)(?:\\n```[ \\t]*(?=\\n|$)|(?![\\s\\S]))")
+
+
+fenceSource : Regex.Match -> ( String, String )
+fenceSource match =
+    ( List.head match.submatches |> Maybe.andThen identity |> Maybe.withDefault "" |> String.words |> List.head |> Maybe.withDefault ""
+    , (List.drop 1 match.submatches |> List.head |> Maybe.andThen identity |> Maybe.withDefault "") ++ "\n"
+    )
+
+
+codeSources : State -> List ( String, String )
+codeSources state =
+    let
+        blocks items =
+            List.concatMap
+                (\block ->
+                    case block of
+                        Text source ->
+                            List.map fenceSource (fences source)
+
+                        _ ->
+                            []
+                )
+                items
+    in
+    (Dict.values state.entries |> List.concatMap .messages |> List.append state.live.messages |> List.concatMap (.blocks >> blocks))
+        ++ List.concatMap (.blocks >> blocks) state.queue
+        ++ (Dict.values state.tools
+                |> List.concatMap
+                    (\tool ->
+                        blocks tool.blocks
+                            ++ [ ( if tool.patch then
+                                    "diff"
+
+                                   else
+                                    "json"
+                                 , tool.details
+                                 )
+                               , ( Syntax.fromPath tool.path, tool.written )
+                               ]
+                    )
+           )
 
 
 commandLabel : String -> Html msg
@@ -51,8 +102,8 @@ regex source =
     Regex.fromString source |> Maybe.withDefault Regex.never
 
 
-inline : Bool -> String -> String -> List (Html msg)
-inline hideImages conversationPath source =
+inline : Context -> String -> List (Html msg)
+inline context source =
     let
         matches =
             Regex.find (regex "(`[^`]+`|\\*\\*[^*]+\\*\\*|!?\\[[^\\]\\n]*\\]\\([^\\s)]+\\))") source
@@ -121,12 +172,12 @@ inline hideImages conversationPath source =
                                 text match
 
                             else if image then
-                                imageView hideImages label (conversationPath ++ "/file?path=" ++ Url.percentEncode path)
+                                imageView context.hideImages label (context.path ++ "/file?path=" ++ Url.percentEncode path)
 
                             else
                                 let
                                     href =
-                                        conversationPath ++ "/file?path=" ++ Url.percentEncode path ++ fragment
+                                        context.path ++ "/file?path=" ++ Url.percentEncode path ++ fragment
                                 in
                                 span [ class "file-reference" ]
                                     [ link href
@@ -145,13 +196,13 @@ inline hideImages conversationPath source =
     nodes ++ [ text (String.dropLeft end source) ]
 
 
-codeView : String -> String -> Html msg
-codeView language source =
-    Html.node "elm-code" [ class "code-container", attribute "language" language, attribute "source" source ] []
+codeView : Syntax.Model -> String -> String -> Html msg
+codeView syntax language source =
+    pre [ class "code-container", attribute "data-language" (Syntax.language language) ] [ code [] (Syntax.view syntax language source) ]
 
 
-markdown : Bool -> String -> String -> Html msg
-markdown hideImages conversationPath source =
+markdown : Context -> String -> Html msg
+markdown context source =
     let
         paragraphs str =
             Regex.split (regex "\\n\\n+") str
@@ -167,33 +218,27 @@ markdown hideImages conversationPath source =
                                     content =
                                         List.drop 1 match.submatches |> List.head |> Maybe.andThen identity |> Maybe.withDefault ""
                                 in
-                                Html.node ("h" ++ String.fromInt (String.length hashes + 1)) [] (inline hideImages conversationPath content)
+                                Html.node ("h" ++ String.fromInt (String.length hashes + 1)) [] (inline context content)
 
                             Nothing ->
-                                p [] (inline hideImages conversationPath paragraph)
+                                p [] (inline context paragraph)
                     )
-
-        fences =
-            Regex.find (regex "(?:^|\\n)```([^\\n]*)\\n([\\s\\S]*?)(?:\\n```[ \\t]*(?=\\n|$)|(?![\\s\\S]))") source
 
         step match ( offset, acc ) =
             let
-                language =
-                    List.head match.submatches |> Maybe.andThen identity |> Maybe.withDefault "" |> String.words |> List.head |> Maybe.withDefault ""
-
-                content =
-                    List.drop 1 match.submatches |> List.head |> Maybe.andThen identity |> Maybe.withDefault ""
+                ( language, content ) =
+                    fenceSource match
             in
-            ( match.index + String.length match.match, acc ++ paragraphs (String.slice offset match.index source) ++ [ codeView language (content ++ "\n") ] )
+            ( match.index + String.length match.match, acc ++ paragraphs (String.slice offset match.index source) ++ [ codeView context.syntax language content ] )
 
         ( end, nodes ) =
-            List.foldl step ( 0, [] ) fences
+            List.foldl step ( 0, [] ) (fences source)
     in
     div [ class "text", attribute "data-source" source ] (nodes ++ paragraphs (String.dropLeft end source))
 
 
-toolView : Bool -> String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> String -> Html msg
-toolView hideImages conversationPath toggle opened tools key =
+toolView : Context -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> String -> Html msg
+toolView context toggle opened tools key =
     case Dict.get key tools of
         Nothing ->
             text ""
@@ -224,7 +269,7 @@ toolView hideImages conversationPath toggle opened tools key =
                         span [ class "tool-duration" ] [ text tool.duration ]
                     ]
                 , div [ class "tool-result" ]
-                    (List.map (blockView hideImages conversationPath toggle opened tools) tool.blocks
+                    (List.map (blockView context toggle opened tools) tool.blocks
                         ++ [ if tool.notice == "" then
                                 text ""
 
@@ -241,7 +286,7 @@ toolView hideImages conversationPath toggle opened tools key =
                                      else
                                         "Details"
                                     )
-                                    (codeView
+                                    (codeView context.syntax
                                         (if tool.patch then
                                             "diff"
 
@@ -255,7 +300,7 @@ toolView hideImages conversationPath toggle opened tools key =
                                 text ""
 
                              else
-                                disclosure "written" "Written content" (codeView "" tool.written) False
+                                disclosure "written" "Written content" (codeView context.syntax (Syntax.fromPath tool.path) tool.written) False
                            ]
                     )
                 ]
@@ -270,27 +315,27 @@ imageView hideImages label src =
         Html.node "elm-file" [ attribute "src" src, attribute "label" label, attribute "image" "" ] []
 
 
-blockView : Bool -> String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Block -> Html msg
-blockView hideImages conversationPath toggle opened tools block =
+blockView : Context -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Block -> Html msg
+blockView context toggle opened tools block =
     case block of
         Text str ->
-            Html.Lazy.lazy3 markdown hideImages conversationPath str
+            Html.Lazy.lazy2 markdown context str
 
         Thinking str ->
             div [ class "thinking" ] [ text str ]
 
         Code str ->
-            Html.Lazy.lazy2 codeView "" str
+            Html.Lazy.lazy3 codeView context.syntax "" str
 
         Image mime data ->
-            imageView hideImages "Attachment" ("data:" ++ mime ++ ";base64," ++ data)
+            imageView context.hideImages "Attachment" ("data:" ++ mime ++ ";base64," ++ data)
 
         ToolRef key ->
-            toolView hideImages conversationPath toggle opened tools key
+            toolView context toggle opened tools key
 
 
-viewMessage : Bool -> String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Bool -> Message -> List (Html msg)
-viewMessage hideImages conversationPath toggle opened tools showHeader message =
+viewMessage : Context -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Bool -> Message -> List (Html msg)
+viewMessage context toggle opened tools showHeader message =
     (if showHeader then
         [ header []
             [ span [ class "speaker" ]
@@ -312,7 +357,7 @@ viewMessage hideImages conversationPath toggle opened tools showHeader message =
      else
         []
     )
-        ++ List.map (blockView hideImages conversationPath toggle opened tools) message.blocks
+        ++ List.map (blockView context toggle opened tools) message.blocks
         ++ (if message.error == "" then
                 []
 
@@ -375,8 +420,8 @@ entrySearch tools entry =
 presentation only: neither Elm nor a browser adapter reparents completed nodes.
 A boundary contributes a header and a trailing region around its archived rows.
 -}
-transcript : Bool -> String -> (String -> Bool -> msg) -> Dict String Bool -> String -> Maybe Int -> Dict Int Entry -> Dict String Tool -> Dict String Int -> Html msg
-transcript hideImages conversationPath toggle opened query selected entriesById tools durations =
+transcript : Context -> (String -> Bool -> msg) -> Dict String Bool -> String -> Maybe Int -> Dict Int Entry -> Dict String Tool -> Dict String Int -> Html msg
+transcript context toggle opened query selected entriesById tools durations =
     let
         entries =
             Dict.values entriesById
@@ -543,7 +588,7 @@ transcript hideImages conversationPath toggle opened query selected entriesById 
                     ]
 
                 content =
-                    List.concatMap (viewMessage hideImages conversationPath toggle opened tools True) entry.messages
+                    List.concatMap (viewMessage context toggle opened tools True) entry.messages
 
                 contextOpen =
                     isExpanded entry.id
@@ -578,7 +623,7 @@ transcript hideImages conversationPath toggle opened query selected entriesById 
                                     span [ id ("duration-" ++ key), class "tool-duration", attribute "data-duration-ms" (String.fromInt ms), A.title ("Duration: " ++ String.fromInt ms ++ "ms") ] [ text label ]
                             ]
                         , if entry.boundary == Compact then
-                            div [ class "compaction-summary" ] (List.concatMap (viewMessage hideImages conversationPath toggle opened tools False) entry.messages)
+                            div [ class "compaction-summary" ] (List.concatMap (viewMessage context toggle opened tools False) entry.messages)
 
                           else
                             text ""

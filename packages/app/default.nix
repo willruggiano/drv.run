@@ -28,7 +28,7 @@
     name = "app-npm-deps";
     src = manifests;
     fetcherVersion = 2;
-    hash = "sha256-9Ly+rj3CBiidlyPn7ezvheWxKiUoev9+duQm0Ge95cE=";
+    hash = "sha256-CQ+q6euwx8u/gYEWXSfpdDNG+6k1WQoQ2ZqGtEC+EN4=";
   };
   nodeModules = buildNpmPackage {
     pname = "app-node-modules";

@@ -28,7 +28,7 @@ type alias Entry =
 
 
 type alias Tool =
-    { id : String, name : String, command : String, state : String, duration : String, blocks : List Block, details : String, patch : Bool, written : String, notice : String }
+    { id : String, name : String, command : String, state : String, duration : String, blocks : List Block, details : String, patch : Bool, path : String, written : String, notice : String }
 
 
 type alias Live =
@@ -177,6 +177,7 @@ toolDecoder =
         |> andMap (D.field "blocks" (D.list blockDecoder))
         |> andMap (D.field "details" D.string)
         |> andMap (D.field "patch" D.bool)
+        |> andMap (D.field "path" D.string)
         |> andMap (D.field "written" D.string)
         |> andMap (D.field "notice" D.string)
 
