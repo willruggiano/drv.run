@@ -12,10 +12,6 @@
 
   inputs = {
     self.submodules = true;
-    deploy-rs = {
-      url = "github:serokell/deploy-rs";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     impermanence = {
       url = "github:nix-community/impermanence";
       inputs = {
@@ -28,10 +24,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.zst";
-    sops-nix = {
-      url = "github:Mic92/sops-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs = {self, ...} @ inputs: let
@@ -186,10 +178,6 @@
             ${inputs.microvm}/README.md
           Persistence:
             ${inputs.impermanence}/README.org
-          Deployment:
-            ${inputs.deploy-rs}/README.md
-          Secrets:
-            ${inputs.sops-nix}/README.md
         '';
         checkPhase = ''
           runHook preCheck

@@ -53,7 +53,6 @@
   '';
   environment.etc."xdg/llms.txt".text = ''
     drv.run core dependencies:
-    deploy-rs -> ${inputs.deploy-rs.outPath}
     drv.run -> ${inputs.self.outPath}
     impermanence -> ${inputs.impermanence.outPath}
     microvm.nix -> ${inputs.microvm.outPath}
@@ -66,7 +65,6 @@
           `-- durable -> /pi-durable/{dist/,README.md}
           `-- env -> /pi-env/{docs/,README.md}
           `-- telemetry -> /pi-telemetry/
-    sops-nix -> ${inputs.sops-nix.outPath}
     systemd -> use `man` (${pkgs.systemd.man})
   '';
   environment.persistence."/persist" = {

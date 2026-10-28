@@ -20,7 +20,7 @@
       url = "github:NixOS/nixos-hardware/4bc63156b109ee7b4103e3ec30565c8c92bde435";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nixpkgs.url = "github:NixOS/nixpkgs/a32edd7654519351e48e80372a928df336394670";
+    nixpkgs.follows = "drv-run/nixpkgs";
   };
 
   outputs = {
