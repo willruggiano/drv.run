@@ -57,7 +57,7 @@
           bench
           mitm-proxy
           subtrace
-          systemd
+          systemd-with-vmlinux-btf
           ;
       };
       # n.b. this is for packages only necessary for development and should not

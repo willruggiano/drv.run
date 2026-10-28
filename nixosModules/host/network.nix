@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }: let
   cfg = config.services.drv-run.network;
@@ -47,7 +48,7 @@ in {
       }
       {
         assertion = config.systemd.package.withNsresourced;
-        message = "drv.run requires systemd with nsresourced BPF support; apply drv.run.overlays.default.";
+        message = "drv.run requires systemd with nsresourced BPF support.";
       }
       {
         assertion = builtins.elem "bpf" config.security.lsm;
@@ -66,6 +67,9 @@ in {
     };
     security.polkit.enable = true;
     systemd = {
+      package = pkgs.systemd-with-vmlinux-btf.override {
+        vmlinux-btf = config.boot.kernelPackages.ebpf-headers;
+      };
       additionalUpstreamSystemUnits = ["systemd-nsresourced.service" "systemd-nsresourced.socket"];
       sockets.systemd-nsresourced = {
         overrideStrategy = "asDropin";

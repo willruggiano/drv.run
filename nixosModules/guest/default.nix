@@ -145,8 +145,6 @@
       flake-registry = "";
     };
   };
-  # drv.run's overlay carries additional nixpkgs-less packages (eg. subtrace) in
-  # addition to patched dependencies (eg. systemd +bpf +vmlinux.h)
   nixpkgs.overlays = [self.overlays.default];
 
   programs.git = {
