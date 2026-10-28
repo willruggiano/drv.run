@@ -2,6 +2,7 @@ module TranscriptTest exposing (tests)
 
 import Dict
 import Expect
+import Html
 import Html.Attributes as A
 import Protocol exposing (Block(..))
 import Test exposing (Test, describe, test)
@@ -13,7 +14,7 @@ import Url
 
 render : String -> Query.Single ()
 render source =
-    Transcript.blockView "/sessions/test/conversations/1" (\_ _ -> ()) Dict.empty Dict.empty (Text source)
+    Transcript.blockView False "/sessions/test/conversations/1" (\_ _ -> ()) Dict.empty Dict.empty (Text source)
         |> Query.fromHtml
 
 
@@ -26,16 +27,45 @@ tests =
                     test path <|
                         \_ ->
                             render ("![Screenshot](" ++ path ++ ")")
-                                |> Query.find [ S.tag "img" ]
-                                |> Query.has [ S.class "transcript-image", S.attribute (A.alt "Screenshot"), S.attribute (A.src ("/sessions/test/conversations/1/file?path=" ++ Url.percentEncode (Url.percentDecode path |> Maybe.withDefault path))) ]
+                                |> Query.find [ S.tag "elm-file" ]
+                                |> Query.has [ S.attribute (A.attribute "image" ""), S.attribute (A.attribute "label" "Screenshot"), S.attribute (A.src ("/sessions/test/conversations/1/file?path=" ++ Url.percentEncode (Url.percentDecode path |> Maybe.withDefault path))) ]
                 )
                 [ "/tmp/screenshot.png", "screenshots/result.png", "./result.png", "../result.png", "screenshots/with%20spaces%23%3F.png" ]
             )
+        , test "hidden Markdown images and image blocks have no image element or source" <|
+            \_ ->
+                Expect.all
+                    (List.map
+                        (\block ->
+                            \_ ->
+                                Transcript.blockView True "/sessions/test/conversations/1" (\_ _ -> ()) Dict.empty Dict.empty block
+                                    |> List.singleton
+                                    |> Html.div []
+                                    |> Query.fromHtml
+                                    |> Query.findAll [ S.tag "elm-file" ]
+                                    |> Query.count (Expect.equal 0)
+                        )
+                        [ Text "![Screenshot](shot.png)", Image "image/png" "AA==" ]
+                    )
+                    ()
+        , test "structured image blocks use the inline image preview" <|
+            \_ ->
+                Transcript.blockView False "/sessions/test/conversations/1" (\_ _ -> ()) Dict.empty Dict.empty (Image "image/png" "AA==")
+                    |> List.singleton
+                    |> Html.div []
+                    |> Query.fromHtml
+                    |> Query.find [ S.tag "elm-file" ]
+                    |> Query.has [ S.attribute (A.attribute "image" ""), S.attribute (A.src "data:image/png;base64,AA==") ]
         , test "source citations retain line anchors separately from the file path" <|
             \_ ->
                 render "[Transcript.elm:217](packages/app/serve/elm/src/Transcript.elm#L217)"
                     |> Query.find [ S.tag "a" ]
                     |> Query.has [ S.attribute (A.href "/sessions/test/conversations/1/file?path=packages%2Fapp%2Fserve%2Felm%2Fsrc%2FTranscript.elm#L217"), S.attribute (A.target "_blank"), S.attribute (A.rel "noopener noreferrer") ]
+        , test "source citations include an inline preview with the same line anchor" <|
+            \_ ->
+                render "[Reader contract](reader.d.ts#L45)"
+                    |> Query.find [ S.tag "elm-file" ]
+                    |> Query.has [ S.attribute (A.attribute "src" "/sessions/test/conversations/1/file?path=reader.d.ts#L45"), S.attribute (A.attribute "label" "Reader contract") ]
         , test "absolute source links encode filename fragments" <|
             \_ ->
                 render "[Source](/tmp/a%23b.ts#L2)"
@@ -52,7 +82,7 @@ tests =
                     test (String.fromInt index) <|
                         \_ ->
                             render source
-                                |> Query.findAll [ S.tag "img" ]
+                                |> Query.findAll [ S.tag "elm-file" ]
                                 |> Query.count (Expect.equal 0)
                 )
                 [ "![Screenshot](/tmp/screenshot.png"

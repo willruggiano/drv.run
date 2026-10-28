@@ -1,7 +1,9 @@
+import { extname } from "node:path";
+import highlighter from "../highlight.ts";
 import type { GlobalSettingsStore } from "../server.ts";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { withoutAbortSignal, type Context } from "@earendil-works/chord/context";
+import type { Context } from "@earendil-works/chord/context";
 import { FileError, getOrThrow } from "@earendil-works/pi-durable/env";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import {
@@ -37,6 +39,28 @@ import { conversationFrames } from "./stream.ts";
 function json(response: ServerResponse, value: unknown) {
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify(value));
+}
+function fileResponse(
+  request: IncomingMessage,
+  response: ServerResponse,
+  type: string,
+  body: Buffer | string,
+): void {
+  // Hash the representation actually read/rendered, not potentially stale file metadata.
+  const etag = `"${createHash("sha256").update(type).update("\0").update(body).digest("hex")}"`;
+  response.setHeader("Cache-Control", "private, no-cache");
+  response.setHeader("ETag", etag);
+  const condition = request.headers["if-none-match"];
+  if (
+    condition?.trim() === "*" ||
+    condition?.split(",").some((tag) => tag.trim().replace(/^W\//, "") === etag)
+  ) {
+    response.writeHead(304);
+    response.end();
+    return;
+  }
+  response.writeHead(200, { "Content-Type": type });
+  response.end(body);
 }
 export function elmDocument(response: ServerResponse, site = false): void {
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -84,6 +108,10 @@ export async function elmFrontend(
     return;
   }
   if (request.method === "GET" && operation === "file") {
+    response.setHeader(
+      "Content-Security-Policy",
+      "default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+    );
     const paths = url.searchParams.getAll("path");
     const path = paths[0];
     if (paths.length !== 1 || !path) throw new FormError(400, "Invalid file path.");
@@ -94,20 +122,7 @@ export async function elmFrontend(
     const env = await environment(session, conversation, context);
     let bytes: Buffer;
     try {
-      const reader = getOrThrow(await env.openBinaryReader(path, undefined, context));
-      try {
-        const before = getOrThrow(await reader.info(context));
-        bytes = Buffer.from(getOrThrow(await reader.read(0, before.size + 1, context)));
-        const after = getOrThrow(await reader.info(context));
-        if (
-          bytes.length !== before.size ||
-          after.size !== before.size ||
-          after.mtimeMs !== before.mtimeMs
-        )
-          throw new FormError(409, "File changed while reading; reload to retry.");
-      } finally {
-        await reader.close(withoutAbortSignal(context));
-      }
+      bytes = Buffer.from(getOrThrow(await env.readBinaryFile(path, context)));
     } catch (error) {
       if (!(error instanceof FileError)) throw error;
       throw new FormError(
@@ -126,8 +141,7 @@ export async function elmFrontend(
             ? "image/webp"
             : undefined;
     if (mime) {
-      response.writeHead(200, { "Content-Type": mime });
-      response.end(bytes);
+      fileResponse(request, response, mime, bytes);
       return;
     }
     let source: string;
@@ -149,13 +163,24 @@ export async function elmFrontend(
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
-    response.writeHead(200, {
-      "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy":
-        "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-    });
-    response.end(
-      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(path)}</title><link rel="stylesheet" href="/styles.css"></head><body class="file-viewer"><header class="bar"><a href="${escape(conversationURL(session, conversation.id))}">Conversation</a><h1>${escape(path)}</h1></header><main><pre id="file-source"><code>${lines.map((line, index) => `<span class="source-line" id="L${index + 1}"><a class="line-number" href="#L${index + 1}" aria-label="Line ${index + 1}">${index + 1}</a><span>${escape(line)}</span></span>`).join("")}</code></pre></main></body></html>`,
+    const extension = extname(path).slice(1).toLowerCase();
+    const aliases: Record<string, string> = {
+      mjs: "javascript",
+      cjs: "javascript",
+      mts: "typescript",
+      cts: "typescript",
+      svg: "xml",
+    };
+    const language = Object.hasOwn(aliases, extension) ? aliases[extension] : extension;
+    const highlighted = highlighter.getLanguage(language)
+      ? highlighter.highlight(source, { language, ignoreIllegals: true }).value
+      : escape(source);
+    const embedded = url.searchParams.get("inline") === "1";
+    fileResponse(
+      request,
+      response,
+      "text/html; charset=utf-8",
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(path)}</title><link rel="stylesheet" href="/styles.css"></head><body class="file-viewer">${embedded ? "" : `<header class="bar"><a href="${escape(conversationURL(session, conversation.id))}">Conversation</a><h1>${escape(path)}</h1></header>`}<main><pre id="file-source"><span class="line-numbers">${lines.map((_, index) => `<a class="line-number" id="L${index + 1}" href="#L${index + 1}" aria-label="Line ${index + 1}">${index + 1}</a>`).join("")}</span><code>${highlighted}</code></pre></main></body></html>`,
     );
     return;
   }

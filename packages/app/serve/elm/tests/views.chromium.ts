@@ -373,13 +373,20 @@ await test(
         }),
       context,
     );
-    await page.locator(".transcript-image").click();
-    assert.equal(
-      await page.locator("#image-dialog").evaluate((node: HTMLDialogElement) => node.open),
-      true,
-    );
-    await page.keyboard.press("Escape");
-    await page.locator("#image-dialog").waitFor({ state: "detached" });
+    const attachment = page.locator("elm-file[image]");
+    await attachment.locator("img").waitFor();
+    const openedImage = page.waitForEvent("popup");
+    await attachment.getByRole("link", { name: "Open in new tab" }).click();
+    const imageTab = await openedImage;
+    await imageTab.waitForFunction(() => {
+      const image = document.querySelector("img");
+      return image?.complete && image.naturalWidth > 0;
+    });
+    await imageTab.close();
+    await attachment.getByRole("button", { name: "Collapse Attachment" }).click();
+    await attachment.locator("img").waitFor({ state: "detached" });
+    await attachment.getByRole("button", { name: "Expand Attachment" }).click();
+    await attachment.locator("img").waitFor();
 
     const download = page.waitForEvent("download");
     await page.locator("#prompt").fill("/export");
@@ -417,10 +424,15 @@ await test(
     const f = await fixture(t);
     const session = await f.create();
     const settings = new GlobalSettingsStore();
+    await settings.update({ values: { "terminal.showImages": false } }, f.sessions);
     const b = await browserFixture(t, f.sessions, undefined, undefined, settings);
     const { page } = b;
     page.setDefaultTimeout(10000);
     const path = conversationURL(session);
+    const fileRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === path + "/file") fileRequests.push(request.url());
+    });
     const image = await readFile(new URL("../../icon-192.png", import.meta.url));
     await writeFile(join(f.workspace, "shot #1?.png"), image);
     const sourceName = "source <&>.ts";
@@ -457,6 +469,13 @@ await test(
         message: liveMessage(text),
       };
     }, context);
+    await page.waitForFunction(
+      (text) => document.querySelector("#live .text")?.getAttribute("data-source") === text,
+      text,
+    );
+    assert.equal(await page.locator("#live img").count(), 0);
+    assert.deepEqual(fileRequests, []);
+    await settings.update({ values: { "terminal.showImages": true } }, f.sessions);
     await page.waitForFunction(() => {
       const image = document.querySelector<HTMLImageElement>("#live img.transcript-image");
       return image?.complete && image.naturalWidth > 0;
@@ -470,6 +489,10 @@ await test(
     }, context);
     const history = await readHistory(session.root);
     const modelContext = await session.root.context(context);
+    assert.equal(
+      fileRequests.some((url) => new URL(url).searchParams.get("path") === sourceName),
+      false,
+    );
     for (const viewport of [
       { width: 390, height: 844 },
       { width: 1440, height: 900 },
@@ -481,18 +504,107 @@ await test(
       });
       const imageElement = page.locator("#transcript img.transcript-image");
       assert.equal(await imageElement.getAttribute("alt"), "Screenshot");
-      await imageElement.click();
-      await page.waitForFunction(
-        () => document.querySelector<HTMLDialogElement>("#image-dialog")?.open === true,
+      assert.equal(await imageElement.getAttribute("loading"), "lazy");
+      assert.equal(await imageElement.getAttribute("decoding"), "async");
+      const imagePreview = page.locator("#transcript elm-file[image]");
+      const openedImage = page.waitForEvent("popup");
+      await imagePreview.getByRole("link", { name: "Open in new tab" }).click();
+      const imageTab = await openedImage;
+      await imageTab.waitForFunction(() => {
+        const image = document.querySelector("img");
+        return image?.complete && image.naturalWidth > 0;
+      });
+      await imageTab.close();
+      await imagePreview.getByRole("button", { name: "Collapse Screenshot" }).click();
+      await imagePreview.locator("img").waitFor({ state: "detached" });
+      assert.equal(await imagePreview.getByRole("link").count(), 0);
+      assert.equal(
+        await imagePreview.locator(".file-toggle").textContent(),
+        await page.locator("#transcript elm-file:not([image]) .file-toggle").textContent(),
       );
-      await page.getByRole("button", { name: "Close image", exact: true }).click();
+      await imagePreview.getByRole("button", { name: "Expand Screenshot" }).click();
+      await imagePreview.locator("img").waitFor();
+      const preview = page.locator("#transcript elm-file:not([image])");
+      assert.equal(await preview.locator("iframe").count(), 0);
+      await preview.getByRole("button", { name: "Expand Source:50" }).click();
+      const frame = preview.frameLocator("iframe");
+      await frame.locator("#file-source code .hljs-keyword").first().waitFor();
+      assert.equal(await frame.locator("#file-source code").textContent(), sourceLines.join("\n"));
+      assert.equal(await frame.locator("header").count(), 0);
+      assert.equal(await frame.locator("script").count(), 0);
+      assert.equal(await frame.locator(":target").getAttribute("id"), "L50");
+      assert.equal(
+        await frame.locator("#L50").evaluate((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.top >= 0 && rect.bottom <= innerHeight;
+        }),
+        true,
+      );
+      assert.equal(await preview.locator("iframe").getAttribute("sandbox"), "allow-same-origin");
+      const sourceLink = page.getByRole("link", { name: "Source:50", exact: true });
+      const linkColor = await sourceLink.evaluate((node) => getComputedStyle(node).color);
+      const mutedColor = await page
+        .locator("#transcript .message-time")
+        .first()
+        .evaluate((node) => getComputedStyle(node).color);
+      assert.notEqual(linkColor, mutedColor);
+      for (const item of [imagePreview, preview]) {
+        assert.equal(
+          await item.locator("summary").evaluate((node) => getComputedStyle(node).color),
+          linkColor,
+        );
+        assert.equal(
+          await item.locator(".file-toggle").evaluate((node) => getComputedStyle(node).color),
+          mutedColor,
+        );
+      }
+      assert.equal(
+        await imagePreview.locator(".file-toggle").textContent(),
+        await preview.locator(".file-toggle").textContent(),
+      );
+      assert.equal(
+        await imagePreview.locator(".file-toggle").evaluate((node) => {
+          const label = node.previousSibling;
+          if (!(label instanceof Text)) return false;
+          const range = document.createRange();
+          range.selectNodeContents(label);
+          return node.getBoundingClientRect().left >= range.getBoundingClientRect().right;
+        }),
+        true,
+      );
+      const labelBounds = await sourceLink.boundingBox();
+      const toggleBounds = await preview.locator(".file-toggle").boundingBox();
+      assert(labelBounds && toggleBounds);
+      assert(toggleBounds.x >= labelBounds.x + labelBounds.width);
+      assert.equal(
+        (await imagePreview.locator(".file-toggle").boundingBox())?.width,
+        toggleBounds.width,
+      );
+      if (b.screenshots)
+        await page.screenshot({
+          path: join(b.screenshots, `elm-${viewport.width}-file-preview.png`),
+        });
+      // Unrelated transcript updates must not reload or collapse the open preview.
+      const originalFrame = await preview.locator("iframe").elementHandle();
+      await settings.update({ values: { hideThinkingBlock: viewport.width === 390 } }, f.sessions);
+      await page
+        .locator(viewport.width === 390 ? "#page.hide-thinking" : "#page:not(.hide-thinking)")
+        .waitFor();
+      assert.equal(
+        await preview
+          .locator("iframe")
+          .evaluate((node, original) => node === original, originalFrame),
+        true,
+      );
+      await originalFrame?.dispose();
       const opened = page.waitForEvent("popup");
-      await page.getByRole("link", { name: "Source:50", exact: true }).click();
+      await preview.getByRole("link", { name: "Open in new tab", exact: true }).click();
       const source = await opened;
       await source.waitForLoadState();
       assert.equal(new URL(source.url()).hash, "#L50");
       assert.equal(new URL(source.url()).searchParams.get("path"), sourceName);
-      assert.equal(await source.locator("#L50 > span").textContent(), sourceLines[49]);
+      assert.equal(await source.locator("#file-source code").textContent(), sourceLines.join("\n"));
+      assert((await source.locator("#file-source .hljs-keyword").count()) > 0);
       assert.equal(await source.locator("#file-source script").count(), 0);
       assert.equal(await source.evaluate(() => Object.hasOwn(globalThis, "executed")), false);
       assert.equal(await source.locator(":target").getAttribute("id"), "L50");
@@ -504,9 +616,17 @@ await test(
         true,
       );
       await source.close();
+      await preview.getByRole("button", { name: "Collapse Source:50" }).click();
+      await preview.locator("iframe").waitFor({ state: "detached" });
+      assert.equal(await preview.getByRole("link").count(), 0);
     }
     await settings.update({ values: { "terminal.showImages": false } }, f.sessions);
-    await page.locator("#transcript img.transcript-image").waitFor({ state: "hidden" });
+    await page.locator("#transcript img.transcript-image").waitFor({ state: "detached" });
+    fileRequests.length = 0;
+    await page.reload();
+    await page.locator("#page.hide-images #transcript .text").first().waitFor();
+    assert.equal(await page.locator("#transcript img").count(), 0);
+    assert.deepEqual(fileRequests, []);
     await settings.update({ values: { "terminal.showImages": true } }, f.sessions);
     await page.locator("#transcript img.transcript-image").waitFor({ state: "visible" });
     assert.deepEqual(await readHistory(session.root), history);
@@ -517,8 +637,153 @@ await test(
     await changeDirectory(session, "nested", session.root, context);
     const source = await b.browserContext.newPage();
     await source.goto(`${b.base}${path}/file?path=${encodeURIComponent(sourceName)}`);
-    assert.equal(await source.locator("#L1 > span").textContent(), "Different cwd");
+    assert.equal(await source.locator("#file-source code").textContent(), "Different cwd");
     await source.close();
+    assert.deepEqual(b.errors, []);
+  },
+);
+
+await test(
+  "transcript images defer offscreen reads until scrolled near the viewport",
+  { timeout: 45000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const settings = new GlobalSettingsStore();
+    await settings.update({ values: { "terminal.showImages": false } }, f.sessions);
+    const image = await readFile(new URL("../../icon-192.png", import.meta.url));
+    await writeFile(join(f.workspace, "offscreen.png"), image);
+    await session.root.commit(
+      (tx) =>
+        tx.appendEntry(session.root.id, {
+          kind: "pi.assistant",
+          model: [
+            fauxAssistantMessage("![Offscreen](offscreen.png)\n\n" + "Paragraph\n\n".repeat(1000)),
+          ],
+        }),
+      context,
+    );
+    const b = await browserFixture(t, f.sessions, undefined, undefined, settings);
+    const { page } = b;
+    page.setDefaultTimeout(10000);
+    const path = conversationURL(session);
+    const requests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === path + "/file") requests.push(request.url());
+    });
+    await page.goto(b.base + path);
+    await page.locator("#page.hide-images #transcript .text").waitFor();
+    await page.locator("#conversation-scroll").evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+    await settings.update({ values: { "terminal.showImages": true } }, f.sessions);
+    await page.locator("#transcript img").waitFor({ state: "attached" });
+    // Give layout and the browser's lazy-load observer a turn without a timer-based sleep.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    assert.equal(
+      await page
+        .locator("#transcript img")
+        .evaluate(
+          (node: HTMLImageElement) =>
+            node.getBoundingClientRect().bottom < -10000 && node.naturalWidth === 0,
+        ),
+      true,
+    );
+    assert.deepEqual(requests, []);
+    await page.locator("#transcript img").scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => {
+      const image = document.querySelector<HTMLImageElement>("#transcript img");
+      return image?.complete && image.naturalWidth > 0;
+    });
+    assert.equal(requests.length, 1);
+    assert.deepEqual(b.errors, []);
+  },
+);
+
+await test(
+  "inline citations preview images, highlighted contracts and file errors on demand",
+  { timeout: 45000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const contract =
+      "/** A contract\n * spanning lines. */\nexport type Reader = { read(): string };\n";
+    await writeFile(join(f.workspace, "reader.d.ts"), contract);
+    await writeFile(
+      join(f.workspace, "shot.png"),
+      await readFile(new URL("../../icon-192.png", import.meta.url)),
+    );
+    await session.root.commit(
+      (tx) =>
+        tx.appendEntry(session.root.id, {
+          kind: "pi.assistant",
+          model: [
+            fauxAssistantMessage(
+              "[Reader contract](reader.d.ts#L3) [Screenshot](shot.png) [Missing](missing.ts)",
+            ),
+          ],
+        }),
+      context,
+    );
+    const b = await browserFixture(t, f.sessions);
+    const { page } = b;
+    page.setDefaultTimeout(10000);
+    const requests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname.endsWith("/file")) requests.push(request.url());
+    });
+    await page.goto(b.base + conversationURL(session));
+    const reader = page.locator('elm-file[label="Reader contract"]');
+    await reader.getByRole("button", { name: "Expand Reader contract" }).waitFor();
+    assert.equal(await page.locator("elm-file iframe").count(), 0);
+    assert.deepEqual(requests, []);
+    await reader.getByRole("button", { name: "Expand Reader contract" }).press("Enter");
+    const source = reader.frameLocator("iframe");
+    await source.locator("#file-source .hljs-comment").waitFor();
+    assert.equal(await source.locator("#file-source code").textContent(), contract);
+    assert.equal(
+      await source.locator(".hljs-comment").textContent(),
+      "/** A contract\n * spanning lines. */",
+    );
+    assert.equal(await source.locator(":target").getAttribute("id"), "L3");
+    assert.equal(
+      await source
+        .locator(".hljs-keyword")
+        .first()
+        .evaluate(
+          (node) => getComputedStyle(node).color !== getComputedStyle(node.parentElement!).color,
+        ),
+      true,
+    );
+    await reader.getByRole("button", { name: "Collapse Reader contract" }).press("Space");
+    await reader.locator("iframe").waitFor({ state: "detached" });
+    const updated = "export type Reader = { close(): void };\n";
+    await writeFile(join(f.workspace, "reader.d.ts"), updated);
+    await reader.getByRole("button", { name: "Expand Reader contract" }).click();
+    await source.locator("#file-source code").waitFor();
+    assert.equal(await source.locator("#file-source code").textContent(), updated);
+    const image = page.locator('elm-file[label="Screenshot"]');
+    await image.getByRole("button", { name: "Expand Screenshot" }).click();
+    await image.frameLocator("iframe").locator("img").waitFor();
+    assert.equal(
+      await image
+        .frameLocator("iframe")
+        .locator("img")
+        .evaluate((node: HTMLImageElement) => node.complete && node.naturalWidth > 0),
+      true,
+    );
+    assert.equal(
+      await image.getByRole("link", { name: "Open in new tab" }).getAttribute("target"),
+      "_blank",
+    );
+    const missing = page.locator('elm-file[label="Missing"]');
+    await missing.getByRole("button", { name: "Expand Missing" }).click();
+    await missing.frameLocator("iframe").getByRole("heading", { name: "Request failed" }).waitFor();
     assert.deepEqual(b.errors, []);
   },
 );

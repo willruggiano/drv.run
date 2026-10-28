@@ -1,7 +1,7 @@
 module Transcript exposing (blockView, commandLabel, entrySearch, toolStatus, transcript, viewMessage)
 
 import Dict exposing (Dict)
-import Html exposing (Html, a, article, button, code, details, div, header, img, p, pre, span, strong, summary, text)
+import Html exposing (Html, a, article, button, code, details, div, header, p, pre, span, strong, summary, text)
 import Html.Attributes as A exposing (attribute, class, hidden, id, style)
 import Html.Events exposing (onClick, preventDefaultOn)
 import Html.Keyed
@@ -51,8 +51,8 @@ regex source =
     Regex.fromString source |> Maybe.withDefault Regex.never
 
 
-inline : String -> String -> List (Html msg)
-inline conversationPath source =
+inline : Bool -> String -> String -> List (Html msg)
+inline hideImages conversationPath source =
     let
         matches =
             Regex.find (regex "(`[^`]+`|\\*\\*[^*]+\\*\\*|!?\\[[^\\]\\n]*\\]\\([^\\s)]+\\))") source
@@ -121,10 +121,17 @@ inline conversationPath source =
                                 text match
 
                             else if image then
-                                img [ class "transcript-image", A.alt label, A.src (conversationPath ++ "/file?path=" ++ Url.percentEncode path) ] []
+                                imageView hideImages label (conversationPath ++ "/file?path=" ++ Url.percentEncode path)
 
                             else
-                                link (conversationPath ++ "/file?path=" ++ Url.percentEncode path ++ fragment)
+                                let
+                                    href =
+                                        conversationPath ++ "/file?path=" ++ Url.percentEncode path ++ fragment
+                                in
+                                span [ class "file-reference" ]
+                                    [ link href
+                                    , Html.node "elm-file" [ attribute "src" href, attribute "label" label ] []
+                                    ]
 
                         Nothing ->
                             text match
@@ -143,8 +150,8 @@ codeView language source =
     Html.node "elm-code" [ class "code-container", attribute "language" language, attribute "source" source ] []
 
 
-markdown : String -> String -> Html msg
-markdown conversationPath source =
+markdown : Bool -> String -> String -> Html msg
+markdown hideImages conversationPath source =
     let
         paragraphs str =
             Regex.split (regex "\\n\\n+") str
@@ -160,10 +167,10 @@ markdown conversationPath source =
                                     content =
                                         List.drop 1 match.submatches |> List.head |> Maybe.andThen identity |> Maybe.withDefault ""
                                 in
-                                Html.node ("h" ++ String.fromInt (String.length hashes + 1)) [] (inline conversationPath content)
+                                Html.node ("h" ++ String.fromInt (String.length hashes + 1)) [] (inline hideImages conversationPath content)
 
                             Nothing ->
-                                p [] (inline conversationPath paragraph)
+                                p [] (inline hideImages conversationPath paragraph)
                     )
 
         fences =
@@ -185,8 +192,8 @@ markdown conversationPath source =
     div [ class "text", attribute "data-source" source ] (nodes ++ paragraphs (String.dropLeft end source))
 
 
-toolView : String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> String -> Html msg
-toolView conversationPath toggle opened tools key =
+toolView : Bool -> String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> String -> Html msg
+toolView hideImages conversationPath toggle opened tools key =
     case Dict.get key tools of
         Nothing ->
             text ""
@@ -217,7 +224,7 @@ toolView conversationPath toggle opened tools key =
                         span [ class "tool-duration" ] [ text tool.duration ]
                     ]
                 , div [ class "tool-result" ]
-                    (List.map (blockView conversationPath toggle opened tools) tool.blocks
+                    (List.map (blockView hideImages conversationPath toggle opened tools) tool.blocks
                         ++ [ if tool.notice == "" then
                                 text ""
 
@@ -254,11 +261,20 @@ toolView conversationPath toggle opened tools key =
                 ]
 
 
-blockView : String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Block -> Html msg
-blockView conversationPath toggle opened tools block =
+imageView : Bool -> String -> String -> Html msg
+imageView hideImages label src =
+    if hideImages then
+        text ""
+
+    else
+        Html.node "elm-file" [ attribute "src" src, attribute "label" label, attribute "image" "" ] []
+
+
+blockView : Bool -> String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Block -> Html msg
+blockView hideImages conversationPath toggle opened tools block =
     case block of
         Text str ->
-            Html.Lazy.lazy2 markdown conversationPath str
+            Html.Lazy.lazy3 markdown hideImages conversationPath str
 
         Thinking str ->
             div [ class "thinking" ] [ text str ]
@@ -267,14 +283,14 @@ blockView conversationPath toggle opened tools block =
             Html.Lazy.lazy2 codeView "" str
 
         Image mime data ->
-            img [ class "transcript-image", A.alt "Attachment", A.src ("data:" ++ mime ++ ";base64," ++ data) ] []
+            imageView hideImages "Attachment" ("data:" ++ mime ++ ";base64," ++ data)
 
         ToolRef key ->
-            toolView conversationPath toggle opened tools key
+            toolView hideImages conversationPath toggle opened tools key
 
 
-viewMessage : String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Bool -> Message -> List (Html msg)
-viewMessage conversationPath toggle opened tools showHeader message =
+viewMessage : Bool -> String -> (String -> Bool -> msg) -> Dict String Bool -> Dict String Tool -> Bool -> Message -> List (Html msg)
+viewMessage hideImages conversationPath toggle opened tools showHeader message =
     (if showHeader then
         [ header []
             [ span [ class "speaker" ]
@@ -296,7 +312,7 @@ viewMessage conversationPath toggle opened tools showHeader message =
      else
         []
     )
-        ++ List.map (blockView conversationPath toggle opened tools) message.blocks
+        ++ List.map (blockView hideImages conversationPath toggle opened tools) message.blocks
         ++ (if message.error == "" then
                 []
 
@@ -359,8 +375,8 @@ entrySearch tools entry =
 presentation only: neither Elm nor a browser adapter reparents completed nodes.
 A boundary contributes a header and a trailing region around its archived rows.
 -}
-transcript : String -> (String -> Bool -> msg) -> Dict String Bool -> String -> Maybe Int -> Dict Int Entry -> Dict String Tool -> Dict String Int -> Html msg
-transcript conversationPath toggle opened query selected entriesById tools durations =
+transcript : Bool -> String -> (String -> Bool -> msg) -> Dict String Bool -> String -> Maybe Int -> Dict Int Entry -> Dict String Tool -> Dict String Int -> Html msg
+transcript hideImages conversationPath toggle opened query selected entriesById tools durations =
     let
         entries =
             Dict.values entriesById
@@ -527,7 +543,7 @@ transcript conversationPath toggle opened query selected entriesById tools durat
                     ]
 
                 content =
-                    List.concatMap (viewMessage conversationPath toggle opened tools True) entry.messages
+                    List.concatMap (viewMessage hideImages conversationPath toggle opened tools True) entry.messages
 
                 contextOpen =
                     isExpanded entry.id
@@ -562,7 +578,7 @@ transcript conversationPath toggle opened query selected entriesById tools durat
                                     span [ id ("duration-" ++ key), class "tool-duration", attribute "data-duration-ms" (String.fromInt ms), A.title ("Duration: " ++ String.fromInt ms ++ "ms") ] [ text label ]
                             ]
                         , if entry.boundary == Compact then
-                            div [ class "compaction-summary" ] (List.concatMap (viewMessage conversationPath toggle opened tools False) entry.messages)
+                            div [ class "compaction-summary" ] (List.concatMap (viewMessage hideImages conversationPath toggle opened tools False) entry.messages)
 
                           else
                             text ""

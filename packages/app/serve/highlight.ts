@@ -4,6 +4,7 @@ import core from "highlight.js/lib/core.js";
 
 import bash from "highlight.js/lib/languages/bash.js";
 import css from "highlight.js/lib/languages/css.js";
+import elm from "highlight.js/lib/languages/elm.js";
 import diff from "highlight.js/lib/languages/diff.js";
 import go from "highlight.js/lib/languages/go.js";
 import javascript from "highlight.js/lib/languages/javascript.js";
@@ -19,6 +20,7 @@ for (const [name, language] of Object.entries({
   bash,
   css,
   diff,
+  elm,
   go,
   javascript,
   json,

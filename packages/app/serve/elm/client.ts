@@ -76,6 +76,113 @@ class ElmCode extends HTMLElement {
     }
   }
 }
+class ElmFile extends HTMLElement {
+  static observedAttributes = ["src", "label", "image"];
+  private readonly disclosure = document.createElement("details");
+  private readonly summary = document.createElement("summary");
+  private readonly content = document.createElement("span");
+  private objectURL: string | undefined;
+  private initialized = false;
+
+  constructor() {
+    super();
+    this.content.className = "file-preview-content";
+    this.summary.setAttribute("role", "button");
+    this.disclosure.append(this.summary, this.content);
+  }
+  connectedCallback() {
+    if (!this.initialized) {
+      this.disclosure.open = this.hasAttribute("image");
+      this.initialized = true;
+    }
+    this.replaceChildren(this.disclosure);
+    this.disclosure.addEventListener("toggle", this.render);
+    this.render();
+  }
+  disconnectedCallback() {
+    this.disclosure.removeEventListener("toggle", this.render);
+    this.clear();
+  }
+  attributeChangedCallback() {
+    this.clear();
+    if (this.isConnected) this.render();
+  }
+  private clear() {
+    this.content.replaceChildren();
+    if (this.objectURL) URL.revokeObjectURL(this.objectURL);
+    this.objectURL = undefined;
+  }
+  private render = () => {
+    const label = this.getAttribute("label") || "File";
+    const image = this.hasAttribute("image");
+    const open = this.disclosure.open;
+    const toggle = document.createElement("span");
+    toggle.className = "file-toggle";
+    toggle.textContent = open ? "▾" : "▸";
+    toggle.setAttribute("aria-hidden", "true");
+    this.summary.replaceChildren(...(image ? [document.createTextNode(label)] : []), toggle);
+    this.summary.title = `${open ? "Collapse" : "Expand"} ${label}`;
+    this.summary.setAttribute("aria-label", this.summary.title);
+    this.summary.setAttribute("aria-expanded", String(open));
+    if (!open) {
+      this.clear();
+      return;
+    }
+    if (this.content.childElementCount) return;
+    const src = this.getAttribute("src");
+    if (!src) return;
+    const link = document.createElement("a");
+    link.className = "icon file-open";
+    link.textContent = "↗";
+    link.title = "Open in new tab";
+    link.setAttribute("aria-label", link.title);
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.href = src;
+    if (image) {
+      // Browsers block top-level data: navigation. Attachment tabs need a Blob URL.
+      if (src.startsWith("data:")) {
+        try {
+          const mime = src.slice(5, src.indexOf(";")).toLowerCase();
+          // Do not turn SVG/HTML attachment data into an executable same-origin document.
+          const type = ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mime)
+            ? mime
+            : "application/octet-stream";
+          this.objectURL = URL.createObjectURL(
+            new Blob(
+              [
+                Uint8Array.from(atob(src.slice(src.indexOf(",") + 1)), (character) =>
+                  character.charCodeAt(0),
+                ),
+              ],
+              { type },
+            ),
+          );
+          link.href = this.objectURL;
+        } catch {
+          this.content.textContent = "Unable to decode image.";
+          return;
+        }
+      }
+      const view = document.createElement("img");
+      view.className = "transcript-image";
+      view.alt = label;
+      view.loading = "lazy";
+      view.decoding = "async";
+      view.src = src;
+      this.content.append(link, view);
+    } else {
+      const view = document.createElement("iframe");
+      const url = new URL(src, location.href);
+      url.searchParams.set("inline", "1");
+      view.title = label;
+      view.loading = "lazy";
+      view.setAttribute("sandbox", "allow-same-origin");
+      view.src = url.href;
+      this.content.append(link, view);
+    }
+  };
+}
 class ElmTime extends HTMLElement {
   static observedAttributes = ["timestamp"];
   private static time: Intl.DateTimeFormat | undefined;
@@ -108,6 +215,7 @@ class ElmTime extends HTMLElement {
 }
 customElements.define("elm-command", ElmCommand);
 customElements.define("elm-code", ElmCode);
+customElements.define("elm-file", ElmFile);
 customElements.define("elm-time", ElmTime);
 let drafts: unknown = {};
 try {
@@ -385,10 +493,6 @@ document.addEventListener("click", (event) => {
     send("navigate", link.href);
     return;
   }
-  const image =
-    event.target instanceof Element &&
-    event.target.closest<HTMLImageElement>("img.transcript-image");
-  if (image) send("image", image.src);
 });
 document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || event.isComposing) return;

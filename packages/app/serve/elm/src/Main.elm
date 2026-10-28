@@ -216,7 +216,6 @@ type alias Model =
     , directories : List String
     , directoryRequest : Int
     , composerExpanded : Bool
-    , image : Maybe String
     , latest : Bool
     }
 
@@ -254,7 +253,6 @@ type Msg
     | SaveSettings
     | SettingsSaved Int (Result Http.Error Bool)
     | Directories Int Int (Result Http.Error (List String))
-    | CloseImage
     | Collapse
     | Latest
     | NoOp
@@ -290,7 +288,6 @@ initModel path nonce =
     , directories = []
     , directoryRequest = 0
     , composerExpanded = True
-    , image = Nothing
     , latest = False
     }
 
@@ -565,7 +562,6 @@ update msg model =
                         , nextNavigation = Nothing
                         , directories = []
                         , directoryRequest = model.directoryRequest + 1
-                        , image = Nothing
                     }
             in
             ( updated, Cmd.batch [ connect updated, loadPanel updated, browser (E.object [ ( "kind", E.string "resize" ) ]) ] )
@@ -645,14 +641,6 @@ update msg model =
 
                             "search" ->
                                 update (Search "") model
-
-                            "image" ->
-                                case D.decodeValue D.string payload of
-                                    Ok src ->
-                                        ( { model | image = Just src }, browser (E.object [ ( "kind", E.string "dialog" ), ( "id", E.string "image-dialog" ) ]) )
-
-                                    Err _ ->
-                                        ( model, Cmd.none )
 
                             "navigate" ->
                                 case D.decodeValue D.string payload |> Result.toMaybe |> Maybe.andThen Url.fromString of
@@ -1123,9 +1111,6 @@ update msg model =
                             _ ->
                                 ( { model | settings = Just (Autosave.fail Autosave.ForgetBaseline settings), error = "Settings were not saved. Your changes are retained; retry saving." }, Cmd.none )
 
-        CloseImage ->
-            ( { model | image = Nothing }, Cmd.none )
-
         Collapse ->
             ( { model | composerExpanded = not model.composerExpanded }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
 
@@ -1301,7 +1286,7 @@ view model =
             button [ class "icon", A.type_ "button", attribute "aria-label" label, A.title label, onClick action ] [ Icon.view name ]
 
         message msg =
-            Transcript.viewMessage model.path Toggle opened state.tools True msg
+            Transcript.viewMessage state.metadata.hideImages model.path Toggle opened state.tools True msg
 
         live =
             section [ id "live", attribute "aria-label" "Live output" ]
@@ -1337,7 +1322,7 @@ view model =
                             (message item)
                     )
                     state.live.messages
-                    ++ List.map (Transcript.blockView model.path Toggle opened state.tools << Protocol.ToolRef) state.live.tools
+                    ++ List.map (Transcript.blockView state.metadata.hideImages model.path Toggle opened state.tools << Protocol.ToolRef) state.live.tools
                     ++ List.map
                         (\item ->
                             let
@@ -1386,7 +1371,7 @@ view model =
                                               else
                                                 button [ class "icon", attribute "aria-label" "Cancel queued message", onClick (Command "cancel" (String.fromInt item.id)) ] [ text "×" ]
                                             ]
-                                        , div [] (List.map (Transcript.blockView model.path Toggle opened state.tools) item.blocks)
+                                        , div [] (List.map (Transcript.blockView state.metadata.hideImages model.path Toggle opened state.tools) item.blocks)
                                         ]
                                 )
                                 state.queue
@@ -1511,7 +1496,7 @@ view model =
                     text ""
 
         body =
-            [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy7 viewTranscript model.path opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
+            [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy8 viewTranscript state.metadata.hideImages model.path opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
             , queue
             , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
                 [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
@@ -1691,7 +1676,7 @@ view model =
                         ]
 
                     else
-                        body ++ [ Maybe.map (\src -> Html.node "dialog" [ id "image-dialog", preventDefaultOn "cancel" (D.succeed ( CloseImage, True )) ] [ Html.img [ A.src src, A.alt "Attachment" ] [], button [ onClick CloseImage ] [ text "Close image" ] ]) model.image |> Maybe.withDefault (text "") ]
+                        body
                    )
             )
         ]
@@ -1760,9 +1745,9 @@ branchPanel path branches =
         [ Html.ul [ id "branch-tree" ] (rows Nothing) ]
 
 
-viewTranscript : String -> Dict String Bool -> String -> Maybe Int -> Dict Int Protocol.Entry -> Dict String Protocol.Tool -> Dict String Int -> Html Msg
-viewTranscript path =
-    Transcript.transcript path Toggle
+viewTranscript : Bool -> String -> Dict String Bool -> String -> Maybe Int -> Dict Int Protocol.Entry -> Dict String Protocol.Tool -> Dict String Int -> Html Msg
+viewTranscript hideImages path =
+    Transcript.transcript hideImages path Toggle
 
 
 highlight : Model -> Cmd Msg

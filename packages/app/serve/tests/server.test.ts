@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -380,6 +380,7 @@ await test("built browser assets preserve module formats and selected highlight 
     "bash",
     "css",
     "diff",
+    "elm",
     "go",
     "javascript",
     "json",
@@ -1141,30 +1142,13 @@ await test("server registers built-in models from environment credentials withou
 
 await test("conversation file previews read the bound environment without changing model context", async (t) => {
   const f = await fixture(t);
-  class ObservedEnv extends NodeExecutionEnv {
-    opened = 0;
-    closed = 0;
-    override async openBinaryReader(...args: Parameters<NodeExecutionEnv["openBinaryReader"]>) {
-      const result = await super.openBinaryReader(...args);
-      if (result.ok) {
-        this.opened++;
-        const close = result.value.close.bind(result.value);
-        result.value.close = async (context) => {
-          await close(context);
-          this.closed++;
-        };
-      }
-      return result;
-    }
-  }
-  const env = new ObservedEnv({ cwd: f.workspace });
-  await f.reopen({ env: () => env });
   const session = await f.create();
   const base = await serve(t, f.sessions);
   const url = base + conversationURL(session);
   const image = await readFile(new URL("../icon-192.png", import.meta.url));
   await writeFile(join(f.workspace, "image.bin"), image);
   await writeFile(join(f.workspace, "source.ts"), "export const value = 1;\n");
+  await writeFile(join(f.workspace, "unknown.constructor"), "plain text");
   await writeFile(
     join(f.workspace, "active.svg"),
     '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
@@ -1186,7 +1170,13 @@ await test("conversation file previews read the bound environment without changi
     assert.equal(response.headers.get("Content-Type"), "image/png");
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), expected);
   }
-  for (const path of ["source.ts", "active.svg", "large-text", "many-lines"]) {
+  for (const path of [
+    "source.ts",
+    "active.svg",
+    "large-text",
+    "many-lines",
+    "unknown.constructor",
+  ]) {
     const source = await fetch(`${url}/file?path=${path}`);
     assert.equal(source.status, 200);
     assert.equal(source.headers.get("Content-Type"), "text/html; charset=utf-8");
@@ -1207,8 +1197,70 @@ await test("conversation file previews read the bound environment without changi
       .status,
     403,
   );
-  assert.equal(env.opened, env.closed);
-  assert(env.opened > 0);
   assert.deepEqual(await readHistory(session.root), before);
   assert.deepEqual(await session.root.context(context), modelContext);
+});
+
+await test("file previews revalidate actual response content across edits and cwd changes", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const base = await serve(t, f.sessions);
+  const url = base + conversationURL(session) + "/file?path=";
+  const image = await readFile(new URL("../icon-192.png", import.meta.url));
+  await writeFile(join(f.workspace, "image.png"), image);
+  const sourcePath = join(f.workspace, "source.ts");
+  await writeFile(sourcePath, "one\n");
+  await utimes(sourcePath, new Date(0), new Date(0));
+  for (const path of ["image.png", "source.ts"]) {
+    const first = await fetch(url + path);
+    assert.equal(first.status, 200);
+    assert.equal(first.headers.get("cache-control"), "private, no-cache");
+    const etag = first.headers.get("etag");
+    assert(etag);
+    const bytes = await first.arrayBuffer();
+    for (const condition of [etag, `W/${etag}`, `"other,tag", W/${etag}`, "*"]) {
+      const cached = await fetch(url + path, { headers: { "If-None-Match": condition } });
+      assert.equal(cached.status, 304);
+      assert.equal(cached.headers.get("etag"), etag);
+      assert.equal(cached.headers.get("cache-control"), "private, no-cache");
+      assert.equal((await cached.arrayBuffer()).byteLength, 0);
+    }
+    const fresh = await fetch(url + path, { headers: { "If-None-Match": '"different"' } });
+    assert.equal(fresh.status, 200);
+    assert.equal(fresh.headers.get("etag"), etag);
+    assert.deepEqual(await fresh.arrayBuffer(), bytes);
+  }
+  const original = await fetch(url + "source.ts");
+  const originalTag = original.headers.get("etag");
+  assert(originalTag);
+  await original.arrayBuffer();
+  // Source views include the displayed path: hash rendered HTML, not just file bytes.
+  const alias = await fetch(url + encodeURIComponent(sourcePath));
+  assert.equal(alias.status, 200);
+  assert.notEqual(alias.headers.get("etag"), originalTag);
+  await alias.arrayBuffer();
+  const before = await stat(sourcePath);
+  await writeFile(sourcePath, "two\n");
+  await utimes(sourcePath, before.atime, before.mtime);
+  const after = await stat(sourcePath);
+  assert.equal(after.size, before.size);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+  const changed = await fetch(url + "source.ts", { headers: { "If-None-Match": originalTag } });
+  assert.equal(changed.status, 200);
+  const changedTag = changed.headers.get("etag");
+  assert(changedTag);
+  assert.notEqual(changedTag, originalTag);
+  await changed.arrayBuffer();
+  await mkdir(join(f.workspace, "nested"));
+  await writeFile(join(f.workspace, "nested", "source.ts"), "new cwd\n");
+  await runtime.changeDirectory(session, "nested", session.root, context);
+  const moved = await fetch(url + "source.ts", { headers: { "If-None-Match": changedTag } });
+  assert.equal(moved.status, 200);
+  assert.notEqual(moved.headers.get("etag"), changedTag);
+  await moved.arrayBuffer();
+  await rm(join(f.workspace, "nested", "source.ts"));
+  const missing = await fetch(url + "source.ts", { headers: { "If-None-Match": "*" } });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get("etag"), null);
+  assert.equal(missing.headers.get("cache-control"), "no-store");
 });
