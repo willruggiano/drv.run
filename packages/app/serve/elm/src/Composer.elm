@@ -1,9 +1,11 @@
-module Composer exposing (Config, Submission(..), dot, metadata, modelDetails, shell, view)
+module Composer exposing (Config, Submission(..), dot, metadata, modelDetails, preview, shell, view)
 
+import File exposing (File)
 import Html exposing (Attribute, Html, button, div, fieldset, form, img, span, text, textarea)
 import Html.Attributes as A exposing (attribute, class, id)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Icon
+import Task exposing (Task)
 
 
 type Submission msg
@@ -69,7 +71,7 @@ view config =
                         )
                     |> Maybe.withDefault []
                 )
-            , div [ id "previews", attribute "aria-label" "Attached images" ]
+            , div [ id "previews", attribute "aria-label" "Attached files" ]
                 (List.map
                     (\attachment ->
                         button
@@ -85,7 +87,12 @@ view config =
                             , A.disabled config.editingDisabled
                             , onClick attachment.remove
                             ]
-                            [ img [ A.src attachment.url, A.alt attachment.name ] [] ]
+                            [ if String.isEmpty attachment.url then
+                                text attachment.name
+
+                              else
+                                img [ A.src attachment.url, A.alt attachment.name ] []
+                            ]
                     )
                     config.attachments
                 )
@@ -163,3 +170,12 @@ metadata content =
                 ++ content.after
             )
         ]
+
+
+preview : File -> Task Never String
+preview file =
+    if List.member (File.mime file) [ "image/png", "image/jpeg", "image/gif", "image/webp" ] then
+        File.toUrl file
+
+    else
+        Task.succeed ""

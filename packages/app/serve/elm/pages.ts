@@ -68,7 +68,7 @@ export async function pages(
   }
   if (!landing && path !== "/settings") return false;
   if (request.method === "POST") {
-    const data = await form(request, 8 * 1024 * 1024);
+    const data = await form(request, landing ? Infinity : 8 * 1024 * 1024);
     if (landing) {
       const session = await createSession(data, sessions, context);
       json(response, { path: conversationURL(session) });

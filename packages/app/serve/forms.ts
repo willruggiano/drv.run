@@ -11,7 +11,7 @@ import {
   type Selection,
 } from "./settings.ts";
 import type { IncomingMessage } from "node:http";
-import type { UserInput } from "@earendil-works/pi-durable";
+import type { InputSubmissionDraft, UserInput } from "@earendil-works/pi-durable";
 
 export class FormError extends Error {
   readonly status: number;
@@ -56,25 +56,43 @@ export function field(data: FormData, key: string, max = 100_000): string {
   return value.replace(/\r\n?/g, "\n");
 }
 
-export async function inputContent(data: FormData): Promise<UserInput | undefined> {
+export async function inputContent(
+  data: FormData,
+): Promise<Pick<InputSubmissionDraft, "content" | "entry"> | undefined> {
   const text = data.has("content") ? field(data, "content") : "";
-  const images: Exclude<UserInput, string> = [];
-  let size = 0;
-  for (const file of data.getAll("images")) {
-    if (typeof file === "string") throw new FormError(400, "Invalid image.");
-    if (!file.size) continue;
-    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type))
-      throw new FormError(400, "Unsupported image type.");
-    size += file.size;
-    images.push({
-      type: "image",
-      mimeType: file.type,
-      data: Buffer.from(await file.arrayBuffer()).toString("base64"),
-    });
+  const content: Exclude<UserInput, string> = [{ type: "text", text }];
+  const attachments: { name: string; mimeType: string; size: number; block: number }[] = [];
+  for (const file of data.getAll("files")) {
+    if (typeof file === "string") throw new FormError(400, "Invalid attachment.");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const block = content.length;
+    if (/^image\/(png|jpeg|gif|webp)$/.test(file.type)) {
+      content.push({
+        type: "image",
+        mimeType: file.type,
+        data: Buffer.from(bytes).toString("base64"),
+      });
+    } else {
+      let decoded: string;
+      try {
+        decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        throw new FormError(400, "Attach UTF-8 text files or PNG, JPEG, GIF or WebP images.");
+      }
+      for (const character of decoded) {
+        const code = character.charCodeAt(0);
+        if ((code < 32 && ![9, 10, 12, 13].includes(code)) || code === 127)
+          throw new FormError(400, "Attach UTF-8 text files or PNG, JPEG, GIF or WebP images.");
+      }
+      content.push({ type: "text", text: `File: ${JSON.stringify(file.name)}\n\n${decoded}` });
+    }
+    attachments.push({ name: file.name, mimeType: file.type, size: file.size, block });
   }
-  if (images.length > 4 || size > 5 * 1024 * 1024)
-    throw new FormError(400, "Attach up to four images, totaling at most 5 MiB.");
-  return images.length ? [{ type: "text", text }, ...images] : text.trim() ? text : undefined;
+  return attachments.length
+    ? { content, entry: { kind: "app.attachments", data: { attachments } } }
+    : text.trim()
+      ? { content: text }
+      : undefined;
 }
 
 export async function saveSessionSettings(
@@ -118,8 +136,8 @@ export async function createSession(
   if (data.has("command")) {
     if (
       field(data, "command", 20) !== "new" ||
-      typeof content !== "string" ||
-      content.trim() !== "/new"
+      typeof content?.content !== "string" ||
+      content.content.trim() !== "/new"
     )
       throw new FormError(400, "Invalid creation command.");
     content = undefined;
@@ -135,7 +153,7 @@ export async function createSession(
     target.directoryRoot ? baseDirectory : baseDirectory || undefined,
   );
   if (content !== undefined)
-    await session.root.submit({ type: "input", content, requestId }, context);
+    await session.root.submit({ type: "input", ...content, requestId }, context);
   return session;
 }
 export async function saveGlobalSettings(

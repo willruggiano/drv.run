@@ -402,7 +402,7 @@ request path pending =
 
         body =
             if pending.command == "submit" then
-                Http.multipartBody (List.map (\( k, v ) -> Http.stringPart k v) fields ++ List.map (\attachment -> Http.filePart "images" attachment.file) pending.files)
+                Http.multipartBody (List.map (\( k, v ) -> Http.stringPart k v) fields ++ List.map (\attachment -> Http.filePart "files" attachment.file) pending.files)
 
             else
                 Http.jsonBody (E.object (List.map (\( k, v ) -> ( k, E.string v )) fields))
@@ -815,7 +815,7 @@ update msg model =
                         reason =
                             case result of
                                 Ok False ->
-                                    "The original submission is not recorded yet. Its images are unavailable after reload; do not resend it as text. Check again, or explicitly dismiss the uncertainty before composing a new input."
+                                    "The original submission is not recorded yet. Its files are unavailable after reload; do not resend it as text. Check again, or explicitly dismiss the uncertainty before composing a new input."
 
                                 _ ->
                                     "Could not check the original submission. Its outcome remains uncertain."
@@ -871,7 +871,7 @@ update msg model =
                                 )
 
         PickFiles ->
-            ( model, File.Select.files [ "image/png", "image/jpeg", "image/gif", "image/webp" ] AddedFiles )
+            ( model, File.Select.files [] AddedFiles )
 
         AddedFiles first rest ->
             let
@@ -881,21 +881,13 @@ update msg model =
                 current =
                     (draftFor model).files
 
-                allowed file =
-                    List.member (File.mime file) [ "image/png", "image/jpeg", "image/gif", "image/webp" ]
+                additions =
+                    List.indexedMap (\index file -> { id = model.nonce ++ ".file." ++ String.fromInt (model.counter + 1) ++ "." ++ String.fromInt index, file = file, url = "" }) files
+
+                ( updated, cmd ) =
+                    changeDraft (\draft -> { draft | files = current ++ additions, missingFiles = False }) model
             in
-            if List.length files + List.length current > 4 || List.sum (List.map File.size files ++ List.map (.file >> File.size) current) > 5 * 1024 * 1024 || not (List.all allowed files) then
-                ( { model | error = "Attach up to four PNG, JPEG, GIF or WebP images, totaling at most 5 MiB." }, Cmd.none )
-
-            else
-                let
-                    additions =
-                        List.indexedMap (\index file -> { id = model.nonce ++ ".file." ++ String.fromInt (model.counter + 1) ++ "." ++ String.fromInt index, file = file, url = "" }) files
-
-                    ( updated, cmd ) =
-                        changeDraft (\draft -> { draft | files = draft.files ++ additions, missingFiles = False }) model
-                in
-                ( updated, Cmd.batch (cmd :: List.map (\attachment -> Task.perform (Preview model.path attachment.id) (File.toUrl attachment.file)) additions) )
+            ( updated, Cmd.batch (cmd :: List.map (\attachment -> Task.perform (Preview model.path attachment.id) (Composer.preview attachment.file)) additions) )
 
         Preview path key url ->
             let
@@ -1523,7 +1515,7 @@ view model =
                     [ Maybe.map confirmationComposer model.confirmation |> Maybe.withDefault composer
                     , pendingError
                     , if draft.missingFiles then
-                        p [ class "notice" ] [ text "Images cannot be restored after reload. Check history before resubmitting an uncertain image request. Reselect images or ", button [ onClick DiscardMissingFiles ] [ text "Discard missing attachments" ] ]
+                        p [ class "notice" ] [ text "Files cannot be restored after reload. Check history before resubmitting an uncertain file request. Reselect files or ", button [ onClick DiscardMissingFiles ] [ text "Discard missing attachments" ] ]
 
                       else
                         text ""

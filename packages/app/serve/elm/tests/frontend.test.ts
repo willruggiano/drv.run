@@ -16,6 +16,7 @@ import {
   targetKey,
 } from "../../tests/testing.ts";
 import { GlobalSettingsStore } from "../../server.ts";
+import { inputContent, FormError } from "../../forms.ts";
 import { sessionInfo } from "../../sessions.ts";
 import { conversationURL } from "../../presentation.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
@@ -138,26 +139,67 @@ await test("Elm receipts acknowledge admission without mutating state or exposin
   assert.equal(commits, 0);
 });
 
-await test("Elm rejects invalid multipart attachments without admitting inputs", async (t) => {
+await test("attachments decode text, retain images and preserve file metadata", async () => {
+  const data = new FormData();
+  const files = [
+    new File(["# Markdown\n"], "notes.md", { type: "text/markdown" }),
+    new File(['{"ok":true}'], "data.json", { type: "application/json" }),
+    new File(["λ\r\n"], "unknown", { type: "application/octet-stream" }),
+    new File([], "empty.txt"),
+    new File([new Uint8Array([0, 255, 1])], "image.png", { type: "image/png" }),
+  ];
+  for (const file of files) data.append("files", file);
+  assert.deepEqual(await inputContent(data), {
+    content: [
+      { type: "text", text: "" },
+      { type: "text", text: 'File: "notes.md"\n\n# Markdown\n' },
+      { type: "text", text: 'File: "data.json"\n\n{"ok":true}' },
+      { type: "text", text: 'File: "unknown"\n\nλ\r\n' },
+      { type: "text", text: 'File: "empty.txt"\n\n' },
+      { type: "image", mimeType: "image/png", data: "AP8B" },
+    ],
+    entry: {
+      kind: "app.attachments",
+      data: {
+        attachments: files.map((file, index) => ({
+          name: file.name,
+          mimeType: file.type,
+          size: file.size,
+          block: index + 1,
+        })),
+      },
+    },
+  });
+  assert.equal(await inputContent(new FormData()), undefined);
+  const text = new FormData();
+  text.set("content", "Plain message");
+  assert.deepEqual(await inputContent(text), { content: "Plain message" });
+});
+
+await test("Elm rejects malformed and binary attachments without admitting inputs", async (t) => {
   const f = await fixture(t);
   const session = await f.create();
   const base = await serve(t, f.sessions);
-  for (const [count, size, type] of [
-    [5, 1, "image/png"],
-    [1, 5 * 1024 * 1024 + 1, "image/png"],
-    [1, 1, "text/plain"],
-  ] as const) {
+  for (const file of [
+    "not a file",
+    new File([new Uint8Array([0xff])], "invalid.txt", { type: "text/plain" }),
+    new File([new Uint8Array([0])], "binary.json", { type: "application/json" }),
+  ]) {
     const data = new FormData();
     for (const [key, value] of Object.entries({
       command: "submit",
-      requestId: "invalid-image",
+      requestId: "invalid-file",
       revision: "draft",
       content: "No effect",
       whenBusy: "reject",
     }))
       data.set(key, value);
-    for (let i = 0; i < count; i++)
-      data.append("images", new Blob([new Uint8Array(size)], { type }), `file${i}`);
+    data.append("files", new File(["Valid text"], "valid.txt"));
+    data.append("files", file);
+    await assert.rejects(
+      inputContent(data),
+      (error) => error instanceof FormError && error.status === 400,
+    );
     assert.equal(
       (
         await fetch(base + conversationURL(session) + "/command", {
@@ -170,6 +212,72 @@ await test("Elm rejects invalid multipart attachments without admitting inputs",
     );
   }
   assert.deepEqual(await readHistory(session.root), []);
+});
+
+await test("Elm persists attachment entries on creation and submission without count or size limits", async (t) => {
+  for (const creating of [false, true])
+    await t.test(creating ? "creation" : "conversation", async (t) => {
+      const f = await fixture(t);
+      const id = randomUUID();
+      const session = creating ? undefined : await f.create();
+      const base = await serve(t, f.sessions);
+      const url = creating ? base + "/" : base + conversationURL(session!) + "/command";
+      const data = new FormData();
+      for (const [key, value] of Object.entries(
+        creating
+          ? {
+              id,
+              requestId: "files",
+              target: targetKey(f.binding),
+              model: modelKey(model),
+            }
+          : {
+              command: "submit",
+              requestId: "files",
+              revision: "draft",
+              whenBusy: "reject",
+            },
+      ))
+        data.set(key, value);
+      // Cross both the old attachment limit and the old HTTP body limit.
+      const text = "x".repeat(8 * 1024 * 1024 + 1);
+      data.append("files", new Blob([text], { type: "text/markdown" }), "notes.md");
+      for (let index = 0; index < 5; index++)
+        data.append(
+          "files",
+          new Blob(['{"ok":true}'], { type: "application/json" }),
+          `data${index}.json`,
+        );
+      f.faux.setResponses([fauxAssistantMessage("Received")]);
+      const send = () => fetch(url, { method: "POST", headers: { Origin: base }, body: data });
+      assert.equal((await send()).status, 200);
+      const current = session ?? (await f.sessions.get(id));
+      await current.root.waitForIdle(BACKGROUND_CONTEXT);
+      const records = await readHistory(current.root);
+      const entry = records.find((entry) => entry.kind === "app.attachments");
+      assert(entry);
+      assert.deepEqual(entry.data, {
+        attachments: [
+          { name: "notes.md", mimeType: "text/markdown", size: Buffer.byteLength(text), block: 1 },
+          ...Array.from({ length: 5 }, (_, index) => ({
+            name: `data${index}.json`,
+            mimeType: "application/json",
+            size: 11,
+            block: index + 2,
+          })),
+        ],
+      });
+      const message = entry.model?.[0];
+      assert(message?.role === "user" && Array.isArray(message.content));
+      assert.equal(message.content.length, 7);
+      assert.deepEqual(message.content[1], { type: "text", text: `File: "notes.md"\n\n${text}` });
+      assert.equal((await send()).status, 200);
+      assert.deepEqual(await readHistory(current.root), records);
+      assert.equal(f.faux.state.callCount, 1);
+      await f.reopen();
+      const reopened = await f.sessions.get(current.id);
+      assert.deepEqual(await readHistory(reopened.root), records);
+    });
 });
 
 await test("Elm releases early-disconnected watches and bounds pending entries during initialization", async (t) => {

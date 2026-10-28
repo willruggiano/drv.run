@@ -93,6 +93,18 @@ tests =
                     , \_ -> view |> Query.find [ S.id "send" ] |> Event.simulate Event.click |> Event.expect Send
                     ]
                     ()
+        , test "text attachments have no image preview and share the upload button" <|
+            \_ ->
+                let
+                    view =
+                        render { config | attachments = [ { name = "notes.md", url = "", remove = Remove } ] }
+                in
+                Expect.all
+                    [ \_ -> view |> Query.findAll [ S.id "input-toggle" ] |> Query.count (Expect.equal 1)
+                    , \_ -> view |> Query.find [ S.id "previews" ] |> Query.hasNot [ S.tag "img" ]
+                    , \_ -> view |> Query.find [ S.id "previews" ] |> Query.find [ S.tag "button" ] |> Event.simulate Event.click |> Event.expect Remove
+                    ]
+                    ()
         , test "creation can retry its frozen input while conversation drafts remain editable" <|
             \_ ->
                 let

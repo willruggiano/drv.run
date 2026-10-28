@@ -213,7 +213,7 @@ export async function elmFrontend(
       if (typeof value !== "string") throw new FormError(400, "Expected string fields.");
       data.set(key, value);
     }
-  } else data = await form(request, 8 * 1024 * 1024);
+  } else data = await form(request, Infinity);
   const command = field(data, "command", 20);
   const requestId = field(data, "requestId", 200);
   const revision = field(data, "revision", 200);
@@ -223,11 +223,11 @@ export async function elmFrontend(
     if (data.has("content") && field(data, "content").trimStart().startsWith("/"))
       throw new FormError(400, "Slash commands must use the command interface.");
     const content = await inputContent(data);
-    if (content === undefined) throw new FormError(400, "Enter a message or attach an image.");
+    if (content === undefined) throw new FormError(400, "Enter a message or attach a file.");
     const mode = field(data, "whenBusy", 20);
     if (mode !== "reject" && mode !== "steer" && mode !== "followUp")
       throw new FormError(400, "Invalid submission mode.");
-    await conversation.submit({ type: "input", requestId, content, whenBusy: mode }, context);
+    await conversation.submit({ type: "input", requestId, ...content, whenBusy: mode }, context);
   } else if (command === "new") {
     const info = await sessionInfo(session, conversation, undefined, context);
     if (!info.binding || !info.model) throw new FormError(409, "Target or model is unavailable.");

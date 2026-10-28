@@ -1157,7 +1157,7 @@ await test(
 );
 
 await test(
-  "Elm enforces attachment limits and preserves files through a failed request and retry",
+  "Elm attaches text and images together and preserves files through a failed request and retry",
   { timeout: 45000 },
   async (t) => {
     const f = await fixture(t);
@@ -1166,30 +1166,24 @@ await test(
     const page = b.page;
     page.setDefaultTimeout(10000);
     await page.goto(b.base + conversationURL(session));
-    for (const [count, size, type] of [
-      [5, 1, "image/png"],
-      [1, 5 * 1024 * 1024 + 1, "image/png"],
-      [1, 1, "text/plain"],
-    ] as const) {
-      await page.evaluate(
-        ({ count, size, type }) => {
-          const transfer = new DataTransfer();
-          for (let i = 0; i < count; i++)
-            transfer.items.add(new File([new Uint8Array(size)], `file${i}`, { type }));
-          document
-            .getElementById("prompt")!
-            .dispatchEvent(
-              new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }),
-            );
-        },
-        { count, size, type },
-      );
-      await page.locator("#request-error").waitFor();
-      assert.equal(await page.locator("#previews img").count(), 0);
-      // A fresh revision clears the previous error before the next case.
-      await page.locator("#prompt").fill(String(size) + type);
-    }
-    await page.locator("#prompt").fill("Retry with the original image");
+    assert.equal(await page.getByRole("button", { name: "Upload attachments" }).count(), 1);
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Upload attachments" }).click();
+    const picker = await chooser;
+    assert.equal(await picker.element().getAttribute("accept"), "");
+    await picker.setFiles([
+      ...Array.from({ length: 5 }, (_, index) => ({
+        name: `data${index}.json`,
+        mimeType: "application/json",
+        buffer: Buffer.from('{"ok":true}'),
+      })),
+      { name: "large.txt", mimeType: "text/plain", buffer: Buffer.alloc(5 * 1024 * 1024 + 1, "x") },
+    ]);
+    await page.locator("#previews button").nth(5).waitFor();
+    await page.locator("#previews button").nth(5).click();
+    await page.locator("#previews button").nth(5).waitFor({ state: "detached" });
+    assert.equal(await page.locator("#previews img").count(), 0);
+    await page.locator("#prompt").fill("Retry with the original files");
     await page.evaluate(async () => {
       const transfer = new DataTransfer();
       transfer.items.add(
@@ -1208,7 +1202,7 @@ await test(
     assert.equal(await page.locator("#previews img").count(), 1);
     assert.deepEqual(await readHistory(session.root), []);
     await page.unroute("**/command");
-    f.faux.setResponses([fauxAssistantMessage("Retried image")]);
+    f.faux.setResponses([fauxAssistantMessage("Retried files")]);
     await page.getByRole("button", { name: "Retry original input" }).click();
     await page.waitForFunction(
       () => document.querySelector<HTMLTextAreaElement>("#prompt")?.value === "",
@@ -1219,6 +1213,14 @@ await test(
       .find((message) => message.role === "user");
     assert(user && Array.isArray(user.content));
     assert.equal(user.content.filter((part) => part.type === "image").length, 1);
+    assert.equal(user.content.filter((part) => part.type === "text").length, 6);
+    assert.deepEqual(user.content[1], { type: "text", text: 'File: "data0.json"\n\n{"ok":true}' });
+    const entry = (await readHistory(session.root)).find(
+      (entry) => entry.kind === "app.attachments",
+    );
+    assert(entry && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data));
+    assert(Array.isArray(entry.data.attachments));
+    assert.equal(entry.data.attachments.length, 6);
     assert.deepEqual(b.errors, []);
   },
 );
@@ -1399,6 +1401,65 @@ await test(
     await page.waitForFunction(
       () => document.getElementById("conversation-scroll")?.scrollTop === 120,
     );
+    assert.deepEqual(b.errors, []);
+  },
+);
+
+await test(
+  "Elm creates sessions with text attachments through the single upload button",
+  { timeout: 45000 },
+  async (t) => {
+    const f = await fixture(t);
+    const b = await browserFixture(t, f.sessions);
+    const page = b.page;
+    page.setDefaultTimeout(10000);
+    await page.goto(b.base + "/");
+    const upload = page.getByRole("button", { name: "Upload attachments" });
+    assert.equal(await upload.count(), 1);
+    const chooser = page.waitForEvent("filechooser");
+    await upload.click();
+    const picker = await chooser;
+    assert.equal(await picker.element().getAttribute("accept"), "");
+    await picker.setFiles({
+      name: "notes.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from("# Notes"),
+    });
+    await page.getByRole("button", { name: "Remove notes.md" }).waitFor();
+    assert.equal(await page.locator("#previews img").count(), 0);
+    await page.getByRole("button", { name: "Remove notes.md" }).click();
+    assert.equal(await page.locator("#previews button").count(), 0);
+    await page.evaluate(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["# Notes"], "notes.md", { type: "text/markdown" }));
+      document.getElementById("prompt")!.dispatchEvent(
+        new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: transfer,
+        }),
+      );
+    });
+    await page.getByRole("button", { name: "Remove notes.md" }).waitFor();
+    f.faux.setResponses([fauxAssistantMessage("Received notes")]);
+    await page.getByRole("button", { name: "Create session", exact: true }).click();
+    await page.waitForURL("**/sessions/*/conversations/*");
+    const id = new URL(page.url()).pathname.split("/")[2];
+    const session = await f.sessions.get(id);
+    await session.root.waitForIdle(context);
+    const entry = (await readHistory(session.root)).find(
+      (entry) => entry.kind === "app.attachments",
+    );
+    assert(entry);
+    assert.deepEqual(entry.data, {
+      attachments: [{ name: "notes.md", mimeType: "text/markdown", size: 7, block: 1 }],
+    });
+    const message = entry.model?.[0];
+    assert(message?.role === "user");
+    assert.deepEqual(message.content, [
+      { type: "text", text: "" },
+      { type: "text", text: 'File: "notes.md"\n\n# Notes' },
+    ]);
     assert.deepEqual(b.errors, []);
   },
 );

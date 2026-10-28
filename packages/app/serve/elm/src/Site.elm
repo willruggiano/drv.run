@@ -503,7 +503,7 @@ update msg model =
                                          else
                                             values
                                         )
-                                        ++ List.map (\item -> Http.filePart "images" item.file) model.files
+                                        ++ List.map (\item -> Http.filePart "files" item.file) model.files
                                     )
                                     model.pending
                         in
@@ -553,22 +553,17 @@ update msg model =
                     )
 
         PickFiles ->
-            ( model, File.Select.files [ "image/png", "image/jpeg", "image/gif", "image/webp" ] Files )
+            ( model, File.Select.files [] Files )
 
         Files first rest ->
             let
                 files =
                     first :: rest
-            in
-            if List.length files + List.length model.files > 4 || List.sum (List.map File.size files ++ List.map (.file >> File.size) model.files) > 5 * 1024 * 1024 || not (List.all (\file -> List.member (File.mime file) [ "image/png", "image/jpeg", "image/gif", "image/webp" ]) files) then
-                ( { model | error = "Attach up to four PNG, JPEG, GIF or WebP images, totaling at most 5 MiB." }, Cmd.none )
 
-            else
-                let
-                    updated =
-                        { model | files = model.files ++ List.map (\file -> { file = file, url = "" }) files, missingFiles = False }
-                in
-                ( updated, Cmd.batch (persist updated :: List.map (\file -> Task.perform (Preview file) (File.toUrl file)) files) )
+                updated =
+                    { model | files = model.files ++ List.map (\file -> { file = file, url = "" }) files, missingFiles = False }
+            in
+            ( updated, Cmd.batch (persist updated :: List.map (\file -> Task.perform (Preview file) (Composer.preview file)) files) )
 
         Preview file url ->
             ( { model
@@ -801,7 +796,7 @@ view model =
                             , submitDisabled = model.busy || catalog.options.model == "" || catalog.options.target == ""
                             }
                         , if model.missingFiles then
-                            p [ class "notice" ] [ text "Images cannot be restored after reload. ", button [ onClick DiscardFiles ] [ text "Discard missing attachments" ] ]
+                            p [ class "notice" ] [ text "Files cannot be restored after reload. ", button [ onClick DiscardFiles ] [ text "Discard missing attachments" ] ]
 
                           else
                             text ""
