@@ -121,7 +121,7 @@ inline conversationPath source =
                                 text match
 
                             else if image then
-                                img [ class "transcript-image", A.alt label, A.src (conversationPath ++ "/image?path=" ++ Url.percentEncode path) ] []
+                                img [ class "transcript-image", A.alt label, A.src (conversationPath ++ "/file?path=" ++ Url.percentEncode path) ] []
 
                             else
                                 link (conversationPath ++ "/file?path=" ++ Url.percentEncode path ++ fragment)

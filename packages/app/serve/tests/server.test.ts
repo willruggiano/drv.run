@@ -1181,22 +1181,18 @@ await test("conversation file previews read the bound environment without changi
     [join(f.workspace, "image.bin"), image],
     ["large-image.bin", largeImage],
   ] as const) {
-    for (const operation of ["image", "file"]) {
-      const response = await fetch(`${url}/${operation}?path=${encodeURIComponent(path)}`);
-      assert.equal(response.status, 200);
-      assert.equal(response.headers.get("Content-Type"), "image/png");
-      assert.deepEqual(Buffer.from(await response.arrayBuffer()), expected);
-    }
+    const response = await fetch(`${url}/file?path=${encodeURIComponent(path)}`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), "image/png");
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), expected);
   }
-  for (const path of ["source.ts", "large-text", "many-lines"]) {
+  for (const path of ["source.ts", "active.svg", "large-text", "many-lines"]) {
     const source = await fetch(`${url}/file?path=${path}`);
     assert.equal(source.status, 200);
     assert.equal(source.headers.get("Content-Type"), "text/html; charset=utf-8");
     await source.arrayBuffer();
   }
   for (const [suffix, status] of [
-    ["image?path=source.ts", 415],
-    ["image?path=active.svg", 415],
     ["file?path=binary", 415],
     ["file?path=missing", 404],
     ["file?path=.", 400],
@@ -1207,7 +1203,7 @@ await test("conversation file previews read the bound environment without changi
     assert.equal((await fetch(`${url}/${suffix}`)).status, status, suffix);
   }
   assert.equal(
-    (await fetch(`${url}/image?path=image.bin`, { headers: { Origin: "https://other.example" } }))
+    (await fetch(`${url}/file?path=image.bin`, { headers: { Origin: "https://other.example" } }))
       .status,
     403,
   );

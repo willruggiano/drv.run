@@ -27,7 +27,7 @@ tests =
                         \_ ->
                             render ("![Screenshot](" ++ path ++ ")")
                                 |> Query.find [ S.tag "img" ]
-                                |> Query.has [ S.class "transcript-image", S.attribute (A.alt "Screenshot"), S.attribute (A.src ("/sessions/test/conversations/1/image?path=" ++ Url.percentEncode (Url.percentDecode path |> Maybe.withDefault path))) ]
+                                |> Query.has [ S.class "transcript-image", S.attribute (A.alt "Screenshot"), S.attribute (A.src ("/sessions/test/conversations/1/file?path=" ++ Url.percentEncode (Url.percentDecode path |> Maybe.withDefault path))) ]
                 )
                 [ "/tmp/screenshot.png", "screenshots/result.png", "./result.png", "../result.png", "screenshots/with%20spaces%23%3F.png" ]
             )

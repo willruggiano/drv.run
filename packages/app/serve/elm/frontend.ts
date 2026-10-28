@@ -61,7 +61,7 @@ export async function elmFrontend(
     return;
   }
   const match =
-    /^\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|reset|compact|export|directories|archive|file|image))?$/.exec(
+    /^\/sessions\/([^/]+)\/conversations\/(\d+)(?:\/(events|command|completions|receipt|panel|settings|context|branches|tree|reset|compact|export|directories|archive|file))?$/.exec(
       url.pathname,
     );
   if (!match) throw new FormError(404, "Not found.");
@@ -83,7 +83,7 @@ export async function elmFrontend(
     elmDocument(response);
     return;
   }
-  if (request.method === "GET" && (operation === "file" || operation === "image")) {
+  if (request.method === "GET" && operation === "file") {
     const paths = url.searchParams.getAll("path");
     const path = paths[0];
     if (paths.length !== 1 || !path) throw new FormError(400, "Invalid file path.");
@@ -130,7 +130,6 @@ export async function elmFrontend(
       response.end(bytes);
       return;
     }
-    if (operation === "image") throw new FormError(415, "Expected a PNG, JPEG, GIF or WebP image.");
     let source: string;
     try {
       source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
