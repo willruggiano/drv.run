@@ -10,9 +10,11 @@ usage() {
   printf '%s\n' \
     'Usage: drv.run list [-u <user>]' \
     '       drv.run stop [-u <user>] --all|<instance>' \
+    '       drv.run reset [-u <user>] --all|<instance>' \
     '       drv.run clean [-u <user>] --all|<instance>' \
     'Without -u, target all configured instance owners.' \
     'stop stops instances via systemd and retains their state.' \
+    'reset clears the failed state of instances via systemd.' \
     'clean removes instance state via systemd; instances must be stopped.'
 }
 fail() {
@@ -31,7 +33,7 @@ fi
 (($# > 0)) || invalid
 action=$1
 shift
-[[ $action == list || $action == stop || $action == clean ]] || invalid
+[[ $action == list || $action == stop || $action == reset || $action == clean ]] || invalid
 owners=(@owners@)
 if [[ ${1:-} == -u ]]; then
   (($# >= 2)) && [[ -n $2 ]] || invalid
@@ -60,6 +62,11 @@ fi
 
 found=false
 for owner in "${owners[@]}"; do
+  if [[ $action == reset && $target == --all ]]; then
+    # Include failed units even if they have not written durable state.
+    systemctl --user --machine="$owner@.host" reset-failed 'drv.run@*.service'
+    continue
+  fi
   if [[ $action == stop && $target == --all ]]; then
     # Include units still starting, even before they have written durable state.
     systemctl --user --machine="$owner@.host" stop 'drv.run@*.service'
@@ -79,6 +86,8 @@ for owner in "${owners[@]}"; do
       if [[ $action == clean ]]; then
         # Use exact names: stopped instances may be unloaded by systemd.
         systemctl --user --machine="$owner@.host" clean --what=state "$unit"
+      elif [[ $action == reset ]]; then
+        systemctl --user --machine="$owner@.host" reset-failed "$unit"
       else
         systemctl --user --machine="$owner@.host" stop "$unit"
       fi
