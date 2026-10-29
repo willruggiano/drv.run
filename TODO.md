@@ -61,16 +61,22 @@
     tests sub-directory for integration tests + a default.nix for the test
     derivation via `pkgs.callPackage ./packages/durable`, if apropo
 
-References:
+Additional references:
 
 - <https://github.com/mattpocock/skills/tree/main/skills/engineering/improve-codebase-architecture>
 - <https://github.com/sverweij/dependency-cruiser>
-- <https://elm-lang.org/docs> and <https://guide.elm-lang.org/>
-- <https://github.com/sporto/elm-patterns>
-- <https://package.elm-lang.org/help/design-guidelines>
-- <https://github.com/ricardocasares/skills/tree/main/skills/elm/elm-patterns>
-- <https://github.com/elm/package.elm-lang.org/tree/master>: reference, frontend
-  implemented in Elm (interesting to us), backend in Haskell (not as much)
+
+## Performance
+
+- [ ] Build a minimal guest system. IWYU.
+  - Step 1: **measure**. We need to inspect our guest system closure and
+    identify everything in it that we do not need.
+  - Step 2: figure out how to eliminate everything that we don't need.
+  - Might need a explicitly "modular"/not-nixos-modules approach through
+    targetted `imports`;
+  - <https://github.com/NixOS/nixpkgs/blob/master/nixos/doc/manual/development/modular-services.md>
+  - <https://github.com/NixOS/nixpkgs/pull/401751>
+  - <https://github.com/arianvp/server-optimised-nixos/tree/master>
 
 ## Watchlist
 
