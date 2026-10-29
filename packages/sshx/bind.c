@@ -46,7 +46,7 @@ static void check(int result, const char *operation) {
 int main(int argc, char **argv) {
     struct sockaddr_in6 address = {.sin6_family = AF_INET6, .sin6_port = htons(22)};
     if (argc != 2 || getuid() != geteuid() || !endpoint(owners, getuid(), argv[1], &address.sin6_addr)) {
-        fputs("sshx.bind: requires a configured owner and a ten-character instance ID\n", stderr);
+        fputs("sshx.bind: requires a configured owner and a decimal instance ID in 1..4294967295\n", stderr);
         return EXIT_FAILURE;
     }
 

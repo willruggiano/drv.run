@@ -8,6 +8,10 @@ if [[ ! -S $XDG_RUNTIME_DIR/bus ]]; then
   echo 'Error: a running systemd user manager is required for this account' >&2
   exit 1
 fi
+endpoint() {
+  @endpoint@
+}
+
 ref=${SSH_ORIGINAL_COMMAND:-}
 command=
 # Only split the reference boundary; the Guest shell interprets the command.
@@ -36,6 +40,7 @@ if [[ -z $ref ]]; then
       if [[ ${properties[ActiveState]} == failed ]]; then
         printf ' (%s)' "${properties[Result]}"
       fi
+      endpoint "$id"
       printf '\n'
     fi
   done
@@ -47,12 +52,29 @@ if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
 fi
 
 umask 077
-runtime=$(mktemp -d "$XDG_RUNTIME_DIR/drv.run.XXXXXXXXXX")
-unit="drv.run@${runtime##*.}.service"
+state=$(systemd-path user-state-private)
+mkdir -p "$state/drv.run"
+while :; do
+  id=$(shuf --random-source=/dev/urandom -i 1-4294967295 -n 1)
+  instance="$state/drv.run/$id"
+  # Reserve durable state too: stopped instances retain their identity and keys.
+  if mkdir "$instance"; then
+    runtime="$XDG_RUNTIME_DIR/drv.run.$id"
+    if mkdir "$runtime"; then
+      break
+    fi
+    rmdir "$instance"
+    [[ -e $runtime ]] || exit 1
+  elif [[ ! -e $instance ]]; then
+    exit 1
+  fi
+done
+unit="drv.run@$id.service"
 submitted=false
 cleanup() {
   if [[ $submitted == false ]]; then
     rm -rf "$runtime"
+    rmdir "$instance"
   fi
 }
 trap cleanup EXIT
@@ -72,5 +94,7 @@ if ((status != 0)); then
   printf 'Full log: journalctl --user -u %s --no-pager\n' "$unit" >&2
   exit "$status"
 fi
-printf '%s\n' "${runtime##*/}" >&2
+printf '%s' "${runtime##*/}" >&2
+endpoint "$id" >&2
+printf '\n' >&2
 exec ssh -- "${runtime##*/}" "$command"

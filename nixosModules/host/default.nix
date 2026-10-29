@@ -128,7 +128,22 @@
   launcher = pkgs.writeShellApplication {
     name = "drv.run";
     runtimeInputs = with pkgs; [coreutils jq openssh systemd];
-    text = lib.replaceStrings ["@timing@"] [(builtins.readFile ../timing.sh)] (builtins.readFile ./command.sh);
+    text = lib.replaceStrings ["@timing@" "@endpoint@"] [
+      (builtins.readFile ../timing.sh)
+      (
+        if config.services.drv-run.ssh.tailscale.enable
+        then ''
+          [[ $1 =~ ^[1-9][0-9]{0,9}$ ]] && (( $1 <= 4294967295 )) || return 0
+          case $EUID in
+            ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _: ''
+              ${toString config.users.users.${name}.uid}) printf '\tssh root@g-%s.${name}.${config.services.drv-run.ssh.tailscale.domain}' "$1" ;;
+            '')
+            config.services.drv-run.ssh.owners)}
+          esac
+        ''
+        else ":"
+      )
+    ] (builtins.readFile ./command.sh);
   };
 in {
   imports = [../nix.nix ./network.nix ./mitm-proxy.nix ./ssh.nix self.nixosModules.pi];

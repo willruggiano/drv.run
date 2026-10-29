@@ -5,12 +5,11 @@
 
 int main(void) {
     uint64_t suffix;
-    assert(instance_suffix("0000000000", &suffix) && suffix == 1);
-    assert(instance_suffix("000000000A", &suffix) && suffix == 11);
-    assert(instance_suffix("000000000a", &suffix) && suffix == 37);
-    assert(instance_suffix("0000000010", &suffix) && suffix == 63);
-    assert(instance_suffix("zzzzzzzzzz", &suffix) && suffix == UINT64_C(839299365868340224));
-    const char *invalid[] = {"", "000000000", "00000000000", "../0000000", "000000000-", "000000000\n", "000000000\xff"};
+    assert(instance_suffix("1", &suffix) && suffix == 1);
+    assert(instance_suffix("11", &suffix) && suffix == 11);
+    assert(instance_suffix("1000000000", &suffix) && suffix == 1000000000);
+    assert(instance_suffix("4294967295", &suffix) && suffix == UINT32_MAX);
+    const char *invalid[] = {"", "0", "01", "4294967296", "9999999999", "10000000000", "-1", "+1", "1/", "1\n", "1\xff", "abc", "ABC"};
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++)
         assert(!instance_suffix(invalid[i], &suffix));
     const struct owner policy[] = {
@@ -19,17 +18,17 @@ int main(void) {
         {0, NULL},
     };
     struct in6_addr address, expected;
-    assert(endpoint(policy, 1000, "0000000000", &address));
+    assert(endpoint(policy, 1000, "1", &address));
     assert(inet_pton(AF_INET6, "fd42:1:2:3::1", &expected) == 1);
     assert(memcmp(&address, &expected, sizeof(address)) == 0);
-    assert(endpoint(policy, 1001, "0000000000", &address));
+    assert(endpoint(policy, 1001, "1", &address));
     assert(inet_pton(AF_INET6, "fd42:1:2:4::1", &expected) == 1);
     assert(memcmp(&address, &expected, sizeof(address)) == 0);
-    assert(endpoint(policy, 1000, "zzzzzzzzzz", &address));
-    assert(inet_pton(AF_INET6, "fd42:1:2:3:ba5:ca53:92cb:400", &expected) == 1);
+    assert(endpoint(policy, 1000, "4294967295", &address));
+    assert(inet_pton(AF_INET6, "fd42:1:2:3::ffff:ffff", &expected) == 1);
     assert(memcmp(&address, &expected, sizeof(address)) == 0);
-    assert(!endpoint(policy, 0, "0000000000", &address));
-    assert(!endpoint(policy, 1002, "0000000000", &address));
-    assert(!endpoint(policy, 1000, "../0000000", &address));
+    assert(!endpoint(policy, 0, "1", &address));
+    assert(!endpoint(policy, 1002, "1", &address));
+    assert(!endpoint(policy, 1000, "../1", &address));
     return 0;
 }

@@ -3,18 +3,20 @@
 #include <stdint.h>
 #include <string.h>
 
-// Ten base-62 digits fit in 60 bits. Reserve suffix zero for the prefix itself.
+// Canonical decimal IDs map directly to dnsmasq's synthetic IPv6 suffixes.
+// Zero is reserved for the prefix itself.
 static inline bool instance_suffix(const char *id, uint64_t *suffix) {
-    static const char alphabet[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    if (strlen(id) != 10)
+    size_t length = strlen(id);
+    if (length == 0 || length > 10 || id[0] == '0')
         return false;
     uint64_t value = 0;
-    for (size_t i = 0; i < 10; i++) {
-        const char *digit = strchr(alphabet, id[i]);
-        if (!digit)
+    for (size_t i = 0; i < length; i++) {
+        if (id[i] < '0' || id[i] > '9')
             return false;
-        value = value * 62 + (uint64_t) (digit - alphabet);
+        value = value * 10 + (uint64_t) (id[i] - '0');
     }
-    *suffix = value + 1;
+    if (value > UINT32_MAX)
+        return false;
+    *suffix = value;
     return true;
 }

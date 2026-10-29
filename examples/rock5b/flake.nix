@@ -364,6 +364,13 @@
         # (some lines down) an assistant (pi) over private https that executes
         # tools and runs code in a nixos microvm!
         services.drv-run = {
+          ssh = {
+            owners = {
+              me = {};
+              pi = {};
+            };
+            tailscale.enable = true;
+          };
           guest.extraModules = [
             {
               microvm.vcpu = 4;
@@ -594,6 +601,8 @@
         services.openssh = {
           enable = true;
           openFirewall = true;
+          # Guest endpoints own IPv6 port 22; host access stays on IPv4.
+          listenAddresses = [{addr = "0.0.0.0";}];
           settings = {
             AuthenticationMethods = "publickey";
             PermitRootLogin = "prohibit-password";

@@ -174,26 +174,26 @@ in {
         "install -m 600 ${keys.snakeOilEd25519PrivateKey} /root/wrong-key",
     )
     machine.succeed("printf '%s\\n' " + shlex.quote("fd42:1:2:3::1 ${keys.snakeOilEd25519PublicKey}") + " > /root/known_hosts")
-    first = "drv.run@0000000000.service"
-    exposure = "drv-run-ssh@0000000000.service"
-    second = "drv.run@0000000001.service"
-    second_exposure = "drv-run-ssh@0000000001.service"
+    first = "drv.run@1.service"
+    exposure = "drv-run-ssh@1.service"
+    second = "drv.run@2.service"
+    second_exposure = "drv-run-ssh@2.service"
 
     with subtest("provisioning gates exposure"):
         machine.succeed(unit("alice", f"start --no-block {first}"))
-        machine.wait_for_file("/run/user/1000/drv.run.0000000000/notify.vsock")
+        machine.wait_for_file("/run/user/1000/drv.run.1/notify.vsock")
         machine.fail(unit("alice", f"is-active --quiet {exposure}"))
-        machine.succeed("touch /tmp/ready-0000000000 /tmp/ready-0000000001")
+        machine.succeed("touch /tmp/ready-1 /tmp/ready-2")
         active("alice", exposure)
         machine.succeed(unit("alice", f"start {second}"), unit("bob", f"start {first}"))
         active("alice", second_exposure)
         active("bob", exposure)
 
     with subtest("binding authority and owner isolation"):
-        machine.fail(user("observer", "/run/wrappers/bin/sshx.bind 0000000000"))
+        machine.fail(user("observer", "/run/wrappers/bin/sshx.bind 1"))
         machine.fail(user("alice", "/run/wrappers/bin/sshx.bind ../0000000"))
-        machine.fail(user("alice", "/run/wrappers/bin/sshx.bind 0000000000 fd42:1:2:4::1"))
-        machine.fail(user("bob", "test -r /run/user/1000/drv.run.0000000000/host-key"))
+        machine.fail(user("alice", "/run/wrappers/bin/sshx.bind 1 fd42:1:2:4::1"))
+        machine.fail(user("bob", "test -r /run/user/1000/drv.run.1/host-key"))
         bind = "import socket; s=socket.socket(socket.AF_INET6); s.bind(('::1',22))"
         machine.fail(user("alice", "python3 -c " + shlex.quote(bind)))
         machine.succeed("python3 -c \"import socket; socket.create_connection(('127.0.0.1',22),5).close()\"")
@@ -242,7 +242,7 @@ in {
 
     with subtest("spoofed environment and occupied endpoint"):
         machine.succeed(unit("alice", f"stop {exposure}"))
-        machine.succeed(user("alice", "systemd-run --user --unit=occupied --property=Type=notify env UID=1001 USER=bob XDG_RUNTIME_DIR=/run/user/1001 LISTEN_PIDFDID=0 LISTEN_FDS=99 /run/wrappers/bin/sshx.bind 0000000000"))
+        machine.succeed(user("alice", "systemd-run --user --unit=occupied --property=Type=notify env UID=1001 USER=bob XDG_RUNTIME_DIR=/run/user/1001 LISTEN_PIDFDID=0 LISTEN_FDS=99 /run/wrappers/bin/sshx.bind 1"))
         active("alice", "occupied.service")
         machine.succeed(f"ip netns exec client scp {client_options} 'alice@[fd42:1:2:3::1]:/home/alice/upload' /tmp/owner-check")
         machine.succeed("cmp /tmp/input /tmp/owner-check")

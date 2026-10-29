@@ -79,6 +79,7 @@
       mitm-tests = pkgs.drvr.mitm;
       mitm-nixos = pkgs.drvr.mitm.tests;
       sshx-tests = pkgs.drvr.sshx;
+      ssh-dns = import ./nix/tests/ssh-dns.nix {inherit pkgs;};
       sshx-nixos = pkgs.drvr.sshx.tests;
       tap-tests = pkgs.drvr.tap;
       tape-tests = pkgs.app.tape;
