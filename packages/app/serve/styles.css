@@ -322,6 +322,7 @@ body.stacked-layout {
   & #close-view { display: flex; flex-shrink: 0; align-items: center; justify-content: center; margin: 0 0 12px auto; }
 }
 #landing .session { padding-inline: 0; }
+#landing .session-environment { max-width: 50%; margin-right: auto; }
 #recent-title { margin: 0 0 12px; font-size: 16px; font-weight: 500; color: var(--muted); }
 #recent-empty { margin: 10px; color: var(--muted); font-size: 13px; }
 #app-footer { display: flex; flex-direction: column; position: relative; background: var(--bg); }
@@ -510,6 +511,10 @@ elm-file summary::-webkit-details-marker { display: none; }
 }
 .selector-summary label[hidden] { display: none; }
 @media (max-width: 650px) {
+  #landing { padding-inline: var(--conversation-left) var(--conversation-right); }
+  #landing.pane > div { max-width: none; }
+  #landing .session-archive { display: flex; align-items: center; justify-content: flex-end; padding-inline: 0; border: 0; }
+  .new-composer .composer-shell { padding-top: 10px; }
   .new-composer #footer-instance .selector-label { font-size: 10px; }
   .new-composer #bottom-line, .new-composer #bottom-line .footer-row { display: contents; }
   .new-composer .footer-model-context { order: 1; align-self: stretch; justify-content: center; max-width: none; padding-inline: var(--conversation-left) var(--conversation-right); }

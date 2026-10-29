@@ -5,7 +5,7 @@ import type { GlobalSettingsStore } from "../server.ts";
 import type { Notifications } from "../notifications.ts";
 import type { Sessions } from "../sessions.ts";
 import { form, FormError, createSession, saveGlobalSettings } from "../forms.ts";
-import { conversationURL, compactTokens } from "../presentation.ts";
+import { conversationURL } from "../presentation.ts";
 import {
   settingFields,
   thinkingLevels,
@@ -129,8 +129,10 @@ export async function pages(
         ? `${item.binding.provider === "local" ? "local" : item.binding.target} · ${item.cwd}`
         : "No execution environment",
       model: item.model?.modelId ?? "No model",
-      thinking: item.thinkingLevel,
-      usage: `${item.context.window && item.context.lastResponse ? ((item.context.lastResponse.tokens / item.context.window) * 100).toFixed(1) + "%" : "—"}/${item.context.window ? compactTokens(item.context.window) : "?"}${item.context.autoCompact ? " (auto)" : ""}`,
+      usage:
+        item.context.window && item.context.lastResponse
+          ? ((item.context.lastResponse.tokens / item.context.window) * 100).toFixed(1) + "%"
+          : "—",
     })),
     configured: !!settings,
     fields: settingFields.map((item) => ({

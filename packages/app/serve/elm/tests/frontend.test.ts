@@ -68,6 +68,37 @@ await test("Elm projection never retransmits completed history on document-only 
   assert.equal(next.live?.messages.length, 1);
 });
 
+await test("landing session summaries expose only environment, model and usage percentage", async (t) => {
+  const f = await fixture(t);
+  const session = await f.create();
+  const base = await serve(t, f.sessions);
+  const info = await sessionInfo(session);
+  const expected = {
+    path: `/sessions/${session.id}`,
+    title: "Untitled session",
+    date: new Date(info.created).toISOString().slice(0, 10),
+    environment: `local · ${f.workspace}`,
+    model: model.modelId,
+    usage: "—",
+  };
+  const empty = await (await fetch(base + "/?data=1")).json();
+  assert.deepEqual(empty.sessions, [expected]);
+
+  f.faux.setResponses([fauxAssistantMessage("Done")]);
+  await (
+    await session.root.submit({ type: "input", content: "Review changes" }, BACKGROUND_CONTEXT)
+  ).wait(BACKGROUND_CONTEXT);
+  const { context } = (await f.sessions.catalog(BACKGROUND_CONTEXT)).sessions[0];
+  assert(context.window && context.lastResponse);
+  const populated = await (await fetch(base + "/?data=1")).json();
+  assert.deepEqual(populated.sessions, [
+    {
+      ...expected,
+      usage: ((context.lastResponse.tokens / context.window) * 100).toFixed(1) + "%",
+    },
+  ]);
+});
+
 await test("Elm command boundary enforces origins, methods, identities and durable idempotency", async (t) => {
   const f = await fixture(t);
   const session = await f.create();

@@ -572,6 +572,24 @@ await test("landing composer matches conversation summaries and geometry without
         assert(labelBounds[0].bottom < cwd.y);
         assert(cwd.y + cwd.height <= labelBounds[1].top);
         assert(labelBounds[1].bottom <= box.y);
+        if (width <= 650) {
+          assert.equal(box.y - labelBounds[1].bottom, selectedModel.y - (box.y + box.height));
+          const archive = await page.locator(".session-archive .glyph").first().boundingBox();
+          assert(archive);
+          assert.equal(archive.x + archive.width, box.x + box.width);
+          assert.equal(await page.locator(".session-detail .model-effort").count(), 0);
+          for (const detail of await page.locator(".session-detail").all()) {
+            assert.equal(await detail.locator(":scope > .footer-dot").count(), 1);
+            assert.equal(await detail.locator(".session-environment + .model-summary").count(), 1);
+            const bounds = await detail.boundingBox();
+            const environment = detail.locator(".session-environment");
+            const environmentBounds = await environment.boundingBox();
+            assert(bounds && environmentBounds);
+            assert(environmentBounds.width <= bounds.width / 2);
+            if (width <= 390)
+              assert(await environment.evaluate((node) => node.scrollWidth > node.clientWidth));
+          }
+        }
         assert.equal(await directory.evaluate((node) => getComputedStyle(node).textAlign), "right");
         assert.equal(
           await page

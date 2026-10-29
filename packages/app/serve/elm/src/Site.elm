@@ -27,7 +27,7 @@ port siteIncoming : (D.Value -> msg) -> Sub msg
 
 
 type alias Row =
-    { path : String, title : String, date : String, environment : String, model : String, thinking : String, usage : String }
+    { path : String, title : String, date : String, environment : String, model : String, usage : String }
 
 
 type alias Field =
@@ -112,7 +112,7 @@ catalogDecoder =
                 (D.field "models" (D.list Panel.modelOptionDecoder))
                 (D.field "targets" (D.list Panel.targetOptionDecoder))
             )
-        |> andMap (D.field "sessions" (D.list (D.map7 Row (D.field "path" D.string) (D.field "title" D.string) (D.field "date" D.string) (D.field "environment" D.string) (D.field "model" D.string) (D.field "thinking" D.string) (D.field "usage" D.string))))
+        |> andMap (D.field "sessions" (D.list (D.map6 Row (D.field "path" D.string) (D.field "title" D.string) (D.field "date" D.string) (D.field "environment" D.string) (D.field "model" D.string) (D.field "usage" D.string))))
         |> andMap (D.field "fields" (D.list (D.map6 Field (D.field "key" D.string) (D.field "label" D.string) (D.field "group" D.string) (D.field "readonly" D.bool) (D.field "value" D.string) (D.field "choices" (D.list D.string)))))
         |> andMap (D.field "configured" D.bool)
         |> andMap (D.field "defaultModel" D.string)
@@ -775,7 +775,7 @@ view model =
 
         row item =
             div [ class "session-row" ]
-                [ a [ class "session", href item.path ] [ span [ class "session-heading" ] [ Html.strong [] [ text item.title ], Html.time [ A.datetime item.date, attribute "data-date-only" "" ] [ text item.date ] ], span [ class "session-detail" ] [ span [ class "session-environment" ] [ text item.environment ], dot, span [ class "model-summary" ] [ span [ class "model-name" ] [ text item.model ], dot, span [ class "model-effort" ] [ text item.thinking ] ], dot, span [ class "context-usage" ] [ text item.usage ] ] ]
+                [ a [ class "session", href item.path ] [ span [ class "session-heading" ] [ Html.strong [] [ text item.title ], Html.time [ A.datetime item.date, attribute "data-date-only" "" ] [ text item.date ] ], span [ class "session-detail" ] [ span [ class "session-environment" ] [ text item.environment ], span [ class "model-summary" ] [ span [ class "model-name" ] [ text item.model ] ], dot, span [ class "context-usage" ] [ text item.usage ] ] ]
                 , form [ onSubmit (Action (item.path ++ "/archive")) ] [ button [ class "icon session-archive", attribute "aria-label" "Archive session", A.title "Archive session", A.disabled model.busy ] [ Icon.view "close" ] ]
                 ]
 
