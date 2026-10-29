@@ -3,7 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { BACKGROUND_CONTEXT, awaitWithContext } from "@earendil-works/chord/context";
+import {
+  BACKGROUND_CONTEXT,
+  awaitWithContext,
+  withAbortSignal,
+} from "@earendil-works/chord/context";
 import { Type, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
@@ -20,8 +24,10 @@ import {
   defineTool,
   hook,
   type ConversationId,
+  type ConversationHandle,
   type ToolHooks,
   type JsonObject,
+  type Storage,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -49,6 +55,7 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
   let holding = false;
   let cancelled = false;
   let harness: Harness;
+  let storage: Storage;
   faux.setResponses(
     Array.from({ length: 100 }, () => (request: TranscriptContext) => {
       if (request.messages.at(-1)?.role === "toolResult") return done();
@@ -63,7 +70,7 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
   const registry = createRegistry();
   const options = { sandbox, models: false };
   registry.install(createCodemodeExtension(options));
-  registry.install(createConversationExtension(() => harness));
+  registry.install(createConversationExtension());
   registry.install(
     defineExtension({
       name: "test",
@@ -107,8 +114,9 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
     }),
   );
   async function open() {
+    storage = await openNodeSqliteStorage(join(directory, "test.sqlite"));
     harness = await Harness.open(
-      await openNodeSqliteStorage(join(directory, "test.sqlite")),
+      storage,
       {
         models,
         registry,
@@ -126,6 +134,7 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
   });
   return {
     root,
+    registry,
     sandbox,
     models,
     scripts,
@@ -133,6 +142,9 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
     held,
     get harness() {
       return harness;
+    },
+    get storage() {
+      return storage;
     },
     get holding() {
       return holding;
@@ -334,6 +346,7 @@ await test(
     for (const operation of [
       () => tools.contextView({ conversationId: ${f.root.id} }),
       () => tools.contextEntries({ conversationId: ${outsider.id}, limit: 1 }),
+      () => tools.contextEntries({ query: { conversationId: ${outsider.id} }, limit: 1 }),
       () => tools.contextView({ at: ${secretEntry} }),
       () => tools.forkJoin({ at: ${secretEntry}, content: "escape" }),
     ]) {
@@ -353,7 +366,7 @@ await test(
     assert(
       typeof branch === "object" && branch !== null && "denied" in branch && "hidden" in branch,
     );
-    assert.deepEqual(branch.denied, [true, true, true, true]);
+    assert.deepEqual(branch.denied, [true, true, true, true, true]);
     assert.deepEqual(branch.hidden, { items: [] });
     const records = (await f.harness.commit((tx) => tx.scanConversations({}, 256), context)).items;
     assert.equal(records.length, 4);
@@ -451,5 +464,91 @@ await test(
       answer: history.find((entry) => entry.kind === "pi.assistant")?.model?.[0],
     });
     assert.equal((await f.harness.inspect(context)).tasks.length, 0);
+  },
+);
+
+await test("tool context reads match the public view and obey caller and invocation cancellation", async (t) => {
+  const f = await fixture(t);
+  let handle: ConversationHandle | undefined;
+  f.registry.install(
+    defineExtension({
+      name: "context-lifetime",
+      tools: [
+        defineTool({
+          name: "readContext",
+          description: "Read through the invocation-bound conversation.",
+          parameters: Type.Object({}),
+          async execute(_args, api, callContext) {
+            handle = await api.conversation(api.conversationId, callContext);
+            assert(handle);
+            assert.deepEqual(await handle.context(context), await f.root.context(context));
+            const controller = new AbortController();
+            controller.abort();
+            await assert.rejects(handle.context(withAbortSignal(controller.signal, context)));
+            return {};
+          },
+        }),
+      ],
+    }),
+  );
+  await f.run("await tools.readContext({});");
+  assert(handle);
+  await assert.rejects(handle.context(context));
+});
+
+await test(
+  "a context read finishing after its tool invocation ends rejects",
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const acquired = Promise.withResolvers<ConversationHandle>();
+    const finishTool = Promise.withResolvers<void>();
+    const scanning = Promise.withResolvers<void>();
+    const releaseScan = Promise.withResolvers<void>();
+    f.registry.install(
+      defineExtension({
+        name: "context-lifetime",
+        tools: [
+          defineTool({
+            name: "acquireContext",
+            description: "Acquire an invocation-bound reader.",
+            parameters: Type.Object({}),
+            async execute(_args, api, callContext) {
+              const handle = await api.conversation(api.conversationId, callContext);
+              assert(handle);
+              acquired.resolve(handle);
+              await awaitWithContext(finishTool.promise, callContext);
+              return {};
+            },
+          }),
+        ],
+      }),
+    );
+    f.scripts.set("parent", "await tools.acquireContext({});");
+    await f.root.submit({ type: "input", content: "parent" }, context);
+    const handle = await acquired.promise;
+    const scanEntries = f.storage.scanEntries.bind(f.storage);
+    let held = false;
+    t.mock.method(f.storage, "scanEntries", async (...args: Parameters<Storage["scanEntries"]>) => {
+      const page = await scanEntries(...args);
+      // Hold the scan off the Session line, after the context bounds were captured.
+      if (!held && args[0].maxEntryId !== undefined) {
+        held = true;
+        scanning.resolve();
+        await releaseScan.promise;
+      }
+      return page;
+    });
+    const reading = handle.context(context);
+    const rejected = assert.rejects(reading);
+    try {
+      await scanning.promise;
+      finishTool.resolve();
+      await f.root.waitForIdle(context);
+    } finally {
+      finishTool.resolve();
+      releaseScan.resolve();
+    }
+    await rejected;
   },
 );

@@ -30,6 +30,11 @@
     fetcherVersion = 2;
     hash = "sha256-CQ+q6euwx8u/gYEWXSfpdDNG+6k1WQoQ2ZqGtEC+EN4=";
   };
+  patchDurable = ''
+    patch --batch --forward --fuzz=0 \
+      -d node_modules/@earendil-works/pi-durable -p1 \
+      < ${./pi-durable-conversation-context.patch}
+  '';
   nodeModules = buildNpmPackage {
     pname = "app-node-modules";
     inherit (manifest) version;
@@ -37,6 +42,7 @@
     inherit npmDeps;
     npmDepsFetcherVersion = 2;
     npmRebuildFlags = ["--ignore-scripts"];
+    postConfigure = patchDurable;
     dontNpmBuild = true;
     installPhase = ''
       runHook preInstall
@@ -74,6 +80,7 @@ in
     inherit npmDeps;
     npmDepsFetcherVersion = 2;
     npmRebuildFlags = ["--ignore-scripts"];
+    postConfigure = patchDurable;
     nativeBuildInputs = [esbuild git makeWrapper typescript elmPackages.elm elmPackages.elm-format elmPackages.elm-test];
     preBuild = ''
       export ELM_HOME="$TMPDIR/elm-home"

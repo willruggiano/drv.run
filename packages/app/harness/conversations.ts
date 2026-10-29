@@ -1,85 +1,19 @@
 import assert from "node:assert/strict";
 import { copyJson } from "@earendil-works/chord";
-import type { Context } from "@earendil-works/chord/context";
-import { Type, type Static, type TSchema } from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
+import { AssistantEntry, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import {
-  AssistantEntry,
-  defineExtension,
-  defineTool,
-  section,
-  type EntryId,
-  type Harness,
-  type ToolExecutionApi,
-} from "@earendil-works/pi-durable";
+  AssistantMessageSchema,
+  ContextViewSchema,
+  ConversationIdSchema,
+  CursorSchema,
+  EntryIdSchema,
+  EntryPageSchema,
+  EntryQuerySchema,
+  UserInputSchema,
+} from "./durable.ext.ts";
 
-const id = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
-const object = <P extends Record<string, TSchema>>(properties: P) =>
-  Type.Object(properties, { additionalProperties: false });
-const content = Type.Union([
-  Type.String(),
-  Type.Array(
-    Type.Union([
-      object({
-        type: Type.Literal("text"),
-        text: Type.String(),
-        textSignature: Type.Optional(Type.String()),
-      }),
-      object({ type: Type.Literal("image"), data: Type.String(), mimeType: Type.String() }),
-    ]),
-  ),
-]);
-// Describe the navigable fields without projecting away upstream message or entry metadata.
-const message = Type.Object({
-  role: Type.String(),
-  content: Type.Union([
-    Type.String(),
-    Type.Array(
-      Type.Object({
-        type: Type.String(),
-        text: Type.Optional(Type.String()),
-      }),
-    ),
-  ]),
-});
-const entry = Type.Object({
-  id,
-  conversationId: id,
-  kind: Type.String(),
-  model: Type.Optional(Type.Array(message)),
-});
-const cursor = Type.Record(Type.String(), Type.Unknown());
-
-export function createConversationExtension(harness: () => Harness) {
-  async function self(api: ToolExecutionApi, context: Context) {
-    const conversation = await harness().conversation(api.conversationId, context);
-    assert(conversation);
-    return conversation;
-  }
-
-  function tool<S extends TSchema>(
-    name: string,
-    description: string,
-    parameters: S,
-    structuredOutputSchema: TSchema,
-    execute: (args: Static<S>, api: ToolExecutionApi, context: Context) => Promise<unknown>,
-  ) {
-    return defineTool({
-      name,
-      description,
-      parameters,
-      structuredOutputSchema,
-      callers: ["tools"],
-      replay: "safe",
-      async execute(args, api, context) {
-        return {
-          structuredOutput: copyJson(await execute(args, api, context), {
-            omitUndefinedProperties: true,
-          }),
-        };
-      },
-    });
-  }
-
+export function createConversationExtension() {
   return defineExtension({
     name: "conversations",
     sections: [
@@ -94,70 +28,77 @@ export function createConversationExtension(harness: () => Harness) {
       ),
     ],
     tools: [
-      tool(
-        "contextView",
-        "Read your active context, optionally as of a visible entry. Returns head, raw active entries, per-entry contributions, and assembled messages.",
-        object({ at: Type.Optional(id) }),
-        Type.Object({
-          head: Type.Optional(entry),
-          entries: Type.Array(entry),
-          contributions: Type.Array(Type.Array(message)),
-          messages: Type.Array(message),
-        }),
-        async (args, api, context) =>
-          (await self(api, context)).context(context, { at: args.at as EntryId | undefined }),
-      ),
-      tool(
-        "contextEntries",
-        "Read your raw fork-aware history, including inactive entries. Returns items and optional next; round-trip next as cursor.",
-        object({
-          query: Type.Optional(
-            object({
-              minEntryId: Type.Optional(id),
-              maxEntryId: Type.Optional(id),
-              order: Type.Optional(Type.Enum(["ascending", "descending"])),
+      defineTool({
+        name: "contextView",
+        description:
+          "Read your active context, optionally as of a visible entry. Returns head, raw active entries, per-entry contributions, and assembled messages.",
+        parameters: Type.Object(
+          { at: Type.Optional(EntryIdSchema) },
+          { additionalProperties: false },
+        ),
+        structuredOutputSchema: ContextViewSchema,
+        callers: ["tools"],
+        replay: "safe",
+        async execute(args, api, context) {
+          const conversation = await api.conversation(api.conversationId, context);
+          assert(conversation);
+          return {
+            structuredOutput: copyJson(await conversation.context(context, args), {
+              omitUndefinedProperties: true,
             }),
-          ),
-          limit: Type.Integer({ minimum: 1, maximum: 256 }),
-          cursor: Type.Optional(cursor),
-        }),
-        Type.Object({ items: Type.Array(entry), next: Type.Optional(cursor) }),
-        async (args, api, context) => {
-          const next = args.cursor === undefined ? undefined : copyJson(args.cursor);
-          assert(
-            next === undefined ||
-              (typeof next === "object" && next !== null && !Array.isArray(next)),
-          );
-          return (await self(api, context)).entries(
-            {
-              minEntryId: args.query?.minEntryId as EntryId | undefined,
-              maxEntryId: args.query?.maxEntryId as EntryId | undefined,
-              order: args.query?.order,
-            },
-            args.limit,
-            next,
+          };
+        },
+      }),
+      defineTool({
+        name: "contextEntries",
+        description:
+          "Read your raw fork-aware history, including inactive entries. Returns items and optional next; round-trip next as cursor.",
+        parameters: Type.Object(
+          {
+            query: Type.Optional(
+              Type.Omit(EntryQuerySchema, ["conversationId"], { additionalProperties: false }),
+            ),
+            limit: Type.Integer({ minimum: 1, maximum: 256 }),
+            cursor: Type.Optional(CursorSchema),
+          },
+          { additionalProperties: false },
+        ),
+        structuredOutputSchema: EntryPageSchema,
+        callers: ["tools"],
+        replay: "safe",
+        async execute(args, api, context) {
+          const page = await api.commit(
+            (tx) =>
+              tx.scanEntries(
+                { ...args.query, conversationId: api.conversationId },
+                args.limit,
+                args.cursor,
+              ),
             context,
           );
+          return { structuredOutput: copyJson(page, { omitUndefinedProperties: true }) };
         },
-      ),
-      tool(
-        "forkJoin",
-        "Fork your conversation at a visible entry, submit content, and await its answer. Rejects if the submission is unanswered. Returns conversationId and the complete AssistantMessage.",
-        object({ at: id, content }),
-        Type.Object({
-          conversationId: id,
-          answer: Type.Object({
-            ...message.properties,
-            role: Type.Literal("assistant"),
-            stopReason: Type.String(),
-          }),
+      }),
+      defineTool({
+        name: "forkJoin",
+        description:
+          "Fork your conversation at a visible entry, submit content, and await its answer. Rejects if the submission is unanswered. Returns conversationId and the complete AssistantMessage.",
+        parameters: Type.Object(
+          { at: EntryIdSchema, content: UserInputSchema },
+          { additionalProperties: false },
+        ),
+        structuredOutputSchema: Type.Object({
+          conversationId: ConversationIdSchema,
+          answer: AssistantMessageSchema,
         }),
-        async (args, api, context) => {
+        callers: ["tools"],
+        replay: "safe",
+        async execute(args, api, context) {
           const child = await api.commit(async (tx) => {
             const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
             if (existing) return existing.id;
             return (
-              await tx.forkConversation(api.conversationId, args.at as EntryId, {
+              await tx.forkConversation(api.conversationId, args.at, {
                 ownership: { kind: "task", taskId: api.taskId },
               })
             ).id;
@@ -183,9 +124,16 @@ export function createConversationExtension(harness: () => Harness) {
             await api.commit((tx) => tx.entry(AssistantEntry, settled.answer), context)
           )?.model?.[0];
           assert(answer?.role === "assistant", "Answered submission has no assistant message");
-          return { conversationId: child, answer };
+          return {
+            structuredOutput: copyJson(
+              { conversationId: child, answer },
+              {
+                omitUndefinedProperties: true,
+              },
+            ),
+          };
         },
-      ),
+      }),
     ],
   });
 }

@@ -46,14 +46,13 @@ export async function openHarness(
   registry.install(createContextExtension());
   registry.install(createWebExtension());
   registry.install(createReviewExtension(options.env));
-  let harness: Harness;
   if (options.codemode) {
     const codemode = { sandbox: options.codemode, models: false };
     registry.install(createCodemodeExtension(codemode));
-    registry.install(createConversationExtension(() => harness));
+    registry.install(createConversationExtension());
   }
   const extensions = registry.snapshot().installed();
-  harness = await Harness.open(
+  return Harness.open(
     storage,
     {
       ...options,
@@ -81,5 +80,4 @@ export async function openHarness(
     },
     context,
   );
-  return harness;
 }
