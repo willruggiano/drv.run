@@ -16,5 +16,6 @@
                          'hashmap_put_stats_by_path(&rules->stats_by_path, c->result, &c->st)'
       '';
   });
+  tap = pkgs.callPackage ./tap {};
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
 }

@@ -50,6 +50,7 @@
           mitm-proxy
           subtrace
           systemd-with-vmlinux-btf
+          tap
           ;
       };
       # n.b. this is for packages only necessary for development and should not

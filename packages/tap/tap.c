@@ -1,4 +1,4 @@
-// Unprivileged nsresourced TAP allocation, then exec the pinned CH runner.
+// Unprivileged nsresourced TAP allocation then exec the microvm runner.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -16,7 +16,7 @@
 
 static void check(int result, const char *operation) {
     if (result < 0) {
-        fprintf(stderr, "drv-run-tap: %s: %s\n", operation, strerror(-result));
+        fprintf(stderr, "drv.run.tap: %s: %s\n", operation, strerror(-result));
         exit(EXIT_FAILURE);
     }
 }
@@ -71,7 +71,7 @@ static sd_json_variant *call(sd_varlink *link, const char *method, const char *j
     sd_json_variant_unref(parameters);
     check(result, method);
     if (error) {
-        fprintf(stderr, "drv-run-tap: %s: %s\n", method, error);
+        fprintf(stderr, "drv.run.tap: %s: %s\n", method, error);
         exit(EXIT_FAILURE);
     }
     return reply; // borrowed from link; valid until the next call
@@ -79,11 +79,11 @@ static sd_json_variant *call(sd_varlink *link, const char *method, const char *j
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: drv-run-tap RUNNER [ARGUMENT...]\n");
+        fprintf(stderr, "usage: drv.run.tap RUNNER [ARGUMENT...]\n");
         return EXIT_FAILURE;
     }
     if (getuid() == 0 || getuid() != getgid()) {
-        fprintf(stderr, "drv-run-tap: requires an unprivileged owner with matching UID and primary GID\n");
+        fprintf(stderr, "drv.run.tap: requires an unprivileged owner with matching UID and primary GID\n");
         return EXIT_FAILURE;
     }
     int userns = empty_userns();

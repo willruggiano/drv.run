@@ -125,7 +125,6 @@
       builtins.readFile ./post.sh
     );
   };
-  tap = import ./tap.nix {inherit pkgs;};
   launcher = pkgs.writeShellApplication {
     name = "drv.run";
     runtimeInputs = with pkgs; [coreutils jq openssh systemd];
@@ -294,7 +293,7 @@ in {
         StateDirectory = "drv.run/%i";
         StateDirectoryMode = "0700";
         ExecStartPre = lib.getExe worker;
-        ExecStart = "${tap}/bin/drv-run-tap %S/drv.run/%i/runner/bin/microvm-run";
+        ExecStart = "${lib.getExe pkgs.tap} %S/drv.run/%i/runner/bin/microvm-run";
         ExecStartPost = lib.getExe provision;
         ExecStop = "%S/drv.run/%i/runner/bin/microvm-shutdown";
         ExecStopPost = "${lib.getExe' pkgs.coreutils "rm"} -f %t/drv.run.%i/client.conf";
