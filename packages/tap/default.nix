@@ -18,7 +18,7 @@ stdenv.mkDerivation (finalAttrs: {
   buildInputs = [systemd];
   buildPhase = ''
     mkdir -p $out/bin/
-    cc $src -o $out/bin/${finalAttrs.pname}
+    cc $src $(pkg-config --cflags --libs libsystemd) -o $out/bin/${finalAttrs.pname}
   '';
   meta = {
     description = "nsresourced TAP allocation into the microvm runner";
