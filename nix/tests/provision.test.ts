@@ -42,12 +42,12 @@ for (const accepted of [true, false]) {
 set -euo pipefail
 case "$*" in
   *-fMN*) touch "$FIXTURE/master" ;;
-  *root-environment)
+  *'read -r expected'*)
     IFS= read -r environment
     printf '%s' "$environment" > "$FIXTURE/requested-environment"
     test "$(cat "$FIXTURE/accepted")" = true
     ;;
-  *environment-timings) printf '%s\\n' '{"phase":"profile-ready","monotonic_s":1}' ;;
+  *'cat /run/drv-run-environment/timings.jsonl') printf '%s\\n' '{"phase":"profile-ready","monotonic_s":1}' ;;
   *'-O exit'*)
     test ! -e "$RUNTIME_DIRECTORY/client.conf"
     rm "$FIXTURE/master"
@@ -96,58 +96,56 @@ esac
   });
 }
 
-await test("notification streaming does not require a prepared environment", (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "notification-dispatch-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const guest = readFileSync(new URL("../../nixosModules/guest/guest.sh", import.meta.url), "utf8")
-    .replace("ready=/run/drv-run-environment/ready", 'ready="$FIXTURE/ready"')
-    .replace("@notifications-stream@", 'touch "$FIXTURE/stream-opened"; exit 0');
-  const result = spawnSync("bash", ["-c", guest], {
-    env: { ...process.env, FIXTURE: directory, SSH_ORIGINAL_COMMAND: "notifications-stream" },
-    stdio: "ignore",
-  });
-  assert.ifError(result.error);
-  assert.equal(result.status, 0);
-  assert.equal(existsSync(join(directory, "stream-opened")), true);
-  assert.equal(existsSync(join(directory, "ready")), false);
-});
-
 for (const ready of [false, true]) {
-  test(`SFTP ${ready ? "bypasses nix develop" : "requires guest readiness"}`, (t) => {
-    const directory = mkdtempSync(join(tmpdir(), "sftp-dispatch-"));
+  test(`guest shell ${ready ? "activates the environment without interpreting commands" : "requires readiness"}`, (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "guest-shell-"));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const bin = join(directory, "bin");
+    const home = join(directory, "home");
     mkdirSync(bin);
+    mkdirSync(home);
     if (ready) writeFileSync(join(directory, "ready"), "");
-    writeFileSync(join(bin, "nix"), `#!${bash}\ntouch "$FIXTURE/nix-invoked"\nexit 2\n`, {
-      mode: 0o755,
-    });
-    const server = join(bin, "sftp-server");
+    writeFileSync(join(directory, "environment"), "{}");
+    symlinkSync(join(directory, "environment"), join(directory, "profile"));
     writeFileSync(
-      server,
-      `#!${bash}\nset -euo pipefail\ntest "$1" = -u\ntest "$2" = 0077\ntouch "$FIXTURE/sftp-opened"\n`,
+      join(bin, "nix"),
+      `#!${bash}
+set -euo pipefail
+test "$1" = develop
+test "$2" = "$FIXTURE/profile"
+test "$3" = --command
+touch "$FIXTURE/activated"
+printf 'shellHook output must not enter the protocol\\n'
+if read -r unexpected; then exit 1; fi
+exec "\${@:4}"
+`,
       { mode: 0o755 },
     );
-    const guest = readFileSync(
-      new URL("../../nixosModules/guest/guest.sh", import.meta.url),
+    const shell = readFileSync(
+      new URL("../../nixosModules/guest/shell.sh", import.meta.url),
       "utf8",
     )
-      .replace("ready=/run/drv-run-environment/ready", 'ready="$FIXTURE/ready"')
-      .replace("profile=/nix/var/nix/profiles/project", 'profile="$FIXTURE/missing-profile"')
-      .replace("@sftp-pattern@", "'test-sftp -u 0077'")
-      .replace("@sftp-command@", `${server} -u 0077`);
-    const result = spawnSync("bash", ["-c", guest], {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ""}`,
-        FIXTURE: directory,
-        SSH_ORIGINAL_COMMAND: "test-sftp -u 0077",
+      .replace("profile=/nix/var/nix/profiles/project", 'profile="$FIXTURE/profile"')
+      .replace("/run/drv-run-environment/ready", join(directory, "ready"))
+      .replaceAll("@bash@", bash);
+    const script = join(directory, "shell");
+    writeFileSync(script, shell);
+    const result = spawnSync(
+      "bash",
+      [
+        script,
+        "-c",
+        `test "$PWD" = "$FIXTURE/home" && printf '%s\\n' "quoted; value" > result && exit 37`,
+      ],
+      {
+        cwd: home,
+        env: { ...process.env, FIXTURE: directory, PATH: `${bin}:${process.env.PATH ?? ""}` },
+        stdio: "ignore",
       },
-      stdio: "ignore",
-    });
+    );
     assert.ifError(result.error);
-    assert.equal(result.status, ready ? 0 : 1);
-    assert.equal(existsSync(join(directory, "sftp-opened")), ready);
-    assert.equal(existsSync(join(directory, "nix-invoked")), false);
+    assert.equal(result.status, ready ? 37 : 1);
+    assert.equal(existsSync(join(directory, "activated")), ready);
+    assert.equal(existsSync(join(home, "result")), ready);
   });
 }

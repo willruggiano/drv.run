@@ -11,7 +11,17 @@
       builtins.readFile ./environment.sh
     );
   };
+  shell = pkgs.writeShellApplication {
+    name = "drv-run-shell";
+    runtimeInputs = [config.nix.package pkgs.coreutils];
+    text = lib.replaceStrings ["@bash@"] [(lib.getExe pkgs.bashInteractive)] (
+      builtins.readFile ./shell.sh
+    );
+    derivationArgs.passthru.shellPath = "/bin/drv-run-shell";
+  };
 in {
+  # Override NixOS's mkDefault root shell, but allow ordinary deployment definitions.
+  users.users.root.shell = lib.mkOverride 900 shell;
   assertions = [
     {
       assertion = config.fileSystems."/nix/store".overlay.lowerdir == ["/nix/.ro-store" "/nix/.environment/store"] && config.fileSystems."/nix/store".overlay.upperdir != null;

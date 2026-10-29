@@ -24,10 +24,6 @@
       assertion = config.microvm.storeOnDisk && config.microvm.registerClosure && config.nix.enable && config.microvm.writableStoreOverlay != null;
       message = "drv.run environment images require a registered generic store and a private writable overlay.";
     }
-    {
-      assertion = lib.hasPrefix "/" config.services.openssh.sftpServerExecutable;
-      message = "drv.run's SSH command dispatcher requires an external SFTP server.";
-    }
   ];
 
   boot = {
@@ -165,39 +161,9 @@
     generateHostKeys = false;
     hostKeys = [];
     settings = {
-      PermitRootLogin = "prohibit-password";
-      AuthenticationMethods = "publickey";
-      PasswordAuthentication = false;
-      KbdInteractiveAuthentication = false;
-      DisableForwarding = true;
-      PermitUserRC = false;
-      ForceCommand = lib.getExe (let
-        command = pkgs.writeShellApplication {
-          name = "prepared-command";
-          runtimeInputs = [pkgs.jq];
-          text =
-            builtins.readFile ../timing.sh
-            + ''
-              timing_directory=/run/drv-run-environment
-              phase shell-ready
-              exec ${lib.getExe pkgs.bashInteractive} -c "$1"
-            '';
-        };
-      in
-        pkgs.writeShellApplication {
-          name = "ssh-guest";
-          runtimeInputs = [config.nix.package pkgs.coreutils];
-          text = lib.replaceStrings ["@command@" "@sftp-pattern@" "@sftp-command@" "@notifications-stream@"] [
-            (lib.getExe command)
-            (lib.escapeShellArg (lib.concatStringsSep " " ([config.services.openssh.sftpServerExecutable] ++ config.services.openssh.sftpFlags)))
-            (lib.escapeShellArgs ([config.services.openssh.sftpServerExecutable] ++ config.services.openssh.sftpFlags))
-            (
-              if config.services.drv-run.notifications.enable
-              then "exec ${pkgs.app}/bin/notify-stream /run/user/0/drv-run-notifications/events.sock"
-              else "exit 1"
-            )
-          ] (builtins.readFile ./guest.sh);
-        });
+      PermitRootLogin = lib.mkDefault "prohibit-password";
+      PasswordAuthentication = lib.mkDefault false;
+      KbdInteractiveAuthentication = lib.mkDefault false;
     };
   };
   # TODO: Why are these "extraDependencies"?

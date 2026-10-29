@@ -14,8 +14,8 @@ until ssh -F @service-ssh@ -fMN "$name" </dev/null; do
 done
 phase acknowledgement-start
 environment=$(readlink -e "$STATE_DIRECTORY/environment")
-printf '%s\n' "$environment" | ssh -F @service-ssh@ "$name" root-environment
-ssh -F @service-ssh@ "$name" environment-timings >"$RUNTIME_DIRECTORY/guest-timings.jsonl"
+printf '%s\n' "$environment" | ssh -F @service-ssh@ "$name" 'read -r expected && test "$(cat /run/drv-run-environment/ready)" = "$expected" && test "$(readlink -e /nix/var/nix/profiles/project)" = "$expected"'
+ssh -F @service-ssh@ "$name" 'cat /run/drv-run-environment/timings.jsonl' >"$RUNTIME_DIRECTORY/guest-timings.jsonl"
 ssh -F @service-ssh@ -O exit "$name" </dev/null
 printf 'Provisioned the environment.\n'
 cp "$RUNTIME_DIRECTORY/service-connection.conf" "$RUNTIME_DIRECTORY/.client.conf"

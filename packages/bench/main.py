@@ -393,7 +393,14 @@ def collect(
         )
         atomic_text(
             trial / "guest-phases.jsonl",
-            manager.run(["ssh", "-T", runtime.name, "environment-timings"]),
+            manager.run(
+                [
+                    "ssh",
+                    "-T",
+                    runtime.name,
+                    "cat /run/drv-run-environment/timings.jsonl",
+                ]
+            ),
         )
         phase.update(measured)
         phase["outcome"] = "success"

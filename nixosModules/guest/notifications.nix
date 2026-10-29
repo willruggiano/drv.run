@@ -46,7 +46,12 @@ in {
         mode = "0700";
       }
     ];
-    environment.systemPackages = [pkgs.libnotify];
+    environment.systemPackages = [
+      pkgs.libnotify
+      (pkgs.writeShellScriptBin "notifications-stream" ''
+        exec ${pkgs.app}/bin/notify-stream /run/user/0/drv-run-notifications/events.sock
+      '')
+    ];
     systemd.user.services.drv-run-notifications = {
       description = "drv.run guest notification server";
       wantedBy = ["default.target"];

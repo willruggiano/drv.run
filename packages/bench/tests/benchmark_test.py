@@ -291,7 +291,10 @@ class FakeSystemd:
             ]
             return json.dumps({argv[-1]: {"closureSize": 4096}})
         if argv[0] == "ssh":
-            assert argv[1] == "-T" and argv[3] == "environment-timings"
+            assert (
+                argv[1] == "-T"
+                and argv[3] == "cat /run/drv-run-environment/timings.jsonl"
+            )
             return json.dumps({"phase": "shell-ready", "monotonic_s": 2}) + "\n"
         if argv[0] == "busctl":
             if argv[7] == "ListUnits":

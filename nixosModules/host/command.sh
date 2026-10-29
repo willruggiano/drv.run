@@ -2,12 +2,6 @@
 set -euo pipefail
 read -r request_uptime _ </proc/uptime
 
-export XDG_RUNTIME_DIR="/run/user/$EUID"
-export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-if [[ ! -S $XDG_RUNTIME_DIR/bus ]]; then
-  echo 'Error: a running systemd user manager is required for this account' >&2
-  exit 1
-fi
 ref=${SSH_ORIGINAL_COMMAND:-}
 command=
 # Only split the reference boundary; the Guest shell interprets the command.
@@ -16,8 +10,18 @@ if [[ $ref =~ ^([^[:space:]]+)[[:space:]]+(.*)$ ]]; then
   command=${BASH_REMATCH[2]}
 fi
 if (($# != 0)) || [[ $ref == -* || $ref == *[[:space:]]* ]]; then
-  echo 'Usage: ssh [-t] drv.run <flake-reference> [<command>]' >&2
+  printf '%s\n' 'Usage: ssh [-t] drv.run <flake-reference> [<command>]' \
+    '       ssh -T drv.run connect drv.run.<instance>' >&2
   exit 2
+fi
+if [[ $ref == connect ]]; then
+  exec @connect@ "$command"
+fi
+export XDG_RUNTIME_DIR="/run/user/$EUID"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+if [[ ! -S $XDG_RUNTIME_DIR/bus ]]; then
+  echo 'Error: a running systemd user manager is required for this account' >&2
+  exit 1
 fi
 if [[ -z $ref ]]; then
   # Durable state identifies retained instances; systemd supplies their live state.
@@ -47,12 +51,29 @@ if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
 fi
 
 umask 077
-runtime=$(mktemp -d "$XDG_RUNTIME_DIR/drv.run.XXXXXXXXXX")
+state=$(systemd-path user-state-private)
+mkdir -p "$state/drv.run"
+while :; do
+  # Canonical lowercase IDs work as SSH names without case-dependent identity.
+  id=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+  instance="$state/drv.run/$id"
+  if mkdir "$instance"; then
+    runtime="$XDG_RUNTIME_DIR/drv.run.$id"
+    if mkdir "$runtime"; then
+      break
+    fi
+    rmdir "$instance"
+    [[ -e $runtime ]] || exit 1
+  elif [[ ! -e $instance ]]; then
+    exit 1
+  fi
+done
 unit="drv.run@${runtime##*.}.service"
 submitted=false
 cleanup() {
   if [[ $submitted == false ]]; then
     rm -rf "$runtime"
+    rmdir "$instance"
   fi
 }
 trap cleanup EXIT

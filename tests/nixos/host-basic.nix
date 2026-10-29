@@ -383,9 +383,10 @@ in {
         guest('test ! -e /run/drv-run-seed/environment-path; '
               'findmnt -n --evaluate --source LABEL=drv-run-seed --types ext4 '
               '-O ro,nodev,nosuid,noexec --mountpoint /run/drv-run-seed >/dev/null; '
-              'found=false; for key in /run/credentials/*/authorized-keys; do '
-              'test -f "$key" || continue; cmp /run/drv-run-seed/authorized-keys "$key"; '
-              'cmp /run/drv-run-seed/host-key "$(dirname "$key")/host-key"; '
+              'cmp /run/drv-run-seed/root/authorized_keys /run/drv-run-ssh/root/authorized_keys; '
+              'test $(stat -c %u /run/drv-run-ssh/root/authorized_keys) -eq 0; '
+              'found=false; for key in /run/credentials/*/host-key; do '
+              'test -f "$key" || continue; cmp /run/drv-run-seed/host-key "$key"; '
               'found=true; done; "$found"')
         operator(f"systemctl --user is-active --quiet {unit}")
         status, _ = host.execute(as_user("operator", f"ssh {target} drv-run-command-does-not-exist </dev/null"))
@@ -417,12 +418,8 @@ in {
         guest(f"test ! -e /run/environment; test -L {profile}; test -L {profile}-1-link")
         guest(f"test {profile} -ef {shlex.quote(environment)}")
         guest('test "$DRV_RUN_TEST_READY" = 1; test "$DRV_RUN_TEST_VALUE" = captured; curl --version >/dev/null')
-        # Reject invalid registration requests without disturbing the profile.
-        for invalid in ["", "/tmp/not-an-env", environment + " extra"]:
-            host.fail(as_user("operator",
-                "printf '%s\\n' " + shlex.quote(invalid) + f" | ssh -T {target} root-environment"))
         guest(f"test {profile} -ef {shlex.quote(environment)}; test ! -e {profile}-2-link")
-        # Collect through the daemon transport, outside any nix develop session.
+        # Collect through ordinary SSH execution of nix-daemon --stdio.
         guest("printf '%s' unrooted > /workspace/unrooted; nix-store --add /workspace/unrooted > /workspace/unrooted-path")
         operator(f"nix store gc --store ssh-ng://{target}")
         guest(f"test -r {profile}; test ! -e \"$(< /workspace/unrooted-path)\"; "
@@ -461,7 +458,7 @@ in {
         shell_probe = (
             "set -e\n"
             'test "$(touch /tmp/drv-run-command-guest; id -u)" -eq 0\n'
-            'test "$PWD" = /workspace\n'
+            'test "$PWD" = "$HOME"\n'
             'test "$DRV_RUN_TEST_READY" = 1\n'
             "test ! -t 0\n"
             "curl --version >/dev/null\n"

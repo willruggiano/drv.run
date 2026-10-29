@@ -40,9 +40,11 @@
     fileset = lib.fileset.unions [
       ../tests/environment-metadata.test.ts
       ../tests/provision.test.ts
+      ../tests/launcher.test.ts
       ../../nixosModules/guest/environment-metadata.jq
-      ../../nixosModules/guest/guest.sh
+      ../../nixosModules/guest/shell.sh
       ../../nixosModules/host/post.sh
+      ../../nixosModules/host/command.sh
       ../../nixosModules/timing.sh
     ];
   };

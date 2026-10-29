@@ -79,7 +79,11 @@
       mitm-tests = pkgs.drvr.mitm;
       mitm-nixos = pkgs.drvr.mitm.tests;
       sshx-tests = pkgs.drvr.sshx;
-      sshx-nixos = pkgs.drvr.sshx.tests;
+      ssh-policy = import ./nix/tests/ssh.nix {
+        inherit pkgs;
+        inherit (self) nixosModules;
+        inherit (inputs.nixpkgs.lib) nixosSystem;
+      };
       tap-tests = pkgs.drvr.tap;
       tape-tests = pkgs.app.tape;
       nixos-notifications = import ./tests/nixos/notifications.nix {

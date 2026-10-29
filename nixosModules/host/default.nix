@@ -10,36 +10,32 @@
   ...
 }: let
   normalUsers = lib.filter (user: user.enable && user.isNormalUser) (lib.attrValues config.users.users);
-  # Include must precede fallbacks: OpenSSH uses the first obtained value.
-  # IdentityFile is additive; 'none' suppresses default identity discovery.
-  clientPolicy = ''
-    User root
-    IdentityAgent none
-    IdentitiesOnly yes
-    IdentityFile none
-    CertificateFile none
-    BatchMode yes
-    PreferredAuthentications publickey
-    StrictHostKeyChecking yes
-    UserKnownHostsFile /dev/null
-    GlobalKnownHostsFile /dev/null
-    KnownHostsCommand none
-    VerifyHostKeyDNS no
-    UpdateHostKeys no
-    ForwardAgent no
-    ForwardX11 no
-    ClearAllForwardings yes
-    ControlMaster no
-    ControlPath none
-    ControlPersist no
-  '';
+  connector = pkgs.drvr.sshx.override {systemd = config.systemd.package;};
+  # Management traffic has its own credentials and connection policy. Human
+  # sessions use ordinary SSH options, including PTYs and forwarding.
   serviceSSH = pkgs.writeText "drv.run-service-ssh.conf" ''
     Host drv.run.*
         Include /run/user/%i/%n/service-connection.conf
         ProxyCommand false
-        # Only provisioning uses this private control socket.
         ControlPath /run/user/%i/%n/provision-ssh
-        ${clientPolicy}
+        User root
+        IdentityAgent none
+        IdentitiesOnly yes
+        IdentityFile none
+        CertificateFile none
+        BatchMode yes
+        PreferredAuthentications publickey
+        StrictHostKeyChecking yes
+        UserKnownHostsFile /dev/null
+        GlobalKnownHostsFile /dev/null
+        KnownHostsCommand none
+        VerifyHostKeyDNS no
+        UpdateHostKeys no
+        ForwardAgent no
+        ForwardX11 no
+        ClearAllForwardings yes
+        ControlMaster no
+        ControlPersist no
   '';
   features = config.nix.settings.experimental-features or [];
   enabledFeatures =
@@ -99,18 +95,17 @@
             cp "$RUNTIME_DIRECTORY/notification-incarnation" "$staging/notification-incarnation"
           fi
         '')
-        (lib.optionalString (config.services.drv-run.ssh.owners != {}) ''
+        ''
           case $(id -u) in
-            ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _: let
-            user = config.users.users.${name};
-            keys = pkgs.writeText "drv-run-ssh-${name}-keys" (lib.concatStringsSep "\n" (
+            ${lib.concatMapStringsSep "\n" (user: let
+            keys = pkgs.writeText "drv-run-ssh-${user.name}-keys" (lib.concatStringsSep "\n" (
                 user.openssh.authorizedKeys.keys ++ map builtins.readFile user.openssh.authorizedKeys.keyFiles
               )
               + "\n");
-          in ''${toString user.uid}) cat ${keys} >> "$RUNTIME_DIRECTORY/authorized-keys" ;;'')
-          config.services.drv-run.ssh.owners)}
+          in "${toString user.uid}) cat ${keys} >> \"$RUNTIME_DIRECTORY/authorized-keys\" ;;")
+          normalUsers}
           esac
-        '')
+        ''
       ]
       (builtins.readFile ./pre.sh);
   };
@@ -128,10 +123,13 @@
   launcher = pkgs.writeShellApplication {
     name = "drv.run";
     runtimeInputs = with pkgs; [coreutils jq openssh systemd];
-    text = lib.replaceStrings ["@timing@"] [(builtins.readFile ../timing.sh)] (builtins.readFile ./command.sh);
+    text = lib.replaceStrings ["@timing@" "@connect@"] [
+      (builtins.readFile ../timing.sh)
+      (lib.getExe connector)
+    ] (builtins.readFile ./command.sh);
   };
 in {
-  imports = [../nix.nix ./network.nix ./mitm-proxy.nix ./ssh.nix self.nixosModules.pi];
+  imports = [../nix.nix ./network.nix ./mitm-proxy.nix self.nixosModules.pi];
 
   options.services.drv-run.notifications.enable = lib.mkEnableOption "instance-bound guest D-Bus notifications for services.pi.user";
 
@@ -183,7 +181,9 @@ in {
         # https://github.com/systemd/systemd/blob/v261.2/src/nsresourced/nsresourcework.c
         # https://github.com/systemd/systemd/blob/v261.2/src/basic/namespace-util.c
         assertion =
-          lib.all (
+          builtins.length (lib.unique (map (user: user.uid) normalUsers))
+          == builtins.length normalUsers
+          && lib.all (
             user:
               user.uid
               != null
@@ -192,7 +192,7 @@ in {
               && (config.users.groups.${user.group}.gid or null) == user.uid
           )
           normalUsers;
-        message = "drv.run nsresourced TAPs require each normal owner to have an explicit UID and a private primary group of the same name and numeric GID.";
+        message = "drv.run nsresourced TAPs require each normal owner to have a distinct explicit UID and a private primary group of the same name and numeric GID.";
       }
       {
         assertion = lib.all (user: user.linger == true && builtins.elem "kvm" user.extraGroups) normalUsers;
@@ -260,6 +260,7 @@ in {
       };
     in [
       bench
+      connector
       drvrun
     ];
 
@@ -267,8 +268,8 @@ in {
       Host drv.run.*
           Include /run/user/%i/%n/client.conf
           ProxyCommand false
-          RequestTTY yes
-          ${clientPolicy}
+          User root
+          StrictHostKeyChecking yes
       Host *
     '';
 
@@ -277,11 +278,7 @@ in {
       # Normal accounts are Instance owners; their SSH sessions enter the launcher.
       extraConfig = lib.optionalString (normalUsers != []) ''
         Match User ${lib.concatMapStringsSep "," (user: user.name) normalUsers}
-          AuthenticationMethods publickey
-          DisableForwarding yes
           ForceCommand ${lib.getExe launcher}
-          PermitTTY yes
-          PermitUserRC no
 
         Match all
       '';

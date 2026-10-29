@@ -86,10 +86,11 @@ printf '%s %s\n' "$name" "$(ssh-keygen -y -f "$STATE_DIRECTORY/host-key")" \
   >"$RUNTIME_DIRECTORY/known_hosts"
 staging=$(mktemp -d "$RUNTIME_DIRECTORY/seed.XXXXXXXX")
 trap 'rm -rf "$staging"' EXIT
-cp "$RUNTIME_DIRECTORY/authorized-keys" "$staging/authorized-keys"
+mkdir -m 0700 "$staging/root"
+cp "$RUNTIME_DIRECTORY/authorized-keys" "$staging/root/authorized_keys"
 cp "$STATE_DIRECTORY/host-key" "$staging/host-key"
 printf '%s\n' "$environment" >"$staging/environment"
-chmod 0600 "$staging/"*
+chmod 0600 "$staging/host-key" "$staging/environment" "$staging/root/authorized_keys"
 @mitm-proxy-seed@
 @notification-seed@
 truncate -s 8M "$RUNTIME_DIRECTORY/seed.img"

@@ -88,10 +88,17 @@
     openssh = {
       startWhenNeeded = true;
       openFirewall = false;
-      authorizedKeysFiles = lib.mkForce ["none"];
+      authorizedKeysFiles = lib.mkBefore ["/run/drv-run-ssh/%u/authorized_keys"];
     };
   };
   systemd = {
+    # mke2fs preserves the unprivileged host owner's UID on seed files.
+    # Stage root's public keys with guest ownership for sshd StrictModes.
+    tmpfiles.rules = [
+      "d /run/drv-run-ssh 0755 root root -"
+      "d /run/drv-run-ssh/root 0700 root root -"
+      "C /run/drv-run-ssh/root/authorized_keys 0600 root root - /run/drv-run-seed/root/authorized_keys"
+    ];
     network.networks."10-uplink" = {
       matchConfig.MACAddress = "02:00:00:00:00:01";
       networkConfig = {
@@ -107,10 +114,9 @@
       unitConfig.RequiresMountsFor = "/run/drv-run-seed";
       serviceConfig = {
         LoadCredential = [
-          "authorized-keys:/run/drv-run-seed/authorized-keys"
           "host-key:/run/drv-run-seed/host-key"
         ];
-        ExecStart = lib.mkForce "-${lib.getExe' pkgs.openssh "sshd"} -i -D -f /etc/ssh/sshd_config -h %d/host-key -o AuthorizedKeysFile=%d/authorized-keys";
+        ExecStart = lib.mkForce "-${lib.getExe' pkgs.openssh "sshd"} -i -D -f /etc/ssh/sshd_config -h %d/host-key";
       };
     };
   };
