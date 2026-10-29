@@ -19,7 +19,7 @@ type BrowserRequest =
   | { kind: "download"; url: string }
   | { kind: "selection"; caret: number }
   | { kind: "highlight"; query: string; entries: number[]; current: number | null }
-  | { kind: "focus" | "reveal" | "dialog"; id: string }
+  | { kind: "focus" | "reveal" | "dialog" | "scroll-entry"; id: string }
   | { kind: "resize" | "latest" | "cancel-completions" };
 declare const Elm: { Main: { init(options: { flags: unknown }): App } };
 
@@ -393,6 +393,15 @@ app.ports.browser.subscribe((request) => {
         resize(true);
         if (restore === undefined && pinned && scroll()?.checkVisibility()) latest();
         break;
+      case "scroll-entry": {
+        const target = document.getElementById(request.id);
+        if (target?.checkVisibility()) {
+          restore = undefined;
+          pinned = false;
+          target.scrollIntoView({ block: "start" });
+        }
+        break;
+      }
       case "latest":
         latest();
         break;

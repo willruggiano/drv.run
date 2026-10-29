@@ -257,6 +257,7 @@ type Msg
     | Directories Int Int (Result Http.Error (List String))
     | Collapse
     | Latest
+    | ScrollTo Int
     | NoOp
 
 
@@ -387,7 +388,11 @@ acknowledge pending draft =
         draft
 
     else if pending.clear && draft.revision == pending.revision then
-        emptyDraft
+        if pending.command == "submit" then
+            emptyDraft
+
+        else
+            { emptyDraft | files = draft.files, missingFiles = draft.missingFiles }
 
     else
         { draft | pending = Nothing }
@@ -800,7 +805,31 @@ update msg model =
                         _ ->
                             Nothing
             in
-            ( updated, Cmd.batch [ cmd, Maybe.map (\destination -> Tuple.second (navigate destination updated)) next |> Maybe.withDefault Cmd.none ] )
+            case next of
+                Just destination ->
+                    let
+                        draft =
+                            Dict.get path updated.drafts |> Maybe.withDefault emptyDraft
+
+                        destinationDraft =
+                            Dict.get destination updated.drafts |> Maybe.withDefault emptyDraft
+
+                        transferred =
+                            if destination == path then
+                                updated
+
+                            else
+                                { updated
+                                    | drafts =
+                                        updated.drafts
+                                            |> Dict.insert path { draft | files = [], missingFiles = False }
+                                            |> Dict.insert destination { destinationDraft | files = destinationDraft.files ++ draft.files, missingFiles = destinationDraft.missingFiles || draft.missingFiles }
+                                }
+                    in
+                    ( transferred, Cmd.batch [ storage transferred, Tuple.second (navigate destination transferred) ] )
+
+                Nothing ->
+                    ( updated, cmd )
 
         Acknowledged path pending result ->
             let
@@ -1146,6 +1175,26 @@ update msg model =
 
         Collapse ->
             ( { model | composerExpanded = not model.composerExpanded }, browser (E.object [ ( "kind", E.string "resize" ) ]) )
+
+        ScrollTo entryId ->
+            let
+                opened =
+                    Dict.get model.path model.opened |> Maybe.withDefault Dict.empty
+
+                expanded =
+                    Dict.values model.state.entries
+                        |> List.filter (\entry -> entry.id > entryId && entry.boundary /= Protocol.Normal)
+                        |> List.foldl (\entry -> Dict.insert ("context-" ++ String.fromInt entry.id) True) opened
+
+                updated =
+                    Dict.insert model.path expanded model.opened
+            in
+            ( { model | opened = updated }
+            , Cmd.batch
+                [ browser (E.object [ ( "kind", E.string "opened" ), ( "value", E.dict identity (E.dict identity E.bool) updated ) ])
+                , browser (E.object [ ( "kind", E.string "scroll-entry" ), ( "id", E.string ("entry-" ++ String.fromInt entryId) ) ])
+                ]
+            )
 
         Latest ->
             ( model, browser (E.object [ ( "kind", E.string "latest" ) ]) )
@@ -1528,11 +1577,18 @@ view model =
                 Conversation ->
                     text ""
 
+        scrollButton key label icon target =
+            button [ id key, A.type_ "button", attribute "aria-label" label, A.title label, A.disabled (target == Nothing), onClick (Maybe.map (.id >> ScrollTo) target |> Maybe.withDefault NoOp) ] [ Icon.view icon ]
+
         body =
             [ main_ [ id "main-area" ] [ div [ id "conversation-scroll", hidden (model.pane /= Conversation), class "scrollport pane", A.tabindex 0, attribute "aria-label" "Conversation" ] [ Html.Lazy.lazy7 viewTranscript model.rendering opened (Maybe.withDefault "" model.search) active state.entries state.tools state.metadata.durations, live ], panel ]
             , queue
             , footer [ id "app-footer", class "composer-area", hidden (model.pane == Context) ]
-                [ button [ id "latest", A.type_ "button", hidden (not model.latest), onClick Latest ] [ text "↓ Latest" ]
+                [ div [ id "conversation-navigation", hidden (model.pane /= Conversation), attribute "role" "group", attribute "aria-label" "Conversation navigation" ]
+                    [ button [ id "latest", A.type_ "button", attribute "aria-label" "Latest", A.title "Latest", A.disabled (not model.latest), onClick Latest ] [ Icon.view "chevrons-down" ]
+                    , scrollButton "last" "Last" "chevron-up" (Dict.values state.entries |> List.filter (\entry -> List.any (\item -> item.role == "user") entry.messages) |> List.reverse |> List.head)
+                    , scrollButton "top" "Top" "chevrons-up" (Dict.values state.entries |> List.filter (\entry -> entry.boundary == Protocol.Normal && not (List.isEmpty entry.messages)) |> List.head)
+                    ]
                 , Composer.shell
                     [ p [ id "composer-error", class "error", attribute "role" "alert" ]
                         [ text errorMessage

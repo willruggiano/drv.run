@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test";
 import type { ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { InboxDoc, LiveDoc, type TaskId, type Conversation } from "@earendil-works/pi-durable";
@@ -1527,7 +1528,9 @@ await test(
       document.getElementById("conversation-scroll")!.scrollTop = 120;
     });
     // Deliver the scroll event before navigation removes this scrollport.
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#latest")?.hidden);
+    await page.waitForFunction(
+      () => document.querySelector<HTMLButtonElement>("#latest")?.disabled === false,
+    );
     await page.locator("#conversation-title").click();
     await page.locator("#session-list a").filter({ hasText: "Other" }).click();
     await page.waitForURL(b.base + conversationURL(other, undefined));
@@ -1602,6 +1605,224 @@ await test(
       { type: "text", text: "" },
       { type: "text", text: 'File: "notes.md"\n\n# Notes' },
     ]);
+    assert.deepEqual(b.errors, []);
+  },
+);
+
+await test(
+  "Elm commands retain attachments across acknowledgements and new sessions",
+  { timeout: 45000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const b = await browserFixture(t, f.sessions);
+    const page = b.page;
+    page.setDefaultTimeout(10000);
+    const path = conversationURL(session);
+    await page.goto(b.base + path);
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Upload attachments" }).click();
+    const image = await readFile(join(b.source, "icon-192.png"));
+    await (
+      await chooser
+    ).setFiles([
+      { name: "icon-192.png", mimeType: "image/png", buffer: image },
+      { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Keep this attachment") },
+    ]);
+    await page.waitForFunction(() => document.querySelectorAll("#previews button").length === 2);
+    const preview = await page.locator("#previews img").getAttribute("src");
+    for (const command of ["/rename Attachments", "/reset", "/new"]) {
+      await page.locator("#prompt").fill(command);
+      await page.locator("#send").click();
+      if (command === "/reset") await page.getByRole("button", { name: "Confirm reset" }).click();
+      if (command === "/new") await page.waitForURL((url) => url.pathname !== path);
+      await page.waitForFunction(() => {
+        const draft = JSON.parse(sessionStorage.getItem("pi.elm.drafts")!)[location.pathname];
+        return draft?.text === "" && draft.pending === null;
+      });
+      assert.equal(await page.locator("#previews button").count(), 2);
+      assert.equal(await page.locator("#previews img").getAttribute("src"), preview);
+    }
+    const created = await f.sessions.get(new URL(page.url()).pathname.split("/")[2]);
+    f.faux.setResponses([fauxAssistantMessage("Received")]);
+    await page.locator("#send").click();
+    await page.waitForFunction(() => document.querySelectorAll("#previews button").length === 0);
+    await created.root.waitForIdle(context);
+    const history = await readHistory(created.root);
+    const attachment = history.find((entry) => entry.kind === "app.attachments");
+    assert(attachment);
+    assert.deepEqual(attachment.data, {
+      attachments: [
+        {
+          name: "icon-192.png",
+          mimeType: "image/png",
+          size: image.length,
+          block: 1,
+        },
+        { name: "notes.txt", mimeType: "text/plain", size: 20, block: 2 },
+      ],
+    });
+    const user = history
+      .flatMap((entry) => entry.model ?? [])
+      .find((message) => message.role === "user");
+    assert(user && Array.isArray(user.content));
+    assert.equal(user.content.filter((block) => block.type === "image").length, 1);
+    assert.deepEqual(b.errors, []);
+  },
+);
+
+await test(
+  "Elm Top, Last and Latest scroll to messages and preserve live following boundaries",
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t);
+    const session = await f.create();
+    const b = await browserFixture(t, f.sessions);
+    const page = b.page;
+    page.setDefaultTimeout(10000);
+    await page.goto(b.base + conversationURL(session));
+    await page.waitForFunction(
+      () => document.querySelector("#connection")?.textContent === "Connected",
+    );
+    const top = page.getByRole("button", { name: "Top", exact: true });
+    const last = page.getByRole("button", { name: "Last", exact: true });
+    const latest = page.getByRole("button", { name: "Latest", exact: true });
+    for (const button of [latest, last, top]) {
+      assert.equal(
+        await button.evaluate(
+          (node) => node.childNodes.length === 1 && node.firstChild instanceof SVGSVGElement,
+        ),
+        true,
+      );
+      assert.equal(await button.getAttribute("title"), await button.getAttribute("aria-label"));
+    }
+    assert.equal(await top.isDisabled(), true);
+    assert.equal(await last.isDisabled(), true);
+    assert.equal(await latest.isDisabled(), true);
+    const opacities = () =>
+      page
+        .locator("#conversation-navigation button")
+        .evaluateAll((nodes) => nodes.map((node) => Number(getComputedStyle(node).opacity)));
+    assert.deepEqual(await opacities(), [0.4, 0.4, 0.4]);
+    const append = (text: string) =>
+      session.root.commit(
+        (tx) =>
+          tx.appendEntry(session.root.id, {
+            kind: "pi.assistant",
+            model: [fauxAssistantMessage(text)],
+          }),
+        context,
+      );
+    const first = await append("First conversation message");
+    await page.waitForFunction(
+      () => document.querySelector<HTMLButtonElement>("#top")?.disabled === false,
+    );
+    assert.equal(await last.isDisabled(), true);
+    const user = await session.root.commit(async (tx) => {
+      for (let i = 0; i < 15; i++)
+        await tx.appendEntry(session.root.id, {
+          kind: "pi.user",
+          model: [{ role: "user", content: `Earlier request ${i}`, timestamp: i }],
+        });
+      const user = await tx.appendEntry(session.root.id, {
+        kind: "pi.user",
+        model: [
+          { role: "user", content: "Explain the final build result.", timestamp: 1700000000000 },
+        ],
+      });
+      for (let i = 0; i < 20; i++)
+        await tx.appendEntry(session.root.id, {
+          kind: "pi.assistant",
+          model: [
+            fauxAssistantMessage(
+              `Build step ${i} completed.\n\nThe output is ready for inspection.`,
+            ),
+          ],
+        });
+      return user;
+    }, context);
+    const atBottom = () =>
+      page.waitForFunction(() => {
+        const node = document.getElementById("conversation-scroll")!;
+        return Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop) < 1;
+      });
+    const atMessage = (id: number) =>
+      page.waitForFunction((id) => {
+        const node = document.getElementById("conversation-scroll")!;
+        const message = document.getElementById(`entry-${id}`)!;
+        const offset = message.getBoundingClientRect().top - node.getBoundingClientRect().top;
+        const margin = parseFloat(getComputedStyle(message).scrollMarginTop);
+        return message.checkVisibility() && offset >= 0 && offset <= margin + 1;
+      }, id);
+    for (const width of [1000, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.locator(`#entry-${user.id}`).waitFor({ state: "attached" });
+      await last.click();
+      await atMessage(user.id);
+      await page.waitForFunction(
+        () => document.querySelector<HTMLButtonElement>("#latest")?.disabled === false,
+      );
+      assert.deepEqual(await opacities(), [0.8, 0.8, 0.8]);
+      await page.evaluate(() =>
+        document.documentElement.style.setProperty("--translucent-opacity", "0.6"),
+      );
+      assert.deepEqual(await opacities(), [0.6, 0.6, 0.6]);
+      await page.evaluate(() =>
+        document.documentElement.style.removeProperty("--translucent-opacity"),
+      );
+      const positions = await Promise.all(
+        [latest, last, top].map((button) => button.boundingBox()),
+      );
+      assert(positions.every((box) => box !== null));
+      assert(positions[0]!.x + positions[0]!.width < positions[1]!.x);
+      assert(positions[1]!.x + positions[1]!.width < positions[2]!.x);
+      if (b.screenshots)
+        await page.screenshot({
+          path: join(b.screenshots, `elm-conversation-navigation-${width}.png`),
+        });
+      const position = await page
+        .locator("#conversation-scroll")
+        .evaluate((node) => node.scrollTop);
+      const added = await append("New output must not pull the reader away. ".repeat(30));
+      await page.locator(`#entry-${added.id}`).waitFor({ state: "attached" });
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+      assert.equal(
+        await page.locator("#conversation-scroll").evaluate((node) => node.scrollTop),
+        position,
+      );
+      await top.click();
+      await atMessage(first.id);
+      await latest.click();
+      await atBottom();
+      const transcriptBounds = await page.locator("#transcript").boundingBox();
+      const navigationBounds = await page.locator("#conversation-navigation").boundingBox();
+      assert(transcriptBounds && navigationBounds);
+      assert(transcriptBounds.y + transcriptBounds.height <= navigationBounds.y);
+      const followed = await append("Follow new output at the bottom. ".repeat(30));
+      await page.locator(`#entry-${followed.id}`).waitFor({ state: "attached" });
+      await atBottom();
+      await page.waitForFunction(
+        () => document.querySelector<HTMLButtonElement>("#latest")?.disabled === true,
+      );
+    }
+    // Both targets remain reachable inside nested collapsed context archives.
+    for (const kind of ["pi.reset", "pi.compaction"]) {
+      const boundary = await session.root.commit(
+        (tx) => tx.appendEntry(session.root.id, { kind, head: "self" }),
+        context,
+      );
+      await page.locator(`#entry-${boundary.id}`).waitFor();
+    }
+    assert.equal(await page.locator(`#entry-${first.id}`).isVisible(), false);
+    await last.click();
+    await atMessage(user.id);
+    await top.click();
+    await atMessage(first.id);
     assert.deepEqual(b.errors, []);
   },
 );

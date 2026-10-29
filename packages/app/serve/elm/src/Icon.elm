@@ -31,6 +31,15 @@ view name =
             "chevron-down" ->
                 [ Svg.path [ S.d "m6 9 6 6 6-6" ] [] ]
 
+            "chevron-up" ->
+                [ Svg.path [ S.d "m6 15 6-6 6 6" ] [] ]
+
+            "chevrons-up" ->
+                [ Svg.path [ S.d "m6 11 6-6 6 6m-12 8 6-6 6 6" ] [] ]
+
+            "chevrons-down" ->
+                [ Svg.path [ S.d "m6 5 6 6 6-6m-12 8 6 6 6-6" ] [] ]
+
             "close" ->
                 [ Svg.path [ S.d "m6 6 12 12M18 6 6 18" ] [] ]
 

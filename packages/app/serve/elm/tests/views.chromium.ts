@@ -179,7 +179,9 @@ await test(
     await page.locator("#conversation-scroll").evaluate((node) => {
       node.scrollTop = 80;
     });
-    await page.locator("#latest").waitFor();
+    await page.waitForFunction(
+      () => document.querySelector<HTMLButtonElement>("#latest")?.disabled === false,
+    );
     await page.locator("#footer-model").click();
     await page.locator('#settings form[data-autosave] input[name="name"]').fill("First name");
     const received = Promise.withResolvers<void>();
