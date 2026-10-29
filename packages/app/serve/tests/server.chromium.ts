@@ -32,9 +32,9 @@ await test("the frontend uses only the shared stylesheet", async (t) => {
   assert.deepEqual(b.errors, []);
 });
 
-await test("focus does not add outlines or decoration to controls", async (t) => {
+await test("composer focus restores its green border without native control outlines", async (t) => {
   const f = await directoryFixture(t, "/workspace");
-  await f.create();
+  const session = await f.create();
   const { page, base, screenshots, errors } = await browserFixture(
     t,
     f.sessions,
@@ -45,10 +45,17 @@ await test("focus does not add outlines or decoration to controls", async (t) =>
   await page.goto(base);
   await page.locator("#base-directory").waitFor();
   await page.keyboard.press("Tab");
-  const box = page.locator(".compose-box");
+  const box = page.locator("#composer-shell > .compose-box");
   await page.locator("#base-directory").focus();
   const border = await box.evaluate((node) => getComputedStyle(node).borderColor);
+  const primary = await page
+    .locator("#create")
+    .evaluate((node) => getComputedStyle(node).backgroundColor);
   await page.locator("#prompt").focus();
+  assert.equal(await box.evaluate((node) => getComputedStyle(node).borderColor), primary);
+  await page.locator("#create").focus();
+  assert.equal(await box.evaluate((node) => getComputedStyle(node).borderColor), primary);
+  await page.locator("#base-directory").focus();
   assert.equal(await box.evaluate((node) => getComputedStyle(node).borderColor), border);
   const archive = page.locator(".session-archive").first();
   const appearance = (node: Element) => {
@@ -91,7 +98,47 @@ await test("focus does not add outlines or decoration to controls", async (t) =>
     "none",
   );
   if (screenshots) await page.screenshot({ path: join(screenshots, "mobile-toggle-focused.png") });
+  await page.goto(base + conversationURL(session));
+  await page.locator("#prompt").focus();
+  assert.equal(await box.evaluate((node) => getComputedStyle(node).borderColor), primary);
+  await page.locator("#prompt").blur();
+  assert.equal(await box.evaluate((node) => getComputedStyle(node).borderColor), border);
   assert.deepEqual(errors, []);
+});
+
+await test("recent sessions use the hover background during Ctrl+J/K navigation", async (t) => {
+  const f = await fixture(t);
+  await f.create();
+  await f.create();
+  const b = await browserFixture(t, f.sessions);
+  const context = await b.browser.newContext({ viewport: { width: 1440, height: 900 } });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  page.on("pageerror", (error) => b.errors.push(error));
+  await page.goto(b.base);
+  const sessions = page.locator("#session-list .session");
+  await sessions.first().waitFor();
+  const background = (node: Element) => getComputedStyle(node).backgroundColor;
+  const idle = await sessions.first().evaluate(background);
+  await sessions.first().hover();
+  const hovered = await sessions.first().evaluate(background);
+  assert.notEqual(hovered, idle);
+  await page.mouse.move(0, 0);
+  await page.locator("#prompt").focus();
+  for (const [key, index] of [
+    ["j", 0],
+    ["j", 1],
+    ["k", 0],
+  ] as const) {
+    await page.keyboard.press(`Control+${key}`);
+    assert.equal(
+      await sessions.nth(index).evaluate((node) => node === document.activeElement),
+      true,
+    );
+    assert.equal(await sessions.nth(index).evaluate(background), hovered);
+    assert.equal(await sessions.nth(1 - index).evaluate(background), idle);
+  }
+  assert.deepEqual(b.errors, []);
 });
 
 await test("global and session settings share one container and autosave form without status output", async (t) => {
@@ -536,9 +583,15 @@ await test("landing composer matches conversation summaries and geometry without
         assert(target && cwd);
         assert(target.y + target.height <= cwd.y);
         assert(cwd.y + cwd.height <= box.y);
-        assert.equal(target.x, cwd.x);
-        assert.equal(target.width, cwd.width);
+        assert.equal(target.x + target.width, box.x + box.width);
         assert(target.x >= box.x);
+        assert(target.width >= 100);
+        assert(target.width < box.width / 2);
+        assert(cwd.x >= box.x);
+        if (width > 650) {
+          assert(target.width < box.width);
+          assert(cwd.width < box.width);
+        }
         assert.equal(cwd.x + cwd.width, box.x + box.width);
         const labels = page.locator("#footer-instance .selector-label");
         assert.deepEqual(await labels.allTextContents(), ["Environment", "Working directory"]);
@@ -610,6 +663,24 @@ await test("landing composer matches conversation summaries and geometry without
             .locator("#footer-instance .selector-value")
             .evaluate((node) => getComputedStyle(node).fontSize),
         );
+        await directory.fill("/");
+        const short = await directory.boundingBox();
+        assert(short);
+        assert(short.width >= 100);
+        assert(short.width < box.width / 2);
+        assert.equal(short.x + short.width, box.x + box.width);
+        await page.mouse.click(box.x + 1, short.y + short.height / 2);
+        assert.equal(await directory.evaluate((node) => node === document.activeElement), false);
+        await directory.fill("/workspace/longer-directory");
+        const expanded = await directory.boundingBox();
+        assert(expanded);
+        assert(expanded.width > short.width);
+        await directory.fill("/workspace/" + "long-directory/".repeat(30));
+        const constrained = await directory.boundingBox();
+        assert(constrained);
+        assert(constrained.width <= box.width);
+        assert.equal(constrained.x + constrained.width, box.x + box.width);
+        await directory.fill(f.binding.cwd);
         await directory.blur();
         const dot = await page.locator("#footer-model > .footer-dot").boundingBox();
         assert(dot);

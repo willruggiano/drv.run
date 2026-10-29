@@ -118,6 +118,7 @@ img { max-width: 100%; height: auto; } summary { cursor: pointer; padding: 3px 0
 #notice { cursor: pointer; background: var(--notice-bg); } #recovery { background: var(--warning-bg); } .error { color: var(--danger); }
 #composer { padding: 8px max(20px, calc((100% - 820px)/2)) 14px; }
 .compose-box { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 4px; }
+.compose-box:focus-within { border-color: var(--primary); }
 textarea { display: block; width: 100%; resize: vertical; padding: 8px 10px; max-height: 30dvh; min-height: 64px; }
 #prompt { resize: none; min-height: 42px; max-height: 25dvh; background: transparent; border: none; }
 .actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; } .compose-box > .actions { margin: 0; } .spacer { flex: 1; }
@@ -486,7 +487,7 @@ elm-file summary::-webkit-details-marker { display: none; }
 .session-archive:hover { color: var(--fg); opacity: 1; }
 .session-archive .glyph { width: 14px; height: 14px; }
 .session { display: block; border: 1px solid transparent; border-radius: 6px; color: inherit; }
-.session:hover { background: var(--hover); }
+.session:is(:hover, :focus) { background: var(--hover); }
 /* Creation uses the conversation shell and metadata; only its fields are editable. */
 #composer.new-composer, #new-options, #new-options > #options { display: contents; }
 .new-composer #bottom-line { order: 1; }
@@ -505,10 +506,10 @@ elm-file summary::-webkit-details-marker { display: none; }
 .selector-summary input::placeholder { color: var(--muted); opacity: 1; }
 /* Stack each landing input above its label, flush with the composer's right edge. */
 .new-composer #footer-instance { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; order: -1; margin-inline: var(--conversation-left) var(--conversation-right); color: var(--fg); font: 14px/1.7 var(--font-mono); text-align: right; }
-.new-composer #footer-instance label { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(24px, auto) auto; }
+.new-composer #footer-instance label { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(24px, auto) auto; justify-self: end; width: fit-content; min-width: min(12ch, 100%); max-width: 100%; }
 .new-composer #footer-instance .selector-label { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip-path: none; grid-column: 1; grid-row: 2; justify-self: end; color: var(--muted); font: 11px/1.4 var(--font-ui); }
 .new-composer #footer-instance label > :not(.selector-label) { grid-area: 1 / 1 / 2 / 2; }
-.new-composer #footer-instance input { text-align: right; }
+.new-composer #footer-instance input { width: auto; text-align: right; }
 @media (max-width: 650px), (any-pointer: coarse) {
   .new-composer #footer-instance { font-size: 16px; }
 }
