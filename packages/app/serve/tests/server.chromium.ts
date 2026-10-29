@@ -703,6 +703,10 @@ await test("the landing creates, reopens and archives sessions", async (t) => {
   const landing = "/";
   await page.goto(b.base + landing);
   await page.locator("#session-list a").first().waitFor();
+  assert.equal(
+    await page.locator("#recent-title").evaluate((node) => getComputedStyle(node).color),
+    await page.locator("#bottom-line").evaluate((node) => getComputedStyle(node).color),
+  );
   assert.equal(await page.locator("#session-list a").count(), 5);
   const catalog = await f.sessions.catalog();
   assert.deepEqual(
