@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { BACKGROUND_CONTEXT, awaitWithContext, type Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, awaitWithContext } from "@earendil-works/chord/context";
 import { Type, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
@@ -18,10 +18,8 @@ import {
   createRegistry,
   defineExtension,
   defineTool,
-  defineTask,
   hook,
   type ConversationId,
-  type ToolExecutionApi,
   type ToolHooks,
   type JsonObject,
 } from "@earendil-works/pi-durable";
@@ -35,9 +33,8 @@ const call = (name: string, args: JsonObject) =>
   fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
 const done = () => fauxAssistantMessage("Done.");
 const fork = `
-  const view = await tools.conversation_context({});
+  const view = await tools.contextView({});
   const at = view.entries.findLast(e => e.kind === "pi.user").id;
-  const child = await tools.conversation_fork({ at });
 `;
 
 async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
@@ -52,16 +49,13 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
   let holding = false;
   let cancelled = false;
   let harness: Harness;
-  let onCapture:
-    | ((value: unknown, api: ToolExecutionApi, context: Context) => Promise<void>)
-    | undefined;
-  const requests: TranscriptContext[] = [];
   faux.setResponses(
     Array.from({ length: 100 }, () => (request: TranscriptContext) => {
-      requests.push(request);
       if (request.messages.at(-1)?.role === "toolResult") return done();
       const input = request.messages.findLast((message) => message.role === "user")?.content;
       if (input === "hold") return call("hold", {});
+      if (input === "fail")
+        return fauxAssistantMessage("", { stopReason: "error", errorMessage: "failure" });
       const script = typeof input === "string" ? scripts.get(input) : undefined;
       return script === undefined ? done() : call("codemode", { code: script });
     }),
@@ -69,7 +63,7 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
   const registry = createRegistry();
   const options = { sandbox, models: false };
   registry.install(createCodemodeExtension(options));
-  registry.install(createConversationExtension(() => harness, options));
+  registry.install(createConversationExtension(() => harness));
   registry.install(
     defineExtension({
       name: "test",
@@ -79,9 +73,8 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
           name: "capture",
           parameters: Type.Object({ value: Type.Unknown() }),
           description: "Record test state.",
-          async execute(args, api, context) {
+          async execute(args, api) {
             values.push({ conversationId: api.conversationId, value: args.value });
-            await onCapture?.(args.value, api, context);
             return {};
           },
         }),
@@ -119,7 +112,7 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
       {
         models,
         registry,
-        settings: { compaction: { enabled: false, keepRecentTokens: 0 } },
+        settings: { compaction: { backgroundTokens: 0 }, retry: { maxRetries: 0 } },
       },
       context,
     );
@@ -137,9 +130,7 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
     models,
     scripts,
     values,
-    requests,
     held,
-    registry,
     get harness() {
       return harness;
     },
@@ -148,9 +139,6 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
     },
     get cancelled() {
       return cancelled;
-    },
-    capture(fn: typeof onCapture) {
-      onCapture = fn;
     },
     async reopen() {
       await harness.close(context);
@@ -172,113 +160,159 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
   };
 }
 
-await test("opt-in harness installs Codemode and tools-only conversation methods", async (t) => {
+await test("opt-in installs only the three conversation tools and disables background compaction", async (t) => {
   const f = await fixture(t);
   const directory = await mkdtemp(join(tmpdir(), "conversation-open-"));
+  const storage = await openNodeSqliteStorage(join(directory, "test.sqlite"));
+  const modelOverrides: Record<string, { backgroundTokens: number }> = {
+    "faux/test": { backgroundTokens: 300_000 },
+  };
+  const settings = { compaction: { backgroundTokens: 200_000, modelOverrides } };
   const harness = await openHarness(
-    await openNodeSqliteStorage(join(directory, "test.sqlite")),
-    {
-      models: f.models,
-      codemode: f.sandbox,
-    },
+    storage,
+    { models: f.models, codemode: f.sandbox, settings },
     context,
   );
   t.after(async () => {
     await harness.close(context);
     await rm(directory, { recursive: true, force: true });
   });
-  const agent = await (await harness.root(context)).agent(context);
-  assert(agent.tools.some((tool) => tool.name === "codemode"));
-  assert.equal(
-    agent.tools.some((tool) => tool.name.startsWith("conversation_")),
-    false,
-  );
-  assert.deepEqual(
-    agent.callable
-      .filter((tool) => tool.name.startsWith("conversation_"))
-      .map((tool) => tool.name)
-      .sort(),
-    [
-      "conversation_abort",
-      "conversation_compact",
-      "conversation_configure",
-      "conversation_context",
-      "conversation_entries",
-      "conversation_fork",
-      "conversation_reset",
-      "conversation_submit",
-      "conversation_waitForIdle",
-    ],
-  );
+  const root = await harness.root(context);
+  const agent = await root.agent(context);
+  assert.deepEqual(agent.tools.map((tool) => tool.name).sort(), [
+    "bash",
+    "codemode",
+    "edit",
+    "read",
+    "web_fetch",
+    "web_search",
+    "write",
+  ]);
+  assert.deepEqual(agent.callable.map((tool) => tool.name).sort(), [
+    "bash",
+    "contextEntries",
+    "contextView",
+    "edit",
+    "forkJoin",
+    "read",
+    "web_fetch",
+    "web_search",
+    "write",
+  ]);
+  assert.equal(settings.compaction.backgroundTokens, 200_000);
+  assert.equal(modelOverrides["faux/test"].backgroundTokens, 300_000);
+  // Both configured thresholds would start background compaction for a nonempty
+  // request. Check durable records, including tasks that already finished.
+  await root.configure({ model: { provider: "faux", modelId: "test" } }, context);
+  await (await root.submit({ type: "input", content: "answer" }, context)).wait(context);
+  delete modelOverrides["faux/test"];
+  await (await root.submit({ type: "input", content: "again" }, context)).wait(context);
+  const background = await harness.commit((tx) => tx.scanTasks({ background: true }, 256), context);
+  assert.deepEqual(background.items, []);
+  assert.equal((await harness.inspect(context)).tasks.length, 0);
 });
 
 await test(
-  "fork points, parallel results, configure, reset and history pagination",
+  "contextView projects active context; contextEntries retains and paginates raw history",
   { timeout: 30_000 },
   async (t) => {
     const f = await fixture(t);
     const first = await f.root.submit(
-      { type: "write", entry: { kind: "test.first", data: { keep: true } } },
+      { type: "write", entry: { kind: "test.old", data: { retained: true } } },
       context,
     );
-    const firstEntry = (await first.status(context)).entry;
-    assert(firstEntry !== undefined);
-    const second = await f.root.submit(
-      { type: "write", entry: { kind: "test.second", data: { exclude: true } } },
-      context,
-    );
-    const secondEntry = (await second.status(context)).entry;
+    const at = (await first.status(context)).entry;
+    assert(at !== undefined);
+    const historical = await f.root.context(context, { at });
+    await f.root.reset("focused task", context);
     await f.run(`
-    const children = await Promise.all([1, 2].map(async i => {
-      const child = await tools.conversation_fork({ at: ${firstEntry} });
-      await tools.conversation_configure({ conversationId: child.id, change: { instructions: "child instructions" } });
-      const inherited = await tools.conversation_entries({ conversationId: child.id, query: { order: "ascending" }, limit: 1 });
-      await tools.conversation_reset({ conversationId: child.id, handoff: "focused task" });
-      await tools.conversation_submit({ conversationId: child.id, submission: { type: "input", content: "answer", whenBusy: "reject" } });
-      await tools.conversation_waitForIdle({ conversationId: child.id });
-      const result = await tools.conversation_context({ conversationId: child.id });
-      const history = [];
-      let cursor;
-      do {
-        const page = await tools.conversation_entries({ conversationId: child.id, query: { order: "ascending" }, limit: 1, ...(cursor ? { cursor } : {}) });
-        history.push(...page.items);
-        cursor = page.next;
-      } while (cursor);
-      return { id: child.id, inherited, result, history };
-    }));
-    await tools.capture({ value: children });
+    const current = await tools.contextView({});
+    const historical = await tools.contextView({ at: ${at} });
+    const entries = [];
+    let cursor;
+    do {
+      const page = await tools.contextEntries({ query: { order: "ascending" }, limit: 1, ...(cursor ? { cursor } : {}) });
+      entries.push(...page.items);
+      cursor = page.next;
+    } while (cursor);
+    const bounded = await tools.contextEntries({ query: { minEntryId: ${at}, maxEntryId: ${at} }, limit: 1 });
+    await tools.capture({ value: { historical, oldActive: current.entries.some(e => e.id === ${at}), ids: entries.map(e => e.id), bounded } });
   `);
-    const conversations = await f.harness.commit((tx) => tx.scanConversations({}, 256), context);
-    assert.equal(conversations.items.length, 3);
-    for (const record of conversations.items.filter((record) => record.id !== f.root.id)) {
-      assert.deepEqual(record.parent, { conversationId: f.root.id, at: firstEntry });
+    const value = f.values[0].value;
+    assert(
+      typeof value === "object" &&
+        value !== null &&
+        "historical" in value &&
+        "oldActive" in value &&
+        "ids" in value &&
+        "bounded" in value,
+    );
+    assert.deepEqual(value.historical, JSON.parse(JSON.stringify(historical)));
+    assert.equal(value.oldActive, false);
+    assert(Array.isArray(value.ids));
+    assert.equal(value.ids[0], at);
+    assert.deepEqual(
+      value.ids,
+      [...new Set(value.ids)].sort((a, b) => a - b),
+    );
+    assert.deepEqual(
+      value.bounded,
+      JSON.parse(
+        JSON.stringify(
+          await f.root.entries({ minEntryId: at, maxEntryId: at }, 1, undefined, context),
+        ),
+      ),
+    );
+  },
+);
+
+await test(
+  "parallel forkJoin calls inherit the selected history and return their specific answers",
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await fixture(t);
+    await f.root.configure({ instructions: "inherited instructions" }, context);
+    const first = await f.root.submit({ type: "write", entry: { kind: "test.first" } }, context);
+    const at = (await first.status(context)).entry;
+    assert(at !== undefined);
+    const later = await f.root.submit({ type: "write", entry: { kind: "test.later" } }, context);
+    const excluded = (await later.status(context)).entry;
+    await f.run(`
+    const results = await Promise.all(["left", "right"].map(content => tools.forkJoin({ at: ${at}, content })));
+    await tools.capture({ value: results });
+  `);
+    const results = f.values[0].value;
+    assert(Array.isArray(results));
+    assert.equal(results.length, 2);
+    const records = (await f.harness.commit((tx) => tx.scanConversations({}, 256), context)).items;
+    assert.equal(records.length, 3);
+    for (const record of records.filter((record) => record.id !== f.root.id)) {
+      assert.deepEqual(record.parent, { conversationId: f.root.id, at });
+      assert(record.owner);
+      const owner = await f.harness.getTask(record.owner.taskId, context);
+      assert.equal(owner?.kind, "pi.tool");
+      assert.equal(owner?.state.status, "terminal");
       const child = await f.harness.conversation(record.id, context);
       assert(child);
-      const history = await child.entries({}, 256, undefined, context);
-      assert(history.items.some((entry) => entry.id === firstEntry));
+      assert.equal((await child.agent(context)).instructions, "inherited instructions");
+      const history = (await child.entries({}, 256, undefined, context)).items;
+      assert(history.some((entry) => entry.id === at));
       assert.equal(
-        history.items.some((entry) => entry.id === secondEntry),
+        history.some((entry) => entry.id === excluded),
         false,
       );
-      const active = await child.context(context);
-      assert.equal(
-        active.entries.some((entry) => entry.id === firstEntry),
-        false,
+      const answer = history.find((entry) => entry.kind === "pi.assistant")?.model?.[0];
+      assert.deepEqual(
+        results.find((result) => result.conversationId === record.id),
+        { conversationId: record.id, answer },
       );
-      assert.equal(active.messages.at(-1)?.role, "assistant");
-      assert.equal((await child.agent(context)).instructions, "child instructions");
-      assert(record.owner);
-      const guard = await f.harness.getTask(record.owner.taskId, context);
-      assert.equal(guard?.kind, "app.conversations.guard");
-      assert.equal(guard?.state.status, "terminal");
     }
-    assert.equal(f.values.length, 1);
     assert.equal((await f.harness.inspect(context)).tasks.length, 0);
   },
 );
 
 await test(
-  "recursive children can collect results but cannot access parent, siblings or unrelated history",
+  "recursive children have self-only readers and cannot fork unrelated entries",
   { timeout: 30_000 },
   async (t) => {
     const f = await fixture(t);
@@ -287,79 +321,80 @@ await test(
       context,
     );
     const secret = await outsider.submit(
-      { type: "write", entry: { kind: "test.secret", data: { secret: true } } },
+      { type: "write", entry: { kind: "test.secret" } },
       context,
     );
     const secretEntry = (await secret.status(context)).entry;
     assert(secretEntry !== undefined);
-    const branch = (sibling: number) => `
+    f.scripts.set(
+      "branch",
+      `
     ${fork}
     const denied = [];
     for (const operation of [
-      () => tools.conversation_context({ conversationId: ${f.root.id} }),
-      () => tools.conversation_context({ conversationId: ${outsider.id} }),
-      () => tools.conversation_context({ conversationId: ${sibling} }),
-      () => tools.conversation_context({ at: ${secretEntry} }),
-      () => tools.conversation_fork({ at: ${secretEntry} }),
-      () => tools.conversation_waitForIdle({}),
-      () => tools.conversation_abort({}),
-      () => tools.conversation_compact({}),
-      () => tools.conversation_submit({ submission: { type: "input", content: "escape" } }),
+      () => tools.contextView({ conversationId: ${f.root.id} }),
+      () => tools.contextEntries({ conversationId: ${outsider.id}, limit: 1 }),
+      () => tools.contextView({ at: ${secretEntry} }),
+      () => tools.forkJoin({ at: ${secretEntry}, content: "escape" }),
     ]) {
       try { await operation(); denied.push(false); } catch { denied.push(true); }
     }
-    await tools.conversation_submit({ conversationId: child.id, submission: { type: "input", content: "leaf" } });
-    await tools.conversation_waitForIdle({ conversationId: child.id });
-    await tools.capture({ value: { denied, child } });
-  `;
-    f.capture(async (value) => {
-      if (typeof value === "object" && value !== null && "sibling" in value) {
-        assert.equal(typeof value.sibling, "number");
-        assert(typeof value.sibling === "number");
-        f.scripts.set("branch", branch(value.sibling));
-      }
-    });
-    await f.run(`
-    ${fork}
-    const sibling = await tools.conversation_fork({ at });
-    await tools.capture({ value: { sibling: sibling.id } });
-    await tools.conversation_submit({ conversationId: child.id, submission: { type: "input", content: "branch" } });
-    await tools.conversation_waitForIdle({ conversationId: child.id });
-    const result = await tools.conversation_context({ conversationId: child.id });
-    await tools.capture({ value: result.messages.at(-1).role });
+    const hidden = await tools.contextEntries({ query: { minEntryId: ${secretEntry}, maxEntryId: ${secretEntry} }, limit: 1 });
+    const result = await tools.forkJoin({ at, content: "leaf" });
+    await tools.capture({ value: { denied, hidden, result } });
+  `,
+    );
+    await f.run(`${fork}
+    const result = await tools.forkJoin({ at, content: "branch" });
+    await tools.capture({ value: result });
   `);
-    assert.equal(f.values.length, 3);
-    const branchValue = f.values[1].value;
-    assert(typeof branchValue === "object" && branchValue !== null && "denied" in branchValue);
-    assert.deepEqual(branchValue.denied, Array(9).fill(true));
-    assert.equal(f.values[2].value, "assistant");
-    const conversations = await f.harness.commit((tx) => tx.scanConversations({}, 256), context);
-    assert.equal(conversations.items.length, 5);
+    assert.equal(f.values.length, 2);
+    const branch = f.values[0].value;
+    assert(
+      typeof branch === "object" && branch !== null && "denied" in branch && "hidden" in branch,
+    );
+    assert.deepEqual(branch.denied, [true, true, true, true]);
+    assert.deepEqual(branch.hidden, { items: [] });
+    const records = (await f.harness.commit((tx) => tx.scanConversations({}, 256), context)).items;
+    assert.equal(records.length, 4);
+    assert.equal((await f.harness.inspect(context)).tasks.length, 0);
+  },
+);
+
+await test(
+  "forkJoin rejects a failed submission rather than returning an inherited answer",
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await fixture(t);
+    await (
+      await f.root.submit({ type: "input", content: "earlier answer" }, context)
+    ).wait(context);
+    await f.run(`${fork}
+    let rejected = false;
+    try { await tools.forkJoin({ at, content: "fail" }); } catch { rejected = true; }
+    await tools.capture({ value: rejected });
+  `);
+    assert.deepEqual(
+      f.values.map((record) => record.value),
+      [true],
+    );
     assert.equal((await f.harness.inspect(context)).tasks.length, 0);
   },
 );
 
 for (const ending of ["return", "throw", "abort"] as const) {
   await test(
-    `script ${ending} cancels and joins recursive descendants`,
+    `script ${ending} cancels and joins unfinished recursive forkJoin calls`,
     { timeout: 30_000 },
     async (t) => {
       const f = await fixture(t);
-      f.scripts.set(
-        "branch",
-        `
-      ${fork}
-      await tools.conversation_submit({ conversationId: child.id, submission: { type: "input", content: "hold" } });
-      await tools.conversation_waitForIdle({ conversationId: child.id });
-    `,
-      );
+      f.scripts.set("branch", `${fork} await tools.forkJoin({ at, content: "hold" });`);
       f.scripts.set(
         "parent",
-        `
-      ${fork}
-      await tools.conversation_submit({ conversationId: child.id, submission: { type: "input", content: "branch" } });
+        `${fork}
+      void tools.forkJoin({ at, content: "branch" });
       await tools.barrier({});
-      ${ending === "throw" ? 'throw new Error("stop");' : ending === "abort" ? "await tools.conversation_waitForIdle({ conversationId: child.id });" : "return;"}
+      ${ending === "throw" ? 'throw new Error("stop");' : ending === "abort" ? "await tools.hold({});" : "return;"}
     `,
       );
       await f.root.submit({ type: "input", content: "parent" }, context);
@@ -374,144 +409,47 @@ for (const ending of ["return", "throw", "abort"] as const) {
 }
 
 await test(
-  "interrupted fork is not repeated on restart and its child is cleaned up",
+  "restart reuses the fork and submission when interrupted before returning the result",
   { timeout: 30_000 },
   async (t) => {
-    const admitted = Promise.withResolvers<void>();
+    const answered = Promise.withResolvers<void>();
     let first = true;
     const f = await fixture(t, {
       async afterTool(call, _result, _api, context) {
-        if (call.name === "conversation_fork" && first) {
+        if (call.name === "forkJoin" && first) {
           first = false;
-          admitted.resolve();
+          answered.resolve();
           await awaitWithContext(new Promise<never>(() => {}), context);
         }
       },
     });
     f.scripts.set(
       "parent",
-      `
-    const view = await tools.conversation_context({});
-    const at = view.entries.findLast(e => e.kind === "pi.user").id;
-    let interrupted = false;
-    try { await tools.conversation_fork({ at }); } catch { interrupted = true; }
-    await tools.capture({ value: interrupted });
+      `${fork}
+    const result = await tools.forkJoin({ at, content: "child" });
+    await tools.capture({ value: result });
   `,
     );
     await f.root.submit({ type: "input", content: "parent" }, context);
-    await admitted.promise;
+    await answered.promise;
     const root = await f.reopen();
     await root.waitForIdle(context);
-    assert.deepEqual(
-      f.values.map((record) => record.value),
-      [true],
+    const records = (await f.harness.commit((tx) => tx.scanConversations({}, 256), context)).items;
+    assert.equal(records.length, 2);
+    const child = records.find((record) => record.id !== root.id);
+    assert(child);
+    const conversation = await f.harness.conversation(child.id, context);
+    assert(conversation);
+    const history = (await conversation.entries({}, 256, undefined, context)).items.filter(
+      (entry) => entry.conversationId === child.id,
     );
-    const conversations = await f.harness.commit((tx) => tx.scanConversations({}, 256), context);
-    assert.equal(conversations.items.length, 2);
-    assert.equal((await f.harness.inspect(context)).tasks.length, 0);
-  },
-);
-
-for (const recovered of [false, true]) {
-  await test(
-    `scope cleanup crosses background boundaries (recovered=${recovered})`,
-    { timeout: 30_000 },
-    async (t) => {
-      const f = await fixture(t);
-      let aborted = false;
-      const Background = defineTask({
-        name: "test.background",
-        version: 1,
-        initial: () => ({ phase: "hold" as const }),
-        phases: {
-          hold: async (_task, runtime, context) => {
-            await awaitWithContext(new Promise<never>(() => {}), context);
-            await runtime.commit(
-              () => ({ status: "terminal", outcome: { status: "completed", result: null } }),
-              context,
-            );
-          },
-        },
-        abort: async (_task, runtime, context) => {
-          aborted = true;
-          await runtime.commit(
-            () => ({ status: "terminal", outcome: { status: "aborted" } }),
-            context,
-          );
-        },
-      });
-      f.registry.install(defineExtension({ name: "background-test", tasks: [Background] }));
-      f.capture(async (value) => {
-        assert(typeof value === "number");
-        const records = await f.harness.commit((tx) => tx.scanConversations({}, 256), context);
-        const child = records.items.find((record) => record.id === value);
-        assert(child);
-        await f.harness.commit(
-          (tx) =>
-            tx.createTask(Background, null, {
-              ownership: { kind: "conversation" },
-              conversationId: child.id,
-              background: true,
-            }),
-          context,
-        );
-      });
-      const script = `${fork}\nawait tools.capture({ value: child.id });`;
-      if (recovered) {
-        f.scripts.set("parent", `${script}\nawait tools.hold({});`);
-        await f.root.submit({ type: "input", content: "parent" }, context);
-        await f.held.promise;
-        const root = await f.reopen();
-        await root.abort(context);
-      } else {
-        await f.run(script);
-      }
-      assert.equal(aborted, true);
-      assert.equal((await f.harness.inspect(context)).tasks.length, 0);
-    },
-  );
-}
-
-await test(
-  "manual compaction retains raw history and explicit abort settles a child",
-  { timeout: 30_000 },
-  async (t) => {
-    const f = await fixture(t);
-    for (const content of ["earlier task", "more context", "last detail"]) {
-      await f.root.submit({ type: "input", content }, context);
-      await f.root.waitForIdle(context);
-    }
-    await f.run(`
-    ${fork}
-    const taskId = await tools.conversation_compact({ conversationId: child.id, instructions: "Preserve constraints." });
-    await tools.conversation_waitForIdle({ conversationId: child.id });
-    const compacted = await tools.conversation_context({ conversationId: child.id });
-    const original = await tools.conversation_entries({ conversationId: child.id, limit: 256 });
-    await tools.capture({ value: { taskId, head: compacted.head.kind, originalCount: original.items.length } });
-    await tools.conversation_submit({ conversationId: child.id, submission: { type: "input", content: "hold" } });
-    await tools.barrier({});
-    await tools.conversation_abort({ conversationId: child.id });
-    await tools.conversation_waitForIdle({ conversationId: child.id });
-  `);
-    const value = f.values[0].value;
-    assert(typeof value === "object" && value !== null && "head" in value);
-    assert.equal(value.head, "pi.compaction");
-    assert.equal(f.cancelled, true);
-    assert.equal((await f.harness.inspect(context)).tasks.length, 0);
-  },
-);
-
-await test(
-  "unawaited conversation RPCs cannot escape a finished script",
-  { timeout: 30_000 },
-  async (t) => {
-    const f = await fixture(t);
-    await f.run(`
-    ${fork}
-    void tools.conversation_submit({ conversationId: child.id, submission: { type: "input", content: "hold" } });
-    void tools.conversation_fork({ at });
-  `);
-    assert.equal(f.holding, false);
+    assert.equal(history.filter((entry) => entry.kind === "pi.user").length, 1);
+    assert.equal(history.filter((entry) => entry.kind === "pi.assistant").length, 1);
+    assert.equal(f.values.length, 1);
+    assert.deepEqual(f.values[0].value, {
+      conversationId: child.id,
+      answer: history.find((entry) => entry.kind === "pi.assistant")?.model?.[0],
+    });
     assert.equal((await f.harness.inspect(context)).tasks.length, 0);
   },
 );

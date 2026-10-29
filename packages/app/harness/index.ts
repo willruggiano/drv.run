@@ -50,7 +50,7 @@ export async function openHarness(
   if (options.codemode) {
     const codemode = { sandbox: options.codemode, models: false };
     registry.install(createCodemodeExtension(codemode));
-    registry.install(createConversationExtension(() => harness, codemode));
+    registry.install(createConversationExtension(() => harness));
   }
   const extensions = registry.snapshot().installed();
   harness = await Harness.open(
@@ -59,7 +59,24 @@ export async function openHarness(
       ...options,
       registry,
       get settings() {
-        return { ...options.settings, extensions };
+        const settings = options.settings;
+        if (!options.codemode) return { ...settings, extensions };
+        const compaction = settings?.compaction;
+        // Foreground ownership does not cancel background compaction.
+        return {
+          ...settings,
+          extensions,
+          compaction: {
+            ...compaction,
+            backgroundTokens: 0,
+            modelOverrides: Object.fromEntries(
+              Object.entries(compaction?.modelOverrides ?? {}).map(([model, policy]) => [
+                model,
+                { ...policy, backgroundTokens: 0 },
+              ]),
+            ),
+          },
+        };
       },
     },
     context,
