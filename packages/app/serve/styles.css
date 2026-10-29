@@ -128,8 +128,9 @@ textarea { display: block; width: 100%; resize: vertical; padding: 8px 10px; max
 #send, #create, #stop, #input-toggle { width: 40px; padding: 0; }
 #input-toggle { font-size: 20px; } #input-mode { font-size: 11px; color: var(--muted); background: transparent; border-color: transparent; padding: 3px 6px; }
 #attachments { display: flex; flex-wrap: wrap; gap: 4px; } #attachments button { font-size: 11px; margin: 4px; }
-#conversation-navigation { display: flex; gap: 6px; width: max-content; white-space: nowrap; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 6px; } #conversation-navigation button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 32px; padding: 0; border-radius: 20px; box-shadow: 0 3px 12px var(--shadow); } .composer-area { position: relative; flex-shrink: 0; }
+#conversation-navigation { display: flex; gap: 6px; width: max-content; white-space: nowrap; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 6px; } #conversation-navigation button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 32px; padding: 0; border: 0; border-radius: 20px; background: var(--bg); } .composer-area { position: relative; flex-shrink: 0; }
 #conversation-navigation button:enabled { opacity: var(--translucent-opacity); }
+#conversation-navigation:has(#latest:enabled) button { border: 1px solid var(--line); }
 dialog { color: inherit; background: var(--dialog-bg); border: 1px solid var(--border-overlay); border-radius: 12px; width: min(520px, calc(100% - 32px)); padding: 20px; max-height: 85dvh; overflow: auto; } dialog::backdrop { background: var(--backdrop); }
 .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; } h2 { margin: 0; font-size: 16px; font-weight: 500; }
 label { min-width: 0; } label > span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; } select { width: 100%; }

@@ -1695,6 +1695,18 @@ await test(
         true,
       );
       assert.equal(await button.getAttribute("title"), await button.getAttribute("aria-label"));
+      assert.deepEqual(
+        await button.evaluate((node) => {
+          const style = getComputedStyle(node);
+          return {
+            borders: ["top", "right", "bottom", "left"].map((side) =>
+              style.getPropertyValue(`border-${side}-width`),
+            ),
+            shadow: style.boxShadow,
+          };
+        }),
+        { borders: ["0px", "0px", "0px", "0px"], shadow: "none" },
+      );
     }
     assert.equal(await top.isDisabled(), true);
     assert.equal(await last.isDisabled(), true);
@@ -1703,6 +1715,17 @@ await test(
       page
         .locator("#conversation-navigation button")
         .evaluateAll((nodes) => nodes.map((node) => Number(getComputedStyle(node).opacity)));
+    const backgroundsMatch = () =>
+      page
+        .locator("#conversation-navigation button")
+        .evaluateAll((nodes) =>
+          nodes.every(
+            (node) =>
+              getComputedStyle(node).backgroundColor ===
+              getComputedStyle(document.documentElement).backgroundColor,
+          ),
+        );
+    assert.equal(await backgroundsMatch(), true);
     assert.deepEqual(await opacities(), [0.4, 0.4, 0.4]);
     const append = (text: string) =>
       session.root.commit(
@@ -1762,6 +1785,13 @@ await test(
       await page.waitForFunction(
         () => document.querySelector<HTMLButtonElement>("#latest")?.disabled === false,
       );
+      assert.equal(await backgroundsMatch(), true);
+      assert.deepEqual(
+        await page
+          .locator("#conversation-navigation button")
+          .evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).borderTopWidth)),
+        ["1px", "1px", "1px"],
+      );
       assert.deepEqual(await opacities(), [0.8, 0.8, 0.8]);
       await page.evaluate(() =>
         document.documentElement.style.setProperty("--translucent-opacity", "0.6"),
@@ -1803,6 +1833,16 @@ await test(
       const navigationBounds = await page.locator("#conversation-navigation").boundingBox();
       assert(transcriptBounds && navigationBounds);
       assert(transcriptBounds.y + transcriptBounds.height <= navigationBounds.y);
+      assert.deepEqual(
+        await page
+          .locator("#conversation-navigation button")
+          .evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).borderTopWidth)),
+        ["0px", "0px", "0px"],
+      );
+      if (b.screenshots)
+        await page.screenshot({
+          path: join(b.screenshots, `elm-conversation-navigation-clear-${width}.png`),
+        });
       const followed = await append("Follow new output at the bottom. ".repeat(30));
       await page.locator(`#entry-${followed.id}`).waitFor({ state: "attached" });
       await atBottom();
