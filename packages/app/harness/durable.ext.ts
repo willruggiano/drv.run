@@ -4,9 +4,15 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { ConversationId, EntryId, TaskId } from "@earendil-works/pi-durable";
 
 // Brands are erased on the wire; validation establishes the numeric representation, not existence.
-export const EntryIdSchema = Type.Unsafe<EntryId>(Type.Integer());
-export const ConversationIdSchema = Type.Unsafe<ConversationId>(Type.Integer());
-export const TaskIdSchema = Type.Unsafe<TaskId>(Type.Integer());
+export const EntryIdSchema = Type.Unsafe<EntryId>(
+  Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+);
+export const ConversationIdSchema = Type.Unsafe<ConversationId>(
+  Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+);
+export const TaskIdSchema = Type.Unsafe<TaskId>(
+  Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+);
 
 // TypeBox truncates recursive static inference to any; retain the upstream recursive type.
 export const JsonValueSchema = Type.Unsafe<JsonValue>(
