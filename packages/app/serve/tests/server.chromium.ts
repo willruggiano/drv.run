@@ -415,7 +415,7 @@ await test("landing composer matches conversation summaries and geometry without
       const models = page.getByRole("combobox", { name: "Model", exact: true });
       const thinking = page.getByRole("combobox", { name: "Thinking", exact: true });
       const environment = page.getByRole("combobox", { name: "Environment", exact: true });
-      const directory = page.getByRole("combobox", { name: "Base directory", exact: true });
+      const directory = page.getByRole("combobox", { name: "Working directory", exact: true });
       assert.equal(await directory.inputValue(), f.binding.cwd);
       assert.equal(await directory.getAttribute("placeholder"), "/workspace");
       assert.equal(await directory.evaluate((node) => node.matches(":placeholder-shown")), false);
@@ -452,10 +452,7 @@ await test("landing composer matches conversation summaries and geometry without
         assert.equal(await page.locator(selector).textContent(), value);
       assert.match((await models.locator("option:checked").textContent()) ?? "", /^faux \/ /);
       assert.match((await thinking.locator("option:checked").textContent()) ?? "", /^Default \(/);
-      assert.equal(
-        await page.locator("#footer-instance label:last-child .selector-value").textContent(),
-        f.binding.cwd,
-      );
+      assert.equal(await directory.inputValue(), f.binding.cwd);
       await page.locator("#prompt").fill("Review the current changes");
       for (const width of [320, 390, 650, 651, 1440]) {
         await page.setViewportSize({ width, height: 844 });
@@ -507,16 +504,7 @@ await test("landing composer matches conversation summaries and geometry without
           const expected = await conversation
             .locator(selector === "#submit" ? "#send" : selector)
             .evaluate(geometry);
-          if (width <= 650 && selector.startsWith("#footer-model")) {
-            // Landing settings flank a fixed center dot, not a centered text group.
-            assert.deepEqual(
-              { ...actual, x: expected.x, width: expected.width },
-              expected,
-              `${selector} at ${width}px`,
-            );
-          } else {
-            assert.deepEqual(actual, expected, `${selector} at ${width}px`);
-          }
+          assert.deepEqual(actual, expected, `${selector} at ${width}px`);
         }
         for (const control of [models, thinking, environment, directory]) {
           assert.equal(await control.isVisible(), true);
@@ -534,40 +522,85 @@ await test("landing composer matches conversation summaries and geometry without
         assert(box && selectedModel && selectedThinking);
         assert.equal(selectedModel.y, selectedThinking.y);
         assert(selectedModel.y >= box.y + box.height);
+        if (width <= 650) {
+          assert.equal(
+            (selectedModel.x + selectedThinking.x + selectedThinking.width) / 2,
+            box.x + box.width / 2,
+          );
+        } else {
+          assert.equal(selectedThinking.x + selectedThinking.width, box.x + box.width);
+        }
+        assert(selectedModel.x >= box.x);
         const target = await environment.boundingBox();
         const cwd = await directory.boundingBox();
         assert(target && cwd);
-        assert.equal(target.y, cwd.y);
-        if (width <= 650) {
-          assert(target.y + target.height <= box.y);
-          assert(cwd.y + cwd.height <= box.y);
-          assert(target.x + target.width <= cwd.x);
-          assert(cwd.x + cwd.width <= box.x + box.width);
-          const dots = await page
-            .locator("#footer-instance .instance-separator, #footer-model > .footer-dot")
-            .evaluateAll((nodes) =>
-              nodes.map((node) => {
-                const bounds = node.getBoundingClientRect();
-                return {
-                  center: bounds.x + bounds.width / 2,
-                  width: bounds.width,
-                  height: bounds.height,
-                };
-              }),
-            );
-          assert.equal(dots.length, 2);
-          for (const dot of dots) {
-            assert.deepEqual(dot, { center: box.x + box.width / 2, width: 2, height: 2 });
-          }
-          assert.equal(target.x + target.width, selectedModel.x + selectedModel.width);
-          assert.equal(cwd.x, selectedThinking.x);
-        } else {
-          const instance = await conversation.locator("#footer-instance").boundingBox();
-          assert(instance);
-          assert.equal(target.x, instance.x);
-          assert(target.x + target.width <= cwd.x);
-          assert(cwd.x + cwd.width <= selectedModel.x);
+        assert(target.y + target.height <= cwd.y);
+        assert(cwd.y + cwd.height <= box.y);
+        assert.equal(target.x, cwd.x);
+        assert.equal(target.width, cwd.width);
+        assert(target.x >= box.x);
+        assert.equal(cwd.x + cwd.width, box.x + box.width);
+        const labels = page.locator("#footer-instance .selector-label");
+        assert.deepEqual(await labels.allTextContents(), ["Environment", "Working directory"]);
+        const muted = await page
+          .locator("#bottom-line")
+          .evaluate((node) => getComputedStyle(node).color);
+        const labelBounds = await labels.evaluateAll((nodes) =>
+          nodes.map((node) => {
+            const bounds = node.getBoundingClientRect();
+            const style = getComputedStyle(node);
+            return {
+              right: bounds.right,
+              top: bounds.top,
+              bottom: bounds.bottom,
+              color: style.color,
+              fontSize: Number.parseFloat(style.fontSize),
+            };
+          }),
+        );
+        const modelTextSize = await page
+          .locator("#footer-model .selector-value")
+          .first()
+          .evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
+        for (const label of labelBounds) {
+          assert.equal(label.right, box.x + box.width);
+          assert.equal(label.color, muted);
+          assert.equal(label.fontSize, width <= 650 ? 10 : 11);
+          assert.equal(label.fontSize, modelTextSize - 1);
         }
+        assert(target.y + target.height <= labelBounds[0].top);
+        assert(labelBounds[0].bottom < cwd.y);
+        assert(cwd.y + cwd.height <= labelBounds[1].top);
+        assert(labelBounds[1].bottom <= box.y);
+        assert.equal(await directory.evaluate((node) => getComputedStyle(node).textAlign), "right");
+        assert.equal(
+          await page
+            .locator("#footer-instance .selector-value")
+            .evaluate((node) => getComputedStyle(node).textAlign),
+          "right",
+        );
+        const unfocusedFont = await directory.evaluate((node) => getComputedStyle(node).font);
+        await directory.focus();
+        assert.equal(
+          await directory.evaluate((node) => getComputedStyle(node).font),
+          unfocusedFont,
+        );
+        assert.deepEqual(await directory.boundingBox(), cwd);
+        assert.equal(
+          await environment.evaluate((node) => getComputedStyle(node).fontSize),
+          await page
+            .locator("#footer-instance .selector-value")
+            .evaluate((node) => getComputedStyle(node).fontSize),
+        );
+        await directory.blur();
+        const dot = await page.locator("#footer-model > .footer-dot").boundingBox();
+        assert(dot);
+        assert.equal(dot.width, 2);
+        assert.equal(dot.height, 2);
+        assert.equal(
+          dot.x + dot.width / 2,
+          (selectedModel.x + selectedModel.width + selectedThinking.x) / 2,
+        );
         // The metadata starts at the same offset below the shared compose box.
         const offset = async (view: typeof page) =>
           view.evaluate(() => {
@@ -610,10 +643,7 @@ await test("landing composer matches conversation summaries and geometry without
       );
       await directory.fill(join(f.binding.cwd, "drv.run"));
       await directory.blur();
-      assert.equal(
-        await page.locator("#footer-instance label:last-child .selector-value").textContent(),
-        join(f.binding.cwd, "drv.run"),
-      );
+      assert.equal(await directory.inputValue(), join(f.binding.cwd, "drv.run"));
       await page.reload();
       await page.waitForFunction(
         () => document.querySelector<HTMLSelectElement>("#thinking")?.value === "high",
@@ -641,7 +671,7 @@ await test("landing cwd submits the root once and still accepts relative paths",
   const { page, base } = await browserFixture(t, f.sessions);
   for (const directory of [f.binding.cwd, "", "nested"]) {
     await page.goto(base);
-    const input = page.getByRole("combobox", { name: "Base directory", exact: true });
+    const input = page.getByRole("combobox", { name: "Working directory", exact: true });
     await input.fill(directory);
     await page.locator("#prompt").fill("Check cwd");
     f.faux.setResponses([fauxAssistantMessage("Checked.")]);

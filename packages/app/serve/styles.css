@@ -489,8 +489,7 @@ elm-file summary::-webkit-details-marker { display: none; }
 .selector-summary label { min-height: 24px; position: relative; display: flex; align-items: center; min-width: 0; margin: 0; }
 .selector-summary .selector-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .selector-summary :is(input, select) { field-sizing: content; min-width: 0; max-width: 100%; min-height: 24px; padding: 0; border: 0; background: transparent; font: inherit; color: inherit; text-overflow: ellipsis; }
-.selector-summary select, .selector-summary input:not(:focus) { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-.selector-summary input:focus + .selector-value { display: none; }
+.selector-summary select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .selector-summary .selector-value { margin: 0; font: inherit; color: inherit; overflow: hidden; text-overflow: ellipsis; }
 #footer-model.selector-summary { min-height: 24px; }
 /* Keep the actual controls above iOS's focus-zoom threshold, not the summaries. */
@@ -500,18 +499,20 @@ elm-file summary::-webkit-details-marker { display: none; }
 .selector-summary option { background: var(--surface); }
 .selector-summary label:hover { color: var(--fg); }
 .selector-summary input::placeholder { color: var(--muted); opacity: 1; }
-#footer-instance.selector-summary { gap: 0; }
-.instance-separator { white-space: pre; }
-.selector-summary label[hidden], .selector-summary:has(> label[hidden]) > .instance-separator { display: none; }
+/* Stack each landing input above its label, flush with the composer's right edge. */
+.new-composer #footer-instance { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; order: -1; margin-inline: var(--conversation-left) var(--conversation-right); color: var(--fg); font: 14px/1.7 var(--font-mono); text-align: right; }
+.new-composer #footer-instance label { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(24px, auto) auto; }
+.new-composer #footer-instance .selector-label { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip-path: none; grid-column: 1; grid-row: 2; justify-self: end; color: var(--muted); font: 11px/1.4 var(--font-ui); }
+.new-composer #footer-instance label > :not(.selector-label) { grid-area: 1 / 1 / 2 / 2; }
+.new-composer #footer-instance input { text-align: right; }
+@media (max-width: 650px), (any-pointer: coarse) {
+  .new-composer #footer-instance { font-size: 16px; }
+}
+.selector-summary label[hidden] { display: none; }
 @media (max-width: 650px) {
-  /* Creation still needs environment controls before a conversation exists. */
+  .new-composer #footer-instance .selector-label { font-size: 10px; }
   .new-composer #bottom-line, .new-composer #bottom-line .footer-row { display: contents; }
-  .new-composer #footer-instance, .stacked-layout .new-composer #footer-model { display: grid; grid-template-columns: minmax(0, 1fr) 2px minmax(0, 1fr); gap: 6px; }
-  .new-composer #footer-instance { order: -1; margin-inline: 16px; }
-  .new-composer #footer-instance label:first-child, .new-composer .model-name label { justify-content: flex-end; }
-  .new-composer .instance-separator { width: 2px; height: 2px; border-radius: 50%; background: currentColor; font-size: 0; }
-  .new-composer .footer-model-context { order: 1; align-self: stretch; max-width: none; padding-inline: 16px; }
-  .new-composer #footer-model { width: 100%; }
+  .new-composer .footer-model-context { order: 1; align-self: stretch; justify-content: center; max-width: none; padding-inline: var(--conversation-left) var(--conversation-right); }
   #footer-model.selector-summary, .selector-summary label { min-height: 28px; }
   #conversation-scroll { padding-top: 8px; padding-bottom: 8px; }
   .bar > .icon { min-height: 38px; }

@@ -116,10 +116,11 @@ creationOptionsView change save directories settings =
             optionFields True change save directories settings
     in
     div [ id "options" ]
-        [ Composer.metadata
+        [ div [ id "footer-instance", class "selector-summary" ] [ controls.environment, controls.directory ]
+        , Composer.metadata
             { label = "New session settings"
             , before = []
-            , instance = div [ id "footer-instance", class "model-summary selector-summary" ] [ controls.environment, span [ class "instance-separator" ] [ text " · " ], controls.directory ]
+            , instance = text ""
             , statistics = []
             , model = div [ id "footer-model", class "model-summary selector-summary" ] (Composer.modelDetails controls.model controls.thinking)
             , context = Nothing
@@ -182,43 +183,35 @@ optionFields compact change save directories settings =
                 )
             )
     , directory =
-        if compact && root == "" then
-            span [] [ text (Maybe.map .cwd target |> Maybe.withDefault "") ]
+        label [ A.hidden (not compact && root == "") ]
+            [ span [ class "selector-label" ]
+                [ text
+                    (if compact then
+                        "Working directory"
 
-        else
-            label [ A.hidden (root == "") ]
-                ([ span [ class "selector-label" ] [ text "Base directory" ]
-                 , input
-                    [ id "base-directory"
-                    , A.name "baseDirectory"
-                    , A.maxlength 4096
-                    , A.placeholder "/workspace"
-                    , A.list "directories"
-                    , value settings.directory
-                    , onInput (change Directory)
-                    , onBlur save
-                    ]
-                    []
-                 ]
-                    ++ (if compact then
-                            [ span [ class "selector-value", attribute "aria-hidden" "true" ]
-                                [ text
-                                    (if settings.directory == "" then
-                                        root
+                     else
+                        "Base directory"
+                    )
+                ]
+            , input
+                [ id "base-directory"
+                , A.name "baseDirectory"
+                , A.maxlength 4096
+                , A.placeholder "/workspace"
+                , A.list "directories"
+                , A.readonly (root == "")
+                , value
+                    (if compact && root == "" then
+                        Maybe.map .cwd target |> Maybe.withDefault ""
 
-                                     else if String.startsWith "/" settings.directory then
-                                        settings.directory
-
-                                     else
-                                        root ++ "/" ++ settings.directory
-                                    )
-                                ]
-                            ]
-
-                        else
-                            []
-                       )
-                )
+                     else
+                        settings.directory
+                    )
+                , onInput (change Directory)
+                , onBlur save
+                ]
+                []
+            ]
     , directories =
         Html.datalist [ id "directories" ]
             (List.map
