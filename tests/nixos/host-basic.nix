@@ -3,7 +3,6 @@
   # constrained systems (eg. the ROCK 5B aarch64 guest). You probably don't need
   # this test anyways; generally speaking you should compose the smaller, more
   # targetted, and (preferably) # nixos/vm free tests instead.
-  lib,
   nixosModules,
   pkgs,
 }: let
@@ -710,7 +709,7 @@ in {
         operator(f"${pkgs.e2fsprogs}/bin/e2fsck -fn {state}/state.img")
 
     with subtest("failed exec releases allocated resources without disrupting its peer"):
-        host.fail(as_user("operator", "${lib.getExe pkgs.tap} /does-not-exist"))
+        host.fail(as_user("operator", "${pkgs.lib.getExe pkgs.drvr.tap} /does-not-exist"))
         t.assertEqual(links(), [other_tap])
         host.wait_until_succeeds("test -z \"$(find /run/systemd/nsresource/registry -maxdepth 1 -name 'n1000-*.userns')\"")
         egress("other", other_target)

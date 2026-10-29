@@ -13,7 +13,7 @@
     })
     cfg.owners;
   prefixes = map (owner: "${owner.prefix.address}/64") owners;
-  package = pkgs.callPackage ../../packages/ssh-exposure {
+  package = pkgs.drvr.sshx.override {
     systemd = config.systemd.package;
     owners =
       map (owner: {
@@ -100,8 +100,9 @@ in {
       ];
 
     boot.kernel.sysctl."net.ipv4.ip_unprivileged_port_start" = lib.mkDefault 1024;
-    security.wrappers.drv-run-ssh-bind = {
-      source = "${package}/bin/drv-run-ssh-bind";
+    # TODO: is the name here required to match: security.wrappers.<name>?
+    security.wrappers."${package.meta.mainProgram}" = {
+      source = lib.getExe package;
       owner = "root";
       group = "root";
       capabilities = "cap_net_bind_service+ep";
@@ -151,7 +152,7 @@ in {
         serviceConfig = {
           Type = "notify";
           NotifyAccess = "main";
-          ExecStart = "${config.security.wrapperDir}/drv-run-ssh-bind %i";
+          ExecStart = "${config.security.wrapperDir}/sshx.bind %i";
           KillMode = "control-group";
           Restart = "on-failure";
           RestartSec = 1;

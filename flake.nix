@@ -50,8 +50,13 @@
           mitm-proxy
           subtrace
           systemd-with-vmlinux-btf
-          tap
           ;
+        # Keeping the above intact so I don't have to refactor a bunch of shit,
+        # but I think this is what we should do from now on:
+        drvr = with self.packages.${prev.stdenv.hostPlatform.system}; {
+          inherit sshx tap;
+          mitm = mitm-proxy;
+        };
       };
       # n.b. this is for packages only necessary for development and should not
       # be a dependency of the host, guest, nor rock5b components.
@@ -66,16 +71,16 @@
     checks = eachSystem (pkgs: let
       environmentImage = import ./nix/nixosTests/environment-image.nix {inherit pkgs;};
     in {
-      app-tape = pkgs.app.tape;
       app-tests = pkgs.app;
       bench-tests = pkgs.bench;
-      environment-image = environmentImage.artifact;
-      llms-snapshot = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
-      mitm-proxy-tests = pkgs.mitm-proxy;
-      ssh-exposure = self.packages.${pkgs.stdenv.hostPlatform.system}.ssh-exposure;
-      nixos-ssh-exposure = self.packages.${pkgs.stdenv.hostPlatform.system}.ssh-exposure.tests;
-      nixos-environment-image = environmentImage.integration;
-      nixos-mitm-proxy-tests = pkgs.mitm-proxy.tests;
+      environment-image-tests = environmentImage.artifact;
+      environment-image-nixos = environmentImage.integration;
+      llms-tests = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
+      mitm-tests = pkgs.drvr.mitm;
+      mitm-nixos = pkgs.drvr.mitm.tests;
+      sshx-tests = pkgs.drvr.sshx;
+      sshx-nixos = pkgs.drvr.sshx.tests;
+      tape-tests = pkgs.app.tape;
       nixos-notifications = import ./tests/nixos/notifications.nix {
         inherit pkgs;
         piModule = self.nixosModules.pi;

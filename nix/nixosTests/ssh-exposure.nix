@@ -190,9 +190,9 @@ in {
         active("bob", exposure)
 
     with subtest("binding authority and owner isolation"):
-        machine.fail(user("observer", "/run/wrappers/bin/drv-run-ssh-bind 0000000000"))
-        machine.fail(user("alice", "/run/wrappers/bin/drv-run-ssh-bind ../0000000"))
-        machine.fail(user("alice", "/run/wrappers/bin/drv-run-ssh-bind 0000000000 fd42:1:2:4::1"))
+        machine.fail(user("observer", "/run/wrappers/bin/sshx.bind 0000000000"))
+        machine.fail(user("alice", "/run/wrappers/bin/sshx.bind ../0000000"))
+        machine.fail(user("alice", "/run/wrappers/bin/sshx.bind 0000000000 fd42:1:2:4::1"))
         machine.fail(user("bob", "test -r /run/user/1000/drv.run.0000000000/host-key"))
         bind = "import socket; s=socket.socket(socket.AF_INET6); s.bind(('::1',22))"
         machine.fail(user("alice", "python3 -c " + shlex.quote(bind)))
@@ -221,8 +221,8 @@ in {
         machine.fail(f"ip netns exec client sftp {wrong_host} -b /tmp/batch 'alice@[fd42:1:2:3::1]'")
 
     with subtest("connection ownership and independent exposure stop"):
-        machine.succeed("systemd-run --unit=hold-first ip netns exec client python3 ${hold} fd42:1:2:3::1 /tmp/first")
-        machine.succeed("systemd-run --unit=hold-second ip netns exec client python3 ${hold} fd42:1:2:3::2 /tmp/second")
+        machine.succeed("systemd-run --unit=hold-first ip netns exec client ${pkgs.python3}/bin/python3 ${hold} fd42:1:2:3::1 /tmp/first")
+        machine.succeed("systemd-run --unit=hold-second ip netns exec client ${pkgs.python3}/bin/python3 ${hold} fd42:1:2:3::2 /tmp/second")
         machine.wait_for_file("/tmp/first.ready")
         machine.wait_for_file("/tmp/second.ready")
         group = machine.succeed(unit("alice", f"show {exposure} -p ControlGroup --value")).strip()
@@ -242,7 +242,7 @@ in {
 
     with subtest("spoofed environment and occupied endpoint"):
         machine.succeed(unit("alice", f"stop {exposure}"))
-        machine.succeed(user("alice", "systemd-run --user --unit=occupied --property=Type=notify env UID=1001 USER=bob XDG_RUNTIME_DIR=/run/user/1001 LISTEN_PIDFDID=0 LISTEN_FDS=99 /run/wrappers/bin/drv-run-ssh-bind 0000000000"))
+        machine.succeed(user("alice", "systemd-run --user --unit=occupied --property=Type=notify env UID=1001 USER=bob XDG_RUNTIME_DIR=/run/user/1001 LISTEN_PIDFDID=0 LISTEN_FDS=99 /run/wrappers/bin/sshx.bind 0000000000"))
         active("alice", "occupied.service")
         machine.succeed(f"ip netns exec client scp {client_options} 'alice@[fd42:1:2:3::1]:/home/alice/upload' /tmp/owner-check")
         machine.succeed("cmp /tmp/input /tmp/owner-check")

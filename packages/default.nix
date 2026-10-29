@@ -3,7 +3,7 @@
   bench = pkgs.callPackage ./bench {};
   # cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {}; # remove after: https://github.com/NixOS/nixpkgs/pull/574147
   mitm-proxy = pkgs.callPackage ./mitm-proxy {};
-  ssh-exposure = pkgs.callPackage ./ssh-exposure {};
+  sshx = pkgs.callPackage ./sshx {};
   subtrace = pkgs.callPackage ./subtrace.nix {};
   systemd-with-vmlinux-btf = pkgs.linuxPackages.systemd.overrideAttrs (old: {
     # Match config_get_stats_by_path's resolved paths, or udev continually
