@@ -9,6 +9,11 @@ import {
   type Storage,
 } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import {
+  createCodemodeExtension,
+  type CodemodeToolOptions,
+} from "@earendil-works/pi-durable/codemode";
+import { createConversationExtension } from "./conversations.ts";
 import { createContextExtension } from "./context.ts";
 import { createWebExtension } from "./web.ts";
 import { createReviewExtension } from "./review.ts";
@@ -18,6 +23,8 @@ export { DrvRunEnv } from "./drv-run.ts";
 
 type Options = Omit<HarnessOptions, "registry" | "settings"> & {
   readonly settings?: Omit<HarnessSettings, "extensions">;
+  /** Opt-in prototype. The caller owns the sandbox and closes it after the harness. */
+  readonly codemode?: CodemodeToolOptions["sandbox"];
 };
 
 export async function openHarness(
@@ -39,8 +46,14 @@ export async function openHarness(
   registry.install(createContextExtension());
   registry.install(createWebExtension());
   registry.install(createReviewExtension(options.env));
+  let harness: Harness;
+  if (options.codemode) {
+    const codemode = { sandbox: options.codemode, models: false };
+    registry.install(createCodemodeExtension(codemode));
+    registry.install(createConversationExtension(() => harness, codemode));
+  }
   const extensions = registry.snapshot().installed();
-  const harness = await Harness.open(
+  harness = await Harness.open(
     storage,
     {
       ...options,
