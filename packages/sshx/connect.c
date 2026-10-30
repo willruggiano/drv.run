@@ -214,7 +214,7 @@ static bool instance_name(const char *name) {
 
 int main(int argc, char **argv) {
     if (argc != 2 || !instance_name(argv[1]) || isatty(STDIN_FILENO) || isatty(STDOUT_FILENO)) {
-        fputs("Usage: drv-run-connect drv.run.<instance> (without a TTY)\n", stderr);
+        fputs("Usage: drv.run.ssh <instance>\n", stderr);
         return EXIT_FAILURE;
     }
     // No inherited descriptors or environment variables select an owner/socket.

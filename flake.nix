@@ -78,7 +78,7 @@
       llms-tests = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
       mitm-tests = pkgs.drvr.mitm;
       mitm-nixos = pkgs.drvr.mitm.tests;
-      sshx-tests = pkgs.drvr.sshx;
+      sshx-tests = pkgs.drvr.sshx.override {doCheck = true;};
       ssh-policy = import ./nix/tests/ssh.nix {
         inherit pkgs;
         inherit (self) nixosModules;
