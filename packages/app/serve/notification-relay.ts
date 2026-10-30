@@ -162,12 +162,19 @@ export class NotificationRelay {
       if (this.connections.has(instance.name)) continue;
       if (this.connections.size >= this.policy.maxInstances) break;
       const stream = this.connect(instance);
+      let reported = false;
+      const reportFailure = (error: unknown) => {
+        if (reported || this.abort.signal.aborted) return;
+        reported = true;
+        this.report(
+          new Error(`Notification relay disconnected: ${instance.name}`, { cause: error }),
+        );
+      };
+      // The async iterator removes its error listener after readable EOF.
+      // Duplexify can still emit AbortError when teardown destroys its writable side.
+      stream.on("error", reportFailure);
       const task = this.consume(instance, stream)
-        .catch(() => {
-          // Do not put malformed guest frames (or their parser errors) in logs.
-          if (!this.abort.signal.aborted)
-            this.report(new Error(`Notification relay disconnected: ${instance.name}`));
-        })
+        .catch(reportFailure)
         .finally(() => {
           stream.destroy();
           this.connections.delete(instance.name);

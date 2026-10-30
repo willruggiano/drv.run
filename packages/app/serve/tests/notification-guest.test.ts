@@ -116,6 +116,103 @@ await test("full queues reject new requests but reserve closures and retirement"
   assert.deepEqual(drain(outbox).at(-1)?.event, { type: "retire" });
 });
 
+for (const mode of ["eof", "consumer-error", "transport-error", "retire", "shutdown"] as const)
+  await test(`relay child-pipe teardown: ${mode}`, { timeout: 10000 }, async (t) => {
+    const dir = await directory(t);
+    const instance = join(dir, "drv.run.fixture");
+    const vm = randomUUID();
+    await mkdir(instance);
+    await writeFile(join(instance, "notification-incarnation"), `${vm}\n`);
+    const activity = new Activity(":memory:");
+    const reports: unknown[] = [];
+    const failure = new Error("Fixture failure", { cause: new Error("Underlying failure") });
+    if (mode === "consumer-error")
+      t.mock.method(activity, "availableInstance", () => {
+        throw failure;
+      });
+    const transports: { child: ReturnType<typeof spawn>; stream: Duplex; closed: Promise<void> }[] =
+      [];
+    const relay = new NotificationRelay(
+      activity,
+      {
+        runtimeDirectory: dir,
+        sshConfigFile: "/unused-in-test",
+        scanIntervalMs: 100,
+        maxInstances: 2,
+        eventsPerSecond: 1000,
+      },
+      (error) => reports.push(error),
+      () => {
+        // Keep stdin and the process alive after stdout EOF, as SSH pipes can be.
+        const child = spawn(
+          process.execPath,
+          [
+            "-e",
+            `const { closeSync } = require("node:fs");
+             process.on("message", message => {
+               if (message === "eof") closeSync(1);
+               else process.stdout.write(JSON.stringify(message) + "\\n");
+             });`,
+          ],
+          { stdio: ["pipe", "pipe", "ignore", "ipc"] },
+        );
+        assert(child.stdout && child.stdin);
+        const stream = Duplex.from({ readable: child.stdout, writable: child.stdin });
+        child.on("error", (error) => stream.destroy(error));
+        stream.once("close", () => child.kill());
+        const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+        t.after(async () => {
+          stream.destroy();
+          child.kill();
+          await closed;
+        });
+        transports.push({ child, stream, closed });
+        return stream;
+      },
+    );
+    t.after(async () => {
+      await relay.close();
+      activity.close();
+    });
+    // A failed connection must also release its slot for the next scan.
+    for (let attempt = 0; attempt < (mode === "eof" ? 2 : 1); attempt++) {
+      await relay.scan();
+      assert.equal(transports.length, attempt + 1);
+      const { child, stream, closed } = transports[attempt];
+      switch (mode) {
+        case "eof":
+          child.send("eof");
+          break;
+        case "consumer-error":
+          child.send({ v: 1, type: "hello", vm });
+          break;
+        case "transport-error":
+          stream.destroy(failure);
+          break;
+        case "retire":
+          await rm(instance, { recursive: true });
+          await relay.scan();
+          break;
+        case "shutdown":
+          await relay.close();
+          break;
+      }
+      await closed;
+      assert.equal(stream.destroyed, true);
+      assert.equal(reports.length, mode === "shutdown" ? 0 : attempt + 1);
+      if (mode === "shutdown") continue;
+      const report = reports[attempt];
+      assert(report instanceof Error);
+      if (mode === "consumer-error" || mode === "transport-error")
+        assert.equal(report.cause, failure);
+      else {
+        assert(report.cause instanceof Error);
+        assert("code" in report.cause);
+        assert.equal(report.cause.code, "ABORT_ERR");
+      }
+    }
+  });
+
 async function fixture(t: TestContext) {
   // Own a session bus: no desktop, network, login session or test-output parsing.
   const dir = await mkdtemp(join(tmpdir(), "notification-bus-"));
