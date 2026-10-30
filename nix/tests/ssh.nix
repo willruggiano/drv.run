@@ -51,6 +51,43 @@
       system.stateVersion = lib.trivial.release;
     }
   ];
+  fixtureTool = pkgs.writeShellScriptBin "environment-tool" ''
+    set -euo pipefail
+    test "''${activated:-}" = 1
+    test "''${__ETC_PROFILE_DONE:-}" = 1
+    test ! -e /proc/self/fd/3
+    test ! -e /proc/self/fd/4
+    : > "$1"
+  '';
+  environment = pkgs.writeText "ssh-shell-fixture-env" (builtins.toJSON {
+    variables = {
+      PATH = {
+        type = "exported";
+        value = lib.makeBinPath [fixtureTool];
+      };
+      shellHook = {
+        type = "exported";
+        value = ''
+          test -f "$HOME/profile-ready" || exit 90
+          export activated=1
+        '';
+      };
+      outputs = {
+        type = "array";
+        value = [];
+      };
+    };
+    bashFunctions = {};
+  });
+  fixtureShell = pkgs.writeTextFile {
+    name = "guest-shell-fixture";
+    executable = true;
+    text =
+      lib.replaceStrings
+      ["/nix/var/nix/profiles/project" "/run/drv-run-environment/ready" "/workspace"]
+      ["$HOME/project" "$HOME/ready" "$HOME/workspace"]
+      guest.users.users.root.shell.text;
+  };
 in
   assert valid guest;
   assert valid deployment;
@@ -68,5 +105,37 @@ in
   assert !(host.security.wrappers ? "sshx.bind");
     pkgs.runCommand "ssh-policy-check" {} ''
       test -x ${lib.getExe guest.users.users.root.shell}
+      export NIX_REMOTE="local?state=$PWD/state&log=$PWD/log"
+      ${lib.getExe' guest.nix.package "nix-store"} --load-db < ${(pkgs.closureInfo {rootPaths = [environment];})}/registration
+      mkdir -p home/workspace
+      ln -s ${environment} home/project
+      touch home/ready
+      # Model NixOS's profile reset and Bash's SSH startup guard. The unset
+      # variable also checks that profile initialization precedes nounset.
+      cat > home/.bash_profile <<'EOF'
+      if [ -n "$__ETC_PROFILE_SOURCED" ]; then return; fi
+      __ETC_PROFILE_SOURCED=1
+      export __ETC_PROFILE_DONE=1
+      export PATH=${lib.makeBinPath [pkgs.coreutils pkgs.bashInteractive]}
+      : > "$HOME/profile-ready"
+      EOF
+      cat > home/.bashrc <<'EOF'
+      if [ -z "$__ETC_PROFILE_DONE" ]; then . "$HOME/.bash_profile"; fi
+      EOF
+      run_shell() {
+        env -i HOME="$PWD/home" USER=fixture TERM=dumb NIX_REMOTE="$NIX_REMOTE" \
+          PATH=${lib.makeBinPath [pkgs.coreutils pkgs.bashInteractive]} \
+          NIX_CONFIG=$'experimental-features = nix-command flakes\nflake-registry =\nsubstituters =\n' \
+          SSH_CLIENT='127.0.0.1 12345 22' \
+          ${fixtureShell} "$@"
+      }
+      printf 'input\n' | run_shell -c 'read -r value && test "$value" = input && environment-tool "$HOME/executed"'
+      test -f home/profile-ready
+      test -f home/executed
+      if run_shell -c 'exit 37'; then
+        exit 1
+      else
+        test "$?" -eq 37
+      fi
       touch "$out"
     ''

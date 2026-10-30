@@ -278,6 +278,9 @@ in {
               machine.fail(f"test -e /nix/.ro-store/{dependency.rsplit('/', 1)[1]}")
           machine.succeed(f"{link} /root/executed")
           machine.succeed("test -s /root/executed")
+          # Start like sshd, without inherited NixOS profile initialization guards.
+          machine.succeed("env -i HOME=/root USER=root PATH=/run/current-system/sw/bin SSH_CLIENT='127.0.0.1 12345 22' /run/current-system/sw/bin/drv-run-shell -c 'image-fixture /root/shell-executed'")
+          machine.succeed("test -s /root/shell-executed")
           machine.fail(f"test -e {upper}/{dependency.rsplit('/', 1)[1]}")
           machine.succeed(f"nix-store --check-validity {environment} {dependency} {link}")
           info = json.loads(machine.succeed(f"nix path-info --json --json-format 1 {environment}"))

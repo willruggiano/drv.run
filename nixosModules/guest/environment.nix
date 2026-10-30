@@ -11,12 +11,25 @@
       builtins.readFile ./environment.sh
     );
   };
-  shell = pkgs.writeShellApplication {
+  shell = pkgs.writeTextFile {
     name = "drv-run-shell";
-    runtimeInputs = [config.nix.package pkgs.coreutils];
-    text = lib.replaceStrings ["@bash@"] [(lib.getExe pkgs.bashInteractive)] (
-      builtins.readFile ./shell.sh
-    );
+    destination = "/bin/drv-run-shell";
+    executable = true;
+    # Initialize the login profile before strict mode and devshell activation.
+    # Otherwise SSH's command Bash loads /etc/profile after nix develop and resets PATH.
+    text =
+      ''
+        #!${lib.getExe pkgs.bashInteractive} -l
+        export PATH="${lib.makeBinPath [config.nix.package pkgs.coreutils]}:$PATH"
+      ''
+      + lib.replaceStrings ["@bash@"] [(lib.getExe pkgs.bashInteractive)] (builtins.readFile ./shell.sh);
+    checkPhase = ''
+      runHook preCheck
+      ${pkgs.stdenv.shellDryRun} "$target"
+      ${lib.getExe pkgs.shellcheck-minimal} "$target"
+      runHook postCheck
+    '';
+    meta.mainProgram = "drv-run-shell";
     derivationArgs.passthru.shellPath = "/bin/drv-run-shell";
   };
 in {
