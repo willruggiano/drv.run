@@ -274,12 +274,12 @@
         passthru = {inherit llms;};
         shellHook = ''
           export XDG_CONFIG_DIRS="${llms}:''${XDG_CONFIG_DIRS:-/etc/xdg}"
-          linkNodeModulesHook
-          for workspace in ${lib.concatStringsSep " " (lib.importJSON ./packages/app/package.json).workspaces}; do
-            ln -sfn "../$workspace" "$npmRoot/node_modules/$workspace"
-          done
-          export ELM_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/drv-run-${builtins.baseNameOf pkgs.app.elmHome}"
-          if [ ! -d "$ELM_HOME" ]; then
+          if cmp --silent flake.nix ${./flake.nix}; then
+            linkNodeModulesHook
+            for workspace in ${lib.concatStringsSep " " (lib.importJSON ./packages/app/package.json).workspaces}; do
+              ln -sfn "../$workspace" "$npmRoot/node_modules/$workspace"
+            done
+            export ELM_HOME="''${XDG_CACHE_HOME:-$HOME/.cache}/drv-run-${builtins.baseNameOf pkgs.app.elmHome}"
             mkdir -p "$ELM_HOME"
             cp -R ${pkgs.app.elmHome}/. "$ELM_HOME/"
             chmod -R u+w "$ELM_HOME"
