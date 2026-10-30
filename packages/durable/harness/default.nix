@@ -12,7 +12,14 @@ in
     inherit (manifest) version;
     src = lib.fileset.toSource {
       root = ./.;
-      fileset = lib.fileset.unions [./package.json ./package-lock.json ./tsconfig.json ./src];
+      fileset = lib.fileset.unions [
+        ./package.json
+        ./package-lock.json
+        ./tsconfig.json
+        ./tsconfig.build.json
+        ./src
+        ./tests
+      ];
     };
     npmDeps = importNpmLock {npmRoot = ./.;};
     npmRebuildFlags = ["--ignore-scripts"];
@@ -31,6 +38,7 @@ in
     checkPhase = ''
       runHook preCheck
       npm run check
+      npm test
       runHook postCheck
     '';
     installPhase = ''
