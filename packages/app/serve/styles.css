@@ -95,8 +95,9 @@ article.trace-continues {
 .tool-call[open] > summary > .tool-command > .tool-command-text { overflow: visible; }
 .tool-call[open] > summary > .tool-command::after { content: none; }
 .tool-duration { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.tool-status { flex: none; display: inline-grid; place-content: center; align-self: center; width: 1em; height: 1em; font: 11px/1 var(--font-ui); white-space: nowrap; color: var(--muted); }
-.tool-call > summary > .tool-status { align-self: baseline; }
+/* Center every status within one inherited line-height, including multiline summaries. */
+.tool-status { flex: none; display: inline-grid; place-content: center; align-self: center; width: 1em; height: 1lh; font-family: var(--font-ui); white-space: nowrap; color: var(--muted); }
+.tool-call > summary > .tool-status { align-self: start; }
 .tool-status[data-state=running] { grid-template-columns: repeat(2, 2px); grid-template-rows: repeat(2, 2px); gap: 2px; }
 .tool-status[data-state=running] > span { border-radius: 50%; background: currentColor; animation: tool-spinner 900ms linear infinite; }
 @keyframes tool-spinner { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }

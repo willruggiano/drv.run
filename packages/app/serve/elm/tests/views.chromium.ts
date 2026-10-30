@@ -756,7 +756,7 @@ await test(
 await test("tool status icons stay pinned when commands expand", { timeout: 45000 }, async (t) => {
   const f = await fixture(t);
   const session = await f.create();
-  const states = ["completed", "failed"];
+  const states = ["completed", "failed", "running", "pending", "unavailable"];
   await session.root.commit(async (tx) => {
     await tx.appendEntry(session.root.id, {
       kind: "pi.assistant",
@@ -772,7 +772,12 @@ await test("tool status icons stay pinned when commands expand", { timeout: 4500
         ),
       ],
     });
-    for (const state of states)
+    const live = await tx.doc(LiveDoc, session.root.id);
+    live.tools = [
+      { callId: "running", name: "functions.bash", status: "running" },
+      { callId: "pending", name: "functions.bash", status: "pending" },
+    ];
+    for (const state of ["completed", "failed"])
       await tx.appendEntry(session.root.id, {
         kind: "pi.tool",
         model: [
@@ -787,10 +792,11 @@ await test("tool status icons stay pinned when commands expand", { timeout: 4500
         ],
       });
   }, context);
-  const { page, base, errors } = await browserFixture(t, f.sessions);
+  const { page, base, errors, screenshots } = await browserFixture(t, f.sessions);
   await page.goto(base + conversationURL(session));
   for (const width of [390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
+    let reference: { x: number; y: number } | undefined;
     for (const state of states) {
       const tool = page.locator(`[data-call-id="${state}"]`);
       const summary = tool.locator(":scope > summary");
@@ -801,16 +807,51 @@ await test("tool status icons stay pinned when commands expand", { timeout: 4500
           const parent = node.parentElement!.getBoundingClientRect();
           return { x: bounds.x - parent.x, y: bounds.y - parent.y };
         });
+      const assertCentered = async () => {
+        const offset = await icon.evaluate((node) => {
+          const command = node.parentElement!.querySelector(".tool-command-text")!;
+          const text = document.createRange();
+          text.selectNodeContents(command);
+          const firstLine = text.getClientRects()[0];
+          let bounds: { top: number; bottom: number };
+          if (node.children.length) {
+            const dots = Array.from(node.children, (dot) => dot.getBoundingClientRect());
+            bounds = {
+              top: Math.min(...dots.map((dot) => dot.top)),
+              bottom: Math.max(...dots.map((dot) => dot.bottom)),
+            };
+          } else {
+            const glyph = document.createRange();
+            glyph.selectNodeContents(node);
+            bounds = glyph.getBoundingClientRect();
+          }
+          return (bounds.top + bounds.bottom - firstLine.top - firstLine.bottom) / 2;
+        });
+        assert(Math.abs(offset) <= 1, `${state} center is ${offset}px from the first text line`);
+      };
       if (await tool.evaluate((node) => node.hasAttribute("open"))) await summary.click();
+      await assertCentered();
       const collapsed = await position();
+      reference ??= collapsed;
+      assert.deepEqual(collapsed, reference, `${state} aligns with the completed icon`);
       const collapsedBounds = await summary.boundingBox();
       await summary.click();
       const expandedBounds = await summary.boundingBox();
       assert(collapsedBounds && expandedBounds);
       assert(expandedBounds.height > collapsedBounds.height);
       assert.deepEqual(await position(), collapsed);
+      await assertCentered();
       await summary.click();
       assert.deepEqual(await position(), collapsed);
+      await assertCentered();
+    }
+    if (screenshots) {
+      const running = page.locator('[data-call-id="running"]');
+      const article = page.locator("article").filter({ has: running });
+      await article.screenshot({ path: join(screenshots, `tool-status-${width}-collapsed.png`) });
+      await running.locator(":scope > summary").click();
+      await article.screenshot({ path: join(screenshots, `tool-status-${width}-expanded.png`) });
+      await running.locator(":scope > summary").click();
     }
   }
   assert.deepEqual(errors, []);
