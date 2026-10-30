@@ -1,6 +1,8 @@
 {pkgs, ...}: {
   app = pkgs.callPackage ./app {};
   bench = pkgs.callPackage ./bench {};
+  durable-api = pkgs.callPackage ./durable/api {};
+  durable-harness = pkgs.callPackage ./durable/harness {};
   # cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {}; # remove after: https://github.com/NixOS/nixpkgs/pull/574147
   mitm-proxy = pkgs.callPackage ./mitm-proxy {};
   sshx = pkgs.callPackage ./sshx {};
@@ -18,4 +20,5 @@
   });
   tap = pkgs.callPackage ./tap {};
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
+  www = pkgs.callPackage ./www {};
 }

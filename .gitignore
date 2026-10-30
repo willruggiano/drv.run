@@ -3,6 +3,7 @@
 .scratch/
 node_modules/
 packages/app/*/dist/
+packages/durable/*/dist/
 result
 result-*
 
