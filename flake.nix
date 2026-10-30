@@ -73,6 +73,7 @@
     in {
       app-tests = pkgs.app;
       bench-tests = pkgs.bench;
+      durable-harness-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.durable-harness;
       environment-image-tests = environmentImage.artifact;
       environment-image-nixos = environmentImage.integration;
       llms-tests = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;

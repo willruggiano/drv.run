@@ -4,14 +4,16 @@
     "lib": ["ES2024"],
     "module": "NodeNext",
     "strict": true,
+    "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
     "noEmitOnError": true,
     "verbatimModuleSyntax": true,
     "declaration": true,
-    "rootDir": "src",
-    "outDir": "dist"
+    "rewriteRelativeImportExtensions": true,
+    "customConditions": ["development"],
+    "noEmit": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
 }
