@@ -5,11 +5,11 @@
   stdenvNoCC,
   typescript,
 }: let
-  manifest = lib.importJSON ./package.json;
+  pkg = lib.importJSON ./package.json;
 in
   stdenvNoCC.mkDerivation {
-    pname = manifest.name;
-    inherit (manifest) version;
+    pname = pkg.name;
+    inherit (pkg) version;
     src = lib.fileset.toSource {
       root = ./.;
       fileset = lib.fileset.unions [
@@ -23,7 +23,11 @@ in
     };
     npmDeps = importNpmLock {npmRoot = ./.;};
     npmRebuildFlags = ["--ignore-scripts"];
-    nativeBuildInputs = [nodejs typescript importNpmLock.npmConfigHook];
+    nativeBuildInputs = [
+      importNpmLock.npmConfigHook
+      nodejs
+      typescript
+    ];
     preBuild = ''
       patch --batch --forward --fuzz=0 \
         -d node_modules/@earendil-works/pi-durable -p1 \
@@ -44,11 +48,11 @@ in
     installPhase = ''
       runHook preInstall
       npm prune --omit=dev --ignore-scripts --offline
-      mkdir -p "$out/lib/${manifest.name}"
-      cp -R package.json dist node_modules "$out/lib/${manifest.name}/"
-      mkdir -p "$out/share/${manifest.name}"
+      mkdir -p "$out/lib/${pkg.name}"
+      cp -R package.json dist node_modules "$out/lib/${pkg.name}/"
+      mkdir -p "$out/share/${pkg.name}"
       rm -r coverage/tmp
-      cp -R coverage "$out/share/${manifest.name}/"
+      cp -R coverage "$out/share/${pkg.name}/"
       runHook postInstall
     '';
   }
