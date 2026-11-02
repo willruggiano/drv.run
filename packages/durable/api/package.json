@@ -16,5 +16,8 @@
   },
   "dependencies": {
     "@earendil-works/pi-durable": "1.4.0"
+  },
+  "devDependencies": {
+    "knip": "6.44.1"
   }
 }

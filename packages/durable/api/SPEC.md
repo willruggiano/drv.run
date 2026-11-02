@@ -968,6 +968,77 @@ and per-event processing/write durations; stream lifetime is not request
 processing latency. Use telemetry to guide optimization without requiring a
 separate snapshot-cost study before implementation.
 
+## Test plan
+
+### Public interfaces only
+
+Test through package entry points, publicly exposed methods and HTTP/SSE APIs.
+Do not import production internals, expose a method solely for tests, or add
+production test hooks. Use `node:test` and `node:assert/strict` with
+deterministic, offline fixtures and test-owned cleanup. Assert decoded
+responses, observable state and event ordering, not stdout/stderr or
+implementation-text matches.
+
+Drive real Durable conversations through the upstream
+[faux provider](../harness/node_modules/@earendil-works/pi-ai/dist/providers/faux.d.ts)
+(`@earendil-works/pi-ai/providers/faux`), following the pinned Durable
+integration tests. Use its scripted model responses and Durable's public APIs;
+do not invent a new test-only facade for driving sessions or simulating their
+lifecycle.
+
+Assign each behavior to one test suite and exercise it at the narrowest public
+boundary that owns it. Do not repeat the same behavioral assertions in unit,
+HTTP, browser and VM tests. Reuse upstream conformance suites rather than
+rewriting their cases. Incidental execution of shared code is not duplicate
+behavioral coverage; avoid redundant tests, not shared execution paths.
+
+| Boundary                   | Coverage responsibility                                                                                                                                                                                   |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HTTP API                   | Each operation's request decoding, addressing, upstream argument/result mapping, declared errors and implicit 500 fallback; pagination and opaque cursor round trips; omitted fields and explicit `null`. |
+| HTTP mutations and lookups | Observable admission, request-ID recovery, conversation scoping, queued-input withdrawal and execution abort. Verify the adapter preserves upstream behavior, not the internal implementation of Durable. |
+| SSE API                    | Initial snapshot ordering, replacement snapshots, reconnection, terminal events and observation cleanup. Disconnect must not abort execution.                                                             |
+| Public lifecycle API       | Injected factory ownership, open/close behavior and cleanup on failure. Use upstream Harness fixtures, not the concrete application Harness package.                                                      |
+| Telemetry adapter          | Upstream adapter conformance plus an OTLP integration test covering export of existing Durable/AI traces and metrics. Do not duplicate conformance cases in the export test.                              |
+
+Use local fixtures for OTLP verification; do not require a running host viewer,
+external providers or network services in CI. Browser or NixOS tests should only
+cover behavior that cannot be verified at these interfaces, not repeat the API
+suite.
+
+### Coverage gate
+
+Collect code coverage in CI for each package's tests. The target is 100% line,
+branch and function coverage of package-owned production code, with each
+behavior tested once. Include production files that tests never import; exclude
+tests, fixtures, generated output and dependencies from the denominator. Map
+coverage back to TypeScript sources rather than counting emitted JavaScript as a
+second implementation.
+
+Enforce 100% thresholds for the new API implementation. As coverage collection
+is introduced to existing packages, record per-package baselines and ratchet
+them toward 100%. CI must fail if any coverage metric falls below its accepted
+baseline; aggregate gains in another package must not hide a regression. Do not
+lower thresholds, add ignore annotations or exclude production code to make a
+change pass. Retain machine-readable reports and a readable coverage summary as
+CI artifacts.
+
+### Package-scoped Knip checks
+
+Introduce [Knip](https://github.com/webpro-nl/knip) package by package, starting
+with `packages/durable/api`. Give each adopted package its own explicit entry
+points and production/test source scope; do not treat the repository as one
+undifferentiated dependency graph. Check unused files, internal exports and
+dependencies, as well as missing dependency declarations. Account for declared
+public entry points and actual runtime loading rather than adding test imports
+to make unused code appear live.
+
+Declare Knip in each adopted package's `devDependencies`, starting with
+`packages/durable/api/package.json`. Make each adopted package's Knip check and
+coverage gate part of its checks and CI, including Nix validation. Findings must
+fail the check; fix the code or correct the package's entry-point configuration
+rather than broadly suppressing findings. Extend adoption to the other extracted
+packages independently.
+
 ## Follow-up work
 
 Harness catalog, creation, naming and archival; execution-target selection and
