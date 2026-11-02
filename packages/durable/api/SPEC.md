@@ -296,10 +296,6 @@ Initially, each snapshot replaces the previous `ConversationView`. Preserve its
 upstream `conversation`, `entries`, and `docs` fields. The initial protocol has
 no deltas, sequence numbers, replay cursors, or SSE event IDs.
 
-Incremental synchronization is required follow-up work, not part of the initial
-implementation. Its protocol is deferred; implementing it is not contingent on
-snapshot-cost measurements.
-
 Send the acquisition snapshot first. Reconnection acquires a fresh snapshot. A
 terminal frame is best-effort; a broken connection may deliver none. On an `end`
 frame, the client closes its EventSource to prevent automatic reconnection.
@@ -866,29 +862,113 @@ scheduling.
 
 ## Telemetry
 
-Integrate telemetry in the initial implementation using the pinned
+Start with existing Durable and Pi AI instrumentation, one Pi-to-OpenTelemetry
+adapter, and a host-side `otel-desktop-viewer` service. The current application
+runs Durable on the host; only its execution environment reaches into guests. No
+guest telemetry transport, `otel-cli`, or separate Collector is needed for this
+integration. See the [application wiring](../../app/serve/application.ts) and
+[host service](../../../nixosModules/pi.nix).
+
+```text
+host
+  Harness instances: Durable + Pi AI instrumentation
+    -> Pi-to-OTel adapter
+    -> OTel SDK + OTLP exporters
+    -> localhost:4318
+    -> otel-desktop-viewer: DuckDB + web UI
+```
+
+### Adapter and lifecycle
+
+Implement the pinned
 [`pi-telemetry` contracts](../harness/node_modules/@earendil-works/pi-telemetry/dist/index.d.ts)
-and upstream
-[`DURABLE_TELEMETRY_SCHEMA`](../harness/node_modules/@earendil-works/pi-durable/dist/harness/telemetry.d.ts).
-Adapter configuration and export belong to deployment; do not introduce a
-separate telemetry runtime.
+using the OTel SDK directly. Include traces, W3C trace-context propagation and
+metrics; no log pipeline or auto-instrumentation initially. Map span attributes,
+events, statuses and links to their OTel equivalents, and counters, up/down
+counters and histograms to the corresponding metric instruments. Preserve
+upstream names, attributes and error diagnostics; do not add content filtering
+or redaction.
 
-- Record API operation durations and outcomes, with enough detail to distinguish
-  upstream Durable work, serialization, and response writes.
-- For watches, distinguish stream lifetime, time to the first snapshot, and
-  per-event processing and write durations. Do not treat stream lifetime as
-  request-processing latency.
-- Use explicit telemetry contexts and upstream propagation/linking contracts to
-  correlate API operations with Durable work. Preserve upstream span semantics
-  instead of duplicating Durable instrumentation.
-- Keep telemetry content-free: do not record prompts, transcript content, tool
-  arguments or output, credentials, or arbitrary error payloads. Use operation
-  names and route templates rather than identifiers as metric dimensions.
+Preserve callback settlement semantics: invoke the callback synchronously and
+exactly once, preserve its result or rejection, respect explicit status, and
+ignore recording calls after settlement. Settled spans remain usable as link and
+propagation targets. Verify the adapter with the upstream
+[conformance suite](../harness/node_modules/@earendil-works/pi-telemetry/dist/testing/index.d.ts).
+Use explicit contexts, not ambient current-span state. Do not introduce an
+intermediate telemetry database or poll `InMemoryTelemetryContext` for export.
 
-Use telemetry to identify where time is spent and focus subsequent optimization
-efforts. Do not require a separate snapshot-cost study before implementation.
+Deployment owns SDK initialization, service identity, export configuration and
+shutdown. Create one telemetry runtime per application process, share its
+adapter across Harness instances through `HarnessOptions.telemetry`, and shut
+down the providers/exporters after closing the Harnesses. Use SDK batching and
+shutdown flushing rather than custom retry or persistence machinery.
 
-## Separate integrations
+The extracted [`openHarness()`](../harness/src/index.ts) already forwards the
+telemetry option. Configuring it enables existing Durable and nested model
+instrumentation without requiring API request spans first. Preserve Durable's
+propagation and span-link semantics rather than forcing all work into one HTTP
+request tree. Sources:
+[`DURABLE_TELEMETRY_SCHEMA`](../harness/node_modules/@earendil-works/pi-durable/dist/harness/telemetry.js),
+[submission instrumentation](../harness/node_modules/@earendil-works/pi-durable/dist/harness/submissions.js),
+and
+[AI telemetry](../harness/node_modules/@earendil-works/pi-ai/dist/telemetry.js).
+
+### Host collector
+
+Run the nixpkgs-pinned `otel-desktop-viewer` as a NixOS system service:
+
+```nix
+systemd.services.otel-desktop-viewer = let
+  StateDirectory = "otel-desktop-viewer";
+in {
+  wantedBy = ["multi-user.target"];
+  serviceConfig = {
+    inherit StateDirectory;
+    ExecStart = lib.concatStringsSep " " [
+      (lib.getExe pkgs.otel-desktop-viewer)
+      "--host 127.0.0.1"
+      "--open-browser=false"
+      "--db %S/${StateDirectory}/telemetry.duckdb"
+    ];
+  };
+};
+```
+
+The pinned
+[v0.5.0 viewer](https://github.com/CtrlSpice/otel-desktop-viewer/blob/v0.5.0/README.md)
+already provides OTLP receivers, batching, storage and the UI. Use its default 2
+GB on-disk pruning threshold initially. The application sends OTLP/HTTP to port
+4318; access the UI on port 8000 through SSH forwarding or Tailscale.
+
+Configure the application through deployment:
+
+```sh
+OTEL_SERVICE_NAME=drv-run
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+```
+
+The bootstrap must configure the SDK from these values; setting environment
+variables alone does not activate Pi telemetry.
+
+### Integration scope
+
+First verify that a submission produces Durable and AI traces and metrics in the
+viewer. Whether to wire this into the existing application immediately or
+reserve the wiring for the new API executable remains undecided. For the
+existing application, initialization/shutdown belongs in
+[`server.ts`](../../app/serve/server.ts), with the telemetry option passed
+through [`sessions.ts`](../../app/serve/sessions.ts). Instrumenting only the
+extracted packages does not enable telemetry in the running service.
+
+API measurements and shell instrumentation are independent follow-ups, not
+prerequisites for this initial integration. API instrumentation should
+subsequently distinguish upstream Durable work, serialization and response
+writes. For watches, distinguish stream lifetime, time to the first snapshot,
+and per-event processing/write durations; stream lifetime is not request
+processing latency. Use telemetry to guide optimization without requiring a
+separate snapshot-cost study before implementation.
+
+## Follow-up work
 
 Harness catalog, creation, naming and archival; execution-target selection and
 working-directory validation; model/target choices; filesystem completion and
@@ -897,9 +977,7 @@ push notifications are application or deployment integrations. Do not include
 them in the core surface or introduce a dependency on the concrete Harness
 package to implement them.
 
-## Next steps
-
-- Extract the core backend with telemetry while preserving lifecycle behavior
-  and regression coverage. Design application integrations separately.
-- Implement incremental synchronization after the initial snapshot-based API.
-  Use telemetry to guide subsequent optimization efforts.
+Incremental synchronization is required follow-up work, not part of the initial
+snapshot-based API. Its protocol is deferred; implementing it is not contingent
+on snapshot-cost measurements. Use telemetry to guide subsequent optimization
+efforts.
