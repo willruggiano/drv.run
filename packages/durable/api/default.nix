@@ -50,9 +50,6 @@ in
       npm prune --omit=dev --ignore-scripts --offline
       mkdir -p "$out/lib/${pkg.name}"
       cp -R package.json dist node_modules "$out/lib/${pkg.name}/"
-      mkdir -p "$out/share/${pkg.name}"
-      rm -r coverage/tmp
-      cp -R coverage "$out/share/${pkg.name}/"
       runHook postInstall
     '';
   }
