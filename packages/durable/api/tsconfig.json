@@ -1,17 +1,20 @@
 {
   "compilerOptions": {
     "target": "ES2024",
-    "lib": ["ES2024"],
+    "lib": ["ES2024", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
     "module": "NodeNext",
+    "types": ["node", "@modelcontextprotocol/sdk/client/index.js"],
     "strict": true,
+    "erasableSyntaxOnly": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
     "noEmitOnError": true,
     "verbatimModuleSyntax": true,
     "declaration": true,
-    "rootDir": "src",
-    "outDir": "dist"
+    "rewriteRelativeImportExtensions": true,
+    "customConditions": ["development"],
+    "noEmit": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

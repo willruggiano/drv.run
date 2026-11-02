@@ -4,20 +4,64 @@
   "private": true,
   "type": "module",
   "exports": {
-    "types": "./dist/index.d.ts",
-    "default": "./dist/index.js"
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./telemetry": {
+      "development": "./src/telemetry.ts",
+      "types": "./dist/telemetry.d.ts",
+      "default": "./dist/telemetry.js"
+    }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json && KNIP_DISABLE_RAW_TRANSFER=1 knip",
+    "test": "c8 node --conditions=development --test \"tests/*.test.ts\""
   },
   "dependencies": {
-    "@earendil-works/pi-durable": "1.4.0"
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/pi-telemetry": "1.4.0",
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/core": "2.12.0",
+    "zod": "4.6.7"
   },
   "devDependencies": {
-    "knip": "6.44.1"
+    "@earendil-works/pi-ai": "1.4.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.223.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.223.0",
+    "@opentelemetry/resources": "2.12.0",
+    "@opentelemetry/sdk-metrics": "2.12.0",
+    "@opentelemetry/sdk-trace": "2.12.0",
+    "@types/node": "24.19.2",
+    "c8": "12.0.0",
+    "knip": "6.44.1",
+    "typescript": "5.9.3"
+  },
+  "c8": {
+    "all": true,
+    "include": [
+      "src/**/*.ts"
+    ],
+    "extension": [
+      ".ts"
+    ],
+    "reporter": [
+      "text",
+      "json-summary",
+      "lcovonly",
+      "html"
+    ],
+    "check-coverage": true,
+    "lines": 100,
+    "branches": 100,
+    "functions": 100,
+    "statements": 100
   }
 }
