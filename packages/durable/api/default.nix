@@ -3,6 +3,7 @@
   lib,
   nodejs,
   stdenvNoCC,
+  typescript,
 }: let
   manifest = lib.importJSON ./package.json;
 in
@@ -16,14 +17,13 @@ in
         ./package-lock.json
         ./tsconfig.json
         ./tsconfig.build.json
-        ./knip.json
         ./src
         ./tests
       ];
     };
     npmDeps = importNpmLock {npmRoot = ./.;};
     npmRebuildFlags = ["--ignore-scripts"];
-    nativeBuildInputs = [nodejs importNpmLock.npmConfigHook];
+    nativeBuildInputs = [nodejs typescript importNpmLock.npmConfigHook];
     preBuild = ''
       patch --batch --forward --fuzz=0 \
         -d node_modules/@earendil-works/pi-durable -p1 \

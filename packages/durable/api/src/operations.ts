@@ -7,11 +7,15 @@ import type {
   ConversationWatch,
   ConversationId,
 } from "@earendil-works/pi-durable";
-import { z } from "zod";
-import type { decode } from "./request.ts";
+import Type from "typebox";
+import { Check } from "typebox/value";
+import { jsonValue, type decode } from "./request.ts";
 import { Problem, read } from "./problem.ts";
 
 type Request = Awaited<ReturnType<typeof decode>>;
+const cursorSchema = Type.Record(Type.String({ pattern: "^[\\s\\S]*$" }), jsonValue, {
+  additionalProperties: false,
+});
 
 function cursor(value: string | undefined): Cursor | undefined {
   if (value === undefined) return undefined;
@@ -19,9 +23,9 @@ function cursor(value: string | undefined): Cursor | undefined {
     if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Problem(400);
     const bytes = Buffer.from(value, "base64url");
     if (bytes.toString("base64url") !== value) throw new Problem(400);
-    return z
-      .record(z.string(), z.json())
-      .parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+    const decoded: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (!Check(cursorSchema, decoded)) throw new Problem(400);
+    return decoded;
   } catch {
     throw new Problem(400);
   }
@@ -34,12 +38,6 @@ async function page<T>(result: Promise<Page<T, Cursor>>) {
     ...(next === undefined
       ? {}
       : { next: Buffer.from(JSON.stringify(next)).toString("base64url") }),
-  };
-}
-
-function defined<T extends object>(value: T): { [K in keyof T]: Exclude<T[K], undefined> } {
-  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined)) as {
-    [K in keyof T]: Exclude<T[K], undefined>;
   };
 }
 
@@ -59,10 +57,7 @@ export async function execute(
       const { limit, cursor: next, ...query } = request.value;
       return {
         value: await page(
-          harness.commit(
-            (tx) => tx.scanConversations(defined(query), limit, cursor(next)),
-            context,
-          ),
+          harness.commit((tx) => tx.scanConversations(query, limit, cursor(next)), context),
         ),
       };
     }
@@ -70,7 +65,7 @@ export async function execute(
       const { limit, cursor: next, ...query } = request.value;
       return {
         value: await page(
-          harness.commit((tx) => tx.scanTasks(defined(query), limit, cursor(next)), context),
+          harness.commit((tx) => tx.scanTasks(query, limit, cursor(next)), context),
         ),
       };
     }
@@ -85,11 +80,11 @@ export async function execute(
     case "entries": {
       const { limit, cursor: next, ...query } = request.value;
       return {
-        value: await page(conversation.entries(defined(query), limit, cursor(next), context)),
+        value: await page(conversation.entries(query, limit, cursor(next), context)),
       };
     }
     case "context":
-      return { value: await read(() => conversation.context(context, defined(request.value))) };
+      return { value: await read(() => conversation.context(context, request.value)) };
     case "submissionByRequest":
       return {
         value:
@@ -106,15 +101,7 @@ export async function execute(
       return { value: record?.conversationId === conversationId ? record : null };
     }
     case "submit": {
-      const { entry, content, ...draft } = request.value;
-      const submission = await conversation.submit(
-        {
-          ...defined(draft),
-          content: typeof content === "string" ? content : content.map(defined),
-          ...(entry === undefined ? {} : { entry: defined(entry) }),
-        },
-        context,
-      );
+      const submission = await conversation.submit(request.value, context);
       return { value: { id: submission.id } };
     }
     case "abortSubmission":
@@ -128,7 +115,7 @@ export async function execute(
     case "compact":
       return { value: await conversation.compact(request.value.instructions, context) };
     case "configure":
-      await conversation.configure(defined(request.value), context);
+      await conversation.configure(request.value, context);
       return { value: null };
   }
 }

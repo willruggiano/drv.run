@@ -94,10 +94,14 @@ void test("strict route, method, query and JSON decoding precedes opening", asyn
     ["submit", { type: "input", content: null }],
     ["submit", { type: "input", content: "x", whenBusy: "later" }],
     ["abortSubmission", { id: -1 }],
+    ["abortSubmission", { id: "1" }],
+    ["submit", { type: "input", content: [{ type: "text", text: 42 }] }],
+    ["submit", { type: "input", content: [{ type: "text", text: "x", extra: true }] }],
     ["reset", { handoff: null }],
     ["compact", { instructions: 4 }],
     ["configure", { cwd: "/tmp" }],
     ["configure", { model: { provider: "x" } }],
+    ["configure", { model: { provider: "x", modelId: "y", extra: true } }],
     ["configure", { thinkingLevel: "unknown" }],
   ] as const)
     await problem(await fetch(`${url}/c/1/${operation}`, json(body)), 400, ids);
@@ -182,6 +186,8 @@ void test("opaque cursors reject malformed encoding and invalid upstream continu
     "_w",
     Buffer.from("{").toString("base64url"),
     Buffer.from("[]").toString("base64url"),
+    Buffer.from("null").toString("base64url"),
+    Buffer.from('{"nested":{"number":1e400}}').toString("base64url"),
     Buffer.from("{}").toString("base64url"),
   ]) {
     await problem(

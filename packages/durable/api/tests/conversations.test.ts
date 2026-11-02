@@ -26,12 +26,12 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
       : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
   });
   assert.equal(response.status, 200);
-  return response.json();
+  return (await response.json()) as T;
 }
 async function get<T>(url: string): Promise<T> {
   const response = await fetch(url);
   assert.equal(response.status, 200);
-  return response.json();
+  return (await response.json()) as T;
 }
 
 void test("admission, request identity, scoped recovery, withdrawal and execution abort", async (t) => {

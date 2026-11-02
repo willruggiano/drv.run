@@ -1,9 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2024",
-    "lib": ["ES2024", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+    "lib": ["ES2024"],
     "module": "NodeNext",
-    "types": ["node", "@modelcontextprotocol/sdk/client/index.js"],
+    "types": ["node"],
     "strict": true,
     "erasableSyntaxOnly": true,
     "noUncheckedIndexedAccess": true,
@@ -14,7 +14,8 @@
     "declaration": true,
     "rewriteRelativeImportExtensions": true,
     "customConditions": ["development"],
-    "noEmit": true
+    "noEmit": true,
+    "skipLibCheck": true
   },
   "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

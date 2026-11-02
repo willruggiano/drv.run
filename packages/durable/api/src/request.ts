@@ -1,107 +1,138 @@
 import type { IncomingMessage } from "node:http";
-import { z } from "zod";
+import Type, { type Static, type TProperties, type TSchema } from "typebox";
+import { Check } from "typebox/value";
 import type { ConversationId, EntryId, TaskId, SubmissionId } from "@earendil-works/pi-durable";
 import { Problem } from "./problem.ts";
 
-const id = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const queryId = z.string().regex(/^\d+$/).transform(Number).pipe(id);
-const conversationId = queryId.transform((value) => value as ConversationId);
-const entryId = queryId.transform((value) => value as EntryId);
-const taskId = queryId.transform((value) => value as TaskId);
-const submissionId = id.transform((value) => value as SubmissionId);
-const order = z.enum(["ascending", "descending"]).optional();
+const id = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
+// Unsafe supplies only the upstream brand; Check still enforces the integer schema.
+const conversationId = Type.Unsafe<ConversationId>(id);
+const entryId = Type.Unsafe<EntryId>(id);
+const taskId = Type.Unsafe<TaskId>(id);
+const submissionId = Type.Unsafe<SubmissionId>(id);
+const order = Type.Optional(Type.Enum(["ascending", "descending"]));
 const pagination = {
-  limit: queryId.pipe(z.number().positive()),
-  cursor: z.string().optional(),
+  limit: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+  cursor: Type.Optional(Type.String()),
 };
-const content = z.union([
-  z.string(),
-  z.array(
-    z.union([
-      z.strictObject({
-        type: z.literal("text"),
-        text: z.string(),
-        textSignature: z.string().optional(),
+
+export const jsonValue = Type.Cyclic(
+  {
+    Json: Type.Union([
+      Type.Null(),
+      Type.Boolean(),
+      Type.Number(),
+      Type.String(),
+      Type.Array(Type.Ref("Json")),
+      Type.Record(Type.String({ pattern: "^[\\s\\S]*$" }), Type.Ref("Json"), {
+        additionalProperties: false,
       }),
-      z.strictObject({ type: z.literal("image"), data: z.base64(), mimeType: z.string() }),
+    ]),
+  },
+  "Json",
+);
+
+function object<P extends TProperties>(properties: P) {
+  return Type.Object(properties, { additionalProperties: false });
+}
+
+const content = Type.Union([
+  Type.String(),
+  Type.Array(
+    Type.Union([
+      object({
+        type: Type.Literal("text"),
+        text: Type.String(),
+        textSignature: Type.Optional(Type.String()),
+      }),
+      object({
+        type: Type.Literal("image"),
+        data: Type.String({
+          pattern: "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+        }),
+        mimeType: Type.String(),
+      }),
     ]),
   ),
 ]);
-const boolean = z
-  .enum(["true", "false"])
-  .transform((value) => value === "true")
-  .optional();
+const boolean = Type.Optional(Type.Boolean());
 
 const queries = {
-  inspect: z.strictObject({}),
-  scanConversations: z.strictObject({
+  inspect: object({}),
+  scanConversations: object({
     ...pagination,
     order,
-    ownerConversationId: conversationId.optional(),
-    ownerTaskId: taskId.optional(),
+    ownerConversationId: Type.Optional(conversationId),
+    ownerTaskId: Type.Optional(taskId),
   }),
-  scanTasks: z.strictObject({
+  scanTasks: object({
     ...pagination,
     order,
-    conversationId: conversationId.optional(),
-    kind: z.string().optional(),
-    status: z.enum(["pending", "running", "waiting", "sleeping", "terminal"]).optional(),
+    conversationId: Type.Optional(conversationId),
+    kind: Type.Optional(Type.String()),
+    status: Type.Optional(Type.Enum(["pending", "running", "waiting", "sleeping", "terminal"])),
     abortRequested: boolean,
     background: boolean,
   }),
-  watch: z.strictObject({}),
-  entries: z.strictObject({
+  watch: object({}),
+  entries: object({
     ...pagination,
     order,
-    minEntryId: entryId.optional(),
-    maxEntryId: entryId.optional(),
+    minEntryId: Type.Optional(entryId),
+    maxEntryId: Type.Optional(entryId),
   }),
-  context: z.strictObject({ at: entryId.optional() }),
-  submissionByRequest: z.strictObject({ requestId: z.string() }),
-  "submissions/status": z.strictObject({ id: queryId.pipe(submissionId) }),
+  context: object({ at: Type.Optional(entryId) }),
+  submissionByRequest: object({ requestId: Type.String() }),
+  "submissions/status": object({ id: submissionId }),
 };
 const bodies = {
-  resume: z.undefined(),
-  abort: z.undefined(),
-  submit: z.strictObject({
-    type: z.literal("input"),
+  resume: Type.Undefined(),
+  abort: Type.Undefined(),
+  submit: object({
+    type: Type.Literal("input"),
     content,
-    requestId: z.string().optional(),
-    whenBusy: z.enum(["steer", "followUp", "reject"]).optional(),
-    entry: z
-      .strictObject({
-        kind: z.string().refine((value) => !value.startsWith("pi.")),
-        data: z.json().optional(),
-      })
-      .optional(),
+    requestId: Type.Optional(Type.String()),
+    whenBusy: Type.Optional(Type.Enum(["steer", "followUp", "reject"])),
+    entry: Type.Optional(
+      object({ kind: Type.String({ pattern: "^(?!pi\\.)" }), data: Type.Optional(jsonValue) }),
+    ),
   }),
-  abortSubmission: z.strictObject({ id: submissionId }),
-  reset: z.strictObject({ handoff: z.string().optional() }),
-  compact: z.strictObject({ instructions: z.string().optional() }),
-  configure: z.strictObject({
-    model: z.strictObject({ provider: z.string(), modelId: z.string() }).nullable().optional(),
-    thinkingLevel: z
-      .enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
-      .nullable()
-      .optional(),
+  abortSubmission: object({ id: submissionId }),
+  reset: object({ handoff: Type.Optional(Type.String()) }),
+  compact: object({ instructions: Type.Optional(Type.String()) }),
+  configure: object({
+    model: Type.Optional(
+      Type.Union([object({ provider: Type.String(), modelId: Type.String() }), Type.Null()]),
+    ),
+    thinkingLevel: Type.Optional(
+      Type.Union([
+        Type.Enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
+        Type.Null(),
+      ]),
+    ),
   }),
 };
 
 type Query = {
-  [K in keyof typeof queries]: { operation: K; value: z.output<(typeof queries)[K]> };
+  [K in keyof typeof queries]: { operation: K; value: Static<(typeof queries)[K]> };
 }[keyof typeof queries];
 type Body = {
-  [K in keyof typeof bodies]: { operation: K; value: z.output<(typeof bodies)[K]> };
+  [K in keyof typeof bodies]: { operation: K; value: Static<(typeof bodies)[K]> };
 }[keyof typeof bodies];
 
-function parse<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
-  const result = schema.safeParse(value);
-  if (!result.success) throw new Problem(400);
-  return result.data;
+function parse<S extends TSchema>(schema: S, value: unknown): Static<S> {
+  if (!Check(schema, value)) throw new Problem(400);
+  return value;
+}
+
+function queryValue(schema: TSchema | undefined, value: string): unknown {
+  if (Type.IsInteger(schema) && /^\d+$/.test(value)) return Number(value);
+  if (Type.IsBoolean(schema) && (value === "true" || value === "false")) return value === "true";
+  return value;
 }
 
 export function parseId(value: string): ConversationId {
-  return parse(conversationId, value);
+  return parse(conversationId, queryValue(conversationId, value));
 }
 
 export async function decode(
@@ -116,12 +147,16 @@ export async function decode(
   if (Object.hasOwn(queries, operation)) {
     if (request.method !== "GET") throw new Problem(405, "GET");
     await noBody(request);
-    const values: Record<string, string> = {};
+    const name = operation as keyof typeof queries;
+    const properties: TProperties = queries[name].properties;
+    const values: Record<string, unknown> = {};
     for (const [key, value] of url.searchParams) {
       if (Object.hasOwn(values, key)) throw new Problem(400);
-      Object.defineProperty(values, key, { value, enumerable: true });
+      Object.defineProperty(values, key, {
+        value: queryValue(properties[key], value),
+        enumerable: true,
+      });
     }
-    const name = operation as keyof typeof queries;
     // Each table key selects the schema for the same discriminant.
     return { operation: name, value: parse(queries[name], values) } as Query;
   }
