@@ -16,12 +16,14 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "schema.graphql"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "check": "tsc -p tsconfig.json && KNIP_DISABLE_RAW_TRANSFER=1 knip",
-    "test": "c8 node --conditions=development --test \"tests/*.test.ts\""
+    "build": "npm run build:graphql && tsc -p tsconfig.build.json",
+    "check": "npm run build:graphql && tsc -p tsconfig.json && KNIP_DISABLE_RAW_TRANSFER=1 knip",
+    "test": "c8 node --conditions=development --test \"tests/*.test.ts\"",
+    "build:graphql": "mkdir -p generated && grats --tsconfig tsconfig.grats.json && tsc -p tsconfig.grats.json"
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
@@ -40,6 +42,8 @@
     "@opentelemetry/sdk-trace": "2.12.0",
     "@types/node": "24.19.2",
     "c8": "12.0.0",
+    "graphql": "16.14.2",
+    "grats": "0.0.37",
     "knip": "6.44.1"
   },
   "c8": {
@@ -64,11 +68,13 @@
   },
   "knip": {
     "entry": [
-      "tests/*.test.ts"
+      "tests/*.test.ts",
+      "generated/graphql.ts"
     ],
     "project": [
       "src/**/*.ts!",
-      "tests/**/*.ts"
+      "tests/**/*.ts",
+      "graphql.ts"
     ],
     "typescript": {
       "config": [

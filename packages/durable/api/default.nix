@@ -13,10 +13,14 @@ in
     src = lib.fileset.toSource {
       root = ./.;
       fileset = lib.fileset.unions [
+        ./.gitignore
+        ./.npmrc
         ./package.json
         ./package-lock.json
         ./tsconfig.json
         ./tsconfig.build.json
+        ./tsconfig.grats.json
+        ./graphql.ts
         ./src
         ./tests
       ];
@@ -47,9 +51,9 @@ in
     '';
     installPhase = ''
       runHook preInstall
-      npm prune --omit=dev --ignore-scripts --offline
+      npm prune --omit=dev --omit=peer --ignore-scripts --offline
       mkdir -p "$out/lib/${pkg.name}"
-      cp -R package.json dist node_modules "$out/lib/${pkg.name}/"
+      cp -R package.json schema.graphql dist node_modules "$out/lib/${pkg.name}/"
       runHook postInstall
     '';
   }
