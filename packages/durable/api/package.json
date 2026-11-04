@@ -17,13 +17,13 @@
   },
   "files": [
     "dist",
-    "schema.graphql"
+    "graphql/schema.graphql"
   ],
   "scripts": {
     "build": "npm run build:graphql && tsc -p tsconfig.build.json",
     "check": "npm run build:graphql && tsc -p tsconfig.json && KNIP_DISABLE_RAW_TRANSFER=1 knip",
     "test": "c8 node --conditions=development --test \"tests/*.test.ts\"",
-    "build:graphql": "mkdir -p generated && grats --tsconfig tsconfig.grats.json && tsc -p tsconfig.grats.json"
+    "build:graphql": "mkdir -p graphql/generated && grats --tsconfig graphql/tsconfig.grats.json && tsc -p graphql/tsconfig.grats.json"
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
@@ -69,12 +69,12 @@
   "knip": {
     "entry": [
       "tests/*.test.ts",
-      "generated/graphql.ts"
+      "graphql/generated/graphql.ts"
     ],
     "project": [
       "src/**/*.ts!",
       "tests/**/*.ts",
-      "graphql.ts"
+      "graphql/graphql.ts"
     ],
     "typescript": {
       "config": [

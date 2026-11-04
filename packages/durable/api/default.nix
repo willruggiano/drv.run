@@ -19,8 +19,8 @@ in
         ./package-lock.json
         ./tsconfig.json
         ./tsconfig.build.json
-        ./tsconfig.grats.json
-        ./graphql.ts
+        ./graphql/tsconfig.grats.json
+        ./graphql/graphql.ts
         ./src
         ./tests
       ];
@@ -53,7 +53,8 @@ in
       runHook preInstall
       npm prune --omit=dev --omit=peer --ignore-scripts --offline
       mkdir -p "$out/lib/${pkg.name}"
-      cp -R package.json schema.graphql dist node_modules "$out/lib/${pkg.name}/"
+      cp -R package.json dist node_modules "$out/lib/${pkg.name}/"
+      install -Dm644 graphql/schema.graphql "$out/lib/${pkg.name}/graphql/schema.graphql"
       runHook postInstall
     '';
   }
