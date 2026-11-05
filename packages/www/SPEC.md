@@ -307,24 +307,6 @@ manifest.webmanifest
   or benchmark derivations, not installed into the public asset directory.
   Benchmarks are not flake checks.[^layout-build]
 
-### Allowlist compliance and prior approval for amendments
-
-- Every added or modified repository source file must appear in the table and
-  remain within `packages/www`. Include untracked files in the audit; reviewing
-  only the tracked diff is insufficient.
-- Check the responsibility as well as the path. Permission to adjust a build
-  file is not permission to change unrelated dependencies, suppress checks, or
-  alter backend behavior.
-- If a required file is missing from the allowlist, stop and request approval
-  for the exact package-local path and responsibility. Do not create it first,
-  hide it in a generated directory, or broaden the list unilaterally.
-- Renaming or deleting a listed end-state file requires an approved layout
-  amendment. An external integration need does not expand this allowlist beyond
-  `packages/www`.
-- Specifications and contributor guidance outside this section remain
-  applicable; the allowlist limits the edit surface but does not waive tests,
-  formatting, type safety, or the required behavior.
-
 [^layout-rest]:
     [[packages/durable/api/SPEC.md]], particularly its core surface, observation
     contract, and separation of application integrations.
