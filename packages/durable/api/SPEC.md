@@ -9,11 +9,14 @@ organizational directory, not a package.
   creating a Harness. Depend only on upstream Durable's `Harness` type, not on
   `packages/durable/harness`.
 - Implementing the factory and connecting it to the API is a configuration and
-  deployment concern.
+  deployment concern. Deployment also supplies Pi AI model access for the
+  service-level model catalog; do not discover it through Harness internals.
 - Treat upstream Durable as canonical for conversations. Keep operation names,
   arguments, results, and semantics as close to upstream as transport permits.
-- Expose only the core operations required by the frontend, listed below.
-  Application integrations are separate from this surface.
+- Expose the core operations listed below; frontends may consume a subset.
+  Application integrations are separate from this surface. `configure` is the
+  canonical conversation configuration mutation for model, thinking level, and
+  working directory; do not duplicate it in an application settings endpoint.
 - Keep transactions and execution callbacks server-side. Do not introduce a
   remote transaction language or adopt Chord's distributed object runtime.
 - Preserve submission identity, admission semantics, and the distinction between
@@ -26,9 +29,10 @@ organizational directory, not a package.
 Operations are scoped by session and conversation IDs as applicable. A session
 ID addresses a persisted Harness instance. Names below identify logical
 operations; their HTTP routes are listed separately. Execution contexts remain
-server-side; object handles become IDs or records at the transport boundary.
+server-side; object handles become IDs or records at the transport boundary. The
+model catalog is service-scoped and does not require an existing session.
 
-The required behaviors come from the existing
+Behavioral evidence for this surface comes from the existing
 [frontend commands](../../app/serve/elm/frontend.ts),
 [conversation observation](../../app/serve/elm/stream.ts),
 [transcript trees](../../app/serve/trees.ts), and
@@ -46,7 +50,8 @@ The required behaviors come from the existing
 | Reset / compact context                                                 | `reset(handoff?)`, `compact(instructions?)`                  | Corresponding `Conversation` methods. Observe subsequent progress; no remote wait operation initially.                                                        |
 | Context inspection                                                      | `context(at?)`                                               | `Conversation.context()`. Distinct from complete history.                                                                                                     |
 | Branch navigation and transcript trees                                  | `scanConversations(query, limit, cursor)`; reuse `entries()` | `Tx.scanConversations()` inside a server-side read-only transaction. Elm constructs the tree from records. No fork mutation required by the current frontend. |
-| Model and thinking settings                                             | `configure(change)`                                          | `Conversation.configure()`, initially restricted to frontend-used model/thinking fields. Current overrides arrive through `watch()` as `AgentDoc`.            |
+| Model, thinking, and working-directory settings                         | `configure(change)`                                          | `Conversation.configure()` with the supported `AgentChange` fields; stored choices arrive through `watch()` as `AgentDoc`.                                    |
+| Available chat models                                                   | `models()`                                                   | Host-supplied Pi AI `Models.getAvailable()` with a public metadata projection.                                                                                |
 | Compaction duration badges                                              | `scanTasks(query, limit, cursor)`, submission `status(id)`   | `Tx.scanTasks()` reads completed compactions; `Harness.submission(id).status()` resolves their summary entries. Read-only; no task-control API.               |
 
 ## Routes
@@ -60,6 +65,7 @@ All reads use GET. POST is reserved for mutations; there are no POST reads.
 
 | Method | Route                   | Operation                                 |
 | ------ | ----------------------- | ----------------------------------------- |
+| GET    | `/api/models`           | `models()`                                |
 | GET    | `S/inspect`             | `inspect()`                               |
 | GET    | `S/scanConversations`   | `scanConversations(query, limit, cursor)` |
 | GET    | `S/scanTasks`           | `scanTasks(query, limit, cursor)`         |
@@ -242,6 +248,70 @@ is proven insufficient, stop and re-evaluate a suitable replacement; do not
 introduce a replacement preemptively. They are part of a successful response,
 not non-2xx HTTP failures, and are not redefined as `ProblemDetails`. Persisted
 task outcome errors retain their upstream JSON representation.
+
+### `models()` — `GET /api/models`
+
+```typescript
+import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+
+type ResponseT = Array<
+  Pick<
+    Model<Api>,
+    | "id"
+    | "provider"
+    | "name"
+    | "input"
+    | "reasoning"
+    | "contextWindow"
+    | "maxTokens"
+    | "cost"
+  > & { thinkingLevels: ModelThinkingLevel[] }
+>;
+
+type ErrorT =
+  | { title: "Bad Request"; status: 400 }
+  | { title: "Method Not Allowed"; status: 405 };
+
+declare function models(): Result<ResponseT, ErrorT>;
+```
+
+Errors:
+
+- 400: request query parameters or body supplied; neither is accepted.
+- 405: method is not GET; `Allow: GET`.
+- Other failures use the common 500 fallback, not an invented availability
+  error.
+
+Deployment supplies `models: Models | (() => Models)` in the API's construction
+options, using the public `@earendil-works/pi-ai/models` interface. Read the
+current value per request and call `getAvailable()` with the request
+cancellation signal. This is a catalog read, not a Harness open, model
+generation, provider login, or explicit catalog refresh.
+
+Return available **chat** models in upstream order. Availability means the Pi AI
+provider/auth checks permit listing the model, not that its next request is
+guaranteed to succeed. An empty catalog is a successful empty array. Preserve
+`provider`/`id` identity; `id` becomes `modelId` when constructing a Durable
+`ModelRef`. Populate `thinkingLevels` with Pi AI's
+`getSupportedThinkingLevels()`. Do not include an application-selected default
+model or thinking default.
+
+Serialize only the declared public metadata. Never serialize an entire model,
+provider, or `Models` object: model `headers`, `baseUrl`, credentials, request
+transforms, and compatibility configuration are not part of this response.
+Preserve the selected upstream metadata types instead of copying their schemas.
+
+The service owner must supply the same model configuration used by the Harness
+factory and enforce the service's access policy on this endpoint. Applications
+needing different catalogs for different tenants must scope their API instances
+accordingly rather than exposing another tenant's catalog. Target discovery and
+selection are not model-catalog responsibilities.
+
+Sources: pinned Pi AI 1.4.0
+[Models interface](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-ai/dist/models.d.ts),
+[availability implementation](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-ai/dist/models.js),
+and
+[model types](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-ai/dist/types.d.ts).
 
 ### `watch()` — `GET /api/s/{sessionId}/c/{conversationId}/watch`
 
@@ -736,7 +806,7 @@ The transaction remains server-side.
 ```typescript
 import type { AgentChange, ConversationId } from "@earendil-works/pi-durable";
 
-type Request = Pick<AgentChange, "model" | "thinkingLevel">;
+type Request = Pick<AgentChange, "model" | "thinkingLevel" | "cwd">;
 type ResponseT = null;
 
 type ErrorT =
@@ -764,15 +834,34 @@ Errors:
 - 503: `SessionFailed`.
 
 - Omitted field: unchanged.
-- `null`: clear the stored override and follow host policy.
+- `null`: clear the stored field, using upstream unset-field semantics.
 - Value: replace the stored override.
 
 `model` retains `{ provider, modelId }`; `thinkingLevel` retains upstream's
 thinking-level type.
 
-Do not accept environment bindings, `cwd`, extension objects, or tool objects.
-Observe committed overrides through `watch()`; do not return a second,
-potentially divergent configuration representation.
+`cwd` is the upstream directory string within the conversation's execution
+environment. Pass it unchanged to `Conversation.configure()`; do not normalize
+it against the API server's filesystem, create directories, or claim that this
+operation validates their existence. Clearing it removes the stored choice; it
+does not select a directory on behalf of the environment implementation.
+
+This is the canonical mutation for these conversation settings. Do not duplicate
+model/thinking/cwd writes in application endpoints. Session naming, execution
+target selection, and host-wide defaults are different resources and remain
+outside this operation. Do not accept environment bindings, extension/tool
+objects, `modelTools`, or instructions in this REST request.
+
+Observe stored choices through `watch()` as `pi.agent`; this is not a resolved
+`Agent` or host-policy snapshot. Return no second configuration representation.
+An unset model/cwd remains absent upstream; unset thinking resolves to `off`.
+Application-selected defaults, where required, belong to session initialization
+or host policy, not an invented fallback in this endpoint.
+
+Sources: pinned Durable 1.4.0
+[AgentChange and EnvTarget](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/types.d.ts)
+and
+[configure/agent resolution](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/agent.js).
 
 ### `scanTasks(query, limit, cursor)` — `GET /api/s/{sessionId}/scanTasks`
 
@@ -1005,6 +1094,23 @@ external providers or network services in CI. Browser or NixOS tests should only
 cover behavior that cannot be verified at these interfaces, not repeat the API
 suite.
 
+The configuration/model expansion additionally requires public HTTP tests for:
+
+- Setting, retaining by omission, and clearing `cwd`; observing the stored value
+  through watch; rejecting unsupported configuration fields.
+- Catalog reads before any session exists, current model-source replacement,
+  auth-based availability and supported thinking levels, an empty catalog,
+  cancellation/failure, and method/query/body validation.
+- Exact response-object keys and metadata values, including a fixture with
+  secret-bearing model headers that must not appear in the response. Assert
+  decoded data, not serialized-text matches.
+
+The model catalog uses Pi AI in production, not only as a faux-provider test
+dependency. Implementation must declare the pinned runtime dependency and verify
+the installed package after development dependencies are pruned. These are
+required changes, not claims that the current implementation already exposes
+`cwd` or `/api/models`.
+
 ### Coverage gate
 
 Collect code coverage in CI for each package's tests. The target is 100% line,
@@ -1041,12 +1147,14 @@ packages independently.
 
 ## Follow-up work
 
-Harness catalog, creation, naming and archival; execution-target selection and
-working-directory validation; model/target choices; filesystem completion and
-file serving; review workflows; global settings; provider authorization; and
-push notifications are application or deployment integrations. Do not include
-them in the core surface or introduce a dependency on the concrete Harness
-package to implement them.
+Harness catalog, creation, naming and archival; execution-target discovery and
+selection; environment-specific working-directory validation; filesystem
+completion and file serving; review workflows; global settings; provider
+authorization; and push notifications are application or deployment
+integrations. Do not include those integrations in the core surface or introduce
+a dependency on the concrete Harness package to implement them. The core API
+owns Pi AI model discovery and conversation model/thinking/cwd configuration,
+not application targets or filesystem services.
 
 Incremental synchronization is required follow-up work, not part of the initial
 snapshot-based API. Its protocol is deferred; implementing it is not contingent
