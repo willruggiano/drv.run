@@ -6,6 +6,8 @@ import {
   isScalarType,
   isUnionType,
   isInputObjectType,
+  isObjectType,
+  getNamedType,
   parseValue,
   validateSchema,
 } from "graphql";
@@ -56,6 +58,19 @@ const messageIdentity = `__typename
   ... on ToolResultMessage { role timestamp }
 `;
 
+function catalogContext(models: ResolverContext["models"], context = execution): ResolverContext {
+  return {
+    context,
+    models,
+    async session() {
+      assert.fail("catalog reads must not acquire a Harness");
+    },
+    async sessions() {
+      assert.fail("catalog reads must not enumerate sessions");
+    },
+  };
+}
+
 async function fixture(t: TestContext, sessionId = "test") {
   const models = createModels();
   const faux = fauxProvider({ models: [{ id: "test", reasoning: true }] });
@@ -79,6 +94,7 @@ async function fixture(t: TestContext, sessionId = "test") {
       context: execution,
       session: async (id) => (id === sessionId ? instance : undefined),
       sessions: async () => [sessionId],
+      models: () => models,
       ...overrides,
     };
   }
@@ -1769,4 +1785,294 @@ void test("write messages preserve omitted optionals, JSON null and constrained 
     { role: "toolResult", ...toolResult, details: null },
   ]);
   assert.equal(f.faux.state.callCount, 0);
+});
+
+void test("model catalog exposes only typed public metadata without acquiring a Harness", async (t) => {
+  const modelType = schema.getType("Model");
+  assert(isObjectType(modelType));
+  assert.deepEqual(modelType.getInterfaces(), []);
+  const fields = modelType.getFields();
+  assert.deepEqual(Object.keys(fields).sort(), [
+    "contextWindow",
+    "cost",
+    "id",
+    "input",
+    "maxTokens",
+    "name",
+    "provider",
+    "reasoning",
+    "thinkingLevels",
+  ]);
+  assert.equal(getNamedType(fields.id!.type).name, "String");
+  assert.equal(getNamedType(fields.input!.type).name, "ModelInputModality");
+  assert.equal(getNamedType(fields.thinkingLevels!.type).name, "ModelThinkingLevel");
+  assert.equal(getNamedType(fields.cost!.type).name, "ModelCost");
+  for (const [name, expected] of [
+    ["ModelCost", ["cacheRead", "cacheWrite", "input", "output", "tiers"]],
+    ["ModelCostTier", ["cacheRead", "cacheWrite", "input", "inputTokensAbove", "output"]],
+  ] as const) {
+    const type = schema.getType(name);
+    assert(isObjectType(type));
+    assert.deepEqual(Object.keys(type.getFields()).sort(), expected);
+  }
+  const models = createModels();
+  const faux = fauxProvider({
+    provider: "catalog",
+    models: [
+      {
+        id: "z",
+        name: "Reasoner",
+        reasoning: true,
+        input: ["text", "image"],
+        contextWindow: 4294967296,
+        maxTokens: 100,
+        cost: { input: 1.25, output: 2, cacheRead: 3, cacheWrite: 4 },
+      },
+      { id: "a", name: "Plain", reasoning: false, input: ["text"] },
+      { id: "empty-tiers", name: "Empty tiers", reasoning: true, input: ["text"] },
+    ],
+  });
+  const reasoner = faux.models[0];
+  reasoner.headers = { Authorization: "Bearer private", "x-api-key": "private" };
+  reasoner.baseUrl = "https://private.invalid/api";
+  reasoner.samplingParams = { private: "secret" };
+  reasoner.thinkingLevelMap = { minimal: null, xhigh: "extended", max: null };
+  reasoner.cost.tiers = [
+    { inputTokensAbove: 500, input: 5, output: 6.5, cacheRead: 7, cacheWrite: 8 },
+  ];
+  faux.models[2]!.cost.tiers = [];
+  models.setProvider(faux.provider);
+  const refresh = t.mock.method(models, "refresh");
+  const available = t.mock.method(models, "getAvailable");
+  const source = t.mock.fn(() => models);
+  const ctx = catalogContext(source);
+  const result = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `{ models {
+    id provider name input reasoning contextWindow maxTokens thinkingLevels
+    cost { input output cacheRead cacheWrite tiers { inputTokensAbove input output cacheRead cacheWrite } }
+  } }`,
+  });
+  assert.equal(result.errors, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.data)), {
+    models: [
+      {
+        id: "z",
+        provider: "catalog",
+        name: "Reasoner",
+        input: ["text", "image"],
+        reasoning: true,
+        contextWindow: 4294967296,
+        maxTokens: 100,
+        thinkingLevels: ["off", "low", "medium", "high", "xhigh"],
+        cost: {
+          input: 1.25,
+          output: 2,
+          cacheRead: 3,
+          cacheWrite: 4,
+          tiers: [{ inputTokensAbove: 500, input: 5, output: 6.5, cacheRead: 7, cacheWrite: 8 }],
+        },
+      },
+      {
+        id: "a",
+        provider: "catalog",
+        name: "Plain",
+        input: ["text"],
+        reasoning: false,
+        contextWindow: 128000,
+        maxTokens: 16384,
+        thinkingLevels: ["off"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tiers: null },
+      },
+      {
+        id: "empty-tiers",
+        provider: "catalog",
+        name: "Empty tiers",
+        input: ["text"],
+        reasoning: true,
+        contextWindow: 128000,
+        maxTokens: 16384,
+        thinkingLevels: ["off", "minimal", "low", "medium", "high"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tiers: [] },
+      },
+    ],
+  });
+  assert.equal(source.mock.callCount(), 1);
+  assert.equal(available.mock.callCount(), 1);
+  assert.deepEqual(available.mock.calls[0]?.arguments, [undefined, undefined]);
+  assert.equal(refresh.mock.callCount(), 0);
+  assert.equal(faux.state.callCount, 0);
+  for (const field of [
+    "headers",
+    "baseUrl",
+    "api",
+    "compat",
+    "samplingParams",
+    "thinkingLevelMap",
+    "inputLimits",
+  ]) {
+    const denied = await graphql({ schema, contextValue: ctx, source: `{ models { ${field} } }` });
+    assert(denied.errors?.length);
+    assert.equal(denied.data, undefined);
+  }
+  const invalid = await graphql({
+    schema,
+    contextValue: ctx,
+    source: '{ models(provider: "catalog") { id } }',
+  });
+  assert(invalid.errors?.length);
+  assert.equal(invalid.data, undefined);
+  assert.equal(source.mock.callCount(), 1);
+});
+
+void test("model catalog observes auth and filtering, and excludes non-chat models", async (t) => {
+  const models = createModels();
+  const faux = fauxProvider({ models: [{ id: "allowed" }, { id: "filtered" }] });
+  let authenticated = false;
+  const allModels = t.mock.fn((): readonly (AI.Model<AI.Api> | AI.ImageModel<AI.ImageApi>)[] => [
+    ...faux.models,
+    {
+      type: "image",
+      id: "image-model",
+      provider: "faux",
+      api: "openrouter-images",
+      name: "Image model",
+      baseUrl: "https://unused.invalid",
+      input: ["text"],
+      output: ["image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  ]);
+  models.setProvider({
+    ...faux.provider,
+    auth: {
+      apiKey: {
+        name: "Test auth",
+        async check() {
+          return authenticated ? { type: "api_key" } : undefined;
+        },
+        async resolve() {
+          assert.fail("availability must not request generation credentials");
+        },
+      },
+    },
+    filterModels: (entries) => entries.filter((model) => model.id === "allowed"),
+    getAllModels: allModels,
+  });
+  const contextValue = catalogContext(() => models);
+  const source = "{ models { id provider } }";
+  for (const allowed of [false, true, false]) {
+    authenticated = allowed;
+    const result = await graphql({ schema, contextValue, source });
+    assert.equal(result.errors, undefined);
+    assert.deepEqual(JSON.parse(JSON.stringify(result.data)), {
+      models: allowed ? [{ id: "allowed", provider: "faux" }] : [],
+    });
+  }
+  assert.equal(allModels.mock.callCount(), 0);
+  assert.equal(faux.state.callCount, 0);
+});
+
+void test("model catalog resolves its source independently for aliases and later requests", async (t) => {
+  const first = createModels();
+  const second = createModels();
+  first.setProvider(fauxProvider({ provider: "first", models: [{ id: "same-id" }] }).provider);
+  second.setProvider(fauxProvider({ provider: "second", models: [{ id: "same-id" }] }).provider);
+  const firstReads = t.mock.method(first, "getAvailable");
+  const secondReads = t.mock.method(second, "getAvailable");
+  let current = first;
+  const source = t.mock.fn(() => {
+    const value = current;
+    current = second;
+    return value;
+  });
+  const contextValue = catalogContext(source);
+  const result = await graphql({
+    schema,
+    contextValue,
+    source: "{ first: models { id provider } second: models { id provider } }",
+  });
+  assert.equal(result.errors, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.data)), {
+    first: [{ id: "same-id", provider: "first" }],
+    second: [{ id: "same-id", provider: "second" }],
+  });
+  assert.equal(source.mock.callCount(), 2);
+  assert.equal(firstReads.mock.callCount(), 1);
+  assert.equal(secondReads.mock.callCount(), 1);
+  current = createModels();
+  const empty = await graphql({ schema, contextValue, source: "{ models { id } }" });
+  assert.equal(empty.errors, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(empty.data)), { models: [] });
+  assert.equal(source.mock.callCount(), 3);
+});
+
+void test("model catalog failures use the existing error policy and never become empty lists", async () => {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider({
+    ...faux.provider,
+    getModels() {
+      throw new Error("private provider data");
+    },
+  });
+  let failSource = true;
+  const contextValue = catalogContext(() => {
+    if (failSource) throw new Error("private source data");
+    return models;
+  });
+  for (const sourceFailure of [true, false]) {
+    failSource = sourceFailure;
+    const result = await graphql({ schema, contextValue, source: "{ models { id } }" });
+    assert.equal(result.data, null);
+    assert.equal(result.errors?.length, 1);
+    assert.equal(result.errors[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    assert.deepEqual(result.errors[0]?.path, ["models"]);
+  }
+});
+
+void test("model catalog forwards request cancellation to the upstream availability check", async (t) => {
+  const models = createModels();
+  const faux = fauxProvider();
+  const started = Promise.withResolvers<AbortSignal>();
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const context = withAbortSignal(controller.signal, execution);
+  models.setProvider({
+    ...faux.provider,
+    auth: {
+      apiKey: {
+        name: "Pending auth",
+        async check({ signal }) {
+          started.resolve(signal);
+          await awaitWithContext(new Promise<never>(() => {}), withAbortSignal(signal, execution));
+          assert.fail("availability check must be cancelled");
+        },
+        async resolve() {
+          assert.fail("availability uses auth checks only");
+        },
+      },
+    },
+  });
+  const available = t.mock.method(models, "getAvailable");
+  const request = graphql({
+    schema,
+    contextValue: catalogContext(() => models, context),
+    source: "{ models { id } }",
+  });
+  const signal = await started.promise;
+  assert.equal(available.mock.callCount(), 1);
+  assert.deepEqual(available.mock.calls[0]?.arguments, [
+    undefined,
+    { signal: context.abortSignal },
+  ]);
+  assert.equal(signal.aborted, false);
+  controller.abort();
+  const result = await request;
+  assert.equal(signal.aborted, true);
+  assert.equal(result.data, null);
+  assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.deepEqual(result.errors?.[0]?.path, ["models"]);
+  assert.equal(faux.state.callCount, 0);
 });

@@ -38,6 +38,7 @@ Source prefixes below refer to the pinned 1.4.0 packages:
 - `AI`: Pi AI
   [messages, content, tools, and usage](../node_modules/@earendil-works/pi-ai/dist/types.d.ts),
   [diagnostics](../node_modules/@earendil-works/pi-ai/dist/utils/diagnostics.d.ts),
+  [model catalog and helpers](../node_modules/@earendil-works/pi-ai/dist/models.d.ts),
   and
   [model settings](../node_modules/@earendil-works/pi-ai/dist/providers/model-schema.d.ts).
 - `Chord`: [JSON values](../node_modules/@earendil-works/chord/dist/json.d.ts).
@@ -58,6 +59,7 @@ Calls to `D.Conversation` methods acquire the handle through
 | Refetch a global identity                       | `Query.node`                             | Adapter dispatch: session lookup for Harness; `D.Tx.conversation`, `D.Tx.entry`, or `D.Tx.task` for records; `D.Harness.submission().status()` for submissions. |
 | Resolve an accessible session                   | `Query.harness`                          | Deployment's `ResolverContext.session(sessionId)`; no Durable catalog operation.                                                                                |
 | List accessible sessions                        | `Query.harnesses`                        | Deployment's `ResolverContext.sessions()`; sorted catalog, without opening Harnesses.                                                                           |
+| List available chat models                      | `Query.models`                           | Deployment's `ResolverContext.models()`, then Pi AI `Models.getAvailable(undefined, { signal })`; no Harness lookup.                                            |
 | Read a conversation record                      | `Harness.conversation`                   | `D.Tx.conversation(id)`; returns the persisted record, not a live `D.Conversation` handle.                                                                      |
 | Inspect scheduling and live work                | `Harness.inspect`                        | `D.Harness.inspect()`.                                                                                                                                          |
 | Browse conversation scopes                      | `Harness.scanConversations`              | `D.Tx.scanConversations(query, limit, cursor)`.                                                                                                                 |
@@ -147,6 +149,14 @@ token, not an individual `D.EntryRecord`.
 | `ConfigureInput`          | Adapter addressing/correlation envelope around the exposed `D.AgentChange` fields.                       |
 | `ConfigurePayload`        | Adapter envelope for successful upstream void completion.                                                |
 
+### Model catalog types
+
+| Schema name     | Upstream name or adapter role                                                                                     |
+| --------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `Model`         | Public metadata projection of `AI.Model<AI.Api>`, plus supported thinking levels; not a Node or selected default. |
+| `ModelCost`     | `AI.ModelCost`, including optional pricing tiers; not message `UsageCost`.                                        |
+| `ModelCostTier` | `AI.ModelCostTier`.                                                                                               |
+
 ### Messages, content, and diagnostics
 
 These declarations originate in Pi AI, not Durable. Durable stores and returns
@@ -221,6 +231,7 @@ upstream inline literal union rather than a separately exported type.
 | `InputSubmissionDraftWhenBusy` | `NonNullable<D.InputSubmissionDraft["whenBusy"]>`.                                                        |
 | `JoinPolicy`                   | `D.JoinPolicy`.                                                                                           |
 | `MessageRole`                  | `AI.Message["role"]`.                                                                                     |
+| `ModelInputModality`           | `AI.ModelInputModality`.                                                                                  |
 | `ModelThinkingLevel`           | `AI.ModelThinkingLevel`, used by Durable's agent settings.                                                |
 | `NestedToolCallStatus`         | `AI.NestedToolCallRecord["status"]`.                                                                      |
 | `ScanOrder`                    | `D.ScanOrder`.                                                                                            |
@@ -276,6 +287,8 @@ renamed.
 | Mutation `input`                                            | Adapter envelope; native procedures receive the selected arguments, not this envelope.                                                               |
 | Mutation input `conversationId`                             | Global ConversationRecord identity used to resolve the native conversation. Other `ConversationId`-typed fields/arguments remain native numeric IDs. |
 | `ResumeInput.sessionId`                                     | Global Harness identity, unlike the external key in `Harness.sessionId`.                                                                             |
+| `Model.id`                                                  | Native Pi AI model ID, paired with `provider`; becomes `modelId` in `ModelRefInput`, not a global Node ID.                                           |
+| `Model.thinkingLevels`                                      | `getSupportedThinkingLevels(model)`, using the existing `ModelThinkingLevel` enum.                                                                   |
 | `SubmitInput.submission`                                    | The draft argument of `D.Conversation.submit()`.                                                                                                     |
 | `SubmissionDraft.input`, `SubmissionDraft.write`            | Selected native draft; conversion supplies the corresponding `type` discriminator.                                                                   |
 | `MessageInput.system`, `.user`, `.assistant`, `.toolResult` | Selected native message; conversion supplies the corresponding `role` discriminator.                                                                 |
@@ -343,6 +356,46 @@ These are transcript entries, not Durable Docs. Sources:
 and
 [model-context construction](../node_modules/@earendil-works/pi-durable/dist/harness/context.js).
 
+## Model catalog
+
+`Query.models` is an argument-free, service-scoped list of available chat
+models. It requires no session and must not acquire a Harness or enable
+scheduling. Return a plain list in upstream order, without pagination or adapter
+sorting. An empty catalog is a successful empty list, not an availability error.
+
+Use the public metadata projection defined by the REST
+[[packages/durable/api/SPEC.md#`models()` — `GET /api/models`]] contract.
+
+`Model` is not a `Node`. Preserve native `provider`/`id` identity; the catalog's
+`id` becomes `modelId` when constructing `ModelRefInput`. Do not provide a
+selected/default model or thinking level. Availability reflects upstream
+provider/auth checks, not a guarantee that generation will succeed.
+
+`ResolverContext.models` supplies `() => Models`, using the public
+`@earendil-works/pi-ai/models` interface. Deployment supplies this borrowed
+source using the same model configuration as the Harness factory and enforces
+the catalog's access policy. Tenant-specific catalogs require appropriately
+scoped contexts; never discover the catalog through a Harness.
+
+Resolve the source and call `getAvailable()` on every resolver invocation,
+passing `ctx.context.abortSignal`. Do not cache acquisitions or results across
+aliases or requests, call `refresh()`, initiate provider login, or generate
+model output. Derive thinking levels with the upstream helper rather than
+reimplementing its rules. Failures use the existing GraphQL error policy;
+cancellation and failure must not become a successful empty list.
+
+Project only the public metadata allowlist. Never expose model headers,
+credentials, base URLs, request transforms, compatibility configuration, or
+provider/Models objects, even through a JSON scalar. Keep cost tiers and input
+modalities typed. The field contracts are authoritative in the generated
+[schema](schema.graphql); the inventory above records their upstream mappings.
+
+Sources: pinned Pi AI
+[Models interface](../node_modules/@earendil-works/pi-ai/dist/models.d.ts),
+[availability and thinking-level helpers](../node_modules/@earendil-works/pi-ai/dist/models.js),
+[model types](../node_modules/@earendil-works/pi-ai/dist/types.d.ts), and
+[cost and modality types](../node_modules/@earendil-works/pi-ai/dist/providers/model-schema.d.ts).
+
 ## Composition
 
 ```text
@@ -372,13 +425,14 @@ route decoder or dispatcher for GraphQL.
 ### Dependency injection
 
 The [ResolverContext](graphql.ts) supplies the Chord context, an authorized
-session lookup, and the authorized session catalog. It contains no observation
-cache. Grats supplies it through its native context mechanism; see
+session lookup, the authorized session catalog, and the borrowed model source.
+It contains no observation cache. Grats supplies it through its native context
+mechanism; see
 [[packages/durable/api/node_modules/grats/llm-docs/docblock-tags/context.md]].
 
 Do not substitute ambient mutable state, patch generated resolver maps, or
-construct a new schema per request. Both session callbacks enforce the same
-access policy; lookup does not create missing sessions.
+construct a new schema per request. Deployment enforces access policy for all
+lookup and catalog callbacks; session lookup does not create missing sessions.
 
 ## Execution and observations
 
@@ -424,8 +478,8 @@ target. An opaque ID is not an access credential.
 Durable's `Cursor` is backend-owned continuation state. Pass the supplied limit
 and cursor to exactly one upstream page read. Project `items` to `nodes` and
 `next` to `pageInfo.next`; do not rescan, look ahead, or synthesize edge
-cursors. Round-trip the cursor JSON unchanged. Harness catalog listing is not
-paginated. Do not claim snapshot isolation between page requests.
+cursors. Round-trip the cursor JSON unchanged. Harness and model catalog lists
+are not paginated. Do not claim snapshot isolation between page requests.
 
 Source: upstream
 [page and scan contracts](../node_modules/@earendil-works/pi-durable/dist/types.d.ts).
@@ -444,33 +498,50 @@ empty configurations are not sufficient validation. See its
 [scalar implementation](../node_modules/graphql/type/definition.js) and
 [[packages/durable/api/node_modules/grats/llm-docs/docblock-tags/scalars.md]].
 
-Execution failures use GraphQL errors with these `extensions.code` values:
+The production implementation must classify execution failures into GraphQL
+errors with these `extensions.code` values:
 
-| Condition                                                 | Code                    |
-| --------------------------------------------------------- | ----------------------- |
-| Adapter validation failure or typed `StorageRequestError` | `BAD_REQUEST`           |
-| Missing mutation target                                   | `NOT_FOUND`             |
-| Typed `ConversationBusy`                                  | `CONVERSATION_BUSY`     |
-| Typed `SessionFailed`                                     | `SESSION_FAILED`        |
-| Otherwise                                                 | `INTERNAL_SERVER_ERROR` |
+| Condition                                                                        | Code                    |
+| -------------------------------------------------------------------------------- | ----------------------- |
+| Adapter validation failure or `StorageRequestError` from a rejected storage read | `BAD_REQUEST`           |
+| Missing mutation target                                                          | `NOT_FOUND`             |
+| Typed `ConversationBusy`                                                         | `CONVERSATION_BUSY`     |
+| Fatal `Storage.commit()` or `mintId()` failure, including `StorageRequestError`  | `INTERNAL_SERVER_ERROR` |
+| Typed `SessionFailed`                                                            | `SESSION_FAILED`        |
+| Otherwise                                                                        | `INTERNAL_SERVER_ERROR` |
 
 Missing lookup objects return null; storage failures do not masquerade as
 absence. Persisted task failures and blocked inspection states are data, not
 GraphQL execution failures.
 
-The resolver's `mapError` classifies by exception type, independently of the
-operation. Existing `ResolverError` instances pass through; `ReadAfterWrite` and
-untyped exceptions take the internal-error fallback. Never classify by message
-text. Preserve GraphQL error paths, null propagation, and partial results.
-Return safe messages, not internal exception messages, stacks, or causes. Keep
-diagnostics server-side without rewriting persisted failure data.
+The current resolver's `mapError` is provisional: it classifies by exception
+type alone and maps every `StorageRequestError` to `BAD_REQUEST`. Production
+must distinguish rejected storage reads from fatal commit/mint failures; the
+current implementation does not yet satisfy that requirement. Establish the
+failure's origin, not merely whether its GraphQL operation is a query or a
+mutation. A storage read inside a read-only `Harness.commit()` is still a read,
+not a `Storage.commit()` call.
+
+Upstream may propagate the original exception for the first fatal storage
+failure; classify it as `INTERNAL_SERVER_ERROR`, even when its class is
+`StorageRequestError`. Subsequent calls throw `SessionFailed` and map to
+`SESSION_FAILED`. Neither outcome proves that a mutation failed to commit or
+authorizes automatic replay.
+
+Existing `ResolverError` instances pass through; `ReadAfterWrite` and untyped
+exceptions take the internal-error fallback. Never classify by message text.
+Preserve GraphQL error paths, null propagation, and partial results. Return safe
+messages, not internal exception messages, stacks, or causes. Keep diagnostics
+server-side without rewriting persisted failure data.
 
 GraphQL request errors, execution errors, and HTTP transport errors are
 distinct. Use protocol-appropriate statuses; do not map every execution error to
 HTTP 500 or send REST problem documents in place of GraphQL execution results.
 
-Sources: [GraphQL error mapping](graphql.ts) and upstream
-[error types](../node_modules/@earendil-works/pi-durable/dist/errors.d.ts).
+Sources: [GraphQL error mapping](graphql.ts), upstream
+[error types](../node_modules/@earendil-works/pi-durable/dist/errors.d.ts), the
+[storage failure guard](../node_modules/@earendil-works/pi-durable/dist/session/session.js),
+and [[packages/durable/api/SPEC.md#HTTP errors]].
 
 ## HTTP transport
 
@@ -555,6 +626,23 @@ coercion, identity and independent reads, upstream cursor round trips,
 pagination boundaries, admission recovery, typed errors, and lifecycle behavior.
 Verify that reads do not enable scheduling and disconnects do not abort admitted
 work.
+
+Before production, add regression tests distinguishing rejected storage reads
+from fatal commit/mint failures of the same `StorageRequestError` class,
+including the original fatal exception and subsequent `SessionFailed`. The
+current operation-independent error tests do not establish this distinction.
+
+Model-catalog executable-schema tests cover:
+
+- Catalog reads without sessions and without invoking either session callback.
+- Dynamic source replacement, independent alias reads, upstream ordering,
+  auth-based availability, and empty catalogs.
+- Supported thinking levels, complete public metadata including cost tiers, and
+  native model identity.
+- Cancellation forwarding and failure classification, without empty-list
+  fallbacks.
+- The schema's metadata allowlist and decoded selections from secret-bearing
+  model fixtures; no sensitive fields or generic model JSON escape hatch.
 
 The current [coverage configuration](../package.json) targets `src/**/*.ts`; its
 percentage does not establish GraphQL coverage. Do not weaken thresholds or

@@ -105,6 +105,12 @@ enum MessageRole {
   user
 }
 
+"""Upstream ModelInputModality."""
+enum ModelInputModality {
+  image
+  text
+}
+
 enum ModelThinkingLevel {
   high
   low
@@ -745,6 +751,40 @@ type MessageDiagnostic {
 }
 
 """
+Public Pi AI chat-model metadata, not a persisted Node or selected default.
+"""
+type Model {
+  contextWindow: Float!
+  """Catalog prices, not accumulated message usage."""
+  cost: ModelCost!
+  """Native model ID; pair with provider. Becomes modelId in ModelRefInput."""
+  id: String!
+  input: [ModelInputModality!]!
+  maxTokens: Float!
+  name: String!
+  provider: String!
+  reasoning: Boolean!
+  """Pi AI getSupportedThinkingLevels(), not a default selection."""
+  thinkingLevels: [ModelThinkingLevel!]!
+}
+
+type ModelCost {
+  cacheRead: Float!
+  cacheWrite: Float!
+  input: Float!
+  output: Float!
+  tiers: [ModelCostTier!]
+}
+
+type ModelCostTier {
+  cacheRead: Float!
+  cacheWrite: Float!
+  input: Float!
+  inputTokensAbove: Float!
+  output: Float!
+}
+
+"""
 Output representation of upstream ModelRef; ModelRefInput is the mutation input type.
 """
 type ModelRef {
@@ -817,6 +857,13 @@ type Query {
   Order by ascending sessionId; listing does not create sessions or enable scheduling.
   """
   harnesses: [Harness!]!
+  """
+  Service-scoped available chat models in upstream order, without pagination.
+  Reads the deployment's current model source per call; never acquires a Harness,
+  refreshes the catalog, or starts generation. Availability does not guarantee
+  that a subsequent model request succeeds. An empty catalog is an empty list.
+  """
+  models: [Model!]!
   """
   Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
   """

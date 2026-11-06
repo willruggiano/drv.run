@@ -8,10 +8,11 @@ import { getSchema } from "./generated/graphql.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import type * as Chord from "@earendil-works/chord";
 import type * as AI from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 
 // TypeScript/Grats is the schema source of truth. The generated factory accepts
 // scalar implementations. Deployment supplies authorized persisted Harness lookup
-// and the session catalog. Listener, lifetime, and recovery policy remain external.
+// and the session/model catalogs. Listener, lifetime, and recovery policy remain external.
 // Upstream: pi-durable 1.4.0 dist/types.d.ts and dist/harness/types.d.ts.
 // Global identities, connection wrappers, and transport inputs remain adapter types.
 
@@ -47,13 +48,14 @@ import type * as AI from "@earendil-works/pi-ai";
  */
 
 // Session keys must never be reused for replacement storage.
-// Both callbacks enforce the same access policy.
+// Deployment enforces access policy for every lookup and catalog.
 // The caller owns Harnesses; storage owns pagination cursors.
 /** @gqlContext */
 export interface ResolverContext {
   readonly context: Chord.Context;
   readonly session: (sessionId: string) => Promise<Durable.Harness | undefined>;
   readonly sessions: () => Promise<readonly string[]>;
+  readonly models: () => Models;
 }
 
 type ErrorCode =
@@ -69,6 +71,11 @@ class ResolverError extends GraphQLError {
   }
 }
 
+// TODO(production): distinguish StorageRequestError from rejected storage reads
+// (BAD_REQUEST) from fatal Storage.commit()/mintId() failures (INTERNAL_SERVER_ERROR).
+// This type-only mapping is provisional; subsequent SessionFailed remains SESSION_FAILED.
+// A read inside Harness.commit() is still a read, not a Storage.commit() failure.
+// See SPEC.md "Validation and errors" and pi-durable/dist/session/session.js's storage guard.
 function mapError(error?: unknown): ResolverError {
   if (error instanceof ResolverError) return error;
   if (error instanceof SessionFailed) return new ResolverError("SESSION_FAILED");
@@ -928,6 +935,94 @@ export async function harnesses(ctx: ResolverContext): Promise<Harness[]> {
   } catch (error) {
     throw mapError(error);
   }
+}
+
+/**
+ * Service-scoped available chat models in upstream order, without pagination.
+ * Reads the deployment's current model source per call; never acquires a Harness,
+ * refreshes the catalog, or starts generation. Availability does not guarantee
+ * that a subsequent model request succeeds. An empty catalog is an empty list.
+ * @gqlQueryField
+ */
+export async function models(ctx: ResolverContext): Promise<Model[]> {
+  try {
+    const signal = ctx.context.abortSignal;
+    const available = await ctx
+      .models()
+      .getAvailable(undefined, signal === undefined ? undefined : { signal });
+    return available.map((model) => ({
+      id: model.id,
+      provider: model.provider,
+      name: model.name,
+      input: model.input,
+      reasoning: model.reasoning,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      cost: model.cost,
+      thinkingLevels: getSupportedThinkingLevels(model),
+    }));
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/**
+ * Public Pi AI chat-model metadata, not a persisted Node or selected default.
+ * @gqlType
+ */
+interface Model {
+  /** Native model ID; pair with provider. Becomes modelId in ModelRefInput. @gqlField */
+  readonly id: string;
+  /** @gqlField */
+  readonly provider: string;
+  /** @gqlField */
+  readonly name: string;
+  /** @gqlField */
+  readonly input: ReadonlyArray<ModelInputModality>;
+  /** @gqlField */
+  readonly reasoning: boolean;
+  /** @gqlField */
+  readonly contextWindow: Float;
+  /** @gqlField */
+  readonly maxTokens: Float;
+  /** Catalog prices, not accumulated message usage. @gqlField */
+  readonly cost: ModelCost;
+  /** Pi AI getSupportedThinkingLevels(), not a default selection. @gqlField */
+  readonly thinkingLevels: ReadonlyArray<ModelThinkingLevel>;
+}
+
+/**
+ * Upstream ModelInputModality.
+ * @gqlEnum
+ */
+type ModelInputModality = "text" | "image";
+
+/** @gqlType */
+interface ModelCost {
+  /** @gqlField */
+  readonly input: Float;
+  /** @gqlField */
+  readonly output: Float;
+  /** @gqlField */
+  readonly cacheRead: Float;
+  /** @gqlField */
+  readonly cacheWrite: Float;
+  /** @gqlField */
+  readonly tiers?: ReadonlyArray<ModelCostTier> | null;
+}
+
+/** @gqlType */
+interface ModelCostTier {
+  /** @gqlField */
+  readonly inputTokensAbove: Float;
+  /** @gqlField */
+  readonly input: Float;
+  /** @gqlField */
+  readonly output: Float;
+  /** @gqlField */
+  readonly cacheRead: Float;
+  /** @gqlField */
+  readonly cacheWrite: Float;
 }
 
 /**
