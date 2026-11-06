@@ -4,9 +4,11 @@
   nixConfig = {
     extra-substituters = [
       "https://drv-run.cachix.org"
+      "https://jj-gh.cachix.org"
     ];
     extra-trusted-public-keys = [
       "drv-run.cachix.org-1:WPTiRxMwsLWdwH7RqpbLzjXy/282xH6G4Qq/+igHVx0="
+      "jj-gh.cachix.org-1:N1uFBMDd9znlhDa68BRqLSXYzXXJ2+WHVuwxpGxCtDo="
     ];
   };
 
@@ -19,6 +21,9 @@
         nixpkgs.follows = "nixpkgs";
       };
     };
+    jj-gh.url = "github:mrjones2014/jj-gh/stable";
+    # jj-gh.inputs.nixpkgs.follows = "nixpkgs";  TODO: probably just use our
+    # binary cache instead of relying on jj-gh's?
     microvm = {
       url = "path:microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -34,7 +39,10 @@
         system: let
           pkgs = import inputs.nixpkgs {
             inherit system;
-            overlays = [self.overlays.default];
+            overlays = [
+              self.overlays.default
+              inputs.jj-gh.overlays.default
+            ];
           };
         in
           f pkgs
@@ -240,6 +248,7 @@
           gzip
           hunk
           jq
+          jj-gh
           jujutsu
           just
           less
