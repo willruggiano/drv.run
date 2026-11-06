@@ -10,6 +10,8 @@ import {
   SessionFailed,
   ConversationBusy,
 } from "@earendil-works/pi-durable";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createApi } from "durable-api";
 import { openHarness, serve } from "./fixtures.ts";
 
@@ -99,7 +101,13 @@ void test("strict route, method, query and JSON decoding precedes opening", asyn
     ["submit", { type: "input", content: [{ type: "text", text: "x", extra: true }] }],
     ["reset", { handoff: null }],
     ["compact", { instructions: 4 }],
-    ["configure", { cwd: "/tmp" }],
+    ["configure", { cwd: 42 }],
+    ["configure", { cwd: {} }],
+    ["configure", { extensions: [] }],
+    ["configure", { tools: [] }],
+    ["configure", { modelTools: [] }],
+    ["configure", { instructions: "no" }],
+    ["configure", { env: "local" }],
     ["configure", { model: { provider: "x" } }],
     ["configure", { model: { provider: "x", modelId: "y", extra: true } }],
     ["configure", { thinkingLevel: "unknown" }],
@@ -255,7 +263,10 @@ void test("serialized inspection diagnostics remain native JSON; serializer fail
 
 void test("body limits reject invalid deployment configuration", () => {
   for (const bodyLimit of [0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])
-    assert.throws(() => createApi({ openHarness: async () => undefined, bodyLimit }), RangeError);
+    assert.throws(
+      () => createApi({ models: createModels(), openHarness: async () => undefined, bodyLimit }),
+      RangeError,
+    );
 });
 
 void test("transport failure after SSE headers disconnects instead of sending a problem", async (t) => {
@@ -279,4 +290,253 @@ void test("asynchronous SSE write failure releases observation and closes transp
   });
   await assert.rejects(fetch(`${url}/c/1/watch`));
   write.mock.restore();
+});
+
+void test("model catalog projects public metadata without opening a Harness", async (t) => {
+  const models = createModels();
+  const faux = fauxProvider({
+    provider: "catalog",
+    models: [
+      {
+        id: "reasoner",
+        name: "Reasoner",
+        reasoning: true,
+        input: ["text", "image"],
+        contextWindow: 1000,
+        maxTokens: 100,
+        cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+      },
+      { id: "plain", name: "Plain", reasoning: false, input: ["text"] },
+    ],
+  });
+  const reasoner = faux.models[0];
+  reasoner.headers = { Authorization: "Bearer private", "x-api-key": "private" };
+  reasoner.baseUrl = "https://private.invalid/api";
+  reasoner.thinkingLevelMap = { minimal: null, xhigh: "extended", max: null };
+  reasoner.cost.tiers = [
+    { inputTokensAbove: 500, input: 5, output: 6, cacheRead: 7, cacheWrite: 8 },
+  ];
+  models.setProvider(faux.provider);
+  const refresh = t.mock.method(models, "refresh");
+  const { url } = await serve(t, {
+    models,
+    async openHarness() {
+      assert.fail("catalog reads must not open a Harness");
+    },
+  });
+  const response = await fetch(new URL("/api/models", url));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/json");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await response.json(), [
+    {
+      id: "reasoner",
+      provider: "catalog",
+      name: "Reasoner",
+      input: ["text", "image"],
+      reasoning: true,
+      contextWindow: 1000,
+      maxTokens: 100,
+      cost: {
+        input: 1,
+        output: 2,
+        cacheRead: 3,
+        cacheWrite: 4,
+        tiers: [{ inputTokensAbove: 500, input: 5, output: 6, cacheRead: 7, cacheWrite: 8 }],
+      },
+      thinkingLevels: ["off", "low", "medium", "high", "xhigh"],
+    },
+    {
+      id: "plain",
+      provider: "catalog",
+      name: "Plain",
+      input: ["text"],
+      reasoning: false,
+      contextWindow: 128000,
+      maxTokens: 16384,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      thinkingLevels: ["off"],
+    },
+  ]);
+  assert.equal(refresh.mock.callCount(), 0);
+  assert.equal(faux.state.callCount, 0);
+});
+
+void test("catalog observes current authentication, provider filtering, and replacement model sources", async (t) => {
+  let models = createModels();
+  const faux = fauxProvider({ models: [{ id: "allowed" }, { id: "filtered" }] });
+  let authenticated = false;
+  models.setProvider({
+    ...faux.provider,
+    auth: {
+      apiKey: {
+        name: "Test auth",
+        async check() {
+          return authenticated ? { type: "api_key" } : undefined;
+        },
+        async resolve() {
+          assert.fail("availability uses check, not request authentication");
+        },
+      },
+    },
+    filterModels: (entries) => entries.filter((model) => model.id === "allowed"),
+  });
+  let reads = 0;
+  const { url } = await serve(t, {
+    models: () => {
+      reads++;
+      return models;
+    },
+    async openHarness() {
+      assert.fail("catalog reads must not open a Harness");
+    },
+  });
+  const catalog = new URL("/api/models", url);
+  const empty = await fetch(catalog);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(await empty.json(), []);
+  authenticated = true;
+  const available = await fetch(catalog);
+  assert.equal(available.status, 200);
+  const entries = await available.json();
+  assert(Array.isArray(entries));
+  assert.deepEqual(
+    entries.map((model) => model.id),
+    ["allowed"],
+  );
+  authenticated = false;
+  assert.deepEqual(await (await fetch(catalog)).json(), []);
+  models = createModels();
+  models.setProvider(fauxProvider({ provider: "replacement", models: [{ id: "new" }] }).provider);
+  const replacement = await fetch(catalog);
+  assert.equal(replacement.status, 200);
+  const replaced = await replacement.json();
+  assert(Array.isArray(replaced));
+  assert.deepEqual(
+    replaced.map(({ id, provider }) => ({ id, provider })),
+    [{ id: "new", provider: "replacement" }],
+  );
+  assert.equal(reads, 4);
+});
+
+void test("model route rejects methods, queries, bodies, and session scopes before reading the catalog", async (t) => {
+  const { url } = await serve(t, {
+    models: () => {
+      assert.fail("invalid requests must not read the catalog");
+    },
+    async openHarness() {
+      assert.fail("invalid requests must not open a Harness");
+    },
+  });
+  const catalog = new URL("/api/models", url);
+  for (const method of ["POST", "PUT", "DELETE", "OPTIONS"]) {
+    const response = await fetch(catalog, { method });
+    assert.equal(response.headers.get("allow"), "GET");
+    await problem(response, 405, {});
+  }
+  const head = await fetch(catalog, { method: "HEAD" });
+  assert.equal(head.status, 405);
+  assert.equal(head.headers.get("allow"), "GET");
+  for (const query of ["provider=test", "unknown=1", "limit=1", "x=1&x=2"])
+    await problem(await fetch(`${catalog.href}?${query}`), 400, {});
+  for (const path of ["/api/models/", "/api/models/missing"])
+    await problem(await fetch(new URL(path, url)), 404, {});
+  await problem(await fetch(`${url}/models`), 404);
+  await problem(await fetch(`${url}/c/1/models`), 404, { sessionId: "test", conversationId: 1 });
+  const response = await new Promise<{ status: number | undefined; body: unknown }>(
+    (resolve, reject) => {
+      const request = httpRequest(
+        catalog,
+        { method: "GET", headers: { "content-length": 1 } },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk) => chunks.push(chunk));
+          response.on("end", () =>
+            resolve({
+              status: response.statusCode,
+              body: JSON.parse(Buffer.concat(chunks).toString()),
+            }),
+          );
+        },
+      );
+      request.on("error", reject);
+      request.end("x");
+    },
+  );
+  assert.deepEqual(response, {
+    status: 400,
+    body: { type: "about:blank", title: "Bad Request", status: 400 },
+  });
+});
+
+void test("model source and provider failures return generic problems without session identity", async (t) => {
+  const models = createModels();
+  const faux = fauxProvider();
+  models.setProvider({
+    ...faux.provider,
+    getModels() {
+      throw new Error("private provider data");
+    },
+  });
+  let failSource = true;
+  const { url } = await serve(t, {
+    models: () => {
+      if (failSource) throw new SessionFailed(new Error("private source data"));
+      return models;
+    },
+    async openHarness() {
+      assert.fail("catalog reads must not open a Harness");
+    },
+  });
+  await problem(await fetch(new URL("/api/models", url)), 500, {});
+  failSource = false;
+  await problem(await fetch(new URL("/api/models", url)), 500, {});
+});
+
+void test("disconnect cancels an outstanding model availability check", async (t) => {
+  const models = createModels();
+  const faux = fauxProvider();
+  const started = Promise.withResolvers<AbortSignal>();
+  const aborted = Promise.withResolvers<void>();
+  models.setProvider({
+    ...faux.provider,
+    auth: {
+      apiKey: {
+        name: "Pending auth",
+        async check({ signal }) {
+          started.resolve(signal);
+          await new Promise<void>((resolve) =>
+            signal.addEventListener(
+              "abort",
+              () => {
+                aborted.resolve();
+                resolve();
+              },
+              { once: true },
+            ),
+          );
+          signal.throwIfAborted();
+          assert.fail("request must be aborted");
+        },
+        async resolve() {
+          assert.fail("availability uses check");
+        },
+      },
+    },
+  });
+  const { url } = await serve(t, {
+    models,
+    async openHarness() {
+      assert.fail("catalog reads must not open a Harness");
+    },
+  });
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const request = fetch(new URL("/api/models", url), { signal: controller.signal });
+  const signal = await started.promise;
+  assert.equal(signal.aborted, false);
+  controller.abort();
+  await assert.rejects(request, { name: "AbortError" });
+  await aborted.promise;
+  assert.equal(signal.aborted, true);
 });

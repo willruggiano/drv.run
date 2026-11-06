@@ -213,6 +213,43 @@ void test("configuration omission, replacement, clearing, and current/historical
   assert.equal(invisible.status, 500);
 });
 
+void test("cwd configuration preserves literal values, omission, and clearing in watch snapshots", async (t) => {
+  const { harness, root } = await openHarness(t);
+  const { url } = await serve(t, { openHarness: async () => harness });
+  const base = `${url}/c/${root.id}`;
+  const iterator = events(await fetch(`${base}/watch`));
+  try {
+    const initial = await iterator.next();
+    assert(!initial.done && initial.value.type === "snapshot");
+    const original = initial.value.value.docs["pi.agent"];
+    assert(original);
+    assert.equal(Object.hasOwn(original, "cwd"), false);
+
+    // The API must neither resolve these against its own cwd nor probe the filesystem.
+    for (const cwd of ["/missing/../literal path/", "relative/path", ""]) {
+      assert.equal(await post(`${base}/configure`, { cwd }), null);
+      const changed = await iterator.next();
+      assert(!changed.done && changed.value.type === "snapshot");
+      assert.deepEqual(changed.value.value.docs["pi.agent"], { ...original, cwd });
+    }
+    await post(`${base}/configure`, { thinkingLevel: "high" });
+    const retained = await iterator.next();
+    assert(!retained.done && retained.value.type === "snapshot");
+    assert.deepEqual(retained.value.value.docs["pi.agent"], {
+      ...original,
+      cwd: "",
+      thinkingLevel: "high",
+    });
+    assert.equal(await post(`${base}/configure`, { cwd: null }), null);
+    const cleared = await iterator.next();
+    assert(!cleared.done && cleared.value.type === "snapshot");
+    assert.deepEqual(cleared.value.value.docs["pi.agent"], { ...original, thinkingLevel: "high" });
+    assert.equal((await root.agent(context)).cwd, undefined);
+  } finally {
+    await iterator.return(undefined);
+  }
+});
+
 void test("compaction admission returns a task ID and scans preserve terminal records", async (t) => {
   const { harness, root, faux } = await openHarness(t);
   faux.setResponses([

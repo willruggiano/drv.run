@@ -16,8 +16,11 @@ import {
 } from "@earendil-works/pi-durable";
 import { createApi, type ApiOptions } from "durable-api";
 
-export async function serve(t: TestContext, options: ApiOptions) {
-  const api = createApi(options);
+export async function serve(
+  t: TestContext,
+  options: Omit<ApiOptions, "models"> & { models?: ApiOptions["models"] },
+) {
+  const api = createApi({ models: createModels(), ...options });
   const server = createServer(api.handle);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");

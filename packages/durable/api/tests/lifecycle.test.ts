@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import type { Harness } from "@earendil-works/pi-durable";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { createApi } from "durable-api";
 import { openHarness, serve } from "./fixtures.ts";
 
@@ -107,6 +108,7 @@ void test("shutdown attempts every Harness and reports close failures", async (t
     throw error;
   });
   const api = createApi({
+    models: createModels(),
     openHarness: async (id) => (id === "first" ? first.harness : second.harness),
   });
   const server = createServer(api.handle).listen(0, "127.0.0.1");

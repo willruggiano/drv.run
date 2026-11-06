@@ -44,7 +44,7 @@ async function page<T>(result: Promise<Page<T, Cursor>>) {
 export async function execute(
   harness: Harness,
   conversationId: ConversationId | undefined,
-  request: Request,
+  request: Exclude<Request, { operation: "models" }>,
   context: Context,
 ): Promise<{ value: unknown } | { watch: ConversationWatch }> {
   switch (request.operation) {

@@ -58,6 +58,7 @@ const content = Type.Union([
 const boolean = Type.Optional(Type.Boolean());
 
 const queries = {
+  models: object({}),
   inspect: object({}),
   scanConversations: object({
     ...pagination,
@@ -101,6 +102,7 @@ const bodies = {
   reset: object({ handoff: Type.Optional(Type.String()) }),
   compact: object({ instructions: Type.Optional(Type.String()) }),
   configure: object({
+    cwd: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     model: Type.Optional(
       Type.Union([object({ provider: Type.String(), modelId: Type.String() }), Type.Null()]),
     ),
@@ -139,11 +141,16 @@ export async function decode(
   request: IncomingMessage,
   url: URL,
   operation: string,
-  conversation: boolean,
+  scope: "service" | "session" | "conversation",
   bodyLimit: number,
 ): Promise<Query | Body> {
-  if (conversation === ["inspect", "resume", "scanConversations", "scanTasks"].includes(operation))
-    throw new Problem(404);
+  const expected =
+    operation === "models"
+      ? "service"
+      : ["inspect", "resume", "scanConversations", "scanTasks"].includes(operation)
+        ? "session"
+        : "conversation";
+  if (scope !== expected) throw new Problem(404);
   if (Object.hasOwn(queries, operation)) {
     if (request.method !== "GET") throw new Problem(405, "GET");
     await noBody(request);
