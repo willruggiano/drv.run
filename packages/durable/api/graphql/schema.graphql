@@ -8,6 +8,12 @@ Upstream ConversationId: a nonnegative safe-integer JSON number in
 scalar ConversationId
 
 """
+Backend-owned JSON continuation state. Round-trip it unchanged to the same
+upstream scan; storage validates it. Null means no continuation.
+"""
+scalar Cursor
+
+"""
 Upstream EntryId; the same numeric range and representation as ConversationId.
 """
 scalar EntryId
@@ -21,11 +27,6 @@ scalar JsonObject
 A finite JSON value, including null; object keys and payloads are preserved.
 """
 scalar JsonValue
-
-"""
-An unmodified pi-ai Message JSON object, including all provider-specific fields.
-"""
-scalar Message
 
 """
 Upstream SubmissionId; the same numeric range and representation as ConversationId.
@@ -42,19 +43,18 @@ Upstream TelemetryCarrier: a JSON object with string keys and string values.
 """
 scalar TelemetryCarrier
 
-"""
-InputSubmissionDraft.content: a string or an ordered array of text/image blocks.
-TextContent: {type: "text", text: string, textSignature?: string}.
-ImageContent: {type: "image", data: base64 string, mimeType: string}.
-Validate the complete upstream shape without coercion or dropping extra fields.
-"""
-scalar UserInput
-
 enum BlockedReason {
   migration_failed
   missing_task
   restart_limit
   task_too_old
+}
+
+enum ContentType {
+  image
+  text
+  thinking
+  toolCall
 }
 
 """GraphQL name for ContextEdit["action"]."""
@@ -98,6 +98,13 @@ enum JoinPolicy {
   failFast
 }
 
+enum MessageRole {
+  assistant
+  system
+  toolResult
+  user
+}
+
 enum ModelThinkingLevel {
   high
   low
@@ -108,9 +115,25 @@ enum ModelThinkingLevel {
   xhigh
 }
 
+enum NestedToolCallStatus {
+  error
+  ok
+  unfinished
+}
+
 enum ScanOrder {
   ascending
   descending
+}
+
+enum StopReason {
+  aborted
+  deferred
+  error
+  length
+  pending
+  stop
+  toolUse
 }
 
 """GraphQL name for SubmissionRecord["status"]."""
@@ -161,15 +184,28 @@ enum TaskStateStatus {
   waiting
 }
 
+union AssistantContent = TextContent | ThinkingContent | ToolCall
+
+"""
+Upstream pi-ai message variants. String/array content stays distinct through
+typed wrappers; JSON maps and application payloads remain JSON.
+"""
+union Message = AssistantMessage | SystemMessage | ToolResultMessage | UserMessage
+
+union SystemMessageContent = StringContent | TextContentList
+
+union UserContent = ImageContent | TextContent
+
+union UserMessageContent = StringContent | UserContentList
+
 """
 Globally refetchable identity. IDs encode object type, persisted session identity,
 and the durable ID where applicable. They survive Harness reopen and are never
 reused for replacement storage. An inherited entry has the same ID in every
 conversation. Clients must not decode IDs.
 
-Repeated occurrences of the same ID within a query have equal field values.
-Resolvers must reuse request-scoped observations; a mutating Harness must not
-produce conflicting versions through node(), connections, and inspection.
+Each resolver reads independently. Repeated IDs do not imply a shared snapshot
+across node(), connections, or inspection while the Harness is mutating.
 """
 interface Node {
   id: ID!
@@ -200,7 +236,7 @@ input AgentChange {
   """
   Omitted: unchanged. Explicit null: clear override. Value: replace override.
   """
-  model: ModelRef
+  model: ModelRefInput
   """
   Omitted: unchanged. Explicit null: clear override. Value: replace override.
   """
@@ -237,6 +273,12 @@ input EntryQuery {
   order: ScanOrder
 }
 
+input ImageContentInput {
+  """Base64-encoded image bytes."""
+  data: String!
+  mimeType: String!
+}
+
 input InputEntry {
   """Optional JSON payload; explicit null is allowed."""
   data: JsonValue
@@ -252,7 +294,7 @@ input InputSubmissionDraft {
   whenBusy: InputSubmissionDraftWhenBusy
 }
 
-input ModelRef {
+input ModelRefInput {
   modelId: String!
   provider: String!
 }
@@ -288,6 +330,23 @@ input TaskQuery {
   status: TaskStateStatus
 }
 
+input TextContentInput {
+  text: String!
+  """Omit when absent; explicit null is invalid."""
+  textSignature: String
+}
+
+"""Exactly one representation: plain text or ordered text/image blocks."""
+input UserInput @oneOf {
+  blocks: [UserInputBlock!]
+  text: String
+}
+
+input UserInputBlock @oneOf {
+  image: ImageContentInput
+  text: TextContentInput
+}
+
 """
 Successful void result; only the optional correlation value is returned.
 """
@@ -309,16 +368,29 @@ type Agent {
   cwd: String
   """Additional instructions, not the rendered extension prompt sections."""
   instructions: String
-  model: AgentModel
+  model: ModelRef
   thinkingLevel: ModelThinkingLevel!
 }
 
-"""
-Output representation of upstream ModelRef; ModelRef is the mutation input type.
-"""
-type AgentModel {
-  modelId: String!
+type AssistantMessage {
+  api: String!
+  content: [AssistantContent!]!
+  deferred: DeferredHandle
+  diagnostics: [MessageDiagnostic!]
+  durationMs: Float
+  endTurn: Boolean
+  errorMessage: String
+  model: String!
   provider: String!
+  providerThinkingLevel: String
+  rawStopReason: String
+  responseId: String
+  responseModel: String
+  role: MessageRole!
+  stopReason: StopReason!
+  thinkingLevel: ModelThinkingLevel
+  timestamp: Float!
+  usage: Usage!
 }
 
 type CompactPayload {
@@ -370,7 +442,7 @@ type ConversationRecord implements Node {
   """
   Fork-aware history, including inherited entries. Default order is descending.
   """
-  entries(after: String, first: Int!, query: EntryQuery! = {}): EntryRecordConnection!
+  entries(cursor: Cursor, limit: Int!, query: EntryQuery! = {}): EntryRecordConnection!
   harness: Harness!
   id: ID!
   owner: ConversationRecordOwner
@@ -387,14 +459,12 @@ type ConversationRecord implements Node {
   submissionByRequest(requestId: String!): SubmissionRecord
 }
 
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
 type ConversationRecordConnection {
-  edges: [ConversationRecordEdge!]!
+  nodes: [ConversationRecord!]!
   pageInfo: PageInfo!
-}
-
-type ConversationRecordEdge {
-  cursor: String!
-  node: ConversationRecord!
 }
 
 """GraphQL name for NonNullable<ConversationRecord["owner"]>."""
@@ -407,6 +477,24 @@ type ConversationRecordOwner {
 type ConversationRecordParent {
   at: EntryId!
   conversationId: ConversationId!
+}
+
+type DeferredHandle {
+  api: String!
+  data: JsonValue
+  expiresAt: Float
+  id: String!
+  modelId: String!
+  pollAfterMs: Float
+  provider: String!
+}
+
+type DiagnosticError {
+  """Upstream string or number code."""
+  code: JsonValue
+  message: String!
+  name: String
+  stack: String
 }
 
 type EntryRecord implements Node {
@@ -423,14 +511,12 @@ type EntryRecord implements Node {
   model: [Message!]
 }
 
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
 type EntryRecordConnection {
-  edges: [EntryRecordEdge!]!
+  nodes: [EntryRecord!]!
   pageInfo: PageInfo!
-}
-
-type EntryRecordEdge {
-  cursor: String!
-  node: EntryRecord!
 }
 
 type Harness implements Node {
@@ -446,20 +532,10 @@ type Harness implements Node {
   """
   Tx.scanConversations(); default order is ascending, or the cursor's order.
   """
-  scanConversations(after: String, first: Int!, query: ConversationQuery! = {}): ConversationRecordConnection!
+  scanConversations(cursor: Cursor, limit: Int!, query: ConversationQuery! = {}): ConversationRecordConnection!
   """Tx.scanTasks(); default order is ascending, or the cursor's order."""
-  scanTasks(after: String, first: Int!, query: TaskQuery! = {}): TaskRecordConnection!
+  scanTasks(cursor: Cursor, limit: Int!, query: TaskQuery! = {}): TaskRecordConnection!
   sessionId: String!
-}
-
-type HarnessConnection {
-  edges: [HarnessEdge!]!
-  pageInfo: PageInfo!
-}
-
-type HarnessEdge {
-  cursor: String!
-  node: Harness!
 }
 
 type HarnessInspection {
@@ -467,6 +543,27 @@ type HarnessInspection {
   """Queued and placed submissions, in upstream ID order."""
   submissions: [SubmissionRecord!]!
   tasks: [TaskInspection!]!
+}
+
+type ImageContent {
+  data: String!
+  mimeType: String!
+  type: ContentType!
+}
+
+type MessageDiagnostic {
+  details: JsonObject
+  error: DiagnosticError
+  timestamp: Float!
+  type: String!
+}
+
+"""
+Output representation of upstream ModelRef; ModelRefInput is the mutation input type.
+"""
+type ModelRef {
+  modelId: String!
+  provider: String!
 }
 
 type Mutation {
@@ -501,30 +598,26 @@ type Mutation {
   submit(input: SubmitInput!): SubmitPayload
 }
 
+type NestedToolCallRecord {
+  arguments: JsonObject
+  argumentsBytes: Float
+  durationMs: Float
+  error: String
+  id: String!
+  name: String!
+  status: NestedToolCallStatus!
+}
+
+type NestedToolCalls {
+  calls: [NestedToolCallRecord!]!
+  complete: Boolean!
+}
+
 """
-Forward-only Relay connections: first is a nonnegative Int, including zero;
-after is an opaque edge cursor. Slice strictly after its edge, then take first.
-Ordering is stable across pages. Omitted order inherits the cursor's order or
-the operation's initial default. Conflicting order or foreign/malformed cursors
-are BAD_REQUEST. Cursors bind connection, session and conversation where applicable,
-filters, and effective order, but not page size.
-
-Every edge must have its own resumable cursor, including the final edge. A
-Durable Page.next is a page continuation, not a cursor to copy onto every edge;
-the adapter must retain enough continuation/position information for any edge.
-The HTTP API's cursor encoding is not assumed to be a Relay edge cursor.
-
-hasNextPage reflects whether more matching edges remain, including for first: 0;
-use lookahead rather than assuming a full page means more results. For forward
-pagination, hasPreviousPage may be false if prior edges cannot be determined
-efficiently. startCursor/endCursor equal the first/last returned edge cursor,
-or null when edges is empty. Backward pagination is intentionally not exposed.
+Upstream page continuation. Null means the backend returned no next cursor.
 """
 type PageInfo {
-  endCursor: String
-  hasNextPage: Boolean!
-  hasPreviousPage: Boolean!
-  startCursor: String
+  next: Cursor
 }
 
 type Query {
@@ -536,9 +629,8 @@ type Query {
   List accessible persisted sessions from the deployment's catalog, not the cache
   of open Harness instances. Durable does not provide a cross-session catalog.
   Order by ascending sessionId; listing does not create sessions or enable scheduling.
-  Cursors bind the catalog, access scope, and ordering, not an individual session.
   """
-  harnesses(after: String, first: Int!): HarnessConnection!
+  harnesses: [Harness!]!
   """
   Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
   """
@@ -551,6 +643,10 @@ type ResetPayload {
 
 type ResumePayload {
   clientMutationId: String
+}
+
+type StringContent {
+  text: String!
 }
 
 """
@@ -581,6 +677,17 @@ type SubmitPayload {
   node(id) reads its receipt; this payload is not itself the submission Node.
   """
   submissionId: ID!
+}
+
+type SystemMessage {
+  content: SystemMessageContent!
+  role: MessageRole!
+  """Named prompt sections; null values remove a section."""
+  sections: JsonObject
+  """Upstream wall-clock milliseconds."""
+  timestamp: Float!
+  toolsAdded: [Tool!]
+  toolsRemoved: [ToolReference!]
 }
 
 type TaskInspection {
@@ -650,14 +757,12 @@ type TaskRecord implements Node {
   version: Float!
 }
 
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
 type TaskRecordConnection {
-  edges: [TaskRecordEdge!]!
+  nodes: [TaskRecord!]!
   pageInfo: PageInfo!
-}
-
-type TaskRecordEdge {
-  cursor: String!
-  node: TaskRecord!
 }
 
 """
@@ -673,4 +778,89 @@ type TaskState {
   policy: JoinPolicy
   status: TaskStateStatus!
   until: Float
+}
+
+type TextContent {
+  text: String!
+  textSignature: String
+  type: ContentType!
+}
+
+type TextContentList {
+  blocks: [TextContent!]!
+}
+
+type ThinkingContent {
+  redacted: Boolean
+  thinking: String!
+  thinkingSignature: String
+  type: ContentType!
+}
+
+type Tool {
+  """
+  Upstream false or provider-specific constrained-sampling configuration.
+  """
+  constrainedSampling: JsonValue
+  description: String!
+  name: String!
+  """JSON Schema for tool arguments."""
+  parameters: JsonObject!
+}
+
+type ToolCall {
+  arguments: JsonObject!
+  argumentsError: String
+  id: String!
+  name: String!
+  namespace: String
+  thoughtSignature: String
+  type: ContentType!
+}
+
+type ToolReference {
+  name: String!
+}
+
+type ToolResultMessage {
+  content: [UserContent!]!
+  """Unmodified application payload."""
+  details: JsonValue
+  durationMs: Float
+  isError: Boolean!
+  nestedCalls: NestedToolCalls
+  role: MessageRole!
+  timestamp: Float!
+  toolCallId: String!
+  toolName: String!
+  usage: Usage
+}
+
+type Usage {
+  cacheRead: Float!
+  cacheWrite: Float!
+  cacheWrite1h: Float
+  cost: UsageCost!
+  input: Float!
+  output: Float!
+  reasoning: Float
+  totalTokens: Float!
+}
+
+type UsageCost {
+  cacheRead: Float!
+  cacheWrite: Float!
+  input: Float!
+  output: Float!
+  total: Float!
+}
+
+type UserContentList {
+  blocks: [UserContent!]!
+}
+
+type UserMessage {
+  content: UserMessageContent!
+  role: MessageRole!
+  timestamp: Float!
 }

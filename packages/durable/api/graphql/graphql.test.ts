@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { GraphQLError, graphql, isScalarType, parseValue, validateSchema } from "graphql";
+import {
+  GraphQLError,
+  graphql,
+  isScalarType,
+  isUnionType,
+  isInputObjectType,
+  parseValue,
+  validateSchema,
+} from "graphql";
+import type * as AI from "@earendil-works/pi-ai";
 import {
   BACKGROUND_CONTEXT,
   awaitWithContext,
@@ -20,29 +29,40 @@ import {
   type HarnessInspection,
   type EntryRecord,
   type TaskId,
+  type Cursor,
+  type TaskQuery,
+  type SubmissionId,
 } from "@earendil-works/pi-durable";
 import { createSchema, type ResolverContext } from "./graphql.ts";
 
 const execution = BACKGROUND_CONTEXT;
 const schema = createSchema();
 type Connection<T> = {
-  edges: Array<{ cursor: string; node: T }>;
-  pageInfo: {
-    hasNextPage: boolean;
-    hasPreviousPage: boolean;
-    startCursor: string | null;
-    endCursor: string | null;
-  };
+  nodes: T[];
+  pageInfo: { next: Cursor | null };
 };
 type Identity = { id: string; durableId: number };
-const pageFields = "pageInfo { hasNextPage hasPreviousPage startCursor endCursor }";
+const pageFields = "pageInfo { next }";
+
+const userMessageFields = `__typename ... on UserMessage {
+  role timestamp content { __typename ... on StringContent { text }
+    ... on UserContentList { blocks { __typename ... on TextContent { type text textSignature } ... on ImageContent { type data mimeType } } }
+  }
+}`;
+const messageIdentity = `__typename
+  ... on SystemMessage { role timestamp }
+  ... on UserMessage { role timestamp }
+  ... on AssistantMessage { role timestamp }
+  ... on ToolResultMessage { role timestamp }
+`;
 
 async function fixture(t: TestContext, sessionId = "test") {
   const models = createModels();
   const faux = fauxProvider({ models: [{ id: "test", reasoning: true }] });
   models.setProvider(faux.provider);
+  const storage = new MemoryStorage();
   const instance = await Harness.open(
-    new MemoryStorage(),
+    storage,
     {
       models,
       registry: createRegistry(),
@@ -56,10 +76,8 @@ async function fixture(t: TestContext, sessionId = "test") {
   });
   function request(overrides: Partial<ResolverContext> = {}): ResolverContext {
     return {
-      execution,
-      scope: "catalog:user",
-      observations: new Map(),
-      lookup: async (id) => (id === sessionId ? instance : undefined),
+      context: execution,
+      session: async (id) => (id === sessionId ? instance : undefined),
       sessions: async () => [sessionId],
       ...overrides,
     };
@@ -87,6 +105,7 @@ async function fixture(t: TestContext, sessionId = "test") {
     { session: sessionId },
   );
   return {
+    storage,
     instance,
     root,
     faux,
@@ -100,36 +119,40 @@ async function fixture(t: TestContext, sessionId = "test") {
 
 void test("generated schema remains valid", () => {
   assert.deepEqual(validateSchema(schema), []);
+  const message = schema.getType("Message");
+  assert(isUnionType(message));
+  assert.deepEqual(
+    message
+      .getTypes()
+      .map((type) => type.name)
+      .sort(),
+    ["AssistantMessage", "SystemMessage", "ToolResultMessage", "UserMessage"],
+  );
+  for (const name of ["UserInput", "UserInputBlock"]) {
+    const input = schema.getType(name);
+    assert(isInputObjectType(input));
+    assert.equal(input.isOneOf, true);
+  }
 });
 
-void test("catalog pagination, authorized lookup, missing nodes, and in-flight reuse", async (t) => {
+void test("catalog list, authorized sessions, missing nodes, and independent reads", async (t) => {
   const f = await fixture(t);
-  const lookup = t.mock.fn(async (id: string) => (id === "test" ? f.instance : undefined));
-  const ctx = () => f.request({ lookup, sessions: async () => ["z", "test", "a / 雪"] });
-  const list = `query($first: Int!, $after: String) { harnesses(first: $first, after: $after) { edges { cursor node { id sessionId } } ${pageFields} } }`;
-  const empty = await f.success<{ harnesses: Connection<never> }>(list, { first: 0 }, ctx());
-  assert.deepEqual(empty.harnesses.edges, []);
-  assert.equal(empty.harnesses.pageInfo.hasNextPage, true);
-  const first = await f.success<{ harnesses: Connection<{ id: string; sessionId: string }> }>(
+  const session = t.mock.fn(async (id: string) => (id === "test" ? f.instance : undefined));
+  const ctx = () => f.request({ session, sessions: async () => ["z", "test", "a / 雪"] });
+  const list = `{ harnesses { id sessionId } }`;
+  const all = await f.success<{ harnesses: Array<{ id: string; sessionId: string }> }>(
     list,
-    { first: 2 },
+    {},
     ctx(),
   );
   assert.deepEqual(
-    first.harnesses.edges.map((edge) => edge.node.sessionId),
-    ["a / 雪", "test"],
+    all.harnesses.map((item) => item.sessionId),
+    ["a / 雪", "test", "z"],
   );
-  assert.equal(lookup.mock.callCount(), 0);
-  const tail = await f.success<typeof first>(
-    list,
-    { first: 5, after: first.harnesses.edges[0]!.cursor },
-    ctx(),
-  );
-  assert.deepEqual(
-    tail.harnesses.edges.map((edge) => edge.node.sessionId),
-    ["test", "z"],
-  );
-  assert.equal(tail.harnesses.pageInfo.hasNextPage, false);
+  assert.equal(session.mock.callCount(), 0);
+  assert.deepEqual(await f.success(list, {}, f.request({ sessions: async () => [] })), {
+    harnesses: [],
+  });
   const values = await f.success<{
     a: { id: string };
     b: { id: string };
@@ -143,27 +166,21 @@ void test("catalog pagination, authorized lookup, missing nodes, and in-flight r
   assert.deepEqual(values.a, values.b);
   assert.deepEqual(values.a, values.node);
   assert.equal(values.absent, null);
-  assert.equal(lookup.mock.callCount(), 2);
+  assert.equal(session.mock.callCount(), 4);
   assert.deepEqual(
     await f.success(
       `query($id: ID!) { node(id: $id) { id } }`,
       { id: f.harnessId },
-      f.request({ lookup: async () => undefined }),
+      f.request({ session: async () => undefined }),
     ),
     { node: null },
   );
-  const denied = await f.run(
-    list,
-    { first: 1, after: first.harnesses.edges[0]!.cursor },
-    f.request({ scope: "other-user" }),
-  );
-  assert.equal(denied.errors?.[0]?.extensions.code, "BAD_REQUEST");
   assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
 });
 
 void test("resolved configuration, omission, clearing, and serial mutation fields", async (t) => {
   const f = await fixture(t);
-  const read = `{ harness(sessionId: "test") { conversation(id: 1) { agent { cwd model { provider modelId } thinkingLevel instructions } } } }`;
+  const read = `{ harness(sessionId: "test") { conversation(id: 1) { agent { cwd model { ... on ModelRef { provider modelId } } thinkingLevel instructions } } } }`;
   type Settings = {
     harness: {
       conversation: {
@@ -199,6 +216,14 @@ void test("resolved configuration, omission, clearing, and serial mutation field
   });
   value = (await f.success<Settings>(read)).harness.conversation.agent;
   assert.deepEqual(value, { cwd: null, model: null, thinkingLevel: "off", instructions: null });
+  await f.success(
+    `mutation($id: ID!, $model: ModelRefInput!) {
+      configure(input: { conversationId: $id, change: { model: $model } }) { clientMutationId }
+    }`,
+    { id: f.conversationId, model: { provider: "faux", modelId: "test" } },
+  );
+  value = (await f.success<Settings>(read)).harness.conversation.agent;
+  assert.deepEqual(value.model, { provider: "faux", modelId: "test" });
   await f.root.configure({ instructions: "extra" }, execution);
   await f.success(
     `mutation($id: ID!) {
@@ -213,7 +238,7 @@ void test("resolved configuration, omission, clearing, and serial mutation field
   assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
 });
 
-void test("entry edge cursors resume at any edge across backend pages, in either order", async (t) => {
+void test("entry connections return exactly one upstream page and its continuation", async (t) => {
   const f = await fixture(t);
   const records: EntryRecord[] = [];
   for (let i = 0; i < 132; i++) {
@@ -224,58 +249,78 @@ void test("entry edge cursors resume at any edge across backend pages, in either
       ),
     );
   }
-  const query = `query($first: Int!, $after: String, $filter: EntryQuery!) { harness(sessionId: "test") { conversation(id: 1) { entries(first: $first, after: $after, query: $filter) { edges { cursor node { id durableId data } } ${pageFields} } } } }`;
+  const expected = await f.root.entries({ order: "ascending" }, 130, undefined, execution);
+  const scan = t.mock.method(f.storage, "scanEntries");
+  const query = `query($limit: Int!, $cursor: Cursor, $filter: EntryQuery!) { harness(sessionId: "test") { conversation(id: 1) { entries(limit: $limit, cursor: $cursor, query: $filter) { nodes { id durableId data } ${pageFields} } } } }`;
   type Result = { harness: { conversation: { entries: Connection<Identity & { data: number }> } } };
-  async function page(first: number, filter: Record<string, unknown> = {}, after?: string) {
-    return (await f.success<Result>(query, { first, filter, after })).harness.conversation.entries;
+  async function page(limit: number, filter: Record<string, unknown> = {}, cursor?: Cursor | null) {
+    return (await f.success<Result>(query, { limit, filter, cursor })).harness.conversation.entries;
   }
-  const zero = await page(0);
-  assert.deepEqual(zero.edges, []);
-  assert.equal(zero.pageInfo.hasNextPage, true);
   const ascending = await page(130, { order: "ascending" });
+  assert.equal(scan.mock.callCount(), 1);
+  assert.equal(scan.mock.calls[0]?.arguments[1], 130);
+  assert.equal(scan.mock.calls[0]?.arguments[2], undefined);
   assert.deepEqual(
-    ascending.edges.map((edge) => edge.node.durableId),
+    ascending.nodes.map((node) => node.durableId),
     records.slice(0, 130).map((record) => record.id),
   );
-  assert.equal(ascending.pageInfo.hasNextPage, true);
-  assert.equal(ascending.pageInfo.startCursor, ascending.edges[0]?.cursor);
-  assert.equal(ascending.pageInfo.endCursor, ascending.edges.at(-1)?.cursor);
-  assert.equal(new Set(ascending.edges.map((edge) => edge.cursor)).size, 130);
-  const rest = await page(10, {}, ascending.edges[128]!.cursor);
+  assert.deepEqual(ascending.pageInfo.next, expected.next);
+  const rest = await page(10, {}, ascending.pageInfo.next);
+  assert.equal(scan.mock.callCount(), 2);
+  assert.equal(scan.mock.calls[1]?.arguments[1], 10);
+  assert.deepEqual(scan.mock.calls[1]?.arguments[2], expected.next);
   assert.deepEqual(
-    rest.edges.map((edge) => edge.node.data),
-    [129, 130, 131],
+    rest.nodes.map((node) => node.data),
+    [130, 131],
   );
-  assert.equal(rest.pageInfo.hasNextPage, false);
-  const done = await page(0, {}, rest.edges.at(-1)!.cursor);
-  assert.equal(done.pageInfo.hasNextPage, false);
-  assert.equal(done.pageInfo.startCursor, null);
-  assert.equal(done.pageInfo.endCursor, null);
-  const descending = await page(2);
-  const continuation = await page(1, {}, descending.edges[0]!.cursor);
-  assert.deepEqual(continuation.edges[0]?.node, descending.edges[1]?.node);
+  assert.equal(rest.pageInfo.next, null);
+  const descending = await page(2, {}, null);
+  assert.deepEqual(
+    descending.nodes.map((node) => node.data),
+    [131, 130],
+  );
+  const continuation = await page(1, {}, descending.pageInfo.next);
+  assert.equal(continuation.nodes[0]?.data, 129);
   const bounded = await page(5, { minEntryId: records[3]!.id, maxEntryId: records[3]!.id });
-  assert.equal(bounded.edges.length, 1);
-  assert.equal(bounded.edges[0]?.node.data, 3);
+  assert.equal(bounded.nodes.length, 1);
+  assert.equal(bounded.nodes[0]?.data, 3);
+  const empty = await page(1, { minEntryId: Number.MAX_SAFE_INTEGER });
+  assert.deepEqual(empty, { nodes: [], pageInfo: { next: null } });
   for (const variables of [
-    { first: -1, filter: {} },
-    { first: 1, filter: {}, after: "!" },
-    { first: 1, filter: { order: "descending" }, after: ascending.edges[0]!.cursor },
-    { first: 1, filter: { minEntryId: records[1]!.id }, after: ascending.edges[0]!.cursor },
-    { first: 1, filter: { order: null } },
+    { limit: 0, filter: {} },
+    { limit: -1, filter: {} },
+    { limit: 1, filter: {}, cursor: "!" },
+    { limit: 1, filter: {}, cursor: { after: "invalid" } },
+    { limit: 1, filter: { order: "descending" }, cursor: ascending.pageInfo.next },
+    { limit: 1, filter: { order: null } },
   ]) {
     const result = await f.run(query, variables);
     assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
   }
-  const foreign = await f.run(
-    `query($after: String!) { harness(sessionId: "test") { scanConversations(first: 1, after: $after) { edges { cursor } } } }`,
-    { after: ascending.edges[0]!.cursor },
-  );
-  assert.equal(foreign.errors?.[0]?.extensions.code, "BAD_REQUEST");
   assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
 });
 
-void test("fork-aware entries keep identity and context preserves raw messages and empty contributions", async (t) => {
+void test("opaque backend continuations pass through without lookahead, decoding, or rewriting", async (t) => {
+  const f = await fixture(t);
+  const opaque = { "backend.key": { position: [null, true, 42], "line\nbreak": "opaque" } };
+  const scan = t.mock.method(
+    f.storage,
+    "scanTasks",
+    async (_query: TaskQuery, _limit: number, cursor: Cursor | undefined) =>
+      cursor === undefined ? { items: [], next: opaque } : { items: [] },
+  );
+  const query = `query($cursor: Cursor) { harness(sessionId: "test") { scanTasks(limit: 7, cursor: $cursor) { nodes { id } pageInfo { next } } } }`;
+  const first = await f.success<{ harness: { scanTasks: Connection<Identity> } }>(query);
+  assert.equal(scan.mock.callCount(), 1);
+  assert.deepEqual(first.harness.scanTasks, { nodes: [], pageInfo: { next: opaque } });
+  assert.deepEqual(scan.mock.calls[0]?.arguments.slice(0, 3), [{}, 7, undefined]);
+  const last = await f.success(query, { cursor: first.harness.scanTasks.pageInfo.next });
+  assert.equal(scan.mock.callCount(), 2);
+  assert.deepEqual(scan.mock.calls[1]?.arguments.slice(0, 3), [{}, 7, opaque]);
+  assert.deepEqual(last, { harness: { scanTasks: { nodes: [], pageInfo: { next: null } } } });
+});
+
+void test("fork-aware entries keep identity and context preserves message content and empty contributions", async (t) => {
   const f = await fixture(t);
   const message = { role: "user", content: "original", timestamp: 42 } as const;
   const first = await f.instance.commit(
@@ -294,15 +339,15 @@ void test("fork-aware entries keep identity and context preserves raw messages a
   const fork = await f.root.fork(second.id, { ownership: { kind: "ownerless" } }, execution);
   const query = `query($fork: ConversationId!, $at: EntryId!) {
     harness(sessionId: "test") {
-      root: conversation(id: 1) { entries(first: 5) { edges { node { id durableId model data edits { target action messages } head } } } }
-      fork: conversation(id: $fork) { parent { conversationId at } entries(first: 5) { edges { node { id durableId model data edits { target action messages } head } } } context { entries { id durableId } contributions messages head { id } } historical: context(at: $at) { messages entries { durableId } } }
+      root: conversation(id: 1) { entries(limit: 5) { nodes { id durableId model { ${userMessageFields} } data edits { target action messages { ${userMessageFields} } } head } } }
+      fork: conversation(id: $fork) { parent { conversationId at } entries(limit: 5) { nodes { id durableId model { ${userMessageFields} } data edits { target action messages { ${userMessageFields} } } head } } context { entries { id durableId } contributions { ${userMessageFields} } messages { ${userMessageFields} } head { id } } historical: context(at: $at) { messages { ${userMessageFields} } entries { durableId } } }
     }
   }`;
   type Result = {
     harness: {
-      root: { entries: { edges: Array<{ node: Identity }> } };
+      root: { entries: { nodes: Identity[] } };
       fork: {
-        entries: { edges: Array<{ node: Identity }> };
+        entries: { nodes: Identity[] };
         parent: { conversationId: number; at: number };
         context: {
           entries: Identity[];
@@ -317,19 +362,25 @@ void test("fork-aware entries keep identity and context preserves raw messages a
   const value = (await f.success<Result>(query, { fork: fork.id, at: first.id })).harness;
   assert.deepEqual(value.fork.entries, value.root.entries);
   assert.deepEqual(value.fork.parent, { conversationId: f.root.id, at: second.id });
-  assert.deepEqual(value.fork.context.contributions, [[message], []]);
-  assert.deepEqual(value.fork.context.messages, [message]);
+  const projected = {
+    __typename: "UserMessage",
+    role: "user",
+    timestamp: 42,
+    content: { __typename: "StringContent", text: "original" },
+  };
+  assert.deepEqual(value.fork.context.contributions, [[projected], []]);
+  assert.deepEqual(value.fork.context.messages, [projected]);
   assert.equal(value.fork.context.head, null);
   assert.deepEqual(value.fork.historical.entries, [{ durableId: first.id }]);
-  const id = value.root.entries.edges[0]!.node.id;
+  const id = value.root.entries.nodes[0]!.id;
   const refetch = await f.success<{ node: Identity }>(
-    `query($id: ID!) { node(id: $id) { id ... on EntryRecord { durableId model data edits { target action messages } head } } }`,
+    `query($id: ID!) { node(id: $id) { id ... on EntryRecord { durableId model { ${userMessageFields} } data edits { target action messages { ${userMessageFields} } } head } } }`,
     { id },
   );
-  assert.deepEqual(refetch.node, value.root.entries.edges[0]!.node);
+  assert.deepEqual(refetch.node, value.root.entries.nodes[0]!);
 });
 
-void test("conversation/task scans, inspection, node refetch, and per-operation record equality", async (t) => {
+void test("conversation/task scans, inspection, and node refetch read records independently", async (t) => {
   const f = await fixture(t);
   const other = await f.instance.createConversation(
     { ownership: { kind: "ownerless" } },
@@ -345,8 +396,8 @@ void test("conversation/task scans, inspection, node refetch, and per-operation 
     execution,
   );
   const read = `{ harness(sessionId: "test") {
-    scanConversations(first: 1) { edges { cursor node { id durableId parent { at } owner { taskId } } } ${pageFields} }
-    scanTasks(first: 2, query: { kind: "pi.compaction", status: pending, background: false, abortRequested: false, conversationId: 1 }) { edges { cursor node { id durableId state { status checkpoint outcome { status result } } input memos } } ${pageFields} }
+    scanConversations(limit: 1) { nodes { id durableId parent { at } owner { taskId } } ${pageFields} }
+    scanTasks(limit: 2, query: { kind: "pi.compaction", status: pending, background: false, abortRequested: false, conversationId: 1 }) { nodes { id durableId state { status checkpoint outcome { status result } } input memos } ${pageFields} }
     inspect { scheduling tasks { record { id durableId state { status checkpoint outcome { status result } } input memos } state { kind migrates error } } submissions { id } }
   } }`;
   type Task = Identity & {
@@ -362,15 +413,15 @@ void test("conversation/task scans, inspection, node refetch, and per-operation 
     };
   };
   const value = (await f.success<Result>(read)).harness;
-  assert.equal(value.scanConversations.pageInfo.hasNextPage, true);
-  assert.equal(value.scanConversations.edges[0]?.node.durableId, f.root.id);
+  assert(value.scanConversations.pageInfo.next);
+  assert.equal(value.scanConversations.nodes[0]?.durableId, f.root.id);
   const tail = await f.success<{ harness: { scanConversations: Connection<Identity> } }>(
-    `query($after: String!) { harness(sessionId: "test") { scanConversations(first: 1, after: $after) { edges { cursor node { id durableId } } ${pageFields} } } }`,
-    { after: value.scanConversations.edges[0]!.cursor },
+    `query($cursor: Cursor!) { harness(sessionId: "test") { scanConversations(limit: 1, cursor: $cursor) { nodes { id durableId } ${pageFields} } } }`,
+    { cursor: value.scanConversations.pageInfo.next },
   );
-  assert.equal(tail.harness.scanConversations.edges[0]?.node.durableId, other.id);
+  assert.equal(tail.harness.scanConversations.nodes[0]?.durableId, other.id);
   assert.equal(value.inspect.scheduling, "paused");
-  const task = value.scanTasks.edges[0]!.node;
+  const task = value.scanTasks.nodes[0]!;
   assert.equal(task.durableId, taskId);
   assert.deepEqual(value.inspect.tasks[0]?.record, task);
   assert.deepEqual(value.inspect.submissions, []);
@@ -395,26 +446,37 @@ void test("conversation/task scans, inspection, node refetch, and per-operation 
   }>(
     `query($id: ID!) {
     a: node(id: $id) { id ... on TaskRecord { durableId state { status checkpoint } } }
-    harness(sessionId: "test") { scanTasks(first: 5) { edges { node { id durableId state { status checkpoint } } } } inspect { tasks { record { id durableId state { status checkpoint } } } } }
+    harness(sessionId: "test") { scanTasks(limit: 5) { nodes { id durableId state { status checkpoint } } } inspect { tasks { record { id durableId state { status checkpoint } } } } }
   }`,
     { id: task.id },
   );
-  assert.deepEqual(concurrent.a, concurrent.harness.scanTasks.edges[0]?.node);
-  assert.deepEqual(concurrent.a, concurrent.harness.inspect.tasks[0]?.record);
+  assert.deepEqual(concurrent.a, concurrent.harness.scanTasks.nodes[0]);
+  assert.deepEqual(concurrent.harness.inspect.tasks[0]?.record, {
+    ...concurrent.a,
+    state: { status: "sleeping", checkpoint: { phase: "select" } },
+  });
 });
 
-void test("agent observations are shared between concurrent aliases but not between operations", async (t) => {
+void test("agent aliases read independently within and between operations", async (t) => {
   const f = await fixture(t);
   t.mock.method(f.instance, "conversation", async () => f.root);
   const value = await f.root.agent(execution);
   let calls = 0;
-  t.mock.method(f.root, "agent", async () => ({ ...value, cwd: String(++calls) }));
+  const context = withAbortSignal(new AbortController().signal, execution);
+  t.mock.method(f.root, "agent", async (received: ResolverContext["context"]) => {
+    assert.equal(received, context);
+    return { ...value, cwd: String(++calls) };
+  });
   const query = `{ harness(sessionId: "test") { a: conversation(id: 1) { agent { cwd } } b: conversation(id: 1) { agent { cwd } } } }`;
-  const result = await f.success<{ harness: { a: unknown; b: unknown } }>(query);
-  assert.deepEqual(result.harness.a, result.harness.b);
-  assert.equal(calls, 1);
-  await f.success(query);
+  const result = await f.success<{ harness: { a: unknown; b: unknown } }>(
+    query,
+    {},
+    f.request({ context }),
+  );
+  assert.notDeepEqual(result.harness.a, result.harness.b);
   assert.equal(calls, 2);
+  await f.success(query, {}, f.request({ context }));
+  assert.equal(calls, 4);
 });
 
 void test("submission admission, idempotent recovery, busy rejection, scoped withdrawal and abort", async (t) => {
@@ -438,14 +500,19 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   const mutation = `mutation($id: ID!, $draft: InputSubmissionDraft!) { submit(input: { conversationId: $id, submission: $draft, clientMutationId: "echo" }) { submissionId clientMutationId } }`;
   type Result = { submit: { submissionId: string; clientMutationId: string } };
   const content = [
-    { type: "text", text: "hello", textSignature: "sig", extra: { keep: true } },
+    { type: "text", text: "hello", textSignature: "sig" },
     { type: "image", data: "aGk=", mimeType: "image/png" },
   ];
   const admitted = await f.success<Result>(mutation, {
     id: f.conversationId,
     draft: {
       type: "input",
-      content,
+      content: {
+        blocks: [
+          { text: { text: "hello", textSignature: "sig" } },
+          { image: { data: "aGk=", mimeType: "image/png" } },
+        ],
+      },
       requestId: "key",
       entry: { kind: "app.user", data: { "arbitrary.key": [null, 1] } },
     },
@@ -459,12 +526,12 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   ]);
   const duplicate = await f.success<Result>(mutation, {
     id: f.conversationId,
-    draft: { type: "input", content: "different", requestId: "key" },
+    draft: { type: "input", content: { text: "different" }, requestId: "key" },
   });
   assert.deepEqual(duplicate, admitted);
   const busy = await f.run(mutation, {
     id: f.conversationId,
-    draft: { type: "input", content: "reject", whenBusy: "reject" },
+    draft: { type: "input", content: { text: "reject" }, whenBusy: "reject" },
   });
   assert.equal(busy.errors?.[0]?.extensions.code, "CONVERSATION_BUSY");
   const receipt = await f.success<{
@@ -506,7 +573,7 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   assert.equal(cancelled, false);
   const queued = await f.success<Result>(mutation, {
     id: f.conversationId,
-    draft: { type: "input", content: "queued", whenBusy: "followUp" },
+    draft: { type: "input", content: { text: "queued" }, whenBusy: "followUp" },
   });
   const queuedReceipt = await f.success<{ node: Identity }>(
     `query($id: ID!) { node(id: $id) { id ... on SubmissionRecord { durableId } } }`,
@@ -566,22 +633,49 @@ void test("resume, reset and compaction preserve upstream admission semantics", 
   const value = await f.success<{
     harness: { conversation: { context: { head: { durableId: number }; messages: unknown[] } } };
   }>(
-    `{ harness(sessionId: "test") { conversation(id: 1) { context { head { durableId } messages } } } }`,
+    `{ harness(sessionId: "test") { conversation(id: 1) { context { head { durableId } messages { ${messageIdentity} } } } } }`,
   );
   assert.equal(value.harness.conversation.context.head.durableId, current.head?.id);
-  assert.deepEqual(value.harness.conversation.context.messages, current.messages);
+  const typenames = {
+    system: "SystemMessage",
+    user: "UserMessage",
+    assistant: "AssistantMessage",
+    toolResult: "ToolResultMessage",
+  };
+  assert.deepEqual(
+    value.harness.conversation.context.messages,
+    current.messages.map((message) => ({
+      __typename: typenames[message.role],
+      role: message.role,
+      timestamp: message.timestamp,
+    })),
+  );
 });
 
 void test("input validation rejects null overrides outside configure, invalid scalars and reserved kinds", async (t) => {
   const f = await fixture(t);
   for (const draft of [
-    { type: "input", content: "x", requestId: null },
-    { type: "input", content: "x", whenBusy: null },
-    { type: "input", content: "x", entry: null },
-    { type: "input", content: "x", entry: { kind: "pi.user" } },
-    { type: "input", content: [{ type: "image", data: "!", mimeType: "image/png" }] },
-    { type: "input", content: [{ type: "text", text: 3 }] },
-    { type: "input", content: "x", entry: { kind: "app", data: Infinity } },
+    { type: "input", content: { text: "x" }, requestId: null },
+    { type: "input", content: { text: "x" }, whenBusy: null },
+    { type: "input", content: { text: "x" }, entry: null },
+    { type: "input", content: { text: "x" }, entry: { kind: "pi.user" } },
+    ...[
+      "!",
+      "A",
+      "AAA",
+      "Zg=",
+      "Zg===",
+      "Zg==\n",
+      " Zg==",
+      "Zg== ",
+      "-_==",
+      "data:image/png;base64,aGk=",
+    ].map((data) => ({
+      type: "input",
+      content: { blocks: [{ image: { data, mimeType: "image/png" } }] },
+    })),
+    { type: "input", content: { blocks: [{ text: { text: "x", textSignature: null } }] } },
+    { type: "input", content: { text: "x" }, entry: { kind: "app", data: Infinity } },
   ]) {
     const result = await f.run(
       `mutation($id: ID!, $draft: InputSubmissionDraft!) { submit(input: { conversationId: $id, submission: $draft }) { submissionId } }`,
@@ -597,7 +691,7 @@ void test("input validation rejects null overrides outside configure, invalid sc
     assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
   }
   const nullAt = await f.run(
-    `{ harness(sessionId: "test") { conversation(id: 1) { context(at: null) { messages } } } }`,
+    `{ harness(sessionId: "test") { conversation(id: 1) { context(at: null) { messages { __typename } } } } }`,
   );
   assert.equal(nullAt.errors?.[0]?.extensions.code, "BAD_REQUEST");
   for (const id of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1"]) {
@@ -631,13 +725,16 @@ void test("input validation rejects null overrides outside configure, invalid sc
   assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
 });
 
-void test("error classification depends on typed failures and read/write boundaries", async (t) => {
+void test("error classification depends only on typed failures, not the operation", async (t) => {
   const f = await fixture(t);
   for (const [error, code] of [
     [new StorageRequestError("private"), "BAD_REQUEST"],
     [new SessionFailed(new Error("private")), "SESSION_FAILED"],
     [new ReadAfterWrite("private"), "INTERNAL_SERVER_ERROR"],
     [new Error("SessionFailed"), "INTERNAL_SERVER_ERROR"],
+    [new ConversationBusy(f.root.id), "CONVERSATION_BUSY"],
+    [undefined, "INTERNAL_SERVER_ERROR"],
+    ["SessionFailed", "INTERNAL_SERVER_ERROR"],
   ] as const) {
     t.mock.method(f.instance, "inspect", async () => {
       throw error;
@@ -649,9 +746,9 @@ void test("error classification depends on typed failures and read/write boundar
     t.mock.restoreAll();
   }
   for (const [error, code] of [
-    [new StorageRequestError("private"), "INTERNAL_SERVER_ERROR"],
+    [new StorageRequestError("private"), "BAD_REQUEST"],
     [new SessionFailed(new Error("private")), "SESSION_FAILED"],
-    [new ConversationBusy(f.root.id), "INTERNAL_SERVER_ERROR"],
+    [new ConversationBusy(f.root.id), "CONVERSATION_BUSY"],
     [new Error("private"), "INTERNAL_SERVER_ERROR"],
   ] as const) {
     t.mock.method(f.instance, "conversation", async () => f.root);
@@ -669,7 +766,7 @@ void test("error classification depends on typed failures and read/write boundar
   const missing = await f.run(
     `mutation($id: ID!) { abort(input: { conversationId: $id }) { clientMutationId } }`,
     { id: f.conversationId },
-    f.request({ lookup: async () => undefined }),
+    f.request({ session: async () => undefined }),
   );
   assert.equal(missing.errors?.[0]?.extensions.code, "NOT_FOUND");
 });
@@ -733,7 +830,7 @@ void test("scalar codecs preserve structured values and reject invalid input/out
     assert.throws(() => id.parseValue("42"), code("BAD_REQUEST"));
   }
   const json = codec("JsonValue");
-  const value = { "file.name": [null, true, { x: 42 }] };
+  const value = { "file.name": [null, true, { x: 42 }], "line\nbreak": "preserved" };
   assert.deepEqual(json.parseValue(value), value);
   assert.deepEqual(json.serialize(value), value);
   assert.deepEqual(structuredClone(json.parseLiteral(parseValue("{nested: $value}"), { value })), {
@@ -745,24 +842,15 @@ void test("scalar codecs preserve structured values and reject invalid input/out
   assert.throws(() => json.serialize(cycle), code("INTERNAL_SERVER_ERROR"));
   assert.throws(() => codec("JsonObject").parseValue([]), code("BAD_REQUEST"));
   assert.deepEqual(codec("JsonObject").parseValue(value), value);
+  const keys = Object.fromEntries(
+    ["", "\n", "\r", "\u2028", "\u2029", "\u0000", "雪", "💾"].map((key, index) => [key, index]),
+  );
+  assert.deepEqual(codec("JsonObject").parseValue(keys), keys);
+  assert.deepEqual(codec("Cursor").parseValue(value), value);
+  assert.throws(() => codec("Cursor").parseValue([]), code("BAD_REQUEST"));
   const trace = { traceparent: "opaque", "vendor.key": "value" };
   assert.deepEqual(codec("TelemetryCarrier").parseValue(trace), trace);
   assert.throws(() => codec("TelemetryCarrier").parseValue({ key: 42 }), code("BAD_REQUEST"));
-  const message = codec("Message");
-  assert.deepEqual(
-    message.serialize({
-      role: "user",
-      content: "text",
-      timestamp: 0,
-      extra: value,
-      omitted: undefined,
-    }),
-    { role: "user", content: "text", timestamp: 0, extra: value },
-  );
-  assert.throws(() => message.serialize(null), code("INTERNAL_SERVER_ERROR"));
-  assert.throws(() => message.serialize(cycle), code("INTERNAL_SERVER_ERROR"));
-  assert.throws(() => message.parseValue({}), code("BAD_REQUEST"));
-  assert.throws(() => message.parseLiteral(parseValue("{}")), code("BAD_REQUEST"));
 });
 
 void test("IDs retain their session scope for reads and mutation authorization", async (t) => {
@@ -772,7 +860,7 @@ void test("IDs retain their session scope for reads and mutation authorization",
   assert.notEqual(a.conversationId, b.conversationId);
   assert.notEqual(a.harnessId, b.harnessId);
   const both = a.request({
-    lookup: async (id) => (id === "a" ? a.instance : id === "b" ? b.instance : undefined),
+    session: async (id) => (id === "a" ? a.instance : id === "b" ? b.instance : undefined),
   });
   const result = await a.success<{
     a: { id: string; harness: { sessionId: string } };
@@ -815,24 +903,461 @@ void test("a later mutation failure does not roll back an earlier mutation", asy
   assert.equal((await f.root.agent(execution)).cwd, "/committed");
 });
 
-void test("acquisition failures are not cached across operations and never masquerade as absence", async (t) => {
+void test("session failures are not cached and never masquerade as absence", async (t) => {
   const f = await fixture(t);
   let fail = true;
-  const lookup = t.mock.fn(async () => {
+  const session = t.mock.fn(async () => {
     if (fail) throw new StorageRequestError("failure while opening storage");
     return f.instance;
   });
   const query = `{ a: harness(sessionId: "test") { id } b: harness(sessionId: "test") { id } }`;
-  const failed = await f.run(query, {}, f.request({ lookup }));
+  const failed = await f.run(query, {}, f.request({ session }));
   assert.equal(failed.errors?.length, 2);
-  assert(failed.errors?.every((error) => error.extensions.code === "INTERNAL_SERVER_ERROR"));
-  assert.equal(lookup.mock.callCount(), 1);
+  assert(failed.errors?.every((error) => error.extensions.code === "BAD_REQUEST"));
+  assert.equal(session.mock.callCount(), 2);
   fail = false;
   const recovered = await f.success<{ a: { id: string }; b: { id: string } }>(
     query,
     {},
-    f.request({ lookup }),
+    f.request({ session }),
   );
   assert.deepEqual(recovered.a, recovered.b);
-  assert.equal(lookup.mock.callCount(), 2);
+  assert.equal(session.mock.callCount(), 4);
+});
+
+void test("message unions expose every upstream variant, content block, and metadata field", async (t) => {
+  const f = await fixture(t);
+  const text: AI.TextContent = { type: "text", text: "text", textSignature: "sig" };
+  const image: AI.ImageContent = { type: "image", data: "aGk=", mimeType: "image/png" };
+  const tool: AI.Tool = {
+    name: "read",
+    description: "Read a file",
+    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    constrainedSampling: { type: "grammar", variants: { openai_regex: ".*" } },
+  };
+  const assistant: AI.AssistantMessage = {
+    ...fauxAssistantMessage("answer"),
+    content: [
+      text,
+      { type: "thinking", thinking: "", thinkingSignature: "encrypted", redacted: true },
+      {
+        type: "toolCall",
+        id: "call",
+        name: "read",
+        arguments: { "file.name": "notes", nested: [null, true] },
+        thoughtSignature: "thought",
+        namespace: "files",
+        argumentsError: "recorded parse failure",
+      },
+    ],
+    timestamp: 1700000000000,
+    durationMs: 0,
+    responseModel: "resolved",
+    responseId: "response",
+    providerThinkingLevel: "provider-effort",
+    thinkingLevel: "high",
+    stopReason: "deferred",
+    rawStopReason: "provider-pending",
+    errorMessage: "recorded error",
+    endTurn: false,
+    deferred: {
+      provider: "faux",
+      modelId: "test",
+      api: "faux",
+      id: "job",
+      expiresAt: 1700000000010,
+      pollAfterMs: 0,
+      data: { opaque: [null, "token"] },
+    },
+    diagnostics: [
+      {
+        type: "provider",
+        timestamp: 1700000000001,
+        error: { name: "RecordedError", message: "recorded", stack: "stored diagnostic", code: 0 },
+        details: { arbitrary: [null, false] },
+      },
+    ],
+    usage: {
+      input: 1,
+      output: 2,
+      cacheRead: 3,
+      cacheWrite: 4,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      totalTokens: 10,
+      cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0.3, total: 0.6 },
+    },
+  };
+  const messages: AI.Message[] = [
+    {
+      role: "system",
+      content: "",
+      timestamp: 1,
+      sections: { instructions: "keep", removed: null },
+      toolsAdded: [tool],
+      toolsRemoved: [{ name: "old" }],
+    },
+    { role: "system", content: [text], timestamp: 2 },
+    { role: "user", content: "", timestamp: 3 },
+    { role: "user", content: [text, image], timestamp: 4 },
+    assistant,
+    {
+      role: "toolResult",
+      toolCallId: "call",
+      toolName: "read",
+      content: [text, image],
+      details: null,
+      isError: false,
+      timestamp: 1700000000002,
+      durationMs: 0,
+      usage: assistant.usage,
+      nestedCalls: {
+        complete: false,
+        calls: [
+          { id: "child", name: "nested", arguments: { x: [null, 1] }, status: "ok", durationMs: 0 },
+          {
+            id: "unfinished",
+            name: "nested",
+            argumentsBytes: 123,
+            status: "unfinished",
+            error: "stored",
+          },
+        ],
+      },
+    },
+  ];
+  const record = await f.instance.commit(
+    (tx) => tx.appendEntry(f.root.id, { kind: "app.messages", model: messages }),
+    execution,
+  );
+  const fragments = `
+    fragment TextFields on TextContent { __typename type text textSignature }
+    fragment ImageFields on ImageContent { __typename type data mimeType }
+    fragment UsageFields on Usage { input output cacheRead cacheWrite cacheWrite1h reasoning totalTokens cost { input output cacheRead cacheWrite total } }
+    fragment MessageFields on Message {
+      __typename
+      ... on SystemMessage {
+        role timestamp sections toolsAdded { name description parameters constrainedSampling } toolsRemoved { name }
+        systemContent: content { __typename ... on StringContent { text } ... on TextContentList { blocks { ...TextFields } } }
+      }
+      ... on UserMessage {
+        role timestamp
+        userContent: content { __typename ... on StringContent { text } ... on UserContentList { blocks { ...TextFields ...ImageFields } } }
+      }
+      ... on AssistantMessage {
+        role timestamp api provider model responseModel responseId providerThinkingLevel thinkingLevel stopReason rawStopReason errorMessage endTurn durationMs
+        assistantContent: content { ...TextFields ... on ThinkingContent { __typename type thinking thinkingSignature redacted } ... on ToolCall { __typename type id name arguments thoughtSignature namespace argumentsError } }
+        usage { ...UsageFields }
+        deferred { provider modelId api id expiresAt pollAfterMs data }
+        diagnostics { type timestamp error { name message stack code } details }
+      }
+      ... on ToolResultMessage {
+        role timestamp toolCallId toolName isError durationMs details resultUsage: usage { ...UsageFields }
+        resultContent: content { ...TextFields ...ImageFields }
+        nestedCalls { complete calls { id name arguments argumentsBytes status durationMs error } }
+      }
+    }
+  `;
+  type Result = { id: string; durableId: number; model: Array<Record<string, unknown>> };
+  const result = await f.success<{ harness: { conversation: { entries: { nodes: Result[] } } } }>(
+    `{ harness(sessionId: "test") { conversation(id: 1) { entries(limit: 1) { nodes { id durableId model { ...MessageFields } } } } } } ${fragments}`,
+  );
+  const entry = result.harness.conversation.entries.nodes[0]!;
+  assert.equal(entry.durableId, record.id);
+  assert.deepEqual(
+    entry.model.map((value) => value.__typename),
+    [
+      "SystemMessage",
+      "SystemMessage",
+      "UserMessage",
+      "UserMessage",
+      "AssistantMessage",
+      "ToolResultMessage",
+    ],
+  );
+  const projectedText = { ...text, __typename: "TextContent" };
+  const projectedImage = { ...image, __typename: "ImageContent" };
+  assert.deepEqual(entry.model[0], {
+    __typename: "SystemMessage",
+    role: "system",
+    timestamp: 1,
+    systemContent: { __typename: "StringContent", text: "" },
+    sections: { instructions: "keep", removed: null },
+    toolsAdded: [tool],
+    toolsRemoved: [{ name: "old" }],
+  });
+  assert.deepEqual(entry.model[1], {
+    __typename: "SystemMessage",
+    role: "system",
+    timestamp: 2,
+    systemContent: { __typename: "TextContentList", blocks: [projectedText] },
+    sections: null,
+    toolsAdded: null,
+    toolsRemoved: null,
+  });
+  assert.deepEqual(entry.model[2], {
+    __typename: "UserMessage",
+    role: "user",
+    timestamp: 3,
+    userContent: { __typename: "StringContent", text: "" },
+  });
+  assert.deepEqual(entry.model[3], {
+    __typename: "UserMessage",
+    role: "user",
+    timestamp: 4,
+    userContent: { __typename: "UserContentList", blocks: [projectedText, projectedImage] },
+  });
+  const { content: assistantBlocks, ...assistantFields } = assistant;
+  assert.deepEqual(entry.model[4], {
+    ...assistantFields,
+    __typename: "AssistantMessage",
+    assistantContent: [
+      projectedText,
+      { ...assistantBlocks[1], __typename: "ThinkingContent" },
+      { ...assistantBlocks[2], __typename: "ToolCall" },
+    ],
+  });
+  assert.deepEqual(entry.model[5], {
+    __typename: "ToolResultMessage",
+    role: "toolResult",
+    toolCallId: "call",
+    toolName: "read",
+    isError: false,
+    timestamp: 1700000000002,
+    durationMs: 0,
+    details: null,
+    resultUsage: assistant.usage,
+    resultContent: [projectedText, projectedImage],
+    nestedCalls: {
+      complete: false,
+      calls: [
+        {
+          id: "child",
+          name: "nested",
+          arguments: { x: [null, 1] },
+          argumentsBytes: null,
+          status: "ok",
+          durationMs: 0,
+          error: null,
+        },
+        {
+          id: "unfinished",
+          name: "nested",
+          arguments: null,
+          argumentsBytes: 123,
+          status: "unfinished",
+          durationMs: null,
+          error: "stored",
+        },
+      ],
+    },
+  });
+  const refetch = await f.success<{ node: Result }>(
+    `query($id: ID!) { node(id: $id) { id ... on EntryRecord { durableId model { ...MessageFields } } } } ${fragments}`,
+    { id: entry.id },
+  );
+  assert.deepEqual(refetch.node, entry);
+  assert.deepEqual(
+    (await f.instance.commit((tx) => tx.entry(record.id), execution))?.model,
+    record.model,
+  );
+});
+
+void test("typed messages are projected in edit replacements, current/historical context and contributions", async (t) => {
+  const f = await fixture(t);
+  const original: AI.UserMessage = { role: "user", content: "original", timestamp: 1 };
+  const replacement: AI.UserMessage = { role: "user", content: [], timestamp: 2 };
+  const first = await f.instance.commit(
+    (tx) => tx.appendEntry(f.root.id, { kind: "app.first", model: [original] }),
+    execution,
+  );
+  await f.instance.commit(
+    (tx) =>
+      tx.appendEntry(f.root.id, {
+        kind: "app.edit",
+        edits: [{ target: first.id, action: "replace", messages: [replacement] }],
+      }),
+    execution,
+  );
+  const replaced = {
+    __typename: "UserMessage",
+    role: "user",
+    timestamp: 2,
+    content: { __typename: "UserContentList", blocks: [] },
+  };
+  const result = await f.success<{
+    harness: {
+      conversation: {
+        entries: {
+          nodes: Array<{
+            edits: Array<{ target: number; action: string; messages: unknown[] }> | null;
+          }>;
+        };
+        context: { messages: unknown[]; contributions: unknown[][] };
+        historical: { messages: unknown[] };
+      };
+    };
+  }>(
+    `query($at: EntryId!) { harness(sessionId: "test") { conversation(id: 1) {
+    entries(limit: 2) { nodes { edits { target action messages { ${userMessageFields} } } } }
+    context { messages { ${userMessageFields} } contributions { ${userMessageFields} } }
+    historical: context(at: $at) { messages { ${userMessageFields} } }
+  } } }`,
+    { at: first.id },
+  );
+  assert.deepEqual(result.harness.conversation.entries.nodes[0]?.edits, [
+    { target: first.id, action: "replace", messages: [replaced] },
+  ]);
+  assert.deepEqual(result.harness.conversation.context.messages, [replaced]);
+  assert.deepEqual(result.harness.conversation.context.contributions, [[replaced], []]);
+  assert.deepEqual(result.harness.conversation.historical.messages, [
+    {
+      __typename: "UserMessage",
+      role: "user",
+      timestamp: 1,
+      content: { __typename: "StringContent", text: "original" },
+    },
+  ]);
+  assert.deepEqual((await f.instance.commit((tx) => tx.entry(first.id), execution))?.model, [
+    original,
+  ]);
+});
+
+void test("one-of inputs reject invalid alternatives before submission", async (t) => {
+  const f = await fixture(t);
+  t.mock.method(f.instance, "conversation", async () => f.root);
+  const submit = t.mock.method(f.root, "submit");
+  const mutation = `mutation($id: ID!, $content: UserInput!) { submit(input: { conversationId: $id, submission: { type: input, content: $content } }) { submissionId } }`;
+  for (const content of [
+    "raw text",
+    [],
+    null,
+    {},
+    { text: null },
+    { blocks: null },
+    { text: "x", blocks: [] },
+    { blocks: [{}] },
+    { blocks: [{ text: null }] },
+    { blocks: [{ text: { text: "x" }, image: { data: "", mimeType: "image/png" } }] },
+    { blocks: [{ text: { text: 3 } }] },
+    { blocks: [{ text: { text: "x", unknown: true } }] },
+  ]) {
+    const result = await f.run(mutation, { id: f.conversationId, content });
+    assert(result.errors?.length);
+    assert.equal(result.data, undefined);
+    assert.equal(result.errors[0]?.path, undefined);
+  }
+  for (const content of ["{}", "{ text: null }", '{ text: "x", blocks: [] }', "{ blocks: [{}] }"]) {
+    const result = await f.run(
+      `mutation($id: ID!) { submit(input: { conversationId: $id, submission: { type: input, content: ${content} } }) { submissionId } }`,
+      { id: f.conversationId },
+    );
+    assert(result.errors?.length);
+    assert.equal(result.data, undefined);
+  }
+  assert.equal(submit.mock.callCount(), 0);
+  assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
+});
+
+void test("one-of input literals preserve empty text, empty blocks and ordered image/text content", async (t) => {
+  const f = await fixture(t);
+  const cases: Array<{ literal: string; content: AI.UserMessage["content"] }> = [
+    { literal: `{ text: "" }`, content: "" },
+    { literal: `{ blocks: [] }`, content: [] },
+    {
+      literal: `{ blocks: [{ image: { data: "aGk=", mimeType: "image/png" } }, { text: { text: "caption", textSignature: "signature" } }, { text: { text: "plain" } }] }`,
+      content: [
+        { type: "image", data: "aGk=", mimeType: "image/png" },
+        { type: "text", text: "caption", textSignature: "signature" },
+        { type: "text", text: "plain" },
+      ],
+    },
+  ];
+  // RFC 4648 section 10 base64 vectors; validation checks encoding, not image bytes.
+  // https://www.rfc-editor.org/rfc/rfc4648#section-10
+  for (const data of ["", "Zg==", "Zm8=", "Zm9v", "Zm9vYg==", "Zm9vYmE=", "Zm9vYmFy"]) {
+    cases.push({
+      literal: `{ blocks: [{ image: { data: "${data}", mimeType: "image/png" } }] }`,
+      content: [{ type: "image", data, mimeType: "image/png" }],
+    });
+  }
+  f.faux.setResponses(cases.map(() => fauxAssistantMessage("answer")));
+  for (const { literal, content } of cases) {
+    const result = await f.success<{ submit: { submissionId: string } }>(
+      `mutation($id: ID!) { submit(input: { conversationId: $id, submission: { type: input, content: ${literal} } }) { submissionId } }`,
+      { id: f.conversationId },
+    );
+    const node = await f.success<{ node: { durableId: SubmissionId } }>(
+      `query($id: ID!) { node(id: $id) { ... on SubmissionRecord { durableId } } }`,
+      { id: result.submit.submissionId },
+    );
+    const submission = await f.instance.submission(node.node.durableId, execution);
+    assert(submission);
+    const receipt = await submission.wait(execution);
+    assert.equal(receipt.status, "done");
+    assert(receipt.entry !== undefined);
+    const entry = await f.instance.commit((tx) => tx.entry(receipt.entry!), execution);
+    assert.deepEqual(entry?.model?.[0]?.content, content);
+  }
+});
+
+void test("message projection preserves absent metadata, empty arrays and JSON payloads", async (t) => {
+  const f = await fixture(t);
+  const details = { "file.name": [null, true], "line\nbreak": { value: 0 } };
+  const messages: AI.Message[] = [
+    {
+      role: "system",
+      content: [],
+      timestamp: 0,
+      toolsAdded: [
+        { name: "disabled", description: "", parameters: {}, constrainedSampling: false },
+        { name: "default", description: "", parameters: {} },
+      ],
+    },
+    { ...fauxAssistantMessage(""), content: [] },
+    {
+      role: "toolResult",
+      toolCallId: "call",
+      toolName: "tool",
+      content: [],
+      isError: true,
+      timestamp: 0,
+      details,
+    },
+  ];
+  await f.instance.commit(
+    (tx) => tx.appendEntry(f.root.id, { kind: "app.optional", model: messages }),
+    execution,
+  );
+  const result = await f.success<{
+    harness: { conversation: { entries: { nodes: Array<{ model: unknown[] }> } } };
+  }>(`{
+    harness(sessionId: "test") { conversation(id: 1) { entries(limit: 1) { nodes { model {
+      __typename
+      ... on SystemMessage { content { ... on TextContentList { blocks { text } } } toolsAdded { constrainedSampling } }
+      ... on AssistantMessage { assistantContent: content { __typename } diagnostics { type } deferred { id } usage { cacheWrite1h reasoning } }
+      ... on ToolResultMessage { resultContent: content { __typename } details nestedCalls { complete } toolUsage: usage { totalTokens } }
+    } } } } }
+  }`);
+  assert.deepEqual(result.harness.conversation.entries.nodes[0]?.model, [
+    {
+      __typename: "SystemMessage",
+      content: { blocks: [] },
+      toolsAdded: [{ constrainedSampling: false }, { constrainedSampling: null }],
+    },
+    {
+      __typename: "AssistantMessage",
+      assistantContent: [],
+      diagnostics: null,
+      deferred: null,
+      usage: { cacheWrite1h: null, reasoning: null },
+    },
+    {
+      __typename: "ToolResultMessage",
+      resultContent: [],
+      details,
+      nestedCalls: null,
+      toolUsage: null,
+    },
+  ]);
 });
