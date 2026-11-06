@@ -21,6 +21,7 @@ in
         ./tsconfig.build.json
         ./graphql/tsconfig.grats.json
         ./graphql/graphql.ts
+        ./graphql/graphql.test.ts
         ./src
         ./tests
       ];
@@ -47,6 +48,7 @@ in
       runHook preCheck
       npm run check
       npm test
+      node --test graphql/graphql.test.ts
       runHook postCheck
     '';
     installPhase = ''

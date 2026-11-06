@@ -1,6 +1,6 @@
 {
   "extends": "../tsconfig.json",
-  "include": ["graphql.ts", "generated/graphql.ts"],
+  "include": ["graphql.ts", "graphql.test.ts", "generated/graphql.ts"],
   "grats": {
     "graphqlSchema": "./schema.graphql",
     "tsSchema": "./generated/graphql.ts",

@@ -1,13 +1,18 @@
-import type { Float, ID, Int } from "grats";
+import assert from "node:assert/strict";
+import type { Float, ID, Int, GqlScalar } from "grats";
+import { GraphQLError, valueFromASTUntyped } from "graphql";
+import Type, { type Static, type TSchema } from "typebox";
+import { Check } from "typebox/value";
+import { ConversationBusy, SessionFailed, StorageRequestError } from "@earendil-works/pi-durable";
+import { getSchema } from "./generated/graphql.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import type * as Chord from "@earendil-works/chord";
 import type * as Telemetry from "@earendil-works/pi-telemetry";
 import type * as AI from "@earendil-works/pi-ai";
 
 // TypeScript/Grats is the schema source of truth. The generated factory accepts
-// scalar implementations. All field resolvers are explicit schema-only stubs;
-// backend execution is not implemented.
-// No Harness acquisition, transport, storage, or execution policy is implemented here.
+// scalar implementations. Deployment supplies authorized persisted Harness lookup
+// and the session catalog. Listener, lifetime, and recovery policy remain external.
 // Upstream: pi-durable 1.4.0 dist/types.d.ts and dist/harness/types.d.ts.
 // Relay identities, connection wrappers, and transport inputs remain adapter types.
 
@@ -41,6 +46,427 @@ import type * as AI from "@earendil-works/pi-ai";
  * description permits it. Relay after permits null, meaning no cursor.
  * clientMutationId permits null and is only echoed, never used as an idempotency key.
  */
+
+// Construct a fresh context for each GraphQL operation. Session keys must never be
+// reused for replacement storage. Both callbacks enforce the same access policy;
+// scope identifies that policy/catalog for cursor binding. The caller owns Harnesses.
+/** @gqlContext */
+export interface ResolverContext {
+  readonly execution: Chord.Context;
+  readonly scope: string;
+  readonly lookup: (sessionId: string) => Promise<Durable.Harness | undefined>;
+  readonly sessions: () => Promise<readonly string[]>;
+  readonly observations: Map<string, Promise<unknown>>;
+}
+
+type ErrorCode =
+  | "BAD_REQUEST"
+  | "NOT_FOUND"
+  | "CONVERSATION_BUSY"
+  | "SESSION_FAILED"
+  | "INTERNAL_SERVER_ERROR";
+
+class ResolverError extends GraphQLError {
+  constructor(code: ErrorCode) {
+    super(code, { extensions: { code } });
+  }
+}
+
+async function boundary<T>(
+  read: boolean,
+  operation: () => T | Promise<T>,
+  admission = false,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof ResolverError) throw error;
+    if (error instanceof SessionFailed) throw new ResolverError("SESSION_FAILED");
+    if (read && error instanceof StorageRequestError) throw new ResolverError("BAD_REQUEST");
+    if (admission && error instanceof ConversationBusy)
+      throw new ResolverError("CONVERSATION_BUSY");
+    throw new ResolverError("INTERNAL_SERVER_ERROR");
+  }
+}
+
+// Keys are private to this module and identify one result type. Cache in-flight
+// reads as well as values, so concurrent aliases cannot observe different versions.
+function observe<T>(ctx: ResolverContext, key: string, read: () => T | Promise<T>): Promise<T> {
+  const existing = ctx.observations.get(key);
+  if (existing) return existing as Promise<T>;
+  const pending = boundary(true, read);
+  ctx.observations.set(key, pending);
+  return pending;
+}
+
+const safeInteger = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
+const jsonSchema = Type.Cyclic(
+  {
+    Json: Type.Union([
+      Type.Null(),
+      Type.Boolean(),
+      Type.Number(),
+      Type.String(),
+      Type.Array(Type.Ref("Json")),
+      Type.Record(Type.String({ pattern: "^[\\s\\S]*$" }), Type.Ref("Json"), {
+        additionalProperties: false,
+      }),
+    ]),
+  },
+  "Json",
+);
+const jsonObjectSchema = Type.Record(Type.String({ pattern: "^[\\s\\S]*$" }), jsonSchema, {
+  additionalProperties: false,
+});
+const textSchema = Type.Object({
+  type: Type.Literal("text"),
+  text: Type.String(),
+  textSignature: Type.Optional(Type.String()),
+});
+const imageSchema = Type.Object({
+  type: Type.Literal("image"),
+  data: Type.String({
+    pattern: "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+  }),
+  mimeType: Type.String(),
+});
+const userInputSchema = Type.Unsafe<UserInput>(
+  Type.Intersect([
+    jsonSchema,
+    Type.Union([Type.String(), Type.Array(Type.Union([textSchema, imageSchema]))]),
+  ]),
+);
+
+function checked<S extends TSchema>(schema: S, value: unknown): Static<S> {
+  try {
+    if (Check(schema, value)) return value;
+  } catch {
+    /* Malformed values, including cycles, are invalid input. */
+  }
+  throw new ResolverError("BAD_REQUEST");
+}
+
+function scalar<S extends TSchema>(schema: S): GqlScalar<Static<S>> {
+  return {
+    parseValue: (value) => checked(schema, value),
+    parseLiteral: (value, variables) => checked(schema, valueFromASTUntyped(value, variables)),
+    serialize(value) {
+      try {
+        if (Check(schema, value)) return value;
+      } catch {
+        /* Do not expose serializer failures. */
+      }
+      throw new ResolverError("INTERNAL_SERVER_ERROR");
+    },
+  };
+}
+
+export function createSchema() {
+  return getSchema({
+    scalars: {
+      ConversationId: scalar(Type.Unsafe<ConversationId>(safeInteger)),
+      EntryId: scalar(Type.Unsafe<EntryId>(safeInteger)),
+      TaskId: scalar(Type.Unsafe<TaskId>(safeInteger)),
+      SubmissionId: scalar(Type.Unsafe<SubmissionId>(safeInteger)),
+      JsonValue: scalar(Type.Unsafe<JsonValue>(jsonSchema)),
+      JsonObject: scalar(Type.Unsafe<JsonObject>(jsonObjectSchema)),
+      TelemetryCarrier: scalar(
+        Type.Unsafe<TelemetryCarrier>(
+          Type.Record(Type.String({ pattern: "^[\\s\\S]*$" }), Type.String(), {
+            additionalProperties: false,
+          }),
+        ),
+      ),
+      UserInput: scalar(userInputSchema),
+      // Message is output-only. Its structure comes from pi-ai, not a second model
+      // schema here. Apply native JSON serialization, including omission of undefined.
+      Message: {
+        parseValue() {
+          throw new ResolverError("BAD_REQUEST");
+        },
+        parseLiteral() {
+          throw new ResolverError("BAD_REQUEST");
+        },
+        serialize(value) {
+          try {
+            const json: unknown = JSON.parse(JSON.stringify(value));
+            if (!Check(jsonObjectSchema, json)) throw new Error();
+            return json;
+          } catch {
+            throw new ResolverError("INTERNAL_SERVER_ERROR");
+          }
+        },
+      },
+    },
+  });
+}
+
+function diagnostic(value: unknown): JsonValue {
+  const serialized: unknown = JSON.parse(JSON.stringify(value));
+  if (!Check(jsonSchema, serialized)) throw new ResolverError("INTERNAL_SERVER_ERROR");
+  return serialized;
+}
+
+function encode(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function decode(value: string): unknown {
+  try {
+    if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
+    const bytes = Buffer.from(value, "base64url");
+    if (bytes.toString("base64url") !== value) throw new Error();
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new ResolverError("BAD_REQUEST");
+  }
+}
+
+const nodeKindSchema = Type.Enum([
+  "Harness",
+  "ConversationRecord",
+  "EntryRecord",
+  "TaskRecord",
+  "SubmissionRecord",
+]);
+type NodeKind = Static<typeof nodeKindSchema>;
+const identitySchema = Type.Tuple([
+  Type.Literal(1),
+  nodeKindSchema,
+  Type.String(),
+  Type.Union([safeInteger, Type.Null()]),
+]);
+function identity(id: ID) {
+  const [_, kind, sessionId, durableId] = checked(identitySchema, decode(id));
+  if (
+    encode([1, kind, sessionId, durableId]) !== id ||
+    (kind === "Harness") !== (durableId === null)
+  )
+    throw new ResolverError("BAD_REQUEST");
+  return { kind, sessionId, durableId };
+}
+function globalId(kind: NodeKind, sessionId: string, id: number | null = null): ID {
+  return encode([1, kind, sessionId, id]);
+}
+function harnessNode(ctx: ResolverContext, sessionId: string): Promise<Harness> {
+  return observe(ctx, `harness-node:${sessionId}`, () => ({
+    __typename: "Harness",
+    id: globalId("Harness", sessionId),
+    sessionId,
+  }));
+}
+function acquire(ctx: ResolverContext, sessionId: string) {
+  return observe(ctx, `instance:${sessionId}`, () => boundary(false, () => ctx.lookup(sessionId)));
+}
+async function requireHarness(ctx: ResolverContext, source: Harness) {
+  const instance = await acquire(ctx, source.sessionId);
+  if (!instance) throw new ResolverError("NOT_FOUND");
+  return instance;
+}
+async function requireConversation(ctx: ResolverContext, source: ConversationRecord) {
+  const instance = await requireHarness(ctx, source.harness);
+  const handle = await observe(ctx, `handle:${source.id}`, () =>
+    instance.conversation(source.durableId, ctx.execution),
+  );
+  if (!handle) throw new ResolverError("NOT_FOUND");
+  return handle;
+}
+
+type RecordNode = ConversationRecord | EntryRecord | TaskRecord | SubmissionRecord;
+// All projections and direct lookups share these keys. The first observation wins.
+function recordNode<T extends RecordNode>(
+  ctx: ResolverContext,
+  id: ID,
+  read: () => Promise<T | null>,
+): Promise<T | null> {
+  return observe(ctx, `record:${id}`, read);
+}
+async function projectConversation(
+  ctx: ResolverContext,
+  owner: Harness,
+  record: Durable.ConversationRecord,
+): Promise<ConversationRecord> {
+  const id = globalId("ConversationRecord", owner.sessionId, record.id);
+  const result = await recordNode(ctx, id, async () => ({
+    ...record,
+    __typename: "ConversationRecord",
+    id,
+    durableId: record.id,
+    harness: owner,
+  }));
+  assert(result);
+  return result;
+}
+async function projectEntry(
+  ctx: ResolverContext,
+  owner: Harness,
+  record: Durable.EntryRecord,
+): Promise<EntryRecord> {
+  const id = globalId("EntryRecord", owner.sessionId, record.id);
+  const result = await recordNode(ctx, id, async () => ({
+    ...record,
+    __typename: "EntryRecord",
+    id,
+    durableId: record.id,
+    harness: owner,
+  }));
+  assert(result);
+  return result;
+}
+async function projectTask(
+  ctx: ResolverContext,
+  owner: Harness,
+  record: Durable.TaskRecord<JsonValue, JsonValue, JsonValue>,
+): Promise<TaskRecord> {
+  const id = globalId("TaskRecord", owner.sessionId, record.id);
+  const result = await recordNode(ctx, id, async () => ({
+    ...record,
+    __typename: "TaskRecord",
+    id,
+    durableId: record.id,
+    harness: owner,
+  }));
+  assert(result);
+  return result;
+}
+async function projectSubmission(
+  ctx: ResolverContext,
+  owner: Harness,
+  record: Durable.SubmissionRecord,
+): Promise<SubmissionRecord> {
+  const id = globalId("SubmissionRecord", owner.sessionId, record.id);
+  const result = await recordNode(ctx, id, async () => ({
+    ...record,
+    __typename: "SubmissionRecord",
+    id,
+    durableId: record.id,
+    harness: owner,
+  }));
+  assert(result);
+  return result;
+}
+
+function nonNull<T extends object>(value: T): { [K in keyof T]: Exclude<T[K], null> } {
+  if (Object.values(value).some((field) => field === null)) throw new ResolverError("BAD_REQUEST");
+  return value as { [K in keyof T]: Exclude<T[K], null> };
+}
+
+const cursorSchema = Type.Object(
+  {
+    version: Type.Literal(1),
+    scope: Type.String(),
+    connection: Type.String(),
+    filters: Type.String(),
+    order: Type.Enum(["ascending", "descending"]),
+    last: Type.Union([safeInteger, Type.String()]),
+  },
+  { additionalProperties: false },
+);
+
+function pagination(
+  ctx: ResolverContext,
+  connection: string,
+  first: number,
+  query: { order?: ScanOrder | null },
+  after: string | null | undefined,
+  defaultOrder: ScanOrder,
+) {
+  if (!Number.isInteger(first) || first < 0 || first > 2147483647)
+    throw new ResolverError("BAD_REQUEST");
+  const { order, ...filters } = nonNull(query);
+  const filterKey = JSON.stringify(
+    Object.entries(filters)
+      .filter(([, value]) => value !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+  const cursor = after == null ? undefined : checked(cursorSchema, decode(after));
+  if (
+    cursor &&
+    (cursor.scope !== ctx.scope ||
+      cursor.connection !== connection ||
+      cursor.filters !== filterKey ||
+      (order !== undefined && order !== cursor.order))
+  )
+    throw new ResolverError("BAD_REQUEST");
+  const effectiveOrder = order ?? cursor?.order ?? defaultOrder;
+  return {
+    order: effectiveOrder,
+    last: cursor?.last,
+    cursor: (last: number | string) =>
+      encode({
+        version: 1,
+        scope: ctx.scope,
+        connection,
+        filters: filterKey,
+        order: effectiveOrder,
+        last,
+      }),
+  };
+}
+
+function connectionResult<T>(edges: Array<{ cursor: string; node: T }>, hasNextPage: boolean) {
+  return {
+    edges,
+    pageInfo: {
+      hasNextPage,
+      hasPreviousPage: false,
+      startCursor: edges[0]?.cursor ?? null,
+      endCursor: edges.at(-1)?.cursor ?? null,
+    },
+  };
+}
+
+async function recordPage<T extends { readonly id: number }, N>(
+  ctx: ResolverContext,
+  key: string,
+  first: number,
+  query: { order?: ScanOrder | null },
+  after: string | null | undefined,
+  defaultOrder: ScanOrder,
+  fetch: (order: ScanOrder, cursor?: Durable.Cursor) => Promise<Durable.Page<T, Durable.Cursor>>,
+  project: (record: T) => Promise<N>,
+) {
+  const page = pagination(ctx, key, first, query, after, defaultOrder);
+  if (page.last !== undefined && typeof page.last !== "number")
+    throw new ResolverError("BAD_REQUEST");
+  const last = page.last;
+  const edges: Array<{ cursor: string; node: N }> = [];
+  let cursor: Durable.Cursor | undefined;
+  // Rescan ordered pages, preserving opaque Durable continuations. Never fabricate
+  // a backend cursor or copy one page continuation onto every edge.
+  do {
+    const batch = await fetch(page.order, cursor);
+    for (const record of batch.items) {
+      if (
+        last !== undefined &&
+        (page.order === "ascending" ? record.id <= last : record.id >= last)
+      )
+        continue;
+      if (edges.length === first) return connectionResult(edges, true);
+      edges.push({ cursor: page.cursor(record.id), node: await project(record) });
+    }
+    cursor = batch.next;
+  } while (cursor !== undefined);
+  return connectionResult(edges, false);
+}
+
+async function mutationConversation(ctx: ResolverContext, id: ID) {
+  if (identity(id).kind !== "ConversationRecord") throw new ResolverError("BAD_REQUEST");
+  const source = await node(id, ctx);
+  if (!source) throw new ResolverError("NOT_FOUND");
+  assert("__typename" in source && source.__typename === "ConversationRecord");
+  return {
+    source: source as ConversationRecord,
+    handle: await requireConversation(ctx, source as ConversationRecord),
+  };
+}
+
+function mutation<T>(ctx: ResolverContext, run: () => Promise<T>, admission = false): Promise<T> {
+  // Root mutation fields run serially. Each must see preceding committed changes,
+  // not an observation retained from a previous field in the same operation.
+  ctx.observations.clear();
+  return boundary(false, run, admission);
+}
 
 /**
  * Upstream ConversationId: a nonnegative safe-integer JSON number in
@@ -120,9 +546,70 @@ interface Node {
  * Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
  * @gqlQueryField
  */
-export function node(id: ID): Promise<Node | null> {
-  void id;
-  throw new Error("not yet implemented");
+export function node(id: ID, ctx: ResolverContext): Promise<Node | null> {
+  return boundary(true, async () => {
+    const target = identity(id);
+    const instance = await acquire(ctx, target.sessionId);
+    if (!instance) return null;
+    const owner = await harnessNode(ctx, target.sessionId);
+    if (target.kind === "Harness") return owner;
+    return recordNode(ctx, id, async () => {
+      switch (target.kind) {
+        case "ConversationRecord": {
+          const record = await instance.commit(
+            (tx) =>
+              tx.conversation(checked(Type.Unsafe<ConversationId>(safeInteger), target.durableId)),
+            ctx.execution,
+          );
+          return record
+            ? {
+                ...record,
+                __typename: "ConversationRecord",
+                id,
+                durableId: record.id,
+                harness: owner,
+              }
+            : null;
+        }
+        case "EntryRecord": {
+          const record = await instance.commit(
+            (tx) => tx.entry(checked(Type.Unsafe<EntryId>(safeInteger), target.durableId)),
+            ctx.execution,
+          );
+          return record
+            ? { ...record, __typename: "EntryRecord", id, durableId: record.id, harness: owner }
+            : null;
+        }
+        case "TaskRecord": {
+          const record = await instance.getTask(
+            checked(Type.Unsafe<Durable.TaskId<JsonValue>>(safeInteger), target.durableId),
+            ctx.execution,
+          );
+          return record
+            ? { ...record, __typename: "TaskRecord", id, durableId: record.id, harness: owner }
+            : null;
+        }
+        case "SubmissionRecord": {
+          const handle = await instance.submission(
+            checked(Type.Unsafe<SubmissionId>(safeInteger), target.durableId),
+            ctx.execution,
+          );
+          const record = await handle?.status(ctx.execution);
+          return record
+            ? {
+                ...record,
+                __typename: "SubmissionRecord",
+                id,
+                durableId: record.id,
+                harness: owner,
+              }
+            : null;
+        }
+        default:
+          throw new Error("Invalid record kind");
+      }
+    });
+  });
 }
 
 /** @gqlType */
@@ -139,9 +626,8 @@ interface Harness extends Node {
  * Resolve a persisted Harness by its external session key; does not create one.
  * @gqlQueryField
  */
-export function harness(sessionId: string): Promise<Harness | null> {
-  void sessionId;
-  throw new Error("not yet implemented");
+export async function harness(sessionId: string, ctx: ResolverContext): Promise<Harness | null> {
+  return (await acquire(ctx, sessionId)) ? harnessNode(ctx, sessionId) : null;
 }
 
 /**
@@ -151,10 +637,28 @@ export function harness(sessionId: string): Promise<Harness | null> {
  * Cursors bind the catalog, access scope, and ordering, not an individual session.
  * @gqlQueryField
  */
-export function harnesses(first: Int, after?: string | null): Promise<HarnessConnection> {
-  void first;
-  void after;
-  throw new Error("not yet implemented");
+export function harnesses(
+  ctx: ResolverContext,
+  first: Int,
+  after?: string | null,
+): Promise<HarnessConnection> {
+  return boundary(true, async () => {
+    const page = pagination(ctx, "harnesses", first, {}, after, "ascending");
+    if (page.order !== "ascending" || (page.last !== undefined && typeof page.last !== "string"))
+      throw new ResolverError("BAD_REQUEST");
+    const sessions = await observe(ctx, "catalog", async () => {
+      const values = [...(await ctx.sessions())].sort();
+      assert.equal(new Set(values).size, values.length);
+      return values;
+    });
+    const remaining = sessions.filter((id) => page.last === undefined || id > page.last);
+    const edges = await Promise.all(
+      remaining
+        .slice(0, first)
+        .map(async (id) => ({ cursor: page.cursor(id), node: await harnessNode(ctx, id) })),
+    );
+    return connectionResult(edges, remaining.length > first);
+  });
 }
 
 /**
@@ -164,19 +668,40 @@ export function harnesses(first: Int, after?: string | null): Promise<HarnessCon
 export function conversation(
   source: Harness,
   id: ConversationId,
+  ctx: ResolverContext,
 ): Promise<ConversationRecord | null> {
-  void source;
-  void id;
-  throw new Error("not yet implemented");
+  return node(
+    globalId("ConversationRecord", source.sessionId, id),
+    ctx,
+  ) as Promise<ConversationRecord | null>;
 }
 
 /**
  * Harness.inspect(): live work and scheduling state, without enabling scheduling.
  * @gqlField
  */
-export function inspect(source: Harness): Promise<HarnessInspection> {
-  void source;
-  throw new Error("not yet implemented");
+export function inspect(source: Harness, ctx: ResolverContext): Promise<HarnessInspection> {
+  return observe(ctx, `inspect:${source.id}`, async () => {
+    const instance = await requireHarness(ctx, source);
+    const value = await instance.inspect(ctx.execution);
+    return {
+      scheduling: value.scheduling,
+      tasks: await Promise.all(
+        value.tasks.map(async ({ record, state }) => ({
+          record: await projectTask(ctx, source, record),
+          state:
+            state.kind === "blocked" && state.error !== undefined
+              ? { ...state, error: diagnostic(state.error) }
+              : state.kind === "blocked"
+                ? { kind: state.kind, reason: state.reason }
+                : state,
+        })),
+      ),
+      submissions: await Promise.all(
+        value.submissions.map((record) => projectSubmission(ctx, source, record)),
+      ),
+    };
+  });
 }
 
 /**
@@ -185,15 +710,29 @@ export function inspect(source: Harness): Promise<HarnessInspection> {
  */
 export function scanConversations(
   source: Harness,
+  ctx: ResolverContext,
   first: Int,
   query: ConversationQuery = {},
   after?: string | null,
 ): Promise<ConversationRecordConnection> {
-  void source;
-  void first;
-  void query;
-  void after;
-  throw new Error("not yet implemented");
+  return boundary(true, async () => {
+    const filters = nonNull(query);
+    const instance = await requireHarness(ctx, source);
+    return recordPage(
+      ctx,
+      `scanConversations:${source.id}`,
+      first,
+      query,
+      after,
+      "ascending",
+      (order, cursor) =>
+        instance.commit(
+          (tx) => tx.scanConversations({ ...filters, order }, 128, cursor),
+          ctx.execution,
+        ),
+      (record) => projectConversation(ctx, source, record),
+    );
+  });
 }
 
 /**
@@ -202,15 +741,26 @@ export function scanConversations(
  */
 export function scanTasks(
   source: Harness,
+  ctx: ResolverContext,
   first: Int,
   query: TaskQuery = {},
   after?: string | null,
 ): Promise<TaskRecordConnection> {
-  void source;
-  void first;
-  void query;
-  void after;
-  throw new Error("not yet implemented");
+  return boundary(true, async () => {
+    const filters = nonNull(query);
+    const instance = await requireHarness(ctx, source);
+    return recordPage(
+      ctx,
+      `scanTasks:${source.id}`,
+      first,
+      query,
+      after,
+      "ascending",
+      (order, cursor) =>
+        instance.commit((tx) => tx.scanTasks({ ...filters, order }, 128, cursor), ctx.execution),
+      (record) => projectTask(ctx, source, record),
+    );
+  });
 }
 
 /**
@@ -238,9 +788,16 @@ interface ConversationRecord extends Node {
  * settings, not just stored overrides. Does not enable scheduling.
  * @gqlField
  */
-export function agent(source: ConversationRecord): Promise<Agent> {
-  void source;
-  throw new Error("not yet implemented");
+export function agent(source: ConversationRecord, ctx: ResolverContext): Promise<Agent> {
+  return observe(ctx, `agent:${source.id}`, async () => {
+    const value = await (await requireConversation(ctx, source)).agent(ctx.execution);
+    return {
+      model: value.model ?? null,
+      thinkingLevel: value.thinkingLevel,
+      cwd: value.cwd ?? null,
+      instructions: value.instructions ?? null,
+    };
+  });
 }
 
 /**
@@ -282,25 +839,50 @@ interface AgentModel {
  */
 export function entries(
   source: ConversationRecord,
+  ctx: ResolverContext,
   first: Int,
   query: EntryQuery = {},
   after?: string | null,
 ): Promise<EntryRecordConnection> {
-  void source;
-  void first;
-  void query;
-  void after;
-  throw new Error("not yet implemented");
+  return boundary(true, async () => {
+    const filters = nonNull(query);
+    const instance = await requireConversation(ctx, source);
+    return recordPage(
+      ctx,
+      `entries:${source.id}`,
+      first,
+      query,
+      after,
+      "descending",
+      (order, cursor) => instance.entries({ ...filters, order }, 128, cursor, ctx.execution),
+      (record) => projectEntry(ctx, source.harness, record),
+    );
+  });
 }
 
 /**
  * Current context when at is omitted; otherwise context through that visible entry.
  * @gqlField
  */
-export function context(source: ConversationRecord, at?: EntryId | null): Promise<ContextView> {
-  void source;
-  void at;
-  throw new Error("not yet implemented");
+export function context(
+  source: ConversationRecord,
+  ctx: ResolverContext,
+  at?: EntryId | null,
+): Promise<ContextView> {
+  return observe(ctx, `context:${source.id}:${at}`, async () => {
+    if (at === null) throw new ResolverError("BAD_REQUEST");
+    const value = await (
+      await requireConversation(ctx, source)
+    ).context(ctx.execution, at === undefined ? {} : { at });
+    return {
+      head: value.head ? await projectEntry(ctx, source.harness, value.head) : null,
+      entries: await Promise.all(
+        value.entries.map((entry) => projectEntry(ctx, source.harness, entry)),
+      ),
+      contributions: value.contributions,
+      messages: value.messages,
+    };
+  });
 }
 
 /**
@@ -311,10 +893,16 @@ export function context(source: ConversationRecord, at?: EntryId | null): Promis
 export function submissionByRequest(
   source: ConversationRecord,
   requestId: string,
+  ctx: ResolverContext,
 ): Promise<SubmissionRecord | null> {
-  void source;
-  void requestId;
-  throw new Error("not yet implemented");
+  return observe(ctx, `request:${source.id}:${requestId}`, async () => {
+    const instance = await requireHarness(ctx, source.harness);
+    const record = await instance.commit(
+      (tx) => tx.submissionByRequest(source.durableId, requestId),
+      ctx.execution,
+    );
+    return record ? projectSubmission(ctx, source.harness, record) : null;
+  });
 }
 
 /**
@@ -325,10 +913,15 @@ export function submissionByRequest(
 export function status(
   source: ConversationRecord,
   id: SubmissionId,
+  ctx: ResolverContext,
 ): Promise<SubmissionRecord | null> {
-  void source;
-  void id;
-  throw new Error("not yet implemented");
+  return boundary(true, async () => {
+    const record = (await node(
+      globalId("SubmissionRecord", source.harness.sessionId, id),
+      ctx,
+    )) as SubmissionRecord | null;
+    return record?.conversationId === source.durableId ? record : null;
+  });
 }
 
 /**
@@ -835,9 +1428,23 @@ interface SubmitPayload {
  * retains the untyped-error fallback. ConversationBusy means not admitted.
  * @gqlMutationField
  */
-export function submit(input: SubmitInput): Promise<SubmitPayload | null> {
-  void input;
-  throw new Error("not yet implemented");
+export function submit(input: SubmitInput, ctx: ResolverContext): Promise<SubmitPayload | null> {
+  return mutation(
+    ctx,
+    async () => {
+      const { source, handle } = await mutationConversation(ctx, input.conversationId);
+      const draft = nonNull(input.submission);
+      checked(userInputSchema, draft.content);
+      if (draft.entry?.kind.startsWith("pi.")) throw new ResolverError("BAD_REQUEST");
+      if (draft.entry?.data !== undefined) checked(jsonSchema, draft.entry.data);
+      const result = await handle.submit(draft, ctx.execution);
+      return {
+        submissionId: globalId("SubmissionRecord", source.harness.sessionId, result.id),
+        clientMutationId: input.clientMutationId ?? null,
+      };
+    },
+    true,
+  );
 }
 
 /** @gqlInput */
@@ -862,9 +1469,14 @@ interface AbortSubmissionPayload {
  */
 export function abortSubmission(
   input: AbortSubmissionInput,
+  ctx: ResolverContext,
 ): Promise<AbortSubmissionPayload | null> {
-  void input;
-  throw new Error("not yet implemented");
+  return mutation(ctx, async () => {
+    const { source } = await mutationConversation(ctx, input.conversationId);
+    const instance = await requireHarness(ctx, source.harness);
+    const result = await instance.abortSubmission(input.id, ctx.execution, source.durableId);
+    return { result, clientMutationId: input.clientMutationId ?? null };
+  });
 }
 
 /**
@@ -898,9 +1510,12 @@ interface AbortPayload {
  * and queued writes. Resolves after upstream abort completes. No background flag.
  * @gqlMutationField
  */
-export function abort(input: AbortInput): Promise<AbortPayload | null> {
-  void input;
-  throw new Error("not yet implemented");
+export function abort(input: AbortInput, ctx: ResolverContext): Promise<AbortPayload | null> {
+  return mutation(ctx, async () => {
+    const { handle } = await mutationConversation(ctx, input.conversationId);
+    await handle.abort(ctx.execution);
+    return { clientMutationId: input.clientMutationId ?? null };
+  });
 }
 
 /** @gqlInput */
@@ -920,9 +1535,15 @@ interface ResumePayload {
  * Enable Harness scheduling; successful return does not mean work has completed.
  * @gqlMutationField
  */
-export function resume(input: ResumeInput): Promise<ResumePayload | null> {
-  void input;
-  throw new Error("not yet implemented");
+export function resume(input: ResumeInput, ctx: ResolverContext): Promise<ResumePayload | null> {
+  return mutation(ctx, async () => {
+    const target = identity(input.sessionId);
+    if (target.kind !== "Harness") throw new ResolverError("BAD_REQUEST");
+    const instance = await acquire(ctx, target.sessionId);
+    if (!instance) throw new ResolverError("NOT_FOUND");
+    instance.resume();
+    return { clientMutationId: input.clientMutationId ?? null };
+  });
 }
 
 /** @gqlInput */
@@ -943,9 +1564,13 @@ interface ResetPayload {
  * Admit a reset, not necessarily its placement. No idempotency key.
  * @gqlMutationField
  */
-export function reset(input: ResetInput): Promise<ResetPayload | null> {
-  void input;
-  throw new Error("not yet implemented");
+export function reset(input: ResetInput, ctx: ResolverContext): Promise<ResetPayload | null> {
+  return mutation(ctx, async () => {
+    if (input.handoff === null) throw new ResolverError("BAD_REQUEST");
+    const { handle } = await mutationConversation(ctx, input.conversationId);
+    await handle.reset(input.handoff, ctx.execution);
+    return { clientMutationId: input.clientMutationId ?? null };
+  });
 }
 
 /** @gqlInput */
@@ -970,9 +1595,16 @@ interface CompactPayload {
  * Admit compaction; task completion and summary placement remain separate.
  * @gqlMutationField
  */
-export function compact(input: CompactInput): Promise<CompactPayload | null> {
-  void input;
-  throw new Error("not yet implemented");
+export function compact(input: CompactInput, ctx: ResolverContext): Promise<CompactPayload | null> {
+  return mutation(ctx, async () => {
+    if (input.instructions === null) throw new ResolverError("BAD_REQUEST");
+    const { source, handle } = await mutationConversation(ctx, input.conversationId);
+    const id = await handle.compact(input.instructions, ctx.execution);
+    return {
+      taskId: globalId("TaskRecord", source.harness.sessionId, id),
+      clientMutationId: input.clientMutationId ?? null,
+    };
+  });
 }
 
 /** @gqlInput */
@@ -1014,7 +1646,13 @@ interface ConfigurePayload {
  * Change model, thinking level, or cwd overrides; read resolved settings through agent.
  * @gqlMutationField
  */
-export function configure(input: ConfigureInput): Promise<ConfigurePayload | null> {
-  void input;
-  throw new Error("not yet implemented");
+export function configure(
+  input: ConfigureInput,
+  ctx: ResolverContext,
+): Promise<ConfigurePayload | null> {
+  return mutation(ctx, async () => {
+    const { handle } = await mutationConversation(ctx, input.conversationId);
+    await handle.configure(input.change, ctx.execution);
+    return { clientMutationId: input.clientMutationId ?? null };
+  });
 }
