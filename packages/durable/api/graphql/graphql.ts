@@ -190,22 +190,24 @@ interface ImageContentInput {
   readonly mimeType: string;
 }
 
+function inputBlock(block: UserInputBlock): AI.TextContent | AI.ImageContent {
+  switch (true) {
+    case "text" in block:
+      return { type: "text", ...nonNull(block.text) };
+    case "image" in block:
+      checked(ImageData, block.image.data);
+      return { type: "image", ...block.image };
+    default:
+      return unreachable(block);
+  }
+}
+
 function inputContent(input: UserInput): Durable.UserInput {
   switch (true) {
     case "text" in input:
       return input.text;
     case "blocks" in input:
-      return input.blocks.map((block): AI.TextContent | AI.ImageContent => {
-        switch (true) {
-          case "text" in block:
-            return { type: "text", ...nonNull(block.text) };
-          case "image" in block:
-            checked(ImageData, block.image.data);
-            return { type: "image", ...block.image };
-          default:
-            return unreachable(block);
-        }
-      });
+      return input.blocks.map(inputBlock);
     default:
       return unreachable(input);
   }
@@ -245,6 +247,7 @@ export function createSchema() {
     scalars: {
       ConversationId: scalar(ConversationId),
       EntryId: scalar(EntryId),
+      EntryHead: scalar(EntryHead),
       TaskId: scalar(TaskId),
       SubmissionId: scalar(SubmissionId),
       JsonValue: scalar(JsonValue),
@@ -1558,24 +1561,37 @@ type Connection<T extends Node> = {
 interface SubmitInput {
   /** Global ConversationRecord ID, not its numeric durableId. */
   readonly conversationId: ID;
-  readonly submission: InputSubmissionDraft;
+  readonly submission: SubmissionDraft;
   readonly clientMutationId?: string | null;
 }
 
+/**
+ * Exactly one upstream SubmissionDraft variant; the selection supplies type.
+ * @gqlInput
+ */
+type SubmissionDraft = { input: InputSubmissionDraft } | { write: WriteSubmissionDraft };
+
 /** @gqlInput */
 interface InputSubmissionDraft {
-  readonly type: InputSubmissionDraftType;
   readonly content: UserInput;
   readonly requestId?: string | null;
   readonly whenBusy?: InputSubmissionDraftWhenBusy | null;
   readonly entry?: InputEntry | null;
 }
 
-/**
- * GraphQL name for InputSubmissionDraft["type"].
- * @gqlEnum
- */
-type InputSubmissionDraftType = "input";
+/** @gqlInput */
+interface WriteSubmissionDraft {
+  readonly entry: EntryDraft;
+  readonly requestId?: string | null;
+}
+
+/** @gqlInput */
+interface InputEntry {
+  /** Application kind; nonempty and outside the reserved pi. prefix. */
+  readonly kind: string;
+  /** Optional JSON payload; explicit null is allowed. */
+  readonly data?: JsonValue | null;
+}
 
 /**
  * GraphQL name for NonNullable<InputSubmissionDraft["whenBusy"]>.
@@ -1584,11 +1600,362 @@ type InputSubmissionDraftType = "input";
 type InputSubmissionDraftWhenBusy = "steer" | "followUp" | "reject";
 
 /** @gqlInput */
-interface InputEntry {
-  /** Application kind; must not start with the reserved prefix "pi.". */
+interface EntryDraft {
   readonly kind: string;
   /** Optional JSON payload; explicit null is allowed. */
   readonly data?: JsonValue | null;
+  /** Omit for display-only data; even an empty array is a context-affecting write. */
+  readonly model?: ReadonlyArray<MessageInput> | null;
+  readonly head?: EntryHead | null;
+  readonly edits?: ReadonlyArray<ContextEditInput> | null;
+}
+
+const EntryHead = Type.Union([EntryId, Type.Literal("self")]);
+/**
+ * Upstream EntryDraft.head: a native EntryId or the literal string "self".
+ * @gqlScalar
+ */
+export type EntryHead = Type.Static<typeof EntryHead>;
+
+/** @gqlInput */
+type ContextEditInput = { omit: EntryId } | { replace: ContextReplacementInput };
+
+/** @gqlInput */
+interface ContextReplacementInput {
+  readonly target: EntryId;
+  readonly messages: ReadonlyArray<MessageInput>;
+}
+
+/** @gqlInput */
+type MessageInput =
+  | { system: SystemMessageInput }
+  | { user: UserMessageInput }
+  | { assistant: AssistantMessageInput }
+  | { toolResult: ToolResultMessageInput };
+
+/** @gqlInput */
+interface SystemMessageInput {
+  readonly content: SystemMessageContentInput;
+  /** Named prompt sections; each value must be a string or null. */
+  readonly sections?: JsonObject | null;
+  readonly toolsAdded?: ReadonlyArray<ToolInput> | null;
+  readonly toolsRemoved?: ReadonlyArray<ToolReferenceInput> | null;
+  readonly timestamp: Float;
+}
+
+/** @gqlInput */
+type SystemMessageContentInput = { text: string } | { blocks: ReadonlyArray<TextContentInput> };
+
+/** @gqlInput */
+interface UserMessageInput {
+  readonly content: UserInput;
+  readonly timestamp: Float;
+}
+
+/** @gqlInput */
+interface AssistantMessageInput {
+  readonly content: ReadonlyArray<AssistantContentInput>;
+  readonly api: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly responseModel?: string | null;
+  readonly responseId?: string | null;
+  readonly providerThinkingLevel?: string | null;
+  readonly thinkingLevel?: ModelThinkingLevel | null;
+  readonly diagnostics?: ReadonlyArray<MessageDiagnosticInput> | null;
+  readonly usage: UsageInput;
+  readonly stopReason: StopReason;
+  readonly deferred?: DeferredHandleInput | null;
+  readonly errorMessage?: string | null;
+  readonly rawStopReason?: string | null;
+  readonly endTurn?: boolean | null;
+  readonly timestamp: Float;
+  readonly durationMs?: Float | null;
+}
+
+/** @gqlInput */
+type AssistantContentInput =
+  | { text: TextContentInput }
+  | { thinking: ThinkingContentInput }
+  | { toolCall: ToolCallInput };
+
+/** @gqlInput */
+interface ThinkingContentInput {
+  readonly thinking: string;
+  readonly thinkingSignature?: string | null;
+  readonly redacted?: boolean | null;
+}
+
+/** @gqlInput */
+interface ToolCallInput {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: JsonObject;
+  readonly thoughtSignature?: string | null;
+  readonly namespace?: string | null;
+  readonly argumentsError?: string | null;
+}
+
+/** @gqlInput */
+interface ToolResultMessageInput {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly content: ReadonlyArray<UserInputBlock>;
+  /** Optional JSON payload; explicit null is allowed. */
+  readonly details?: JsonValue | null;
+  readonly usage?: UsageInput | null;
+  readonly nestedCalls?: NestedToolCallsInput | null;
+  readonly isError: boolean;
+  readonly timestamp: Float;
+  readonly durationMs?: Float | null;
+}
+
+/** @gqlInput */
+interface UsageInput {
+  readonly input: Float;
+  readonly output: Float;
+  readonly cacheRead: Float;
+  readonly cacheWrite: Float;
+  readonly cacheWrite1h?: Float | null;
+  readonly reasoning?: Float | null;
+  readonly totalTokens: Float;
+  readonly cost: UsageCostInput;
+}
+
+/** @gqlInput */
+interface UsageCostInput {
+  readonly input: Float;
+  readonly output: Float;
+  readonly cacheRead: Float;
+  readonly cacheWrite: Float;
+  readonly total: Float;
+}
+
+/** @gqlInput */
+interface DeferredHandleInput {
+  readonly provider: string;
+  readonly modelId: string;
+  readonly api: string;
+  readonly id: string;
+  readonly expiresAt?: Float | null;
+  readonly pollAfterMs?: Float | null;
+  /** Optional JSON payload; explicit null is allowed. */
+  readonly data?: JsonValue | null;
+}
+
+/** @gqlInput */
+interface ToolInput {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: JsonObject;
+  /** Upstream false or ConstrainedSamplingConfig; omit when absent. */
+  readonly constrainedSampling?: JsonValue | null;
+}
+
+/** @gqlInput */
+interface ToolReferenceInput {
+  readonly name: string;
+}
+
+/** @gqlInput */
+interface MessageDiagnosticInput {
+  readonly type: string;
+  readonly timestamp: Float;
+  readonly error?: DiagnosticErrorInput | null;
+  readonly details?: JsonObject | null;
+}
+
+/** @gqlInput */
+interface DiagnosticErrorInput {
+  readonly name?: string | null;
+  readonly message: string;
+  readonly stack?: string | null;
+  /** Upstream string or number code; omit when absent. */
+  readonly code?: JsonValue | null;
+}
+
+/** @gqlInput */
+interface NestedToolCallsInput {
+  readonly calls: ReadonlyArray<NestedToolCallRecordInput>;
+  readonly complete: boolean;
+}
+
+/** @gqlInput */
+interface NestedToolCallRecordInput {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments?: JsonObject | null;
+  readonly argumentsBytes?: Float | null;
+  readonly status: NestedToolCallStatus;
+  readonly durationMs?: Float | null;
+  readonly error?: string | null;
+}
+
+// pi-ai 1.4.0 dist/types.d.ts: SystemMessage.sections and ConstrainedSamplingConfig.
+const PromptSections = Type.Record(JsonKey, Type.Union([Type.String(), Type.Null()]), {
+  additionalProperties: false,
+});
+const ConstrainedSampling = Type.Union([
+  Type.Literal(false),
+  Type.Object(
+    { type: Type.Literal("json_schema"), strict: Type.Enum(["prefer", "require"]) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("grammar"),
+      variants: Type.Object(
+        {
+          openai_lark: Type.Optional(Type.String()),
+          openai_regex: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+]);
+// pi-ai 1.4.0 dist/utils/diagnostics.d.ts: DiagnosticErrorInfo.code.
+const DiagnosticCode = Type.Union([Type.String(), Type.Number()]);
+
+function assistantInputContent(
+  block: AssistantContentInput,
+): AI.AssistantMessage["content"][number] {
+  switch (true) {
+    case "text" in block:
+      return { type: "text", ...nonNull(block.text) };
+    case "thinking" in block:
+      return { type: "thinking", ...nonNull(block.thinking) };
+    case "toolCall" in block:
+      return { type: "toolCall", ...nonNull(block.toolCall) };
+    default:
+      return unreachable(block);
+  }
+}
+
+function inputMessage(input: MessageInput): AI.Message {
+  switch (true) {
+    case "system" in input: {
+      const { content, sections, toolsAdded, toolsRemoved, ...fields } = nonNull(input.system);
+      const result: AI.SystemMessage = {
+        ...fields,
+        role: "system",
+        content:
+          "text" in content
+            ? content.text
+            : content.blocks.map((block): AI.TextContent => ({ type: "text", ...nonNull(block) })),
+      };
+      if (sections !== undefined) result.sections = checked(PromptSections, sections);
+      if (toolsRemoved !== undefined)
+        result.toolsRemoved = toolsRemoved.map((tool) => ({ ...tool }));
+      if (toolsAdded !== undefined)
+        result.toolsAdded = toolsAdded.map((tool) => {
+          const { constrainedSampling, ...fields } = nonNull(tool);
+          const result: AI.Tool = fields;
+          if (constrainedSampling !== undefined)
+            result.constrainedSampling = checked(ConstrainedSampling, constrainedSampling);
+          return result;
+        });
+      return result;
+    }
+    case "user" in input:
+      return {
+        role: "user",
+        timestamp: input.user.timestamp,
+        content: inputContent(input.user.content),
+      };
+    case "assistant" in input: {
+      const { content, usage, diagnostics, deferred, ...fields } = nonNull(input.assistant);
+      const result: AI.AssistantMessage = {
+        ...fields,
+        role: "assistant",
+        content: content.map(assistantInputContent),
+        usage: nonNull(usage),
+      };
+      if (diagnostics !== undefined)
+        result.diagnostics = diagnostics.map((entry) => {
+          const { error, ...fields } = nonNull(entry);
+          const result: AI.AssistantMessageDiagnostic = fields;
+          if (error !== undefined) {
+            const { code, ...fields } = nonNull(error);
+            result.error = fields;
+            if (code !== undefined) result.error.code = checked(DiagnosticCode, code);
+          }
+          return result;
+        });
+      if (deferred !== undefined) {
+        const { data, ...fields } = deferred;
+        result.deferred = nonNull(fields);
+        if (data !== undefined) result.deferred.data = data;
+      }
+      return result;
+    }
+    case "toolResult" in input: {
+      const { details, ...rest } = input.toolResult;
+      const { content, usage, nestedCalls, ...fields } = nonNull(rest);
+      const result: AI.ToolResultMessage = {
+        ...fields,
+        role: "toolResult",
+        content: content.map(inputBlock),
+      };
+      if (details !== undefined) result.details = details;
+      if (usage !== undefined) result.usage = nonNull(usage);
+      if (nestedCalls !== undefined)
+        result.nestedCalls = {
+          ...nestedCalls,
+          calls: nestedCalls.calls.map((call) => nonNull(call)),
+        };
+      return result;
+    }
+    default:
+      return unreachable(input);
+  }
+}
+
+function inputEdit(input: ContextEditInput): Durable.ContextEdit {
+  switch (true) {
+    case "omit" in input:
+      return { target: input.omit, action: "omit" };
+    case "replace" in input:
+      return {
+        target: input.replace.target,
+        action: "replace",
+        messages: input.replace.messages.map(inputMessage),
+      };
+    default:
+      return unreachable(input);
+  }
+}
+
+function submissionDraft(input: SubmissionDraft): Durable.SubmissionDraft {
+  switch (true) {
+    case "input" in input: {
+      const fields = nonNull(input.input);
+      if (
+        fields.entry !== undefined &&
+        (fields.entry.kind.length === 0 || fields.entry.kind.startsWith("pi."))
+      )
+        throw new ResolverError("BAD_REQUEST");
+      return { ...fields, type: "input", content: inputContent(fields.content) };
+    }
+    case "write" in input: {
+      const { entry, ...fields } = nonNull(input.write);
+      const { data, ...rest } = entry;
+      const { model, edits, ...shape } = nonNull(rest);
+      return {
+        ...fields,
+        type: "write",
+        entry: {
+          ...shape,
+          ...(data === undefined ? {} : { data }),
+          ...(model === undefined ? {} : { model: model.map(inputMessage) }),
+          ...(edits === undefined ? {} : { edits: edits.map(inputEdit) }),
+        },
+      };
+    }
+    default:
+      return unreachable(input);
+  }
 }
 
 /** @gqlType */
@@ -1604,9 +1971,9 @@ interface SubmitPayload {
 }
 
 /**
- * Admit input, not placement or completion. Same requestId and type recover the
- * prior submission without comparing content. A key used for another type
- * retains the untyped-error fallback. ConversationBusy means not admitted.
+ * Admit input or a passive entry write, not necessarily placement or completion.
+ * Same requestId and type recover the prior submission without comparing content.
+ * A key used for another type retains the untyped-error fallback. ConversationBusy means not admitted.
  * @gqlMutationField
  */
 export async function submit(
@@ -1615,13 +1982,7 @@ export async function submit(
 ): Promise<SubmitPayload | null> {
   try {
     const { source, handle } = await mutationConversation(ctx, input.conversationId);
-    const draft = nonNull(input.submission);
-    if (draft.entry?.kind.startsWith("pi.")) throw new ResolverError("BAD_REQUEST");
-    if (draft.entry?.data !== undefined) checked(JsonValue, draft.entry.data);
-    const result = await handle.submit(
-      { ...draft, content: inputContent(draft.content) },
-      ctx.context,
-    );
+    const result = await handle.submit(submissionDraft(input.submission), ctx.context);
     return {
       submissionId: globalId("SubmissionRecord", source.harness.sessionId, result.id),
       clientMutationId: input.clientMutationId ?? null,

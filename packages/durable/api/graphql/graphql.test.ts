@@ -128,7 +128,15 @@ void test("generated schema remains valid", () => {
       .sort(),
     ["AssistantMessage", "SystemMessage", "ToolResultMessage", "UserMessage"],
   );
-  for (const name of ["UserInput", "UserInputBlock"]) {
+  for (const name of [
+    "SubmissionDraft",
+    "UserInput",
+    "UserInputBlock",
+    "MessageInput",
+    "AssistantContentInput",
+    "SystemMessageContentInput",
+    "ContextEditInput",
+  ]) {
     const input = schema.getType(name);
     assert(isInputObjectType(input));
     assert.equal(input.isOneOf, true);
@@ -497,7 +505,7 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
     },
   ]);
   t.after(() => release.resolve());
-  const mutation = `mutation($id: ID!, $draft: InputSubmissionDraft!) { submit(input: { conversationId: $id, submission: $draft, clientMutationId: "echo" }) { submissionId clientMutationId } }`;
+  const mutation = `mutation($id: ID!, $draft: InputSubmissionDraft!) { submit(input: { conversationId: $id, submission: { input: $draft }, clientMutationId: "echo" }) { submissionId clientMutationId } }`;
   type Result = { submit: { submissionId: string; clientMutationId: string } };
   const content = [
     { type: "text", text: "hello", textSignature: "sig" },
@@ -506,7 +514,6 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   const admitted = await f.success<Result>(mutation, {
     id: f.conversationId,
     draft: {
-      type: "input",
       content: {
         blocks: [
           { text: { text: "hello", textSignature: "sig" } },
@@ -526,12 +533,12 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   ]);
   const duplicate = await f.success<Result>(mutation, {
     id: f.conversationId,
-    draft: { type: "input", content: { text: "different" }, requestId: "key" },
+    draft: { content: { text: "different" }, requestId: "key" },
   });
   assert.deepEqual(duplicate, admitted);
   const busy = await f.run(mutation, {
     id: f.conversationId,
-    draft: { type: "input", content: { text: "reject" }, whenBusy: "reject" },
+    draft: { content: { text: "reject" }, whenBusy: "reject" },
   });
   assert.equal(busy.errors?.[0]?.extensions.code, "CONVERSATION_BUSY");
   const receipt = await f.success<{
@@ -573,7 +580,7 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   assert.equal(cancelled, false);
   const queued = await f.success<Result>(mutation, {
     id: f.conversationId,
-    draft: { type: "input", content: { text: "queued" }, whenBusy: "followUp" },
+    draft: { content: { text: "queued" }, whenBusy: "followUp" },
   });
   const queuedReceipt = await f.success<{ node: Identity }>(
     `query($id: ID!) { node(id: $id) { id ... on SubmissionRecord { durableId } } }`,
@@ -655,10 +662,10 @@ void test("resume, reset and compaction preserve upstream admission semantics", 
 void test("input validation rejects null overrides outside configure, invalid scalars and reserved kinds", async (t) => {
   const f = await fixture(t);
   for (const draft of [
-    { type: "input", content: { text: "x" }, requestId: null },
-    { type: "input", content: { text: "x" }, whenBusy: null },
-    { type: "input", content: { text: "x" }, entry: null },
-    { type: "input", content: { text: "x" }, entry: { kind: "pi.user" } },
+    { content: { text: "x" }, requestId: null },
+    { content: { text: "x" }, whenBusy: null },
+    { content: { text: "x" }, entry: null },
+    { content: { text: "x" }, entry: { kind: "pi.user" } },
     ...[
       "!",
       "A",
@@ -671,14 +678,13 @@ void test("input validation rejects null overrides outside configure, invalid sc
       "-_==",
       "data:image/png;base64,aGk=",
     ].map((data) => ({
-      type: "input",
       content: { blocks: [{ image: { data, mimeType: "image/png" } }] },
     })),
-    { type: "input", content: { blocks: [{ text: { text: "x", textSignature: null } }] } },
-    { type: "input", content: { text: "x" }, entry: { kind: "app", data: Infinity } },
+    { content: { blocks: [{ text: { text: "x", textSignature: null } }] } },
+    { content: { text: "x" }, entry: { kind: "app", data: Infinity } },
   ]) {
     const result = await f.run(
-      `mutation($id: ID!, $draft: InputSubmissionDraft!) { submit(input: { conversationId: $id, submission: $draft }) { submissionId } }`,
+      `mutation($id: ID!, $draft: InputSubmissionDraft!) { submit(input: { conversationId: $id, submission: { input: $draft } }) { submissionId } }`,
       { id: f.conversationId, draft },
     );
     assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
@@ -1026,10 +1032,54 @@ void test("message unions expose every upstream variant, content block, and meta
       },
     },
   ];
-  const record = await f.instance.commit(
-    (tx) => tx.appendEntry(f.root.id, { kind: "app.messages", model: messages }),
-    execution,
+  const blockInput = (
+    block: AI.TextContent | AI.ImageContent | AI.ThinkingContent | AI.ToolCall,
+  ) => {
+    const { type, ...fields } = block;
+    return { [type]: fields };
+  };
+  const model = messages.map(({ role, content, ...fields }) => {
+    switch (role) {
+      case "system":
+        return {
+          system: {
+            ...fields,
+            content:
+              typeof content === "string"
+                ? { text: content }
+                : {
+                    blocks: content.map(({ text, textSignature }) =>
+                      textSignature === undefined ? { text } : { text, textSignature },
+                    ),
+                  },
+          },
+        };
+      case "user":
+        return {
+          user: {
+            ...fields,
+            content:
+              typeof content === "string" ? { text: content } : { blocks: content.map(blockInput) },
+          },
+        };
+      default:
+        return { [role]: { ...fields, content: content.map(blockInput) } };
+    }
+  });
+  const admitted = await f.success<{ submit: { submissionId: string } }>(
+    `mutation($id: ID!, $entry: EntryDraft!) { submit(input: { conversationId: $id, submission: { write: { entry: $entry } } }) { submissionId } }`,
+    { id: f.conversationId, entry: { kind: "app.messages", model } },
   );
+  const receipt = await f.success<{ node: { type: string; status: string; entry: number } }>(
+    `query($id: ID!) { node(id: $id) { ... on SubmissionRecord { type status entry } } }`,
+    { id: admitted.submit.submissionId },
+  );
+  assert.equal(receipt.node.type, "write");
+  assert.equal(receipt.node.status, "done");
+  const record = (await f.root.entries({}, 1, undefined, execution)).items[0]!;
+  assert.equal(record.id, receipt.node.entry);
+  assert.deepEqual(record.model, messages);
+  assert.equal(f.faux.state.callCount, 0);
   const fragments = `
     fragment TextFields on TextContent { __typename type text textSignature }
     fragment ImageFields on ImageContent { __typename type data mimeType }
@@ -1166,18 +1216,13 @@ void test("message unions expose every upstream variant, content block, and meta
 void test("typed messages are projected in edit replacements, current/historical context and contributions", async (t) => {
   const f = await fixture(t);
   const original: AI.UserMessage = { role: "user", content: "original", timestamp: 1 };
-  const replacement: AI.UserMessage = { role: "user", content: [], timestamp: 2 };
   const first = await f.instance.commit(
     (tx) => tx.appendEntry(f.root.id, { kind: "app.first", model: [original] }),
     execution,
   );
-  await f.instance.commit(
-    (tx) =>
-      tx.appendEntry(f.root.id, {
-        kind: "app.edit",
-        edits: [{ target: first.id, action: "replace", messages: [replacement] }],
-      }),
-    execution,
+  await f.success(
+    `mutation($id: ID!, $target: EntryId!) { submit(input: { conversationId: $id, submission: { write: { entry: { kind: "app.edit", edits: [{ replace: { target: $target, messages: [{ user: { content: { blocks: [] }, timestamp: 2 } }] } }] } } } }) { submissionId } }`,
+    { id: f.conversationId, target: first.id },
   );
   const replaced = {
     __typename: "UserMessage",
@@ -1221,13 +1266,19 @@ void test("typed messages are projected in edit replacements, current/historical
   assert.deepEqual((await f.instance.commit((tx) => tx.entry(first.id), execution))?.model, [
     original,
   ]);
+  await f.success(
+    `mutation($id: ID!, $target: EntryId!) { submit(input: { conversationId: $id, submission: { write: { entry: { kind: "app.omit", edits: [{ omit: $target }] } } } }) { submissionId } }`,
+    { id: f.conversationId, target: first.id },
+  );
+  assert.deepEqual((await f.root.context(execution)).messages, []);
+  assert.equal(f.faux.state.callCount, 0);
 });
 
 void test("one-of inputs reject invalid alternatives before submission", async (t) => {
   const f = await fixture(t);
   t.mock.method(f.instance, "conversation", async () => f.root);
   const submit = t.mock.method(f.root, "submit");
-  const mutation = `mutation($id: ID!, $content: UserInput!) { submit(input: { conversationId: $id, submission: { type: input, content: $content } }) { submissionId } }`;
+  const mutation = `mutation($id: ID!, $content: UserInput!) { submit(input: { conversationId: $id, submission: { input: { content: $content } } }) { submissionId } }`;
   for (const content of [
     "raw text",
     [],
@@ -1249,7 +1300,7 @@ void test("one-of inputs reject invalid alternatives before submission", async (
   }
   for (const content of ["{}", "{ text: null }", '{ text: "x", blocks: [] }', "{ blocks: [{}] }"]) {
     const result = await f.run(
-      `mutation($id: ID!) { submit(input: { conversationId: $id, submission: { type: input, content: ${content} } }) { submissionId } }`,
+      `mutation($id: ID!) { submit(input: { conversationId: $id, submission: { input: { content: ${content} } } }) { submissionId } }`,
       { id: f.conversationId },
     );
     assert(result.errors?.length);
@@ -1284,7 +1335,7 @@ void test("one-of input literals preserve empty text, empty blocks and ordered i
   f.faux.setResponses(cases.map(() => fauxAssistantMessage("answer")));
   for (const { literal, content } of cases) {
     const result = await f.success<{ submit: { submissionId: string } }>(
-      `mutation($id: ID!) { submit(input: { conversationId: $id, submission: { type: input, content: ${literal} } }) { submissionId } }`,
+      `mutation($id: ID!) { submit(input: { conversationId: $id, submission: { input: { content: ${literal} } } }) { submissionId } }`,
       { id: f.conversationId },
     );
     const node = await f.success<{ node: { durableId: SubmissionId } }>(
@@ -1360,4 +1411,362 @@ void test("message projection preserves absent metadata, empty arrays and JSON p
       toolUsage: null,
     },
   ]);
+});
+
+void test("write submissions place metadata without generation and recover by request ID", async (t) => {
+  const f = await fixture(t);
+  const mutation = `mutation($id: ID!, $draft: SubmissionDraft!) { submit(input: { conversationId: $id, submission: $draft, clientMutationId: "echo" }) { submissionId clientMutationId } }`;
+  const data = { "file.path": "/workspace/image.png", "line\nbreak": [null, true, 3] };
+  const admitted = await f.success<{ submit: { submissionId: string; clientMutationId: string } }>(
+    mutation,
+    {
+      id: f.conversationId,
+      draft: { write: { requestId: "write-key", entry: { kind: "app.attachment", data } } },
+    },
+  );
+  assert.equal(admitted.submit.clientMutationId, "echo");
+  assert.deepEqual(
+    await f.success(mutation, {
+      id: f.conversationId,
+      draft: { write: { requestId: "write-key", entry: { kind: "different", data: null } } },
+    }),
+    admitted,
+  );
+  const receipt = await f.success<{ node: { type: string; status: string; entry: number } }>(
+    `query($id: ID!) { node(id: $id) { ... on SubmissionRecord { type status entry } } }`,
+    { id: admitted.submit.submissionId },
+  );
+  assert.equal(receipt.node.type, "write");
+  assert.equal(receipt.node.status, "done");
+  const history = await f.root.entries({}, 10, undefined, execution);
+  assert.deepEqual(history.items, [
+    { id: receipt.node.entry, conversationId: f.root.id, kind: "app.attachment", data },
+  ]);
+  const mismatch = await f.run(mutation, {
+    id: f.conversationId,
+    draft: { input: { requestId: "write-key", content: { text: "not admitted" } } },
+  });
+  assert.equal(mismatch.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  // Writes retain upstream EntryDraft semantics, including pi.* kinds and JSON null.
+  await f.success(mutation, {
+    id: f.conversationId,
+    draft: { write: { entry: { kind: "pi.note", data: null } } },
+  });
+  await f.success(mutation, {
+    id: f.conversationId,
+    draft: { write: { entry: { kind: "app.no-data" } } },
+  });
+  const placed = (await f.root.entries({}, 10, undefined, execution)).items;
+  assert.equal(placed.length, 3);
+  assert.equal(Object.hasOwn(placed[0]!, "data"), false);
+  assert.equal(placed[1]?.data, null);
+  assert.deepEqual((await f.root.context(execution)).messages, []);
+  assert.equal(f.faux.state.callCount, 0);
+  assert.deepEqual((await f.instance.inspect(execution)).tasks, []);
+});
+
+void test("busy writes preserve boundary queuing, empty model arrays, and reset ordering", async (t) => {
+  const f = await fixture(t);
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  f.faux.setResponses([
+    async (_request, options) => {
+      assert(options?.signal);
+      started.resolve();
+      await awaitWithContext(release.promise, withAbortSignal(options.signal, execution));
+      return fauxAssistantMessage("answer");
+    },
+  ]);
+  t.after(() => release.resolve());
+  const active = await f.root.submit({ type: "input", content: "question" }, execution);
+  await started.promise;
+  const mutation = `mutation($id: ID!, $draft: WriteSubmissionDraft!) { submit(input: { conversationId: $id, submission: { write: $draft } }) { submissionId } }`;
+  async function receipt(requestId: string) {
+    const value = await f.instance.commit(
+      (tx) => tx.submissionByRequest(f.root.id, requestId),
+      execution,
+    );
+    assert(value);
+    return value;
+  }
+  for (const [requestId, entry, status] of [
+    ["empty-model", { kind: "app.context", model: [] }, "queued"],
+    ["display", { kind: "app.display", data: 1 }, "done"],
+    ["reset", { kind: "pi.reset", head: "self", model: [] }, "queued"],
+    ["after-reset", { kind: "app.after-reset", data: 2 }, "queued"],
+    ["withdrawn", { kind: "app.withdrawn", model: [] }, "queued"],
+  ] as const) {
+    await f.success(mutation, { id: f.conversationId, draft: { requestId, entry } });
+    assert.equal((await receipt(requestId)).status, status);
+  }
+  const withdrawn = await receipt("withdrawn");
+  assert.deepEqual(
+    await f.success(
+      `mutation($conversation: ID!, $id: SubmissionId!) { abortSubmission(input: { conversationId: $conversation, id: $id }) { result } }`,
+      { conversation: f.conversationId, id: withdrawn.id },
+    ),
+    { abortSubmission: { result: "aborted" } },
+  );
+  assert.equal(
+    (await f.root.entries({}, 50, undefined, execution)).items.some(
+      (entry) => entry.kind === "app.context",
+    ),
+    false,
+  );
+  release.resolve();
+  await active.wait(execution);
+  await f.root.waitForIdle(execution);
+  for (const requestId of ["empty-model", "display", "reset", "after-reset"]) {
+    assert.equal((await receipt(requestId)).status, "done");
+  }
+  assert.equal((await receipt("withdrawn")).status, "unanswered");
+  const history = (await f.root.entries({}, 50, undefined, execution)).items;
+  const reset = history.find((entry) => entry.kind === "pi.reset");
+  const after = history.find((entry) => entry.kind === "app.after-reset");
+  assert(reset && after);
+  assert.equal(reset.head, reset.id);
+  assert(after.id > reset.id);
+  assert.equal(
+    history.some((entry) => entry.kind === "app.withdrawn"),
+    false,
+  );
+  assert.deepEqual(history.find((entry) => entry.kind === "app.context")?.model, []);
+  assert.deepEqual((await f.root.context(execution)).messages, []);
+  assert.equal(f.faux.state.callCount, 1);
+});
+
+void test("write heads preserve native self and entry IDs and reject stale placement", async (t) => {
+  const f = await fixture(t);
+  const first = await f.instance.commit(
+    (tx) => tx.appendEntry(f.root.id, { kind: "app.first" }),
+    execution,
+  );
+  await f.success(
+    `mutation($id: ID!) { submit(input: { conversationId: $id, submission: { write: { entry: { kind: "app.reset", head: "self" } } } }) { submissionId } }`,
+    { id: f.conversationId },
+  );
+  const reset = (await f.root.entries({}, 1, undefined, execution)).items[0]!;
+  assert.equal(reset.head, reset.id);
+  const mutation = `mutation($id: ID!, $head: EntryHead!, $key: String!) { submit(input: { conversationId: $id, submission: { write: { requestId: $key, entry: { kind: "app.head", head: $head } } } }) { submissionId } }`;
+  await f.success(mutation, { id: f.conversationId, head: reset.id, key: "same-head" });
+  await f.success(mutation, { id: f.conversationId, head: first.id, key: "stale-head" });
+  const [same, stale] = await f.instance.commit(
+    async (tx) => [
+      await tx.submissionByRequest(f.root.id, "same-head"),
+      await tx.submissionByRequest(f.root.id, "stale-head"),
+    ],
+    execution,
+  );
+  assert.equal(same?.status, "done");
+  assert.equal(stale?.status, "unanswered");
+  assert.equal(stale?.reason, "stale");
+  assert.equal((await f.root.entries({}, 10, undefined, execution)).items.length, 3);
+  assert.equal((await f.root.context(execution)).head?.head, reset.id);
+  assert.equal(f.faux.state.callCount, 0);
+});
+
+void test("submission and write message one-of inputs reject invalid variants before admission", async (t) => {
+  const f = await fixture(t);
+  t.mock.method(f.instance, "conversation", async () => f.root);
+  const submit = t.mock.method(f.root, "submit");
+  const mutation = `mutation($id: ID!, $draft: SubmissionDraft!) { submit(input: { conversationId: $id, submission: $draft }) { submissionId } }`;
+  for (const draft of [
+    {},
+    { input: null },
+    { write: null },
+    { input: { content: { text: "x" } }, write: { entry: { kind: "app" } } },
+    { type: "write", entry: { kind: "app" } },
+    { write: {} },
+    { write: { entry: { kind: "app" }, content: { text: "x" } } },
+    { write: { entry: { kind: "app" }, whenBusy: "followUp" } },
+    { input: { content: { text: "x" }, entry: { kind: "app", model: [] } } },
+    ...[
+      {},
+      { user: null },
+      {
+        user: { content: { text: "x" }, timestamp: 1 },
+        system: { content: { text: "x" }, timestamp: 1 },
+      },
+    ].map((message) => ({ write: { entry: { kind: "app", model: [message] } } })),
+    ...[
+      {},
+      { omit: null },
+      { omit: 1, replace: { target: 1, messages: [] } },
+      { replace: { target: 1 } },
+    ].map((edit) => ({ write: { entry: { kind: "app", edits: [edit] } } })),
+  ]) {
+    const result = await f.run(mutation, { id: f.conversationId, draft });
+    assert(result.errors?.length);
+    assert.equal(result.data, undefined);
+  }
+  for (const draft of [
+    "{}",
+    "{ input: null }",
+    '{ write: { entry: { kind: "app" } }, input: { content: { text: "x" } } }',
+  ]) {
+    const result = await f.run(
+      `mutation($id: ID!) { submit(input: { conversationId: $id, submission: ${draft} }) { submissionId } }`,
+      { id: f.conversationId },
+    );
+    assert(result.errors?.length);
+    assert.equal(result.data, undefined);
+  }
+  assert.equal(submit.mock.callCount(), 0);
+  assert.deepEqual((await f.root.entries({}, 10, undefined, execution)).items, []);
+});
+
+void test("write input validation rejects invalid heads, null optionals and malformed message metadata", async (t) => {
+  const f = await fixture(t);
+  t.mock.method(f.instance, "conversation", async () => f.root);
+  const submit = t.mock.method(f.root, "submit");
+  const mutation = `mutation($id: ID!, $draft: WriteSubmissionDraft!) { submit(input: { conversationId: $id, submission: { write: $draft } }) { submissionId } }`;
+  const assistant = {
+    content: [],
+    api: "faux",
+    provider: "faux",
+    model: "test",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: 1,
+  };
+  for (const draft of [
+    { entry: { kind: "app" }, requestId: null },
+    ...[null, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "other", "1"].map((head) => ({
+      entry: { kind: "app", head },
+    })),
+    { entry: { kind: "app", model: null } },
+    { entry: { kind: "app", edits: null } },
+    ...[
+      { system: { content: { text: "x" }, timestamp: 1, sections: { invalid: 1 } } },
+      {
+        system: {
+          content: { text: "x" },
+          timestamp: 1,
+          toolsAdded: [
+            { name: "tool", description: "", parameters: {}, constrainedSampling: true },
+          ],
+        },
+      },
+      {
+        user: {
+          content: { blocks: [{ image: { data: "bad", mimeType: "image/png" } }] },
+          timestamp: 1,
+        },
+      },
+      {
+        assistant: {
+          ...assistant,
+          diagnostics: [{ type: "test", timestamp: 1, error: { message: "x", code: [] } }],
+        },
+      },
+      {
+        assistant: {
+          ...assistant,
+          deferred: { provider: "faux", modelId: "test", api: "faux", id: "id", expiresAt: null },
+        },
+      },
+      { assistant: { ...assistant, usage: { ...assistant.usage, reasoning: null } } },
+      { assistant: { ...assistant, content: [{ thinking: { thinking: "x", redacted: null } }] } },
+      {
+        toolResult: {
+          toolCallId: "call",
+          toolName: "tool",
+          content: [],
+          timestamp: 1,
+          isError: false,
+          nestedCalls: {
+            complete: true,
+            calls: [{ id: "nested", name: "tool", status: "ok", arguments: null }],
+          },
+        },
+      },
+    ].map((message) => ({ entry: { kind: "app", model: [message] } })),
+  ]) {
+    const result = await f.run(mutation, { id: f.conversationId, draft });
+    assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST", JSON.stringify(draft));
+  }
+  assert.equal(submit.mock.callCount(), 0);
+});
+
+void test("write messages preserve omitted optionals, JSON null and constrained sampling variants", async (t) => {
+  const f = await fixture(t);
+  const system = {
+    timestamp: 1,
+    toolsAdded: [
+      { name: "plain", description: "", parameters: {} },
+      { name: "disabled", description: "", parameters: {}, constrainedSampling: false },
+      {
+        name: "schema",
+        description: "",
+        parameters: {},
+        constrainedSampling: { type: "json_schema", strict: "require" },
+      },
+      {
+        name: "grammar",
+        description: "",
+        parameters: {},
+        constrainedSampling: {
+          type: "grammar",
+          variants: { openai_regex: "[a-z]+", openai_lark: "start: WORD" },
+        },
+      },
+    ],
+  };
+  const usage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+  const assistant = {
+    content: [],
+    api: "faux",
+    provider: "faux",
+    model: "test",
+    usage,
+    stopReason: "deferred",
+    timestamp: 3,
+    diagnostics: [
+      { type: "notice", timestamp: 3 },
+      { type: "error", timestamp: 3, error: { message: "x" } },
+    ],
+    deferred: { provider: "faux", modelId: "test", api: "faux", id: "request", data: null },
+  };
+  const toolResult = {
+    toolCallId: "call",
+    toolName: "tool",
+    content: [],
+    isError: false,
+    timestamp: 4,
+  };
+  await f.success(
+    `mutation($id: ID!, $model: [MessageInput!]!) { submit(input: { conversationId: $id, submission: { write: { entry: { kind: "app.messages", model: $model } } } }) { submissionId } }`,
+    {
+      id: f.conversationId,
+      model: [
+        { system: { ...system, content: { text: "" } } },
+        { user: { content: { text: "" }, timestamp: 2 } },
+        { assistant },
+        { toolResult },
+        { toolResult: { ...toolResult, details: null } },
+      ],
+    },
+  );
+  assert.deepEqual((await f.root.entries({}, 1, undefined, execution)).items[0]?.model, [
+    { role: "system", ...system, content: "" },
+    { role: "user", content: "", timestamp: 2 },
+    { role: "assistant", ...assistant },
+    { role: "toolResult", ...toolResult },
+    { role: "toolResult", ...toolResult, details: null },
+  ]);
+  assert.equal(f.faux.state.callCount, 0);
 });

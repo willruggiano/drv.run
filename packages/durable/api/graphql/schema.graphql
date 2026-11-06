@@ -14,6 +14,11 @@ upstream scan; storage validates it. Null means no continuation.
 scalar Cursor
 
 """
+Upstream EntryDraft.head: a native EntryId or the literal string "self".
+"""
+scalar EntryHead
+
+"""
 Upstream EntryId; the same numeric range and representation as ConversationId.
 """
 scalar EntryId
@@ -79,11 +84,6 @@ enum HarnessInspectionScheduling {
   closing
   paused
   running
-}
-
-"""GraphQL name for InputSubmissionDraft["type"]."""
-enum InputSubmissionDraftType {
-  input
 }
 
 """GraphQL name for NonNullable<InputSubmissionDraft["whenBusy"]>."""
@@ -243,6 +243,32 @@ input AgentChange {
   thinkingLevel: ModelThinkingLevel
 }
 
+input AssistantContentInput @oneOf {
+  text: TextContentInput
+  thinking: ThinkingContentInput
+  toolCall: ToolCallInput
+}
+
+input AssistantMessageInput {
+  api: String!
+  content: [AssistantContentInput!]!
+  deferred: DeferredHandleInput
+  diagnostics: [MessageDiagnosticInput!]
+  durationMs: Float
+  endTurn: Boolean
+  errorMessage: String
+  model: String!
+  provider: String!
+  providerThinkingLevel: String
+  rawStopReason: String
+  responseId: String
+  responseModel: String
+  stopReason: StopReason!
+  thinkingLevel: ModelThinkingLevel
+  timestamp: Float!
+  usage: UsageInput!
+}
+
 input CompactInput {
   clientMutationId: String
   conversationId: ID!
@@ -255,10 +281,51 @@ input ConfigureInput {
   conversationId: ID!
 }
 
+input ContextEditInput @oneOf {
+  omit: EntryId
+  replace: ContextReplacementInput
+}
+
+input ContextReplacementInput {
+  messages: [MessageInput!]!
+  target: EntryId!
+}
+
 input ConversationQuery {
   order: ScanOrder
   ownerConversationId: ConversationId
   ownerTaskId: TaskId
+}
+
+input DeferredHandleInput {
+  api: String!
+  """Optional JSON payload; explicit null is allowed."""
+  data: JsonValue
+  expiresAt: Float
+  id: String!
+  modelId: String!
+  pollAfterMs: Float
+  provider: String!
+}
+
+input DiagnosticErrorInput {
+  """Upstream string or number code; omit when absent."""
+  code: JsonValue
+  message: String!
+  name: String
+  stack: String
+}
+
+input EntryDraft {
+  """Optional JSON payload; explicit null is allowed."""
+  data: JsonValue
+  edits: [ContextEditInput!]
+  head: EntryHead
+  kind: String!
+  """
+  Omit for display-only data; even an empty array is a context-affecting write.
+  """
+  model: [MessageInput!]
 }
 
 """
@@ -282,7 +349,7 @@ input ImageContentInput {
 input InputEntry {
   """Optional JSON payload; explicit null is allowed."""
   data: JsonValue
-  """Application kind; must not start with the reserved prefix "pi."."""
+  """Application kind; nonempty and outside the reserved pi. prefix."""
   kind: String!
 }
 
@@ -290,13 +357,41 @@ input InputSubmissionDraft {
   content: UserInput!
   entry: InputEntry
   requestId: String
-  type: InputSubmissionDraftType!
   whenBusy: InputSubmissionDraftWhenBusy
+}
+
+input MessageDiagnosticInput {
+  details: JsonObject
+  error: DiagnosticErrorInput
+  timestamp: Float!
+  type: String!
+}
+
+input MessageInput @oneOf {
+  assistant: AssistantMessageInput
+  system: SystemMessageInput
+  toolResult: ToolResultMessageInput
+  user: UserMessageInput
 }
 
 input ModelRefInput {
   modelId: String!
   provider: String!
+}
+
+input NestedToolCallRecordInput {
+  arguments: JsonObject
+  argumentsBytes: Float
+  durationMs: Float
+  error: String
+  id: String!
+  name: String!
+  status: NestedToolCallStatus!
+}
+
+input NestedToolCallsInput {
+  calls: [NestedToolCallRecordInput!]!
+  complete: Boolean!
 }
 
 input ResetInput {
@@ -314,11 +409,33 @@ input ResumeInput {
   sessionId: ID!
 }
 
+"""
+Exactly one upstream SubmissionDraft variant; the selection supplies type.
+"""
+input SubmissionDraft @oneOf {
+  input: InputSubmissionDraft
+  write: WriteSubmissionDraft
+}
+
 input SubmitInput {
   clientMutationId: String
   """Global ConversationRecord ID, not its numeric durableId."""
   conversationId: ID!
-  submission: InputSubmissionDraft!
+  submission: SubmissionDraft!
+}
+
+input SystemMessageContentInput @oneOf {
+  blocks: [TextContentInput!]
+  text: String
+}
+
+input SystemMessageInput {
+  content: SystemMessageContentInput!
+  """Named prompt sections; each value must be a string or null."""
+  sections: JsonObject
+  timestamp: Float!
+  toolsAdded: [ToolInput!]
+  toolsRemoved: [ToolReferenceInput!]
 }
 
 input TaskQuery {
@@ -336,6 +453,65 @@ input TextContentInput {
   textSignature: String
 }
 
+input ThinkingContentInput {
+  redacted: Boolean
+  thinking: String!
+  thinkingSignature: String
+}
+
+input ToolCallInput {
+  arguments: JsonObject!
+  argumentsError: String
+  id: String!
+  name: String!
+  namespace: String
+  thoughtSignature: String
+}
+
+input ToolInput {
+  """Upstream false or ConstrainedSamplingConfig; omit when absent."""
+  constrainedSampling: JsonValue
+  description: String!
+  name: String!
+  parameters: JsonObject!
+}
+
+input ToolReferenceInput {
+  name: String!
+}
+
+input ToolResultMessageInput {
+  content: [UserInputBlock!]!
+  """Optional JSON payload; explicit null is allowed."""
+  details: JsonValue
+  durationMs: Float
+  isError: Boolean!
+  nestedCalls: NestedToolCallsInput
+  timestamp: Float!
+  toolCallId: String!
+  toolName: String!
+  usage: UsageInput
+}
+
+input UsageCostInput {
+  cacheRead: Float!
+  cacheWrite: Float!
+  input: Float!
+  output: Float!
+  total: Float!
+}
+
+input UsageInput {
+  cacheRead: Float!
+  cacheWrite: Float!
+  cacheWrite1h: Float
+  cost: UsageCostInput!
+  input: Float!
+  output: Float!
+  reasoning: Float
+  totalTokens: Float!
+}
+
 """Exactly one representation: plain text or ordered text/image blocks."""
 input UserInput @oneOf {
   blocks: [UserInputBlock!]
@@ -345,6 +521,16 @@ input UserInput @oneOf {
 input UserInputBlock @oneOf {
   image: ImageContentInput
   text: TextContentInput
+}
+
+input UserMessageInput {
+  content: UserInput!
+  timestamp: Float!
+}
+
+input WriteSubmissionDraft {
+  entry: EntryDraft!
+  requestId: String
 }
 
 """
@@ -591,9 +777,9 @@ type Mutation {
   """
   resume(input: ResumeInput!): ResumePayload
   """
-  Admit input, not placement or completion. Same requestId and type recover the
-  prior submission without comparing content. A key used for another type
-  retains the untyped-error fallback. ConversationBusy means not admitted.
+  Admit input or a passive entry write, not necessarily placement or completion.
+  Same requestId and type recover the prior submission without comparing content.
+  A key used for another type retains the untyped-error fallback. ConversationBusy means not admitted.
   """
   submit(input: SubmitInput!): SubmitPayload
 }

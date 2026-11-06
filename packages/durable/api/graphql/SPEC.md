@@ -67,8 +67,8 @@ Calls to `D.Conversation` methods acquire the handle through
 | Inspect current or historical model context     | `ConversationRecord.context`             | `D.Conversation.context(context, { at })`.                                                                                                                      |
 | Recover an uncertain submission acknowledgement | `ConversationRecord.submissionByRequest` | `D.Tx.submissionByRequest(conversationId, requestId)`.                                                                                                          |
 | Read a submission receipt                       | `ConversationRecord.status`              | `D.Harness.submission(id)`, then `D.Submission.status()`; returns null for a different conversation.                                                            |
-| Submit input, including application metadata    | `Mutation.submit`                        | `D.Conversation.submit(submission)`; only the input branch of `D.SubmissionDraft`.                                                                              |
-| Withdraw queued input                           | `Mutation.abortSubmission`               | `D.Harness.abortSubmission(id, context, conversationId)`.                                                                                                       |
+| Submit input or a passive entry write           | `Mutation.submit`                        | `D.Conversation.submit(submission)`; both branches of `D.SubmissionDraft`.                                                                                      |
+| Withdraw a queued submission                    | `Mutation.abortSubmission`               | `D.Harness.abortSubmission(id, context, conversationId)`.                                                                                                       |
 | Stop ordinary owned work                        | `Mutation.abort`                         | `D.Conversation.abort(context)`; no background option exposed.                                                                                                  |
 | Enable scheduling                               | `Mutation.resume`                        | `D.Harness.resume()`.                                                                                                                                           |
 | Admit a context reset                           | `Mutation.reset`                         | `D.Conversation.reset(handoff, context)`.                                                                                                                       |
@@ -112,41 +112,47 @@ token, not an individual `D.EntryRecord`.
 
 ### Inputs, agent settings, and mutation envelopes
 
-| Schema name              | Upstream name or adapter role                                                               |
-| ------------------------ | ------------------------------------------------------------------------------------------- |
-| `ConversationQuery`      | `D.ConversationQuery`.                                                                      |
-| `EntryQuery`             | `Omit<D.EntryQuery, "conversationId">`; the conversation is already addressed.              |
-| `TaskQuery`              | `D.TaskQuery`.                                                                              |
-| `Agent`                  | Readable `D.Agent` fields: `model`, `thinkingLevel`, `cwd`, `instructions`.                 |
-| `AgentChange`            | Writable `D.AgentChange` fields: `model`, `thinkingLevel`, `cwd`.                           |
-| `ModelRefInput`          | `D.ModelRef` as an input object.                                                            |
-| `ModelRef`               | `D.ModelRef` as an output object; GraphQL input and output types cannot share a definition. |
-| `InputSubmissionDraft`   | `D.InputSubmissionDraft`; `content` uses the one-of conversion below.                       |
-| `InputEntry`             | `D.InputEntry`; application kind and arbitrary JSON data.                                   |
-| `UserInput`              | One-of wrapper for `D.UserInput`, which is `AI.UserMessage["content"]`.                     |
-| `UserInputBlock`         | One-of wrapper for an element of the array branch of `D.UserInput`.                         |
-| `TextContentInput`       | `Omit<AI.TextContent, "type">`; conversion supplies `type: "text"`.                         |
-| `ImageContentInput`      | `Omit<AI.ImageContent, "type">`; conversion supplies `type: "image"`.                       |
-| `SubmitInput`            | Adapter addressing/correlation envelope around `D.InputSubmissionDraft`.                    |
-| `SubmitPayload`          | Adapter reference to the admitted `D.Submission.id`.                                        |
-| `AbortSubmissionInput`   | Adapter addressing/correlation envelope for `D.Harness.abortSubmission()`.                  |
-| `AbortSubmissionPayload` | Adapter envelope around the return value of `D.Harness.abortSubmission()`.                  |
-| `AbortInput`             | Adapter addressing/correlation envelope for `D.Conversation.abort()`.                       |
-| `AbortPayload`           | Adapter envelope for successful upstream void completion.                                   |
-| `ResumeInput`            | Adapter addressing/correlation envelope for `D.Harness.resume()`.                           |
-| `ResumePayload`          | Adapter envelope for successful upstream void completion.                                   |
-| `ResetInput`             | Adapter addressing/correlation envelope around `D.Conversation.reset()`'s handoff.          |
-| `ResetPayload`           | Adapter envelope for successful upstream void completion.                                   |
-| `CompactInput`           | Adapter addressing/correlation envelope around `D.Conversation.compact()`'s instructions.   |
-| `CompactPayload`         | Adapter reference to the task ID returned by `D.Conversation.compact()`.                    |
-| `ConfigureInput`         | Adapter addressing/correlation envelope around the exposed `D.AgentChange` fields.          |
-| `ConfigurePayload`       | Adapter envelope for successful upstream void completion.                                   |
+| Schema name               | Upstream name or adapter role                                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `ConversationQuery`       | `D.ConversationQuery`.                                                                                   |
+| `EntryQuery`              | `Omit<D.EntryQuery, "conversationId">`; the conversation is already addressed.                           |
+| `TaskQuery`               | `D.TaskQuery`.                                                                                           |
+| `Agent`                   | Readable `D.Agent` fields: `model`, `thinkingLevel`, `cwd`, `instructions`.                              |
+| `AgentChange`             | Writable `D.AgentChange` fields: `model`, `thinkingLevel`, `cwd`.                                        |
+| `ModelRefInput`           | `D.ModelRef` as an input object.                                                                         |
+| `ModelRef`                | `D.ModelRef` as an output object; GraphQL input and output types cannot share a definition.              |
+| `SubmissionDraft`         | One-of wrapper for `D.SubmissionDraft`; selection supplies `type`.                                       |
+| `InputSubmissionDraft`    | `Omit<D.InputSubmissionDraft, "type">`; selection supplies the discriminator and content is unwrapped.   |
+| `WriteSubmissionDraft`    | Adapter name for the write branch of `D.SubmissionDraft`, without its discriminator or forbidden fields. |
+| `InputEntry`              | `D.InputEntry`; application kind and arbitrary JSON data.                                                |
+| `EntryDraft`              | `D.EntryDraft`, with typed message and context-edit inputs.                                              |
+| `ContextEditInput`        | One-of wrapper for `D.ContextEdit`; selection supplies `action`.                                         |
+| `ContextReplacementInput` | Adapter object for the replace branch's target and messages.                                             |
+| `UserInput`               | One-of wrapper for `D.UserInput`, which is `AI.UserMessage["content"]`.                                  |
+| `UserInputBlock`          | One-of wrapper for an element of the array branch of `D.UserInput`.                                      |
+| `TextContentInput`        | `Omit<AI.TextContent, "type">`; conversion supplies `type: "text"`.                                      |
+| `ImageContentInput`       | `Omit<AI.ImageContent, "type">`; conversion supplies `type: "image"`.                                    |
+| `SubmitInput`             | Adapter addressing/correlation envelope around `D.SubmissionDraft`.                                      |
+| `SubmitPayload`           | Adapter reference to the admitted `D.Submission.id`.                                                     |
+| `AbortSubmissionInput`    | Adapter addressing/correlation envelope for `D.Harness.abortSubmission()`.                               |
+| `AbortSubmissionPayload`  | Adapter envelope around the return value of `D.Harness.abortSubmission()`.                               |
+| `AbortInput`              | Adapter addressing/correlation envelope for `D.Conversation.abort()`.                                    |
+| `AbortPayload`            | Adapter envelope for successful upstream void completion.                                                |
+| `ResumeInput`             | Adapter addressing/correlation envelope for `D.Harness.resume()`.                                        |
+| `ResumePayload`           | Adapter envelope for successful upstream void completion.                                                |
+| `ResetInput`              | Adapter addressing/correlation envelope around `D.Conversation.reset()`'s handoff.                       |
+| `ResetPayload`            | Adapter envelope for successful upstream void completion.                                                |
+| `CompactInput`            | Adapter addressing/correlation envelope around `D.Conversation.compact()`'s instructions.                |
+| `CompactPayload`          | Adapter reference to the task ID returned by `D.Conversation.compact()`.                                 |
+| `ConfigureInput`          | Adapter addressing/correlation envelope around the exposed `D.AgentChange` fields.                       |
+| `ConfigurePayload`        | Adapter envelope for successful upstream void completion.                                                |
 
 ### Messages, content, and diagnostics
 
 These declarations originate in Pi AI, not Durable. Durable stores and returns
-Pi AI messages. Output unions preserve their variants; wrappers preserve the
-string-versus-array distinction without making messages opaque scalars.
+Pi AI messages. Output unions and one-of inputs preserve their variants;
+wrappers preserve the string-versus-array distinction without making messages
+opaque scalars.
 
 | Schema name            | Upstream name or adapter role                                                        |
 | ---------------------- | ------------------------------------------------------------------------------------ |
@@ -176,6 +182,30 @@ string-versus-array distinction without making messages opaque scalars.
 | `NestedToolCalls`      | `AI.NestedToolCalls`.                                                                |
 | `NestedToolCallRecord` | `AI.NestedToolCallRecord`.                                                           |
 
+Input objects map to the same upstream contracts. Nested content and metadata
+use the corresponding input types; conversion supplies omitted discriminators.
+
+| Schema name                 | Upstream name or adapter role                                                 |
+| --------------------------- | ----------------------------------------------------------------------------- |
+| `MessageInput`              | One-of wrapper for `AI.Message`; selection supplies `role`.                   |
+| `SystemMessageInput`        | `Omit<AI.SystemMessage, "role">`.                                             |
+| `UserMessageInput`          | `Omit<AI.UserMessage, "role">`; content uses `UserInput`.                     |
+| `AssistantMessageInput`     | `Omit<AI.AssistantMessage, "role">`.                                          |
+| `ToolResultMessageInput`    | `Omit<AI.ToolResultMessage, "role">`; content uses `UserInputBlock` elements. |
+| `SystemMessageContentInput` | One-of wrapper for `AI.SystemMessage["content"]`.                             |
+| `AssistantContentInput`     | One-of wrapper for `AI.AssistantMessage["content"][number]`.                  |
+| `ThinkingContentInput`      | `Omit<AI.ThinkingContent, "type">`.                                           |
+| `ToolCallInput`             | `Omit<AI.ToolCall, "type">`.                                                  |
+| `ToolInput`                 | `AI.Tool`; parameters and constrained sampling remain JSON.                   |
+| `ToolReferenceInput`        | `AI.ToolReference`.                                                           |
+| `UsageInput`                | `AI.Usage`.                                                                   |
+| `UsageCostInput`            | `AI.Usage["cost"]`.                                                           |
+| `DeferredHandleInput`       | `AI.DeferredHandle`.                                                          |
+| `MessageDiagnosticInput`    | `AI.AssistantMessageDiagnostic`.                                              |
+| `DiagnosticErrorInput`      | `AI.DiagnosticErrorInfo`.                                                     |
+| `NestedToolCallsInput`      | `AI.NestedToolCalls`.                                                         |
+| `NestedToolCallRecordInput` | `AI.NestedToolCallRecord`.                                                    |
+
 ### Enums
 
 Enum values retain upstream discriminant spellings. Several enums name an
@@ -188,7 +218,6 @@ upstream inline literal union rather than a separately exported type.
 | `ContextEditAction`            | `D.ContextEdit["action"]`.                                                                                |
 | `HarnessAbortSubmissionResult` | `Awaited<ReturnType<D.Harness["abortSubmission"]>>`.                                                      |
 | `HarnessInspectionScheduling`  | `D.HarnessInspection["scheduling"]`.                                                                      |
-| `InputSubmissionDraftType`     | `D.InputSubmissionDraft["type"]`.                                                                         |
 | `InputSubmissionDraftWhenBusy` | `NonNullable<D.InputSubmissionDraft["whenBusy"]>`.                                                        |
 | `JoinPolicy`                   | `D.JoinPolicy`.                                                                                           |
 | `MessageRole`                  | `AI.Message["role"]`.                                                                                     |
@@ -205,23 +234,24 @@ upstream inline literal union rather than a separately exported type.
 
 ### Scalars and GraphQL-provided names
 
-| Schema name        | Upstream name or adapter role                                                                                            |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `ConversationId`   | `D.ConversationId`.                                                                                                      |
-| `EntryId`          | `D.EntryId`.                                                                                                             |
-| `TaskId`           | `D.TaskId`; result-type branding is erased at the transport boundary.                                                    |
-| `SubmissionId`     | `D.SubmissionId`.                                                                                                        |
-| `Cursor`           | `D.Cursor`, represented directly as JSON, not the REST base64url string.                                                 |
-| `JsonObject`       | `D.JsonObject` and `AI.JsonObject`.                                                                                      |
-| `JsonValue`        | `Chord.JsonValue` and `AI.JsonValue`.                                                                                    |
-| `TelemetryCarrier` | `Telemetry.TelemetryCarrier`.                                                                                            |
-| `ID`               | GraphQL built-in used for adapter global identities, not native Durable IDs.                                             |
-| `Int`              | GraphQL built-in used for page limits; upstream accepts a `number`.                                                      |
-| `Float`            | GraphQL built-in used for upstream numeric fields, including timestamps and usage.                                       |
-| `String`           | GraphQL built-in used for upstream strings and adapter session/correlation keys.                                         |
-| `Boolean`          | GraphQL built-in used for upstream booleans.                                                                             |
-| `@oneOf`           | GraphQL input-variant constraint generated by Grats for the `UserInput` and `UserInputBlock` unions.                     |
-| `__typename`       | GraphQL runtime type name, not upstream `role`, `type`, `kind`, or `status`. Those discriminants remain separate fields. |
+| Schema name        | Upstream name or adapter role                                                                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ConversationId`   | `D.ConversationId`.                                                                                                                                                                  |
+| `EntryId`          | `D.EntryId`.                                                                                                                                                                         |
+| `EntryHead`        | `NonNullable<D.EntryDraft["head"]>`: a native EntryId or the literal string "self".                                                                                                  |
+| `TaskId`           | `D.TaskId`; result-type branding is erased at the transport boundary.                                                                                                                |
+| `SubmissionId`     | `D.SubmissionId`.                                                                                                                                                                    |
+| `Cursor`           | `D.Cursor`, represented directly as JSON, not the REST base64url string.                                                                                                             |
+| `JsonObject`       | `D.JsonObject` and `AI.JsonObject`.                                                                                                                                                  |
+| `JsonValue`        | `Chord.JsonValue` and `AI.JsonValue`.                                                                                                                                                |
+| `TelemetryCarrier` | `Telemetry.TelemetryCarrier`.                                                                                                                                                        |
+| `ID`               | GraphQL built-in used for adapter global identities, not native Durable IDs.                                                                                                         |
+| `Int`              | GraphQL built-in used for page limits; upstream accepts a `number`.                                                                                                                  |
+| `Float`            | GraphQL built-in used for upstream numeric fields, including timestamps and usage.                                                                                                   |
+| `String`           | GraphQL built-in used for upstream strings and adapter session/correlation keys.                                                                                                     |
+| `Boolean`          | GraphQL built-in used for upstream booleans.                                                                                                                                         |
+| `@oneOf`           | GraphQL input-variant constraint generated by Grats for the submission, message, content, and context-edit input unions.                                                             |
+| `__typename`       | GraphQL runtime type name, not upstream `role`, `type`, `kind`, or `status`. Output discriminants remain separate fields; input selections supply discriminators where mapped below. |
 
 Other standard GraphQL introspection names and directives have no Durable
 counterpart. Their definitions belong to
@@ -230,31 +260,38 @@ counterpart. Their definitions belong to
 ### Field and argument conversions
 
 All fields and arguments not listed here or in the procedure table retain their
-mapped upstream member names. Union flattening names fields from every variant;
-it does not invent new upstream states. Enum values are not renamed.
+mapped upstream member names. Flattened output objects retain variant-dependent
+fields; one-of inputs select a single upstream variant. Enum values are not
+renamed.
 
-| GraphQL name/path                                  | Upstream mapping                                                                                                                                     |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Node.id`, including record `id` fields            | Adapter global identity containing session scope, kind, and native ID; Harness has no native record ID.                                              |
-| Record `durableId`                                 | The corresponding upstream record's `id`. Applies to ConversationRecord, EntryRecord, TaskRecord, and SubmissionRecord.                              |
-| Record `harness`                                   | Adapter relationship to the owning persisted session.                                                                                                |
-| `Harness.sessionId`, `Query.harness(sessionId)`    | Deployment's external session key, not a Durable record field.                                                                                       |
-| `Query.node(id)`                                   | Adapter global identity selecting a native read.                                                                                                     |
-| `*Connection.nodes`                                | `D.Page.items`, after record projection.                                                                                                             |
-| `*Connection.pageInfo.next`                        | `D.Page.next`; the `pageInfo` container is adapter-only.                                                                                             |
-| Mutation `input`                                   | Adapter envelope; native procedures receive the selected arguments, not this envelope.                                                               |
-| Mutation input `conversationId`                    | Global ConversationRecord identity used to resolve the native conversation. Other `ConversationId`-typed fields/arguments remain native numeric IDs. |
-| `ResumeInput.sessionId`                            | Global Harness identity, unlike the external key in `Harness.sessionId`.                                                                             |
-| `SubmitInput.submission`                           | The draft argument of `D.Conversation.submit()`.                                                                                                     |
-| `SubmitPayload.submissionId`                       | `D.Submission.id`, converted to a global SubmissionRecord identity.                                                                                  |
-| `CompactPayload.taskId`                            | Native result of `D.Conversation.compact()`, converted to a global TaskRecord identity.                                                              |
-| `AbortSubmissionPayload.result`                    | Native result of `D.Harness.abortSubmission()`.                                                                                                      |
-| `clientMutationId`                                 | Adapter-only echo; never forwarded as upstream `requestId`.                                                                                          |
-| `UserInput.text`                                   | Native string content.                                                                                                                               |
-| `UserInput.blocks`                                 | Native ordered content array, after block unwrapping.                                                                                                |
-| `UserInputBlock.text`, `UserInputBlock.image`      | Native text/image block; conversion supplies the corresponding `type` discriminator.                                                                 |
-| `StringContent.text`                               | Native string content, unchanged.                                                                                                                    |
-| `TextContentList.blocks`, `UserContentList.blocks` | Native content arrays, with typed block projections.                                                                                                 |
+| GraphQL name/path                                           | Upstream mapping                                                                                                                                     |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Node.id`, including record `id` fields                     | Adapter global identity containing session scope, kind, and native ID; Harness has no native record ID.                                              |
+| Record `durableId`                                          | The corresponding upstream record's `id`. Applies to ConversationRecord, EntryRecord, TaskRecord, and SubmissionRecord.                              |
+| Record `harness`                                            | Adapter relationship to the owning persisted session.                                                                                                |
+| `Harness.sessionId`, `Query.harness(sessionId)`             | Deployment's external session key, not a Durable record field.                                                                                       |
+| `Query.node(id)`                                            | Adapter global identity selecting a native read.                                                                                                     |
+| `*Connection.nodes`                                         | `D.Page.items`, after record projection.                                                                                                             |
+| `*Connection.pageInfo.next`                                 | `D.Page.next`; the `pageInfo` container is adapter-only.                                                                                             |
+| Mutation `input`                                            | Adapter envelope; native procedures receive the selected arguments, not this envelope.                                                               |
+| Mutation input `conversationId`                             | Global ConversationRecord identity used to resolve the native conversation. Other `ConversationId`-typed fields/arguments remain native numeric IDs. |
+| `ResumeInput.sessionId`                                     | Global Harness identity, unlike the external key in `Harness.sessionId`.                                                                             |
+| `SubmitInput.submission`                                    | The draft argument of `D.Conversation.submit()`.                                                                                                     |
+| `SubmissionDraft.input`, `SubmissionDraft.write`            | Selected native draft; conversion supplies the corresponding `type` discriminator.                                                                   |
+| `MessageInput.system`, `.user`, `.assistant`, `.toolResult` | Selected native message; conversion supplies the corresponding `role` discriminator.                                                                 |
+| `AssistantContentInput.text`, `.thinking`, `.toolCall`      | Selected native content block; conversion supplies the corresponding `type` discriminator.                                                           |
+| `SystemMessageContentInput.text`, `.blocks`                 | Native string or text-block array; block conversion supplies `type: "text"`.                                                                         |
+| `ContextEditInput.omit`                                     | Native `target` with `action: "omit"`; no messages.                                                                                                  |
+| `ContextEditInput.replace`                                  | Native target and replacement messages with `action: "replace"`.                                                                                     |
+| `SubmitPayload.submissionId`                                | `D.Submission.id`, converted to a global SubmissionRecord identity.                                                                                  |
+| `CompactPayload.taskId`                                     | Native result of `D.Conversation.compact()`, converted to a global TaskRecord identity.                                                              |
+| `AbortSubmissionPayload.result`                             | Native result of `D.Harness.abortSubmission()`.                                                                                                      |
+| `clientMutationId`                                          | Adapter-only echo; never forwarded as upstream `requestId`.                                                                                          |
+| `UserInput.text`                                            | Native string content.                                                                                                                               |
+| `UserInput.blocks`                                          | Native ordered content array, after block unwrapping.                                                                                                |
+| `UserInputBlock.text`, `UserInputBlock.image`               | Native text/image block; conversion supplies the corresponding `type` discriminator.                                                                 |
+| `StringContent.text`                                        | Native string content, unchanged.                                                                                                                    |
+| `TextContentList.blocks`, `UserContentList.blocks`          | Native content arrays, with typed block projections.                                                                                                 |
 
 For `ContextView`, `EntryRecord.model`, and replacement `ContextEdit.messages`,
 the field names are unchanged but each native message receives the typed output
@@ -280,19 +317,23 @@ The generated model message remains a user message. Metadata in `data` is not
 automatically model input, decoded as an attachment, or resolved as a file.
 Application-specific attachment descriptors can live there; their interpretation
 belongs to the application. This path is already exposed through GraphQL
-`SubmitInput.submission.entry` and read back through `EntryRecord.data`.
+`SubmitInput.submission.input.entry` and read back through `EntryRecord.data`.
 `SubmissionRecord.entry` is the native ID of that placed entry, not the data
 payload itself. This does not add arbitrary properties to a ConversationRecord
 or SubmissionRecord.
 
-Upstream also accepts `SubmissionDraft`'s passive `type: "write"` branch with an
-`EntryDraft`, or server-side `Tx.appendEntry()`. These can append application
-data without submitting user input. A write with only kind/data is display-only
-and normally lands immediately even while busy; it queues behind a pending
-reset. Writes carrying model/head/edits can affect model context and follow
-upstream placement rules. The current GraphQL `InputSubmissionDraft`
-deliberately excludes passive writes, even though returned `SubmissionRecord`
-objects can have type `write`.
+GraphQL exposes the passive write branch through
+`SubmitInput.submission.write.entry`, mapped to upstream `EntryDraft`. It
+appends an entry without itself requesting an agent response. A write with only
+kind/data is display-only and normally lands immediately even while busy; it
+queues behind a pending reset. Writes carrying model/head/edits follow upstream
+boundary and stale-head rules, even when the arrays are empty. The input
+branch's kind restrictions do not apply to writes.
+
+Both branches forward `requestId`. The same key and native type recover the
+prior submission without comparing payloads; reusing a key across types retains
+the upstream untyped-error fallback. Admission does not imply placement or
+completion.
 
 These are transcript entries, not Durable Docs. Sources:
 [`InputEntry` and `SubmissionDraft`](../node_modules/@earendil-works/pi-durable/dist/harness/types.d.ts),
