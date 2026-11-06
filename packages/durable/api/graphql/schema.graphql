@@ -190,9 +190,13 @@ input AbortSubmissionInput {
 }
 
 """
-Pick<AgentChange, "model" | "thinkingLevel">; no other overrides are exposed.
+Pick<AgentChange, "model" | "thinkingLevel" | "cwd">; no other overrides are exposed.
 """
 input AgentChange {
+  """
+  Omitted: unchanged. Explicit null: clear override. Value: replace override.
+  """
+  cwd: String
   """
   Omitted: unchanged. Explicit null: clear override. Value: replace override.
   """
@@ -296,6 +300,27 @@ type AbortSubmissionPayload {
   result: HarnessAbortSubmissionResult!
 }
 
+"""
+Readable settings from upstream Agent. Runtime extensions, tools, and prompt
+section callbacks remain server-side.
+"""
+type Agent {
+  """Directory within the environment's file system; null when unset."""
+  cwd: String
+  """Additional instructions, not the rendered extension prompt sections."""
+  instructions: String
+  model: AgentModel
+  thinkingLevel: ModelThinkingLevel!
+}
+
+"""
+Output representation of upstream ModelRef; ModelRef is the mutation input type.
+"""
+type AgentModel {
+  modelId: String!
+  provider: String!
+}
+
 type CompactPayload {
   clientMutationId: String
   """
@@ -332,6 +357,11 @@ ConversationRecord, augmented with scoped Conversation operations, the read-only
 Tx.submissionByRequest lookup, and Submission.status. Handles stay server-side.
 """
 type ConversationRecord implements Node {
+  """
+  Conversation.agent(): settings resolved against the current registry and host
+  settings, not just stored overrides. Does not enable scheduling.
+  """
+  agent: Agent!
   """
   Current context when at is omitted; otherwise context through that visible entry.
   """
@@ -422,6 +452,16 @@ type Harness implements Node {
   sessionId: String!
 }
 
+type HarnessConnection {
+  edges: [HarnessEdge!]!
+  pageInfo: PageInfo!
+}
+
+type HarnessEdge {
+  cursor: String!
+  node: Harness!
+}
+
 type HarnessInspection {
   scheduling: HarnessInspectionScheduling!
   """Queued and placed submissions, in upstream ID order."""
@@ -444,7 +484,7 @@ type Mutation {
   """
   compact(input: CompactInput!): CompactPayload
   """
-  Change only model/thinking overrides; return no second configuration representation.
+  Change model, thinking level, or cwd overrides; read resolved settings through agent.
   """
   configure(input: ConfigureInput!): ConfigurePayload
   """Admit a reset, not necessarily its placement. No idempotency key."""
@@ -466,7 +506,7 @@ Forward-only Relay connections: first is a nonnegative Int, including zero;
 after is an opaque edge cursor. Slice strictly after its edge, then take first.
 Ordering is stable across pages. Omitted order inherits the cursor's order or
 the operation's initial default. Conflicting order or foreign/malformed cursors
-are BAD_REQUEST. Cursors bind session, connection, conversation where applicable,
+are BAD_REQUEST. Cursors bind connection, session and conversation where applicable,
 filters, and effective order, but not page size.
 
 Every edge must have its own resumable cursor, including the final edge. A
@@ -492,6 +532,13 @@ type Query {
   Resolve a persisted Harness by its external session key; does not create one.
   """
   harness(sessionId: String!): Harness
+  """
+  List accessible persisted sessions from the deployment's catalog, not the cache
+  of open Harness instances. Durable does not provide a cross-session catalog.
+  Order by ascending sessionId; listing does not create sessions or enable scheduling.
+  Cursors bind the catalog, access scope, and ordering, not an individual session.
+  """
+  harnesses(after: String, first: Int!): HarnessConnection!
   """
   Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
   """

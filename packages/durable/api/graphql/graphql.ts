@@ -145,6 +145,19 @@ export function harness(sessionId: string): Promise<Harness | null> {
 }
 
 /**
+ * List accessible persisted sessions from the deployment's catalog, not the cache
+ * of open Harness instances. Durable does not provide a cross-session catalog.
+ * Order by ascending sessionId; listing does not create sessions or enable scheduling.
+ * Cursors bind the catalog, access scope, and ordering, not an individual session.
+ * @gqlQueryField
+ */
+export function harnesses(first: Int, after?: string | null): Promise<HarnessConnection> {
+  void first;
+  void after;
+  throw new Error("not yet implemented");
+}
+
+/**
  * Resolve Harness.conversation(id); expose its record instead of a live handle.
  * @gqlField
  */
@@ -218,6 +231,49 @@ interface ConversationRecord extends Node {
   readonly parent?: ConversationRecordParent | null;
   /** @gqlField */
   readonly owner?: ConversationRecordOwner | null;
+}
+
+/**
+ * Conversation.agent(): settings resolved against the current registry and host
+ * settings, not just stored overrides. Does not enable scheduling.
+ * @gqlField
+ */
+export function agent(source: ConversationRecord): Promise<Agent> {
+  void source;
+  throw new Error("not yet implemented");
+}
+
+/**
+ * Readable settings from upstream Agent. Runtime extensions, tools, and prompt
+ * section callbacks remain server-side.
+ * @gqlType
+ */
+interface Agent {
+  /** @gqlField */
+  readonly model?: AgentModel | null;
+  /** @gqlField */
+  readonly thinkingLevel: ModelThinkingLevel;
+  /**
+   * Directory within the environment's file system; null when unset.
+   * @gqlField
+   */
+  readonly cwd?: string | null;
+  /**
+   * Additional instructions, not the rendered extension prompt sections.
+   * @gqlField
+   */
+  readonly instructions?: string | null;
+}
+
+/**
+ * Output representation of upstream ModelRef; ModelRef is the mutation input type.
+ * @gqlType
+ */
+interface AgentModel {
+  /** @gqlField */
+  readonly provider: string;
+  /** @gqlField */
+  readonly modelId: string;
 }
 
 /**
@@ -634,7 +690,7 @@ interface TaskQuery {
  * after is an opaque edge cursor. Slice strictly after its edge, then take first.
  * Ordering is stable across pages. Omitted order inherits the cursor's order or
  * the operation's initial default. Conflicting order or foreign/malformed cursors
- * are BAD_REQUEST. Cursors bind session, connection, conversation where applicable,
+ * are BAD_REQUEST. Cursors bind connection, session and conversation where applicable,
  * filters, and effective order, but not page size.
  *
  * Every edge must have its own resumable cursor, including the final edge. A
@@ -658,6 +714,22 @@ interface PageInfo {
   readonly startCursor?: string | null;
   /** @gqlField */
   readonly endCursor?: string | null;
+}
+
+/** @gqlType */
+interface HarnessConnection {
+  /** @gqlField */
+  readonly edges: ReadonlyArray<HarnessEdge>;
+  /** @gqlField */
+  readonly pageInfo: PageInfo;
+}
+
+/** @gqlType */
+interface HarnessEdge {
+  /** @gqlField */
+  readonly cursor: string;
+  /** @gqlField */
+  readonly node: Harness;
 }
 
 /** @gqlType */
@@ -911,7 +983,7 @@ interface ConfigureInput {
 }
 
 /**
- * Pick<AgentChange, "model" | "thinkingLevel">; no other overrides are exposed.
+ * Pick<AgentChange, "model" | "thinkingLevel" | "cwd">; no other overrides are exposed.
  * @gqlInput
  */
 interface AgentChange {
@@ -919,6 +991,8 @@ interface AgentChange {
   readonly model?: ModelRef | null;
   /** Omitted: unchanged. Explicit null: clear override. Value: replace override. */
   readonly thinkingLevel?: ModelThinkingLevel | null;
+  /** Omitted: unchanged. Explicit null: clear override. Value: replace override. */
+  readonly cwd?: string | null;
 }
 
 /** @gqlInput */
@@ -937,7 +1011,7 @@ interface ConfigurePayload {
 }
 
 /**
- * Change only model/thinking overrides; return no second configuration representation.
+ * Change model, thinking level, or cwd overrides; read resolved settings through agent.
  * @gqlMutationField
  */
 export function configure(input: ConfigureInput): Promise<ConfigurePayload | null> {
