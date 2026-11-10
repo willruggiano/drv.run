@@ -36,6 +36,7 @@
 - [ ] Move everything in the justfile to nix, delete justfile
 - [ ] Use legit telemetry tooling (otel-cli, otel-desktop-viewer) instead of
       homegrown slop, eg. [`timings.sh`](nixosModules/timing.sh)
+- [ ] Ship a browser-based editor, or perhaps bridge to neovim _in the guest_?!
 
 ## Codebase architecture
 
@@ -43,23 +44,19 @@
       benchmarks, integration tests, and nixos vm tests via
       passthru.{bench,tests}) -> generate the flake `checks` as function of its
       `packages`.
-- [ ] Split packages/app into:
-  - packages/www: elm frontend
-    - make idiomatic Elm/eliminate most of the typescript
-    - <https://elm-lang.org/docs>
-    - <https://guide.elm-lang.org/>
-    - <https://github.com/sporto/elm-patterns>
-    - <https://package.elm-lang.org/help/design-guidelines>
-    - <https://github.com/ricardocasares/skills/tree/main/skills/elm/elm-patterns>
-    - <https://github.com/elm/package.elm-lang.org/tree/master>
-  - packages/durable/api: typescript backend providing session apis and durable
-    rpc-like apis
-  - packages/durable/harness: basically the existing packages/app/harness
-    verbatim, but as a standalone package/library
-  - n.b. packages/durable is NOT its own package, it is just organizational and
-    should nothing more than the two sub-directories above, and, if apropo, a
-    tests sub-directory for integration tests + a default.nix for the test
-    derivation via `pkgs.callPackage ./packages/durable`, if apropo
+- [[packages/www/FEATURE_GAPS.md]]:
+  - [ ] CRUD for drv.run instances (minimum: list existing instances)
+  - [ ] www app settings (including durable-specific settings)
+  - [ ] OAuth accounts and login
+  - [ ] Push notifications
+  - [ ] Query/mutate durable docs over graphql (this also partially solves
+        /review, /cd, cwd, as well as "execution environment" selection)
+  - It seems like several of these things could be implemented as literal
+    filesystem over http, eg. "list drv.run instances" could be just "ls
+    /drv.run/instances/\*" (not a legit path). Likewise www app settings (the
+    non-durable ones) could be reading/writing a json file...
+- Design and implement a legitimate streaming/sync endpoint. The current "get a
+  fresh snapshot" approach is terrible.
 
 Additional references:
 
