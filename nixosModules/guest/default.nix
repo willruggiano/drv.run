@@ -144,13 +144,14 @@
   programs.git = {
     enable = true;
     # Address your git repos the same as your flakes!
-    # nix flake show github:willruggiano/drv.run
-    # jj git clone github:willruggiano/drv.run
+    # nix flake show tangled:willruggiano.tngl.sh/drv.run
+    # jj git clone tangled:willruggiano.tngl.sh/drv.run
     config.url = {
       "https://codeberg.org/".insteadOf = "codeberg:";
       "https://git.sr.ht/".insteadOf = "sourcehut:";
       "https://github.com/".insteadOf = "github:";
       "https://gitlab.com/".insteadOf = "gitlab:";
+      "https://tangled.org/".insteadOf = "tangled:";
     };
   };
 
