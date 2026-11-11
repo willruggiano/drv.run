@@ -266,9 +266,11 @@ Present two application settings panels:
   retry count/delays, automatic compaction, reserved/recent-context tokens, and
   background-compaction threshold.
 
-Read these through `wwwSettings` and `harnessSettings`; save through
-`saveWwwSettings` and `saveHarnessSettings`. The exact fields, enum choices,
-defaults, and validation are declared in
+Read these through `settings(app: web)` and `settings(app: harness)`, selecting
+fields from the `WebSettings` or `HarnessSettings` union member. `web` names the
+`www` application. Save through the separate `saveWwwSettings` and
+`saveHarnessSettings` mutations. The exact fields, enum choices, defaults, and
+validation are declared in
 [[packages/durable/api/graphql/SPEC.md#Settings schema]] and
 [[packages/durable/api/graphql/SPEC.md#Fields and defaults]]. Use checkboxes,
 choice controls, and integer fields rather than a generic key/value editor.

@@ -467,9 +467,15 @@ these fields with the Durable schema; they do not become Durable operations.
 
 ```graphql
 extend type Query {
-  wwwSettings: WwwSettings
-  harnessSettings: HarnessSettings
+  settings(app: App!): Settings
 }
+
+enum App {
+  web
+  harness
+}
+
+union Settings = WebSettings | HarnessSettings
 
 extend type Mutation {
   saveWwwSettings(input: SaveWwwSettingsInput!): SaveWwwSettingsPayload
@@ -495,7 +501,7 @@ enum HarnessQueueMode {
   all
 }
 
-type WwwSettings {
+type WebSettings {
   revision: String!
   wrapCode: Boolean!
   bottomAlign: Boolean!
@@ -564,7 +570,7 @@ input SaveWwwSettingsInput {
 }
 
 type SaveWwwSettingsPayload {
-  settings: WwwSettings!
+  settings: WebSettings!
   clientMutationId: String
 }
 
@@ -580,12 +586,42 @@ type SaveHarnessSettingsPayload {
 }
 ```
 
-The request's authorized user selects the files. There is no client-supplied
-path, user ID, application-name string, key/value list, or JSON settings scalar.
-These are the complete settings exposed in this iteration; other upstream
-`HarnessSettings` fields are not implicitly writable. Model, thinking level,
-cwd, instructions, and other conversation document values are not fields in
-either application file.
+`App.web` identifies the `www` application and returns `WebSettings`;
+`App.harness` returns `HarnessSettings`. The selector is required and non-null.
+Select fields with fragments on the union members; `__typename` identifies the
+returned variant. Aliases allow both applications to be read in one operation:
+
+```graphql
+query ApplicationSettings {
+  web: settings(app: web) {
+    __typename
+    ... on WebSettings {
+      revision
+      wrapCode
+      defaultDeliveryMode
+    }
+  }
+  harness: settings(app: harness) {
+    __typename
+    ... on HarnessSettings {
+      revision
+      transport
+      retry {
+        enabled
+        maxRetries
+      }
+    }
+  }
+}
+```
+
+The request's authorized user determines whose files are read; `app` selects
+only the application. There is no client-supplied path, user ID, arbitrary
+application-name string, key/value list, or JSON settings scalar. These are the
+complete settings exposed in this iteration; other upstream `HarnessSettings`
+fields are not implicitly writable. Model, thinking level, cwd, instructions,
+and other conversation document values are not fields in either application
+file.
 
 #### Fields and defaults
 
@@ -598,11 +634,11 @@ an empty/default configuration. A read never creates or rewrites a file.
 
 | Field                                         | Default      | Meaning                                                                                       |
 | --------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------- |
-| `WwwSettings.wrapCode`                        | `false`      | Wrap code blocks instead of horizontal scrolling.                                             |
-| `WwwSettings.bottomAlign`                     | `true`       | Bottom-align the transcript.                                                                  |
-| `WwwSettings.hideThinkingBlock`               | `false`      | Hide thinking content in the transcript.                                                      |
-| `WwwSettings.showImages`                      | `true`       | Display supported transcript images.                                                          |
-| `WwwSettings.defaultDeliveryMode`             | `followUp`   | Initial composer delivery choice; `steer` selects steering.                                   |
+| `WebSettings.wrapCode`                        | `false`      | Wrap code blocks instead of horizontal scrolling.                                             |
+| `WebSettings.bottomAlign`                     | `true`       | Bottom-align the transcript.                                                                  |
+| `WebSettings.hideThinkingBlock`               | `false`      | Hide thinking content in the transcript.                                                      |
+| `WebSettings.showImages`                      | `true`       | Display supported transcript images.                                                          |
+| `WebSettings.defaultDeliveryMode`             | `followUp`   | Initial composer delivery choice; `steer` selects steering.                                   |
 | `HarnessSettings.transport`                   | `auto`       | Model-provider transport, not browser SSE transport.                                          |
 | `HarnessSettings.steeringMode`                | `oneAtATime` | Number of steering submissions placed at a boundary.                                          |
 | `HarnessSettings.followUpMode`                | `oneAtATime` | Number of follow-up submissions placed at a boundary.                                         |
@@ -623,20 +659,20 @@ field supplies `HarnessSettings.stream.transport`, not the separate upstream
 provider-request retry settings. Retry and compaction objects map to the
 corresponding upstream policy fields.
 
-`harnessSettings` returns the configured runtime policy with the defaults above
-resolved, not a per-Harness execution snapshot. A Harness consumes current
+`settings(app: harness)` returns the configured runtime policy with the defaults
+above resolved, not a per-Harness execution snapshot. A Harness consumes current
 configuration when it opens. Saves affect subsequent opens, including reopening
 existing sessions; they do not hot-reconfigure already-open Harnesses. Factory
 constraints, such as disabling background compaction for codemode, still apply
 and do not rewrite the configuration file. No per-session runtime-policy copy is
 persisted in Durable.
 
-`wwwSettings` returns the presentation/delivery configuration. A successful save
-updates the initiating page from the returned settings; other pages observe it
-on their next read. Saving a default delivery choice does not alter submissions
-already captured or admitted. Neither application-settings query acquires a
-Harness or requires a session. Neither save mutates Durable documents or changes
-the SSE protocol.
+`settings(app: web)` returns the presentation/delivery configuration. A
+successful save updates the initiating page from the returned settings; other
+pages observe it on their next read. Saving a default delivery choice does not
+alter submissions already captured or admitted. The settings query acquires no
+Harness and requires no session, regardless of the selected application. Neither
+save mutates Durable documents or changes the SSE protocol.
 
 #### Save protocol
 
@@ -1065,16 +1101,17 @@ Model-catalog executable-schema tests cover:
 Document tests must cover non-creating absent reads, address and permission
 checks, validated atomic replacement, null versus removed properties,
 persistence across reopen, and the absence of additional workflow side effects.
-Application-settings tests cover the declared queries, mutations, enums,
-required input fields, defaults, numeric bounds, file ownership, atomic
-persistence, and revision conflicts. Verify absent files return defaults without
-writes, invalid files fail rather than reset, and changing one user's settings
-does not affect another user's file. Saves must not acquire Harnesses or mutate
-Durable docs. Verify new Harness opens use the saved runtime configuration while
-existing conversation document values survive reopen unchanged. `configure`
-retains its partial-update and null-clearing semantics and never writes
-application files. Preserve the existing SSE wire and lifecycle tests; do not
-add new stream behavior as part of these features.
+Application-settings tests cover both `App` selectors, union-member resolution,
+aliased reads, separate save mutations, enums, required input fields, defaults,
+numeric bounds, file ownership, atomic persistence, and revision conflicts.
+Verify absent files return defaults without writes, invalid files fail rather
+than reset, and changing one user's settings does not affect another user's
+file. Saves must not acquire Harnesses or mutate Durable docs. Verify new
+Harness opens use the saved runtime configuration while existing conversation
+document values survive reopen unchanged. `configure` retains its partial-update
+and null-clearing semantics and never writes application files. Preserve the
+existing SSE wire and lifecycle tests; do not add new stream behavior as part of
+these features.
 
 The current [coverage configuration](../package.json) targets `src/**/*.ts`; its
 percentage does not establish GraphQL coverage. Do not weaken thresholds or
