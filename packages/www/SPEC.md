@@ -2,34 +2,63 @@
 
 ## Scope and authority
 
-`www` is an Elm frontend for browsing existing sessions and working in their
-conversations. It uses `elm-graphql` for queries, listings, and mutations, and
-HTTP SSE for live conversation state. These are two views of the same service,
-not separate execution environments:
+`www` is an Elm application for browsing drv.run instances and persisted
+sessions, working in conversations, and managing application settings and linked
+accounts. It uses `elm-graphql` for queries and commands, and the existing HTTP
+SSE endpoint for live conversation state:
 
 ```text
 Elm frontend
-  GraphQL -> queries, listings, mutations --+
-  HTTP SSE -> live conversation state -----+-> shared Harness owner
+  GraphQL -> instance inventory, application settings, accounts, push
+          -> Durable reads, commands, documents --+
+  HTTP SSE -> live conversation state ------------+-> shared Harness owner
 ```
 
-Both transports address the same persisted sessions and conversations under the
-same access policy. Opening a page, reconnecting, or refreshing a read never
-creates a session, submits input, or resumes execution. Leaving a page stops
-observation, not admitted work.
+For Durable resources, both transports address the same persisted sessions and
+conversations under the same access policy. Opening a page, reconnecting, or
+refreshing a read never creates a session, submits input, or resumes execution.
+Leaving a page stops observation, not admitted work.
 
-The [GraphQL schema](../durable/api/graphql/schema.graphql) owns field
-contracts; [[packages/durable/api/graphql/SPEC.md]] owns their semantics. The
-watch contract in [[packages/durable/api/SPEC.md]] owns SSE observations. No
-other REST endpoint, including the old application's endpoints, is a dependency
-of this frontend.
+The [GraphQL schema](../durable/api/graphql/schema.graphql) owns implemented
+field contracts; [[packages/durable/api/graphql/SPEC.md]] defines Durable
+semantics and the application-service boundary. The watch contract in
+[[packages/durable/api/SPEC.md]] owns SSE observations. No other application or
+Durable REST endpoint is a dependency. OAuth authorization redirects and
+callbacks are provider-protocol exchanges, not alternative application APIs.
 
-This document specifies features and their UX, not module layout, build steps,
-or backend changes. [[packages/www/FEATURE_GAPS.md]] records unsupported
-existing features and current service-readiness limits. Unavailable features do
-not gain local substitutes or fallback REST calls. Elm conventions belong to
-[[packages/www/CONTRIBUTING.md]]. The reviewed elm-graphql source is identified
-in [^elm-graphql]; it is not yet a pinned project dependency.
+This document specifies the target features and UX, not module layout, build
+steps, or a claim that every feature is implemented.
+[[packages/www/FEATURE_GAPS.md]] records current API gaps separately from that
+target. Unavailable features do not gain local substitutes or fallback REST
+calls. The existing SSE API stays unchanged except for bug fixes; new document
+and application views use GraphQL reads where that stream has no coverage. Elm
+conventions belong to [[packages/www/CONTRIBUTING.md]]. The reviewed elm-graphql
+source is identified in [^elm-graphql]; it is not yet a pinned project
+dependency.
+
+## Instance inventory
+
+List accessible drv.run instances through GraphQL. Each row shows the instance
+identity, flake reference when available, and the observed systemd
+`ActiveState`, `SubState`, and `Result`. Preserve the distinction between
+starting, running, stopping, inactive, and failed states; a successful previous
+result does not mean the instance is currently running. Unavailable status is
+not an inactive instance.
+
+An instance identifies a host's `drv.run@%i.service`, not a Durable session or
+conversation. Do not infer a session link from matching identifiers. Retained
+stopped instances remain visible; an instance still starting must not disappear
+merely because it has not yet written its retained metadata. Missing metadata
+stays unavailable rather than being fabricated.
+
+Show loading, empty, partial, failed, and stale reads distinctly. Refresh is
+read-only and keeps useful prior rows visible during failure. Listing never
+starts or connects to a guest. There are no instance lifecycle controls in this
+iteration.
+
+Sources: [host inventory](../../nixosModules/host/command.sh),
+[host control](../../nixosModules/host/cli.sh), and
+[[packages/durable/api/graphql/SPEC.md#Application services]].
 
 ## Sessions and navigation
 
@@ -44,12 +73,13 @@ redirect a session link to a guessed root. Conversation labels use their native
 identities unless a supported contract supplies a name. An empty session shows
 “No conversations,” not a creation form.
 
-| Address                                                | User-visible destination             |
-| ------------------------------------------------------ | ------------------------------------ |
-| `/`                                                    | Session catalog                      |
-| `/settings`                                            | Device display preferences           |
-| `/sessions/{sessionId}`                                | Conversations in that session        |
-| `/sessions/{sessionId}/conversations/{conversationId}` | Conversation transcript and composer |
+| Address                                                | User-visible destination                 |
+| ------------------------------------------------------ | ---------------------------------------- |
+| `/`                                                    | Session catalog                          |
+| `/instances`                                           | Instance inventory                       |
+| `/settings`                                            | Application settings, accounts, and push |
+| `/sessions/{sessionId}`                                | Conversations in that session            |
+| `/sessions/{sessionId}/conversations/{conversationId}` | Conversation transcript and composer     |
 
 Deep links, reload, and browser Back/Forward reach the same addressed resource.
 Invalid or unavailable addresses show a scoped error and a home link; they do
@@ -120,8 +150,10 @@ invokes a command.
 Offer follow-up and steering delivery with their upstream meanings, plus reject
 when busy. Explain that steering is admitted for a boundary, not an immediate
 interruption. A server-side busy race produces a visible rejection, not a
-silently changed delivery mode. Without shared defaults, the primary mode is
-follow-up; the visible page-local selection controls subsequent sends.
+silently changed delivery mode. The initial delivery choice follows the `www`
+application setting, defaulting to follow-up. The visible page-local selection
+controls subsequent sends; changing it does not silently save an application
+setting or alter the Harness's queue policy.
 
 Local file selection, paste, and drag/drop share one attachment list:
 
@@ -223,22 +255,55 @@ Sources: [GraphQL operation semantics](../durable/api/graphql/graphql.ts),
 [[packages/durable/api/graphql/SPEC.md]], and existing
 [compaction timing](../app/serve/presentation.ts).
 
+## Application settings
+
+Settings belong to applications, including `www` and `harness`. Present them by
+application, with effective values and any user override distinguishable from
+inherited configuration. The hierarchy follows XDG configuration precedence, not
+separate device/global/server settings layers. Clearing a user override reveals
+the next applicable application value; it does not edit system configuration.
+
+`www` settings cover presentation and the default delivery choice. Harness
+settings cover its defaults and supported execution policy. Display application
+configuration separately from the addressed conversation's persisted settings.
+The model catalog lists available models; it is not the source of configured
+defaults. Report unsupported or read-only settings instead of pretending to save
+them.
+
+New Durable sessions capture the current settings. Existing sessions keep their
+persisted settings, including on reopen, until the user explicitly changes them.
+Saving application defaults must not rewrite their documents or silently change
+their effective policy. Merely visiting a settings page has no write effect.
+
+GraphQL reads and mutations provide application settings. Autosave distinguishes
+unsaved, saving, saved, rejected, and uncertain outcomes. Preserve newer edits
+when a save completes. Concurrent-change rejection offers reread and explicit
+reconciliation, not silent overwrite. Failed saves remain visible and editable.
+Application settings are not a browser-local persistence layer; different
+browsers accessing the same application's configuration see the same saved
+values after refresh. No live settings feed is implied.
+
+Source: [[packages/durable/api/graphql/SPEC.md#Application configuration]].
+
 ## Conversation configuration
 
-The configuration panel edits model, thinking level, and literal working
-directory through GraphQL. Available models come from the GraphQL catalog; show
-provider/name, supported thinking levels, and relevant modality/capacity
-metadata. An empty catalog differs from a failed catalog read. Availability does
-not promise that generation will succeed.
+The configuration panel reads and edits persisted document settings through
+GraphQL, including model, thinking level, and literal working directory in
+`pi.agent`. Available models come from the GraphQL catalog; show provider/name,
+supported thinking levels, and relevant modality/capacity metadata. An empty
+catalog differs from a failed catalog read. Availability does not promise that
+generation will succeed.
 
 Keep an existing unavailable model visible rather than replacing it silently.
 New selections use available catalog entries and compatible thinking levels.
 Refreshing choices must not overwrite newer user edits.
 
-Distinguish stored overrides, visible through SSE, from resolved values read
-through GraphQL `agent`. “Inherit” clears an override; it does not choose a
-hard-coded default. Merely opening the panel does not save effective values back
-as overrides. The resolved instructions are readable, not editable here.
+Distinguish stored document values from resolved values read through GraphQL
+`agent`. Application defaults are captured when a session is created, not a live
+inheritance relationship. Do not label clearing a `pi.agent` field “Inherit
+current application defaults”: an absent field follows Durable's own resolution
+rules. Merely opening the panel does not rewrite the document. The resolved
+instructions remain readable, not editable in this panel.
 
 The cwd field is a literal value in the service-selected environment. Saving it
 does not verify directory existence, expand `~`, select a target, or reproduce
@@ -252,12 +317,71 @@ replay. A read alone cannot rule out a still-pending write.
 
 Leaving with dirty, pending, or uncertain configuration offers Stay, Save/Retry
 where valid, or Discard. Browser history obeys the same guard. External document
-exit warns when the browser permits it, without promising recovery. No
-multi-client conflict detection is claimed.
+exit warns when the browser permits it, without promising recovery. Document
+writes do not imply multi-client conflict detection beyond their declared
+contract.
 
-Sources:
-[Agent and AgentChange contracts](../durable/api/graphql/schema.graphql),
-[^watch], and existing [autosave behavior](../app/serve/elm/src/Autosave.elm).
+Other accessible application documents can be inspected and edited according to
+their write permissions and validation. Distinguish an absent document from an
+empty object or a failed read. Invalid edits preserve the draft and show the
+failure. Changes to documents outside the existing SSE mount require a GraphQL
+reread to show current state.
+
+Document access does not add `/review`, `/endreview`, validated `/cd`, or
+execution-environment workflow operations. Reading or editing review/environment
+data does not promise conversation creation, report transfer, directory
+validation, or a successful connection to an execution target.
+
+Sources: [[packages/durable/api/graphql/SPEC.md#Durable documents]],
+[existing Agent contracts](../durable/api/graphql/schema.graphql), [^watch], and
+existing [autosave behavior](../app/serve/elm/src/Autosave.elm).
+
+## Linked OAuth2 accounts
+
+The accounts view lists configured providers and linked accounts. OpenAI and
+GitHub are not a closed provider list: adding another supported OAuth2 provider
+must not require a new hard-coded page or provider-specific command vocabulary.
+Show account identity when the provider supplies it, granted permissions when
+known, and authorization state independently from model availability.
+
+Users can begin authorization, follow the provider's authorization URL or
+device-code instructions as appropriate, check progress, reauthorize, and
+disconnect an account. Distinguish pending, usable, expired/reauthorization
+required, denied, cancelled, and failed outcomes. Leaving a pending flow must
+not display success. An unsupported grant or missing client registration is an
+explicit configuration problem, not a broken login button.
+
+GraphQL supplies status and commands; provider redirects/callbacks complete the
+OAuth exchange. Refresh status after returning from authorization and offer
+check-again while a device flow is pending. No OAuth status stream is required.
+Disconnect removes local use of the credentials; claim provider-side revocation
+only if it was supported and confirmed. Linking a provider account does not
+establish login to drv.run itself.
+
+Access tokens, refresh tokens, and client secrets never appear in page state,
+GraphQL results, URLs generated by the application, or browser persistence.
+
+Sources: [[packages/durable/api/graphql/SPEC.md#Linked accounts]], and the
+existing [provider adapter](../app/serve/auth.ts).
+
+## Push notifications
+
+Users can enable or disable notifications for the current browser, register its
+subscription, and reconcile subscription changes through GraphQL. Distinguish
+unsupported browser, permission denied, unavailable service, pending
+registration, and enabled states. Permission alone is not a registered
+subscription. Disabling delivery and browser permission are separate actions.
+
+Notifications can open the addressed conversation. Handle unavailable or
+inaccessible destinations without opening a different conversation. Delivery is
+best effort: it can be missed or duplicated and is not evidence of execution
+success or failure. Do not promise delivery, replay, or recovery of missed
+notifications after service restart. Push failures do not affect agent
+execution, and delivery does not require an open SSE connection.
+
+Sources: [[packages/durable/api/graphql/SPEC.md#Push subscriptions]], existing
+[push integration](../app/serve/pwa.ts), and
+[notification service](../app/serve/notifications.ts).
 
 ## Transcript, history, and inspection
 
@@ -322,13 +446,14 @@ Sources:
 existing [trees](../app/serve/trees.ts), [branches](../app/serve/branches.ts),
 [context inspection](../app/serve/inspection.ts), and [^rendering].
 
-## Device preferences and interface behavior
+## Interface behavior
 
-Device preferences include code wrapping and bottom alignment, with defaults of
-unwrapped code and bottom alignment. They persist only on this device; storage
-failure keeps the in-memory choice and reports “Not persisted.” Local thinking
-and image visibility controls affect presentation, not provider execution or
-shared server settings. No global-save confirmation is shown for a local choice.
+`www` presentation settings include code wrapping, bottom alignment, thinking
+visibility, and image visibility. Defaults retain unwrapped code and bottom
+alignment. These are application settings, not a separate device-settings
+hierarchy. Unsaved presentation changes may remain visible in the current page,
+but a failed configuration write must not show “Saved.” These controls affect
+presentation, not provider execution.
 
 Preserve the current typography, colors, icons, compact usage bar, and code/tool
 treatment. Desktop and narrow/mobile layouts keep navigation, transcript,
@@ -343,8 +468,7 @@ selection is keyboard-accessible. Announce operation and connection outcomes,
 not every streamed token. Ordinary editing, copy, and modifier navigation remain
 available. Unicode text and caret movement must not corrupt characters.
 
-Sources: existing [browser preferences](../app/serve/elm/client.ts),
-[styles](../app/serve/styles.css), and
+Sources: existing [styles](../app/serve/styles.css) and
 [interaction regressions](../app/serve/elm/tests/frontend.chromium.ts).
 
 ## Failure and privacy behavior
@@ -364,15 +488,16 @@ remote Markdown-image fetches. Valid embedded raster images and local previews
 remain supported. Guest paths/citations stay readable but do not open a remote
 file viewer. Safe external links open with isolation from the application page.
 
-No offline mutations, private-response cache, credential storage, or persisted
-composer captures. Device display preferences do not contain conversation data.
-No content-bearing analytics or debug logs. Provider credentials never enter
-browser settings. UI visibility is not access enforcement.
+No offline mutations, private-response cache, browser credential storage, or
+persisted composer captures. Application display settings do not contain
+conversation data. No content-bearing analytics or debug logs. Provider
+credentials never enter browser settings. UI visibility is not access
+enforcement.
 
 Large histories and rapid streaming must leave editing, Stop, navigation,
-selection, and scrolling responsive. Failure of optional highlighting or device
-storage must not prevent ordinary conversation use. Neither SSE nor an open
-browser page promises background notification delivery.
+selection, and scrolling responsive. Failure of optional highlighting or a
+settings save must not prevent ordinary conversation use. Neither SSE nor an
+open browser page promises background notification delivery.
 
 [^elm-graphql]:
     Reviewed clone at commit

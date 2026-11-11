@@ -7,11 +7,18 @@ Comparison: the existing `packages/app/serve` frontend against the current
 [HTTP SSE watch](../durable/api/src/stream.ts). Other Durable REST operations
 and all old application endpoints are excluded, even where they still exist.
 
-[[packages/www/SPEC.md]] describes the supported UX. This document records
-missing capabilities and parity limits, not proposed routes or an implementation
-plan. A feature requiring a new service contract remains unsupported; generic
-entry writes and model prompts are not substitutes for privileged application
-actions.
+[[packages/www/SPEC.md]] describes the target UX, not only implemented features.
+This document records current missing capabilities and parity limits, not an
+implementation plan. The agreed additions are instance listing, application
+configuration, extensible OAuth2 accounts, best-effort push, and Durable
+document queries/mutations. Their contracts are in
+[[packages/durable/api/graphql/SPEC.md]]. They remain unimplemented unless the
+schema and service provide them; a specification change does not close a gap.
+
+The existing SSE API stays unchanged except for bug fixes. Workflow parity gaps
+below do not require new review, directory-validation, or environment
+operations. Generic entry writes and model prompts are not substitutes for
+document access or privileged application actions.
 
 ## Service readiness
 
@@ -32,6 +39,21 @@ Sources: [API entry point](../durable/api/src/index.ts),
 [package exports/dependencies](../durable/api/package.json),
 [installation](../durable/api/default.nix), and
 [[packages/durable/api/graphql/SPEC.md#Ownership, recovery, and deployment]].
+
+## drv.run instance inventory
+
+The existing host CLI enumerates retained instances and reads systemd state.
+There is no GraphQL instance inventory. `harnesses` lists Durable sessions, not
+host instances, and the conversation watch is not an instance-status feed.
+
+The target is read-only listing with instance identity, available flake
+reference, and explicit systemd state/result. The existing retained-directory
+listing alone also misses units still starting before their retained metadata
+exists. Instance lifecycle mutations are not part of this iteration.
+
+Sources: [host inventory](../../nixosModules/host/command.sh),
+[host control](../../nixosModules/host/cli.sh), and
+[[packages/durable/api/graphql/SPEC.md#Application services]].
 
 ## Session lifecycle and catalog metadata
 
@@ -62,50 +84,69 @@ Sources: existing [home/catalog handlers](../app/serve/elm/pages.ts),
 [GraphQL Harness and Query fields](../durable/api/graphql/schema.graphql), and
 [^mounted-docs].
 
-## Shared settings and effective policy
+## Application configuration and captured settings
 
 Existing UX: shared default model/thinking, per-model thinking overrides,
 provider transport preference, default delivery mode, steering/follow-up
 batching, automatic compaction and retry toggles, read-only policy numbers, and
 shared thinking/image visibility preferences.
 
-There is no shared-settings read/write surface. GraphQL `configure` exposes only
-conversation model, thinking level, and cwd. `agent` exposes resolved model,
-thinking, cwd, and instructions, not the full effective host policy. Stored
-`pi.agent` overrides do not establish inherited host defaults.
+There is no application-configuration GraphQL read/write surface. The target is
+configuration owned by each application (`www`, `harness`, and so on), resolved
+through XDG precedence, not a device/global/server settings hierarchy. The old
+single settings store and browser-local display persistence are not that
+contract.
 
-Consequences:
+GraphQL `configure` exposes conversation model, thinking level, and cwd. `agent`
+exposes resolved model, thinking, cwd, and instructions, not the full effective
+Harness policy. The old `GlobalSettingsStore.bind()` supplies live policy
+getters; changing that store can affect existing sessions. That does not satisfy
+the new-session capture and existing-session pinning requirement. `pi.agent`
+alone is not a snapshot of every `HarnessSettings` field.
 
-- Shared autosave and cross-device defaults are unavailable.
-- The context panel cannot report authoritative effective compaction thresholds,
-  reserve/recent-token policy, or retry/queue policy. The old `(auto)` usage-bar
-  indicator is not generally derivable from stored overrides.
-- The catalog supplies available models, not the service's selected default.
+Missing:
 
-Supported remainder: conversation model/thinking/cwd configuration, raw context
-inspection, observed usage, and local display preferences. Local delivery choice
-is not a saved server queue policy. Browser SSE is unrelated to the old setting
-for model-provider transport.
+- XDG application-configuration reads, validated saves, and stale-save
+  rejection.
+- Creation-time capture and reopen behavior preserving session-effective policy
+  rather than reapplying changed application defaults.
+- Authoritative effective compaction, retry, and queue policy for inspection.
+  The old `(auto)` usage-bar indicator is not generally derivable from stored
+  agent values.
+
+The model catalog supplies available models, not application defaults. Existing
+conversation configuration, context inspection, and observed usage remain
+available. Browser SSE is unrelated to the model-provider transport setting.
 
 Sources: existing [setting definitions](../app/serve/settings.ts),
 [settings UI](../app/serve/elm/src/Site.elm),
 [context policy projection](../app/serve/inspection.ts),
-[usage metadata](../app/serve/elm/stream.ts), and
-[Agent/AgentChange fields](../durable/api/graphql/schema.graphql).
+[usage metadata](../app/serve/elm/stream.ts),
+[Agent/AgentChange fields](../durable/api/graphql/schema.graphql),
+[current settings persistence and binding](../app/serve/server.ts), and
+[[packages/durable/api/graphql/SPEC.md#Application configuration]].
 
-## Provider authorization
+## Linked OAuth2 accounts
 
 Existing UX: OpenAI/GitHub status and identity, device-code login, verification
 URL, polling, reauthorization, and logout.
 
-Neither GraphQL nor watch exposes provider authorization status or actions.
+Neither GraphQL nor watch exposes account authorization status or actions. The
+existing frontend adapter also hard-codes the OpenAI/GitHub provider set; it
+does not satisfy the target of adding other OAuth2 providers without new
+frontend pages. Extensible account management is separate from login to drv.run
+itself.
+
 Model availability cannot distinguish unconfigured, logged-out, expired, and
 failed authorization states. The browser cannot reproduce this workflow from
 `models`, and must not receive credentials to bypass the missing boundary.
+Provider configuration, grant support, and identity lookup must be explicit;
+OAuth2 alone does not make these identical across providers.
 
 Sources: existing [authorization handlers](../app/serve/elm/pages.ts),
-[provider boundary](../app/serve/auth.ts), and
-[model catalog contract](../durable/api/graphql/schema.graphql).
+[provider boundary](../app/serve/auth.ts),
+[model catalog contract](../durable/api/graphql/schema.graphql), and
+[[packages/durable/api/graphql/SPEC.md#Linked accounts]].
 
 ## Push notifications
 
@@ -117,12 +158,34 @@ server delivery integration. Browser permission alone does not enable delivery.
 SSE supplies neither background push nor a guarantee of updates while the page
 is suspended or closed.
 
+The target is best-effort delivery, not a durable notification queue or restart
+recovery. Missing reliable-delivery machinery is not a feature gap. Persisted
+subscriptions and server-side credentials are still required. No SSE change is
+needed for push.
+
 Local notification rendering, safe link handling, and installable static assets
 are browser capabilities, not substitutes for these missing service operations.
 
 Sources: existing [push UI/integration](../app/serve/pwa.ts),
 [push service](../app/serve/notifications.ts),
 [server routes](../app/serve/server.ts), and [worker](../app/serve/worker.js).
+
+## Durable documents
+
+The current GraphQL schema exposes entries and a limited `configure` mutation,
+not general document reads/writes. New document queries and mutations are
+specified in [[packages/durable/api/graphql/SPEC.md#Durable documents]] and are
+not yet implemented. Application `Metadata`, `Environment`, and `Review` are
+also absent from the existing SSE mount; adding GraphQL access does not change
+that mount.
+
+Document access enables reading and changing registered state, not additional
+review, directory-validation, or environment-selection workflow operations.
+Absent-document reads must remain non-creating. Document mutations must use the
+same Harness owner as the existing SSE API.
+
+Sources: [current schema](../durable/api/graphql/schema.graphql),
+[application documents](../app/serve/sessions.ts), and [^mounted-docs].
 
 ## Execution environment and filesystem
 
@@ -142,6 +205,10 @@ GraphQL's literal `cwd` override is supported but does not reproduce the old
 entry payload containing a file path does not hydrate its contents. Asking the
 agent to read a file is not an equivalent, passive viewer operation.
 
+Document mutations can expose stored execution bindings and cwd; they do not add
+target connection checks or path validation. Those additional operations are not
+required by the agreed document surface.
+
 Supported remainder: local text/image attachments, embedded image blocks,
 recorded tool output, displayed patches/diffs, and literal cwd configuration.
 Guest paths can remain readable without a broken viewer link.
@@ -160,11 +227,16 @@ agent/environment choices; `/endreview` stops it, sends its report back, clears
 review state, and returns to the original conversation. Branch labels and parent
 links incorporate application review relationships.
 
-Missing: conversation creation, application document reads/writes, and review
-start/end operations. GraphQL passive writes append transcript entries; they do
-not update `Review`, `Metadata`, or `Environment` documents. The SSE mount does
-not include those documents either. A stored `app.review` entry is readable but
-cannot substitute for the complete lifecycle or current review relationships.
+The current GraphQL surface cannot create conversations or read/write the
+application documents used by this workflow. Passive writes append transcript
+entries; they do not update `Review`, `Metadata`, or `Environment` documents.
+The SSE mount does not include those documents either. A stored `app.review`
+entry is readable but cannot substitute for current review relationships.
+
+The agreed addition is document access only. It does not require new review
+start/end operations or promise the old coordinated review lifecycle. Reading
+and editing review state is distinct from creating conversations and
+transferring reports.
 
 Supported remainder: navigate ordinary persisted parent/owner relationships,
 read existing review transcript content, and render application entries. The old
@@ -185,9 +257,12 @@ built-in documents. It does not expose the Harness commit feed or invalidate a
 catalog when a different conversation changes.
 
 GraphQL can reconstruct ordinary branch/transcript trees and read current or
-historical context. Refresh or polling can update those views, but the current
+historical context. Explicit refresh can update those views, but the current
 surface does not provide equivalent push-driven freshness across the entire
-Harness. It also does not supply the old enriched presentation frames.
+Harness. It also does not supply the old enriched presentation frames. This is
+an accepted limitation: the existing stream remains unchanged except for bug
+fixes. Document access does not require enriched frames, deltas, replay, or a
+new synchronization endpoint.
 
 This is not a blocker for streaming assistant text, tool progress, inbox,
 compaction, or usage in the active conversation. Those are present in the

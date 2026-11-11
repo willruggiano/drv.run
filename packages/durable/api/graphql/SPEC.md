@@ -19,8 +19,15 @@ and
 This directory belongs to the enclosing API package, not a separate npm package.
 The schema covers non-streaming operations. Do not add subscriptions, remote
 transactions, execution callbacks, or task-control operations as server
-plumbing. The REST specification remains separate:
-[[packages/durable/api/SPEC.md]].
+plumbing. The existing SSE API remains unchanged except for bug fixes. New
+application and document capabilities use GraphQL; they do not extend the REST
+surface or require a new synchronization protocol. The existing REST/SSE
+contract remains separate: [[packages/durable/api/SPEC.md]].
+
+The inventory below describes the implemented schema. The document and
+application-service requirements below define the agreed target, not fields
+already present in that schema. Add authoritative field contracts to the Grats
+source during implementation; do not maintain speculative SDL here.
 
 ## Schema-to-upstream mapping
 
@@ -356,6 +363,170 @@ These are transcript entries, not Durable Docs. Sources:
 and
 [model-context construction](../node_modules/@earendil-works/pi-durable/dist/harness/context.js).
 
+## Durable documents
+
+Expose queries and mutations for registered Durable documents, separately from
+transcript entries. This is the only new Durable operation family in this
+iteration. Do not add review start/end, directory validation, environment
+selection, conversation creation, or other workflow operations to support it.
+Existing commands such as `configure` retain their contracts.
+
+Address a document through its owning Harness and registered definition, with
+the native session/conversation/task scope and a family key where applicable.
+These are Durable document addresses, not application configuration layers.
+Deployment supplies the exposed definitions and their read/write permissions;
+clients cannot register arbitrary definitions or select storage paths. Check
+ownership and permissions for every address, including task-owned documents. Do
+not expose credentials or internal execution state through a generic JSON escape
+hatch.
+
+Reads use the owning Harness's non-creating `snapshot()` interface. An absent
+document is distinct from an empty object and a failed read. Queries must not
+use `Tx.doc()` to manufacture an initial value, create a document, or enable
+scheduling. Preserve native document semantics rather than inventing historical
+reads for documents which do not retain history.
+
+A content mutation addresses one document and replaces its content with a
+validated strict JSON object in one `Harness.commit()` using the registered
+token and `Tx.doc()`. Omitted object properties are removed; explicit JSON null
+remains a value where the document contract allows it. Do not reinterpret a
+stored null as a deletion instruction. Validate the complete replacement before
+adopting it. Initialization, when permitted for an absent document, follows the
+registered definition; an absent parent conversation or task is not created.
+Document registration and arbitrary execution callbacks remain server-side.
+
+Writability is explicit, not implied by a registered kind or by the ability to
+read it. Validate document-specific invariants; runtime-owned inbox, live, and
+provider state are not user configuration. Agent-setting edits must preserve
+`pi.agent` invariants. One mutation's commit is atomic; several GraphQL mutation
+fields are not a transaction. Do not claim compare-and-swap, automatic merge, or
+deduplication guarantees that the mutation contract does not provide.
+
+Reads and mutations borrow the same Harness as SSE. Completion acknowledges the
+document commit, not completion of any subsequent execution using that state. Do
+not hide conversation creation, directory checks, report transfer, or remote
+connection establishment inside a document mutation. Existing registered hooks
+and document history/fork semantics still apply. A disconnected response does
+not authorize automatic replay.
+
+Only the existing mounted documents appear in SSE. Query other documents again
+after a mutation or on explicit refresh; adding document access does not add a
+document watch route, an enriched SSE mount, or synchronization machinery.
+
+Sources: pinned Durable 1.4.0
+[document tokens, Session.snapshot, and Tx.doc](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/types.d.ts),
+[agent document semantics](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/agent.js),
+and the [existing SSE adapter](../src/stream.ts).
+
+## Application services
+
+The application's GraphQL surface provides instance inventory, application
+configuration, linked OAuth2 accounts, and push-subscription management. These
+are not Durable operations. Keep their service ownership outside this reusable
+adapter; do not add host control, credential storage, or application settings to
+`ResolverContext` merely to share an HTTP endpoint. Application queries and
+commands may be composed with Durable GraphQL without changing Durable's
+factory, storage, or operation contracts. The frontend requirements are in
+[[packages/www/SPEC.md]].
+
+Instance inventory is read-only in this iteration. Expose authorized instance
+identity, flake reference when known, and systemd `ActiveState`, `SubState`, and
+`Result`. Combine retained inventory with currently known instance units so that
+stopped instances and units still starting remain representable. Preserve
+unavailable observations separately from inactive state and partial inventory
+separately from a complete list. An instance identifies a host service, not a
+persisted Harness; `harnesses` is not its catalog. Listing must not start or
+connect to guests. Do not add lifecycle mutations yet.
+
+Sources: [host inventory](../../../../nixosModules/host/command.sh) and
+[host control](../../../../nixosModules/host/cli.sh).
+
+### Application configuration
+
+Configuration belongs to applications such as `www` and `harness`, each with its
+own configuration contract. Resolve it using XDG configuration locations and
+precedence: `$XDG_CONFIG_HOME` before `$XDG_CONFIG_DIRS`, with directories in
+the latter searched in order. Honor the specified defaults and ignore invalid
+relative XDG paths. XDG defines location and precedence, not a universal JSON
+merge algorithm; each application defines its configuration format and value
+resolution. Do not invent device/global/server settings layers.
+
+GraphQL reads expose application settings, effective values, and the user
+override where applicable. Mutations validate the application's settings and
+write only its user configuration under `$XDG_CONFIG_HOME`. Clearing an override
+reveals lower-precedence configuration. Do not write resolved system defaults
+back merely because a page was opened. Reject stale GraphQL edits rather than
+silently overwriting another save; persist an accepted change atomically before
+reporting success. Credentials are not ordinary settings fields.
+
+New Durable sessions capture the selected application defaults. Persist their
+session-effective configuration and initialize conversation settings in their
+Durable documents, including `pi.agent`. Existing sessions retain the captured
+settings until explicitly changed by the user; reopening is not creation and
+must not reapply current application defaults. Editing an application default is
+not a mutation of every existing session.
+
+Do not claim that `pi.agent` stores all `HarnessSettings`: upstream resolves
+runtime policy separately. The application's session initialization and reopen
+path must preserve the captured policy as well as the conversation's document
+values. Do not reuse live settings getters that change existing sessions when
+application defaults change. Clearing a document field keeps upstream semantics;
+it is not a new request to inherit current XDG configuration.
+
+Sources:
+[XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/0.8/),
+[current settings and live policy binding](../../../app/serve/server.ts),
+[Harness factory](../../harness/src/index.ts), and pinned
+[agent and policy resolution](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/agent.js).
+
+### Linked accounts
+
+Expose linked-account status and authorization commands without a closed
+OpenAI/GitHub provider enum. Support adding OAuth2 providers through
+configuration for standard behavior and narrow provider adapters for remaining
+differences. Provider configuration identifies endpoints or discovery metadata,
+client registration, requested permissions, supported grants, and account
+identity lookup. Arbitrary OAuth2 support does not imply uniform identity data,
+device authorization, refresh, or revocation support.
+
+The account service owns authorization attempts, credential persistence,
+refresh, and disconnect. Keep that lifecycle separate from login to drv.run.
+GraphQL exposes only public account metadata, state, and information needed to
+complete authorization; never access tokens, refresh tokens, or client secrets.
+Provider redirects and callbacks are OAuth protocol exchanges, not new REST
+application commands. Bind an authorization attempt to its initiating user and
+validate callback correlation; use PKCE for authorization-code flows. Device
+flows follow the provider's polling and expiry rules.
+
+Provider destinations and client registrations are trusted service
+configuration, not arbitrary browser-supplied URLs or filesystem paths. Report
+unsupported grants and missing configuration explicitly. Disconnect stops local
+credential use and clears the linked credentials; provider-side revocation is
+attempted only when supported and is not implied by local success. Library and
+provider-adapter selection must not require provider-specific frontend pages.
+
+Sources: [existing authorization boundary](../../../app/serve/auth.ts),
+[OAuth 2.0](https://www.rfc-editor.org/rfc/rfc6749),
+[PKCE](https://www.rfc-editor.org/rfc/rfc7636), and
+[device authorization](https://www.rfc-editor.org/rfc/rfc8628).
+
+### Push subscriptions
+
+GraphQL exposes public push configuration and authorized subscription
+registration/removal. The notification service owns subscription persistence and
+server-side push credentials. Browser permission alone is not registration;
+never return private push keys. Validate subscription input and ownership before
+using it as a delivery destination.
+
+Delivery is best effort and independent of an open browser or SSE connection.
+Failures do not fail agent execution. No durable delivery queue, replay, or
+restart recovery of pending notifications is required. Missed or duplicate
+notifications are possible; they are not execution receipts. Subscription
+persistence does not imply persisted delivery work.
+
+Sources: [existing notification service](../../../app/serve/notifications.ts)
+and [push transport](../../../app/serve/push.ts).
+
 ## Model catalog
 
 `Query.models` is an argument-free, service-scoped list of available chat
@@ -410,9 +581,9 @@ GraphQL-over-HTTP handler -> GraphQL.js -> Grats-generated schema
                                       upstream Harness
 ```
 
-Keep all handwritten GraphQL code in [graphql.ts](graphql.ts). Use exported
-functional resolvers colocated with their associated interfaces; do not put
-methods on GraphQL interfaces. Generated code is a build artifact.
+Keep all handwritten Durable GraphQL code in [graphql.ts](graphql.ts). Use
+exported functional resolvers colocated with their associated interfaces; do not
+put methods on GraphQL interfaces. Generated code is a build artifact.
 
 Depend on upstream Harness interfaces, not the application Harness
 implementation. Deployment supplies the factory, storage, execution environment,
@@ -576,10 +747,11 @@ requests. The endpoint mount and listener address belong to deployment.
 
 ## Ownership, recovery, and deployment
 
-Share concurrent opens of one persisted Harness. Opening belongs to the service,
-not the first request's lifetime. An absent persisted session must not be
-created as a side effect of lookup. Factory failures must release partially
-acquired resources.
+Share concurrent opens of one persisted Harness across GraphQL and the existing
+SSE API, including document operations. Neither transport opens a separate owner
+of the same storage. Opening belongs to the service, not the first request's
+lifetime. An absent persisted session must not be created as a side effect of
+lookup. Factory failures must release partially acquired resources.
 
 Observe terminal instance state and define how failed instances become eligible
 for reopening. Reopen from persisted storage; never transparently replay a
@@ -643,6 +815,14 @@ Model-catalog executable-schema tests cover:
   fallbacks.
 - The schema's metadata allowlist and decoded selections from secret-bearing
   model fixtures; no sensitive fields or generic model JSON escape hatch.
+
+Document tests must cover non-creating absent reads, address and permission
+checks, validated atomic replacement, null versus removed properties,
+persistence across reopen, and the absence of additional workflow side effects.
+Verify application-default changes leave existing session settings unchanged,
+including after reopen, while new sessions use the updated defaults. Preserve
+the existing SSE wire and lifecycle tests; do not add new stream behavior as
+part of these features.
 
 The current [coverage configuration](../package.json) targets `src/**/*.ts`; its
 percentage does not establish GraphQL coverage. Do not weaken thresholds or

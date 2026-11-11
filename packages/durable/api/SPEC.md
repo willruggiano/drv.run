@@ -14,15 +14,26 @@ organizational directory, not a package.
 - Treat upstream Durable as canonical for conversations. Keep operation names,
   arguments, results, and semantics as close to upstream as transport permits.
 - Expose the core operations listed below; frontends may consume a subset.
-  Application integrations are separate from this surface. `configure` is the
-  canonical conversation configuration mutation for model, thinking level, and
-  working directory; do not duplicate it in an application settings endpoint.
+  Application integrations are separate from this surface. Existing `configure`
+  behavior remains unchanged. New document access belongs to GraphQL, not to an
+  additional REST configuration endpoint.
 - Keep transactions and execution callbacks server-side. Do not introduce a
   remote transaction language or adopt Chord's distributed object runtime.
 - Preserve submission identity, admission semantics, and the distinction between
   disconnecting an observer and aborting execution.
 - Keep interfaces small and deep, with at most three exports per TypeScript
   module. Do not export production internals solely for tests.
+
+The frontend uses GraphQL for queries and commands and this API's existing SSE
+watch for live conversation state. Both transports must borrow the same owning
+Harness. This document retains the existing REST contracts; it does not require
+new frontend dependencies on those routes. New document and application-service
+requirements belong to [[packages/durable/api/graphql/SPEC.md]].
+
+The streaming API is frozen except for bug fixes. Keep its route, full-snapshot
+frames, mounted documents, terminal events, and reconnect behavior intact. Do
+not add deltas, replay, revisions, a new watch route, or a replacement sync
+protocol as part of the GraphQL work.
 
 ## Core surface
 
@@ -1145,18 +1156,15 @@ fail the check; fix the code or correct the package's entry-point configuration
 rather than broadly suppressing findings. Extend adoption to the other extracted
 packages independently.
 
-## Follow-up work
+## Application boundary
 
-Harness catalog, creation, naming and archival; execution-target discovery and
-selection; environment-specific working-directory validation; filesystem
-completion and file serving; review workflows; global settings; provider
-authorization; and push notifications are application or deployment
-integrations. Do not include those integrations in the core surface or introduce
-a dependency on the concrete Harness package to implement them. The core API
-owns Pi AI model discovery and conversation model/thinking/cwd configuration,
-not application targets or filesystem services.
+Instance inventory, application configuration, linked OAuth2 accounts, and push
+subscriptions belong to application or deployment services, not this core REST
+surface. Their GraphQL requirements are defined in
+[[packages/durable/api/graphql/SPEC.md#Application services]]. Do not introduce
+a dependency on the concrete Harness package to implement them here.
 
-Incremental synchronization is required follow-up work, not part of the initial
-snapshot-based API. Its protocol is deferred; implementing it is not contingent
-on snapshot-cost measurements. Use telemetry to guide subsequent optimization
-efforts.
+Durable document queries and mutations are the only new Durable operation family
+in this iteration. They do not add review, directory-validation, or environment
+workflow operations. The existing streaming API remains unchanged except for bug
+fixes; synchronization redesign is not part of this work.
