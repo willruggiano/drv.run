@@ -28,13 +28,14 @@ callbacks are provider-protocol exchanges, not alternative application APIs.
 
 This document specifies the target features and UX, not module layout, build
 steps, or a claim that every feature is implemented.
-[[packages/www/FEATURE_GAPS.md]] records current API gaps separately from that
-target. Unavailable features do not gain local substitutes or fallback REST
-calls. The existing SSE API stays unchanged except for bug fixes; new document
-and application views use GraphQL reads where that stream has no coverage. Elm
-conventions belong to [[packages/www/CONTRIBUTING.md]]. The reviewed elm-graphql
-source is identified in [^elm-graphql]; it is not yet a pinned project
-dependency.
+[[packages/www/FEATURE_GAPS.md]] records only parity gaps remaining after this
+specification is implemented. Specified features are implementation work, not
+feature gaps. Unavailable features do not gain local substitutes or fallback
+REST calls. The existing SSE API stays unchanged except for bug fixes; new
+document and application views use GraphQL reads where that stream has no
+coverage. Elm conventions belong to [[packages/www/CONTRIBUTING.md]]. The
+reviewed elm-graphql source is identified in [^elm-graphql]; it is not yet a
+pinned project dependency.
 
 ## Instance inventory
 
@@ -257,39 +258,53 @@ Sources: [GraphQL operation semantics](../durable/api/graphql/graphql.ts),
 
 ## Application settings
 
-Settings belong to applications, including `www` and `harness`. Present them by
-application, with effective values and any user override distinguishable from
-inherited configuration. The hierarchy follows XDG configuration precedence, not
-separate device/global/server settings layers. Clearing a user override reveals
-the next applicable application value; it does not edit system configuration.
+Present two application settings panels:
 
-`www` settings cover presentation and the default delivery choice. Harness
-settings cover its defaults and supported execution policy. Display application
-configuration separately from the addressed conversation's persisted settings.
-The model catalog lists available models; it is not the source of configured
-defaults. Report unsupported or read-only settings instead of pretending to save
-them.
+- `www`: code wrapping, bottom alignment, thinking visibility, image visibility,
+  and the default follow-up/steering delivery choice.
+- Harness: model-provider transport, steering/follow-up batching, retry enabled,
+  retry count/delays, automatic compaction, reserved/recent-context tokens, and
+  background-compaction threshold.
 
-New Durable sessions capture the current settings. Existing sessions keep their
-persisted settings, including on reopen, until the user explicitly changes them.
-Saving application defaults must not rewrite their documents or silently change
-their effective policy. Merely visiting a settings page has no write effect.
+Read these through `wwwSettings` and `harnessSettings`; save through
+`saveWwwSettings` and `saveHarnessSettings`. The exact fields, enum choices,
+defaults, and validation are declared in
+[[packages/durable/api/graphql/SPEC.md#Settings schema]] and
+[[packages/durable/api/graphql/SPEC.md#Fields and defaults]]. Use checkboxes,
+choice controls, and integer fields rather than a generic key/value editor.
 
-GraphQL reads and mutations provide application settings. Autosave distinguishes
-unsaved, saving, saved, rejected, and uncertain outcomes. Preserve newer edits
-when a save completes. Concurrent-change rejection offers reread and explicit
-reconciliation, not silent overwrite. Failed saves remain visible and editable.
-Application settings are not a browser-local persistence layer; different
-browsers accessing the same application's configuration see the same saved
-values after refresh. No live settings feed is implied.
+Each application owns one configuration file. `www` uses the user's
+`$XDG_CONFIG_HOME/www/settings.json`; Harness uses
+`$XDG_CONFIG_HOME/harness/settings.json`. There is no XDG configuration
+inheritance or device/global/server hierarchy. Notification and OAuth2 account
+configuration remain separate. Durable conversation settings live only in
+Durable documents and are not application-file fields.
+
+Label Harness values as configuration for subsequent Harness opens, not live
+policy inspection. Saving does not hot-reconfigure already-open Harnesses;
+reopening uses current Harness configuration without rewriting conversation
+documents. `www` saves apply to the current page from the returned settings;
+other pages observe them on refresh. Merely visiting a settings page has no
+write effect.
+
+Each save submits the complete typed settings object and the revision from its
+last read or successful save. A revision conflict preserves edits and offers
+reread/reconciliation; do not retry with a new revision without user review.
+Autosave distinguishes unsaved, saving, saved, rejected, and uncertain outcomes.
+Preserve newer edits when a save completes. Failed saves remain visible and
+editable. Application settings are not a browser-local persistence layer;
+different browsers accessing the same application's configuration see the same
+saved values after refresh. No live settings feed is implied.
 
 Source: [[packages/durable/api/graphql/SPEC.md#Application configuration]].
 
 ## Conversation configuration
 
-The configuration panel reads and edits persisted document settings through
-GraphQL, including model, thinking level, and literal working directory in
-`pi.agent`. Available models come from the GraphQL catalog; show provider/name,
+The conversation configuration panel reads persisted settings and uses the typed
+GraphQL `configure` mutation for model, thinking level, and literal working
+directory in `pi.agent`. Editing one field preserves the others; this is not
+whole-document replacement. It does not save either application's configuration
+file. Available models come from the GraphQL catalog; show provider/name,
 supported thinking levels, and relevant modality/capacity metadata. An empty
 catalog differs from a failed catalog read. Availability does not promise that
 generation will succeed.
@@ -299,11 +314,11 @@ New selections use available catalog entries and compatible thinking levels.
 Refreshing choices must not overwrite newer user edits.
 
 Distinguish stored document values from resolved values read through GraphQL
-`agent`. Application defaults are captured when a session is created, not a live
-inheritance relationship. Do not label clearing a `pi.agent` field “Inherit
-current application defaults”: an absent field follows Durable's own resolution
-rules. Merely opening the panel does not rewrite the document. The resolved
-instructions remain readable, not editable in this panel.
+`agent`. Values used to initialize a conversation do not create a live link to
+application defaults. Clearing a field follows Durable's own resolution rules;
+it does not reload application configuration. Merely opening the panel does not
+rewrite the document. The resolved instructions remain readable, not editable in
+this panel.
 
 The cwd field is a literal value in the service-selected environment. Saving it
 does not verify directory existence, expand `~`, select a target, or reproduce
@@ -438,8 +453,9 @@ incomplete, not a claim that no other branches exist.
 
 These panels are refreshable GraphQL reads, not a Harness-wide event stream. The
 active conversation's SSE does not guarantee discovery of changes in other
-conversations. Application-specific review relationships and effective host
-policy are not inferred from ordinary ancestry or stored overrides.
+conversations. Application-specific review relationships come from their
+documents, not ordinary ancestry. Current application configuration does not
+establish the effective policy of an already-open Harness.
 
 Sources:
 [history/context/ancestry fields](../durable/api/graphql/schema.graphql),

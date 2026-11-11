@@ -3,11 +3,12 @@
 ## Authority and scope
 
 The [schema](schema.graphql), including its descriptions, is authoritative for
-GraphQL shape and field-specific contracts. Author it in
-[graphql.ts](graphql.ts) and generate it with Grats; do not maintain a second
-schema or resolver map. This specification defines execution, transport,
-ownership, and deployment requirements. It does not redefine types, fields,
-arguments, or defaults.
+the implemented Durable GraphQL surface. Author it in [graphql.ts](graphql.ts)
+and generate it with Grats; do not maintain a second runtime schema or resolver
+map. This specification defines execution, transport, ownership, and deployment
+requirements. The application configuration section declares the target settings
+schema and field semantics for the application surface, which is not yet
+implemented.
 
 Upstream Durable is authoritative for Harness behavior. Use the versions pinned
 in the [package manifest](../package.json) and lockfile. The relevant contracts
@@ -26,8 +27,9 @@ contract remains separate: [[packages/durable/api/SPEC.md]].
 
 The inventory below describes the implemented schema. The document and
 application-service requirements below define the agreed target, not fields
-already present in that schema. Add authoritative field contracts to the Grats
-source during implementation; do not maintain speculative SDL here.
+already present in that schema. Implement the declared application settings
+contract rather than substituting a generic settings map. Keep generated schema
+descriptions consistent with these field semantics during implementation.
 
 ## Schema-to-upstream mapping
 
@@ -443,41 +445,285 @@ Sources: [host inventory](../../../../nixosModules/host/command.sh) and
 
 ### Application configuration
 
-Configuration belongs to applications such as `www` and `harness`, each with its
-own configuration contract. Resolve it using XDG configuration locations and
-precedence: `$XDG_CONFIG_HOME` before `$XDG_CONFIG_DIRS`, with directories in
-the latter searched in order. Honor the specified defaults and ignore invalid
-relative XDG paths. XDG defines location and precedence, not a universal JSON
-merge algorithm; each application defines its configuration format and value
-resolution. Do not invent device/global/server settings layers.
+Configuration has independent owners:
 
-GraphQL reads expose application settings, effective values, and the user
-override where applicable. Mutations validate the application's settings and
-write only its user configuration under `$XDG_CONFIG_HOME`. Clearing an override
-reveals lower-precedence configuration. Do not write resolved system defaults
-back merely because a page was opened. Reject stale GraphQL edits rather than
-silently overwriting another save; persist an accepted change atomically before
-reporting success. Credentials are not ordinary settings fields.
+| Configuration                                       | Authoritative storage                    |
+| --------------------------------------------------- | ---------------------------------------- |
+| Durable conversation settings, including `pi.agent` | Durable documents only                   |
+| Harness runtime settings                            | `$XDG_CONFIG_HOME/harness/settings.json` |
+| `www` presentation and delivery settings            | `$XDG_CONFIG_HOME/www/settings.json`     |
 
-New Durable sessions capture the selected application defaults. Persist their
-session-effective configuration and initialize conversation settings in their
-Durable documents, including `pi.agent`. Existing sessions retain the captured
-settings until explicitly changed by the user; reopening is not creation and
-must not reapply current application defaults. Editing an application default is
-not a mutation of every existing session.
+Resolve `$XDG_CONFIG_HOME` for the authorized application user, falling back to
+`$HOME/.config` when unset, empty, or invalid because it is relative. There is
+one JSON file per application. Do not search `$XDG_CONFIG_DIRS` or merge
+system/user/project files. Notification and OAuth2 account configuration remain
+separate. No settings provider, manager, or library is prescribed.
 
-Do not claim that `pi.agent` stores all `HarnessSettings`: upstream resolves
-runtime policy separately. The application's session initialization and reopen
-path must preserve the captured policy as well as the conversation's document
-values. Do not reuse live settings getters that change existing sessions when
-application defaults change. Clearing a document field keeps upstream semantics;
-it is not a new request to inherit current XDG configuration.
+#### Settings schema
+
+The following is the target application GraphQL contract. These fields are not
+implemented in the current generated Durable schema. The application composes
+these fields with the Durable schema; they do not become Durable operations.
+
+```graphql
+extend type Query {
+  wwwSettings: WwwSettings
+  harnessSettings: HarnessSettings
+}
+
+extend type Mutation {
+  saveWwwSettings(input: SaveWwwSettingsInput!): SaveWwwSettingsPayload
+  saveHarnessSettings(
+    input: SaveHarnessSettingsInput!
+  ): SaveHarnessSettingsPayload
+}
+
+enum WwwDeliveryMode {
+  followUp
+  steer
+}
+
+enum HarnessTransport {
+  auto
+  sse
+  websocket
+  websocketCached
+}
+
+enum HarnessQueueMode {
+  oneAtATime
+  all
+}
+
+type WwwSettings {
+  revision: String!
+  wrapCode: Boolean!
+  bottomAlign: Boolean!
+  hideThinkingBlock: Boolean!
+  showImages: Boolean!
+  defaultDeliveryMode: WwwDeliveryMode!
+}
+
+input WwwSettingsInput {
+  wrapCode: Boolean!
+  bottomAlign: Boolean!
+  hideThinkingBlock: Boolean!
+  showImages: Boolean!
+  defaultDeliveryMode: WwwDeliveryMode!
+}
+
+type HarnessSettings {
+  revision: String!
+  transport: HarnessTransport!
+  steeringMode: HarnessQueueMode!
+  followUpMode: HarnessQueueMode!
+  retry: HarnessRetrySettings!
+  compaction: HarnessCompactionSettings!
+}
+
+input HarnessSettingsInput {
+  transport: HarnessTransport!
+  steeringMode: HarnessQueueMode!
+  followUpMode: HarnessQueueMode!
+  retry: HarnessRetrySettingsInput!
+  compaction: HarnessCompactionSettingsInput!
+}
+
+type HarnessRetrySettings {
+  enabled: Boolean!
+  maxRetries: Int!
+  baseDelayMs: Int!
+  maxAgentDelayMs: Int!
+}
+
+input HarnessRetrySettingsInput {
+  enabled: Boolean!
+  maxRetries: Int!
+  baseDelayMs: Int!
+  maxAgentDelayMs: Int!
+}
+
+type HarnessCompactionSettings {
+  enabled: Boolean!
+  reserveTokens: Int!
+  keepRecentTokens: Int!
+  backgroundTokens: Int!
+}
+
+input HarnessCompactionSettingsInput {
+  enabled: Boolean!
+  reserveTokens: Int!
+  keepRecentTokens: Int!
+  backgroundTokens: Int!
+}
+
+input SaveWwwSettingsInput {
+  expectedRevision: String!
+  settings: WwwSettingsInput!
+  clientMutationId: String
+}
+
+type SaveWwwSettingsPayload {
+  settings: WwwSettings!
+  clientMutationId: String
+}
+
+input SaveHarnessSettingsInput {
+  expectedRevision: String!
+  settings: HarnessSettingsInput!
+  clientMutationId: String
+}
+
+type SaveHarnessSettingsPayload {
+  settings: HarnessSettings!
+  clientMutationId: String
+}
+```
+
+The request's authorized user selects the files. There is no client-supplied
+path, user ID, application-name string, key/value list, or JSON settings scalar.
+These are the complete settings exposed in this iteration; other upstream
+`HarnessSettings` fields are not implicitly writable. Model, thinking level,
+cwd, instructions, and other conversation document values are not fields in
+either application file.
+
+#### Fields and defaults
+
+Each file contains the fields of its corresponding settings input, using the
+GraphQL enum spellings as JSON strings. It contains no `revision` or mutation
+metadata. An absent file or omitted file property uses the defaults below;
+nested objects resolve their omitted properties the same way. Unknown fields,
+explicit nulls, wrong types, and out-of-range values make the file invalid, not
+an empty/default configuration. A read never creates or rewrites a file.
+
+| Field                                         | Default      | Meaning                                                                                       |
+| --------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------- |
+| `WwwSettings.wrapCode`                        | `false`      | Wrap code blocks instead of horizontal scrolling.                                             |
+| `WwwSettings.bottomAlign`                     | `true`       | Bottom-align the transcript.                                                                  |
+| `WwwSettings.hideThinkingBlock`               | `false`      | Hide thinking content in the transcript.                                                      |
+| `WwwSettings.showImages`                      | `true`       | Display supported transcript images.                                                          |
+| `WwwSettings.defaultDeliveryMode`             | `followUp`   | Initial composer delivery choice; `steer` selects steering.                                   |
+| `HarnessSettings.transport`                   | `auto`       | Model-provider transport, not browser SSE transport.                                          |
+| `HarnessSettings.steeringMode`                | `oneAtATime` | Number of steering submissions placed at a boundary.                                          |
+| `HarnessSettings.followUpMode`                | `oneAtATime` | Number of follow-up submissions placed at a boundary.                                         |
+| `HarnessSettings.retry.enabled`               | `true`       | Enable Durable generation-attempt retries.                                                    |
+| `HarnessSettings.retry.maxRetries`            | `3`          | Maximum retries after the initial attempt.                                                    |
+| `HarnessSettings.retry.baseDelayMs`           | `2000`       | Base delay between attempts, in milliseconds.                                                 |
+| `HarnessSettings.retry.maxAgentDelayMs`       | `60000`      | Upper bound on agent retry delay, in milliseconds.                                            |
+| `HarnessSettings.compaction.enabled`          | `true`       | Enable automatic threshold/overflow compaction.                                               |
+| `HarnessSettings.compaction.reserveTokens`    | `16384`      | Context capacity reserved for the answer.                                                     |
+| `HarnessSettings.compaction.keepRecentTokens` | `20000`      | Approximate recent-context tokens retained by compaction.                                     |
+| `HarnessSettings.compaction.backgroundTokens` | `32768`      | Background-compaction lead below the blocking threshold; zero disables background compaction. |
+
+All numeric settings are integers in `[0, 2147483647]`; zero retries disables
+additional attempts. `HarnessQueueMode.oneAtATime` maps to upstream
+`"one-at-a-time"`; `all` maps unchanged. `HarnessTransport.websocketCached` maps
+to `"websocket-cached"`; the other transport values map unchanged. The transport
+field supplies `HarnessSettings.stream.transport`, not the separate upstream
+provider-request retry settings. Retry and compaction objects map to the
+corresponding upstream policy fields.
+
+`harnessSettings` returns the configured runtime policy with the defaults above
+resolved, not a per-Harness execution snapshot. A Harness consumes current
+configuration when it opens. Saves affect subsequent opens, including reopening
+existing sessions; they do not hot-reconfigure already-open Harnesses. Factory
+constraints, such as disabling background compaction for codemode, still apply
+and do not rewrite the configuration file. No per-session runtime-policy copy is
+persisted in Durable.
+
+`wwwSettings` returns the presentation/delivery configuration. A successful save
+updates the initiating page from the returned settings; other pages observe it
+on their next read. Saving a default delivery choice does not alter submissions
+already captured or admitted. Neither application-settings query acquires a
+Harness or requires a session. Neither save mutates Durable documents or changes
+the SSE protocol.
+
+#### Save protocol
+
+Both mutations replace the complete application configuration with their typed
+`settings` input. Every input field is required and non-null, including nested
+fields. There is no implicit patch, null-as-delete, or key-based update. Reset a
+setting by supplying its default value; this does not search another file.
+
+`revision` is an opaque, nonempty content revision of the corresponding file,
+including a distinct revision for an absent file. It changes when the file's
+contents change, remains stable across reads/restarts for unchanged contents,
+and is not a Durable document version or a submission ID. Clients return it
+unchanged as `expectedRevision`.
+
+Serialize API saves for each user's application file. Read its current contents
+and compare the revision before writing; do not compare only an in-memory cached
+value. On mismatch, return a GraphQL error with
+`extensions.code = "CONFIGURATION_CONFLICT"` and leave the file unchanged. The
+client rereads and explicitly reconciles its edits. This detects stale API saves
+and already-observed external edits; it is not a locking protocol for unrelated
+processes writing the file concurrently.
+
+On a match, validate the entire input, atomically replace the file, and return
+the saved settings and their new revision. There is no transaction spanning the
+two files. Query fields and mutation payloads are nullable so a field error can
+coexist with other successful selections. An absent file returns defaults, not
+null. Malformed/unreadable files and failed persistence return
+`INTERNAL_SERVER_ERROR`, without substituting a successful default result.
+GraphQL rejects unknown fields, missing/null required inputs, invalid input
+types, and values outside its signed 32-bit `Int` range. Negative policy values
+return `BAD_REQUEST`. Error messages do not expose private paths or file
+contents.
+
+`clientMutationId` is echoed unchanged and is not a deduplication key. A lost
+response leaves the save uncertain; reread before offering another explicit
+save. Equality with desired values is an observation, not proof that a
+particular request succeeded. No automatic replay is required.
+
+#### Durable conversation configuration
+
+Conversation configuration remains the existing typed Durable API:
+
+```graphql
+extend type Mutation {
+  configure(input: ConfigureInput!): ConfigurePayload
+}
+
+input ConfigureInput {
+  conversationId: ID!
+  change: AgentChange!
+  clientMutationId: String
+}
+
+input AgentChange {
+  model: ModelRefInput
+  thinkingLevel: ModelThinkingLevel
+  cwd: String
+}
+
+type ConfigurePayload {
+  clientMutationId: String
+}
+```
+
+`ModelRefInput` and `ModelThinkingLevel` are the existing schema types.
+`conversationId` is a global ConversationRecord ID. Omission leaves a stored
+field unchanged, a value replaces it, and null clears it. For example,
+`change: { cwd: "/work" }` preserves the stored model and thinking level;
+`change: { cwd: null }` removes only cwd. This is not whole-document
+replacement. Read the resolved values through `ConversationRecord.agent` and
+observe stored `pi.agent` changes through the existing SSE mount.
+
+The write goes only to Durable. It neither changes application files nor reloads
+their defaults. Creation-time initial values may seed a conversation's
+documents; those documents remain authoritative on reopen. There is no second
+copy of conversation settings in application configuration. Generic document
+replacement retains its separate contract and does not replace `configure` in
+the settings UI.
 
 Sources:
 [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/0.8/),
-[current settings and live policy binding](../../../app/serve/server.ts),
+[configuration resolver and existing types](graphql.ts),
+[existing application settings](../../../app/serve/settings.ts),
+[existing application defaults](../../../app/serve/server.ts),
+[conversation initialization](../../../app/serve/sessions.ts),
 [Harness factory](../../harness/src/index.ts), and pinned
-[agent and policy resolution](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/agent.js).
+[agent and policy defaults](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/agent.js).
 
 ### Linked accounts
 
@@ -819,10 +1065,16 @@ Model-catalog executable-schema tests cover:
 Document tests must cover non-creating absent reads, address and permission
 checks, validated atomic replacement, null versus removed properties,
 persistence across reopen, and the absence of additional workflow side effects.
-Verify application-default changes leave existing session settings unchanged,
-including after reopen, while new sessions use the updated defaults. Preserve
-the existing SSE wire and lifecycle tests; do not add new stream behavior as
-part of these features.
+Application-settings tests cover the declared queries, mutations, enums,
+required input fields, defaults, numeric bounds, file ownership, atomic
+persistence, and revision conflicts. Verify absent files return defaults without
+writes, invalid files fail rather than reset, and changing one user's settings
+does not affect another user's file. Saves must not acquire Harnesses or mutate
+Durable docs. Verify new Harness opens use the saved runtime configuration while
+existing conversation document values survive reopen unchanged. `configure`
+retains its partial-update and null-clearing semantics and never writes
+application files. Preserve the existing SSE wire and lifecycle tests; do not
+add new stream behavior as part of these features.
 
 The current [coverage configuration](../package.json) targets `src/**/*.ts`; its
 percentage does not establish GraphQL coverage. Do not weaken thresholds or
