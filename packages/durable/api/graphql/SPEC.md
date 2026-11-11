@@ -34,9 +34,10 @@ implementation.
 
 ## Schema-to-upstream mapping
 
-This inventory covers every declared schema type and operation. It maps names,
-not a second runtime schema. Unless a conversion is listed, fields, arguments,
-and enum values keep their upstream names. The explicit target contracts below
+This inventory covers the reusable Durable schema types and operations. The
+application-owned contracts are declared separately below. It maps names, not a
+second runtime schema. Unless a conversion is listed, fields, arguments, and
+enum values keep their upstream names. The explicit target contracts below
 override the implemented [schema](schema.graphql) where they differ.
 
 Source prefixes below refer to the pinned 1.4.0 packages:
@@ -341,8 +342,8 @@ Durable record ID or a filesystem path. Clients may choose a fresh key when
 opening a new store. Deployment validates and authorizes it within its storage
 namespace; it must not interpolate unchecked input into a path. Reopening the
 same store preserves its global identity. A key remains bound to that store
-until deployment deletes it; only then may it identify a new store. Opening
-must not replace existing storage or silently restore an archived store.
+until deployment deletes it; only then may it identify a new store. Opening must
+not replace existing storage or silently restore an archived store.
 
 `Harness.id` is the opaque global GraphQL ID. Operations on an existing Harness
 accept `harnessId: ID!`, including `root`, `createConversation`, and `resume`.
@@ -602,6 +603,104 @@ and
 
 ## Durable documents
 
+### Document schema
+
+A document is Durable's persisted JSON-object state accessed through a
+registered token, not a transcript entry or filesystem document. Pinned Durable
+exports `defineDoc()` for singleton definitions and `defineDocFamily()` for
+keyed families. A family key is upstream's string identifying one member under a
+shared definition and owner scope; it is not another application abstraction.
+`DocumentAddressInput` mirrors `DocumentAddress`: `kind`, `scope`, and optional
+`key`. Scope IDs remain native numeric IDs within the addressed Harness.
+
+```graphql
+enum DocumentScopeKind {
+  session
+  conversation
+  task
+}
+
+enum DocumentHistory {
+  latest
+  rewindable
+}
+
+enum DocumentFork {
+  asOf
+  current
+  initial
+}
+
+input DocumentScopeInput {
+  kind: DocumentScopeKind!
+  conversationId: ConversationId
+  taskId: TaskId
+}
+
+input DocumentAddressInput {
+  kind: String!
+  scope: DocumentScopeInput!
+  key: String
+}
+
+type DocumentDefinition {
+  kind: String!
+  version: Int!
+  scope: DocumentScopeKind!
+  family: Boolean
+  history: DocumentHistory
+  fork: DocumentFork
+}
+
+extend type Harness {
+  documentDefinitions(scope: DocumentScopeInput!): [DocumentDefinition!]
+  snapshot(address: DocumentAddressInput!): JsonObject
+}
+
+input ReplaceDocumentInput {
+  harnessId: ID!
+  address: DocumentAddressInput!
+  content: JsonObject!
+}
+
+extend type Mutation {
+  replaceDocument(input: ReplaceDocumentInput!): JsonObject
+}
+```
+
+`DocumentDefinition` is the data-only projection of an exposed registered
+singleton or family definition; callbacks remain server-side. `family` is true
+for a family and null for a singleton, matching upstream's optional `true`
+marker. `history` and `fork` are populated only for conversation scope. The
+version is the definition's positive schema version, not a content revision.
+Definition discovery returns authorized definitions for the exact owner, sorted
+by `kind`, including definitions whose documents are absent. It does not list
+stored documents or enumerate family keys. An accessible owner with no exposed
+definitions returns an empty list. Write and initialization permissions remain
+deployment policy enforced on each operation, not Durable definition fields.
+
+For session scope, omit both owner IDs. Conversation scope requires only
+`conversationId`; task scope requires only `taskId`. A singleton forbids `key`;
+a family requires it. Optional input fields permit omission but reject explicit
+null. Validate scope/discriminator pairing before calling Durable. All native
+owner IDs must belong to the addressed, authorized Harness.
+
+`Harness.snapshot` maps directly to `Session.snapshot()` and returns content or
+null, without a second document envelope. Missing/inaccessible owners or
+unexposed definitions return null from lookup fields. An absent document also
+returns null; an empty object remains `{}`. Invalid addresses return
+`BAD_REQUEST`; storage failures remain errors rather than absence.
+`replaceDocument` is explicitly an adapter operation, not an upstream method: it
+applies validated replacement to the draft obtained from `Tx.doc()` inside one
+server-side commit. Missing/inaccessible owners or unexposed definitions return
+`NOT_FOUND`. Read-only definitions, invalid content, and forbidden
+initialization return `BAD_REQUEST`. An absent document may be initialized only
+when deployment permits it; any required family seed is supplied server-side.
+Return the committed replacement, not a later `snapshot()` that could observe
+another writer.
+
+### Execution and permissions
+
 Expose queries and mutations for registered Durable documents, separately from
 transcript entries and the explicit lifecycle operations above. Document access
 does not add review start/end, directory validation, environment selection, or
@@ -634,10 +733,11 @@ Document registration and arbitrary execution callbacks remain server-side.
 
 Writability is explicit, not implied by a registered kind or by the ability to
 read it. Validate document-specific invariants; runtime-owned inbox, live, and
-provider state are not user configuration. Agent-setting edits must preserve
-`pi.agent` invariants. One mutation's commit is atomic; several GraphQL mutation
-fields are not a transaction. Do not claim compare-and-swap, automatic merge, or
-deduplication guarantees that the mutation contract does not provide.
+provider state are not user configuration. Generic `pi.agent` access is
+read-only; its exposed settings are written through `configure`. One mutation's
+commit is atomic; several GraphQL mutation fields are not a transaction. Do not
+claim compare-and-swap, automatic merge, or deduplication guarantees that the
+mutation contract does not provide.
 
 Reads and mutations borrow the same Harness as SSE. Completion acknowledges the
 document commit, not completion of any subsequent execution using that state. Do
@@ -651,6 +751,7 @@ after a mutation or on explicit refresh; adding document access does not add a
 document watch route, an enriched SSE mount, or synchronization machinery.
 
 Sources: pinned Durable 1.4.0
+[defineDoc and defineDocFamily](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/documents.d.ts),
 [document tokens, Session.snapshot, and Tx.doc](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/types.d.ts),
 [agent document semantics](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/agent.js),
 and the [existing SSE adapter](../src/stream.ts).
@@ -666,17 +767,111 @@ commands may be composed with Durable GraphQL without changing Durable's
 factory, storage, or operation contracts. The frontend requirements are in
 [[packages/www/SPEC.md]].
 
-Instance inventory is read-only in this iteration. Expose authorized instance
-identity, flake reference when known, and systemd `ActiveState`, `SubState`, and
-`Result`. Combine retained inventory with currently known instance units so that
-stopped instances and units still starting remain representable. Preserve
-unavailable observations separately from inactive state and partial inventory
-separately from a complete list. An instance identifies a host service, not a
-persisted Harness; `harnesses` is not its catalog. Listing must not start or
-connect to guests. Do not add lifecycle mutations yet.
+### Application identities and connections
 
-Sources: [host inventory](../../../../nixosModules/host/command.sh) and
-[host control](../../../../nixosModules/host/cli.sh).
+`Instance`, `AuthorizationServer`, `Authorization`, and `Account` implement the
+existing `Node` interface. Their opaque global IDs identify resources within the
+authorized deployment/service namespace, not Durable record IDs. Identity is
+stable while the resource exists, including across restart for retained
+resources. Application composition extends `Query.node(id)` dispatch to these
+services without adding them to Durable's `ResolverContext` or replacing the
+Durable identity contract. Missing/inaccessible resources return null; commands
+validate the decoded kind and scope and return `NOT_FOUND` for unavailable
+targets. IDs are not access credentials.
+
+Application lists use `nodes` and the existing `PageInfo.next`, with positive
+`limit` and opaque JSON `Cursor` values. Their owning services implement
+ordering and cursors; they do not call Durable scans or use a Durable cursor as
+invented continuation state. Order instances, servers, and accounts by ascending
+service-owned identity; order authorizations by creation time with service-owned
+identity as a tie-breaker. Validate cursor scope, filters, and ordering. Read
+one page without lookahead or silent truncation. These connections do not
+promise snapshot isolation across pages. Nullable connection fields permit field
+errors without discarding unrelated successful selections.
+
+### Instance inventory
+
+```graphql
+extend type Query {
+  instances(limit: Int!, cursor: Cursor): InstanceConnection
+}
+
+type InstanceConnection {
+  nodes: [Instance!]!
+  pageInfo: PageInfo!
+}
+
+type Instance implements Node {
+  id: ID!
+  unit: String!
+  flakeReference: String
+  state: InstanceState
+  timings: InstanceTimings
+}
+
+type InstanceState {
+  activeState: String!
+  subState: String!
+  result: String
+}
+
+type InstanceTimings {
+  invocationId: String!
+  activationUs: Float
+  workerUs: Float
+  bootWaitUs: Float
+  provisionUs: Float
+  managerGapsUs: Float
+  hostPhases: [InstanceTimingPhase!]
+  guestPhases: [InstanceTimingPhase!]
+}
+
+type InstanceTimingPhase {
+  phase: String!
+  clock: String!
+  monotonicSeconds: Float!
+  resolutionSeconds: Float!
+}
+```
+
+Inventory is read-only. Combine retained inventory with currently known instance
+units so stopped instances and units still starting remain representable. An
+instance identifies a host's service in its owner namespace, not a persisted
+Harness; `harnesses` is not its catalog. Listing must not start or connect to
+guests. There are no instance lifecycle mutations.
+
+`state` projects observed `ActiveState`, `SubState`, and `Result`. Keep their
+string values rather than inventing a closed state enum. Unavailable metadata,
+state, or timings remain null, not fabricated defaults or an inactive state.
+Enumeration must succeed for the requested page: failure to enumerate either
+retained inventory or known units produces a field error and null connection,
+not a successful partial membership list. Clients keep prior rows marked stale.
+Pagination is represented by `pageInfo.next`. Missing row observations do not
+invalidate successfully enumerated membership; read failures for nullable row
+fields retain GraphQL error paths and other usable fields.
+
+Timings describe one observed service invocation, identified by `invocationId`.
+Never combine samples from different invocations. The duration fields map to
+`activation_us`, `worker_us`, `boot_wait_us`, `provision_us`, and
+`manager_gaps_us` in the existing benchmark's `timings()` calculation; all are
+microseconds represented as Float, not signed 32-bit Int. Unavailable or
+unfinished durations remain null. Do not present invalid/unsuccessful activation
+measurements as successful startup durations.
+
+Phase fields project existing host and guest timing JSONL: `phase`, `clock`,
+`monotonic_s`, and `resolution_s`. Preserve order, phase names, and seconds.
+These records currently use `boottime` with 0.01-second resolution, not wall
+clock. Do not subtract host from guest timestamps or mix them with systemd's
+monotonic clock. A null phase list means unavailable; an empty list means the
+source was available but contained no records. Do not fabricate phase data from
+aggregate durations. No historical timing store or timing persistence after
+runtime cleanup is required.
+
+Sources: [host inventory](../../../../nixosModules/host/command.sh),
+[host control](../../../../nixosModules/host/cli.sh),
+[activation measurements](../../../bench/main.py),
+[phase format and clock](../../../../nixosModules/timing.sh), and
+[guest timing collection](../../../../nixosModules/host/post.sh).
 
 ### Application configuration
 
@@ -988,36 +1183,303 @@ Sources:
 
 ### Linked accounts
 
-Expose linked-account status and authorization commands without a closed
-OpenAI/GitHub provider enum. Support adding OAuth2 providers through
-configuration for standard behavior and narrow provider adapters for remaining
-differences. Provider configuration identifies endpoints or discovery metadata,
-client registration, requested permissions, supported grants, and account
-identity lookup. Arbitrary OAuth2 support does not imply uniform identity data,
-device authorization, refresh, or revocation support.
+#### Authority and protocol mapping
 
-The account service owns authorization attempts, credential persistence,
-refresh, and disconnect. Keep that lifecycle separate from login to drv.run.
-GraphQL exposes only public account metadata, state, and information needed to
-complete authorization; never access tokens, refresh tokens, or client secrets.
-Provider redirects and callbacks are OAuth protocol exchanges, not new REST
-application commands. Bind an authorization attempt to its initiating user and
-validate callback correlation; use PKCE for authorization-code flows. Device
-flows follow the provider's polling and expiry rules.
+Map authorization-server metadata, requests, responses, and errors closely to
+the OAuth RFCs and the selected library's public API, as Durable types map to
+upstream Durable. Do not rename protocol error codes or invent a provider enum.
+The current credential service is custom Python over Tornado; no dedicated OAuth
+client library is selected by this specification. Select and pin one before
+implementation and verify its public-type mapping against these target
+contracts. Do not claim a library mapping before that selection.
 
-Provider destinations and client registrations are trusted service
-configuration, not arbitrary browser-supplied URLs or filesystem paths. Report
-unsupported grants and missing configuration explicitly. Disconnect stops local
-credential use and clears the linked credentials; provider-side revocation is
-attempted only when supported and is not implied by local success. Library and
-provider-adapter selection must not require provider-specific frontend pages.
+Protocol fields below retain RFC spellings. `AuthorizationRequest` projects an
+authorization-code request; `url` is the adapter-computed request URL.
+`DeviceAuthorizationResponse` projects RFC 8628 section 3.2 without exposing
+`device_code`. `AuthorizationErrorResponse` preserves protocol error fields,
+including extension error codes as strings. `AuthorizationServer` projects
+public metadata and adds deployment identity and application relationships.
+`Authorization`, its lifecycle status, and `Account` are application-owned
+resources, not objects standardized by OAuth. In particular, an account's
+`identifier` is provider metadata, not an assumed universal `subject` claim.
+
+#### Authorization schema
+
+```graphql
+extend type Query {
+  authorizationServers(
+    limit: Int!
+    cursor: Cursor
+  ): AuthorizationServerConnection
+  accounts(limit: Int!, cursor: Cursor): AccountConnection
+}
+
+type AuthorizationServerConnection {
+  nodes: [AuthorizationServer!]!
+  pageInfo: PageInfo!
+}
+
+type AccountConnection {
+  nodes: [Account!]!
+  pageInfo: PageInfo!
+}
+
+type AuthorizationConnection {
+  nodes: [Authorization!]!
+  pageInfo: PageInfo!
+}
+
+type AuthorizationServer implements Node {
+  id: ID!
+  label: String!
+  authorization_endpoint: String
+  token_endpoint: String
+  device_authorization_endpoint: String
+  revocation_endpoint: String
+  grant_types_supported: [String!]
+  accounts(limit: Int!, cursor: Cursor): AccountConnection
+  authorizations(limit: Int!, cursor: Cursor): AuthorizationConnection
+}
+
+type Account implements Node {
+  id: ID!
+  server: AuthorizationServer!
+  identifier: String
+  displayName: String
+  status: AccountStatus!
+  scope: String
+}
+
+enum AccountStatus {
+  usable
+  temporarilyUnavailable
+  reauthorizationRequired
+}
+
+type Authorization implements Node {
+  id: ID!
+  server: AuthorizationServer!
+  status: AuthorizationStatus!
+  createdAt: Float!
+  account: Account
+  request: AuthorizationRequest
+  deviceAuthorizationResponse: DeviceAuthorizationResponse
+  error: AuthorizationErrorResponse
+}
+
+enum AuthorizationStatus {
+  pending
+  completed
+  cancelled
+  failed
+}
+
+type AuthorizationRequest {
+  url: String!
+  response_type: String!
+  client_id: String!
+  redirect_uri: String!
+  scope: String
+  state: String!
+  code_challenge: String!
+  code_challenge_method: String!
+}
+
+type DeviceAuthorizationResponse {
+  user_code: String!
+  verification_uri: String!
+  verification_uri_complete: String
+  expires_in: Int!
+  interval: Int
+}
+
+type AuthorizationErrorResponse {
+  error: String!
+  error_description: String
+  error_uri: String
+}
+
+input AuthorizeInput {
+  serverId: ID!
+  accountId: ID
+}
+
+input DeviceAuthorizationInput {
+  serverId: ID!
+  accountId: ID
+}
+
+input CancelAuthorizationInput {
+  authorizationId: ID!
+}
+
+input DisconnectInput {
+  accountId: ID!
+}
+
+input RevokeInput {
+  accountId: ID!
+  token_type_hint: String
+}
+
+extend type Mutation {
+  authorize(input: AuthorizeInput!): Authorization
+  deviceAuthorization(input: DeviceAuthorizationInput!): Authorization
+  cancelAuthorization(input: CancelAuthorizationInput!): Boolean
+  disconnect(input: DisconnectInput!): Boolean
+  revoke(input: RevokeInput!): Boolean
+}
+```
+
+`grant_types_supported` retains the protocol strings, including
+`authorization_code` and `urn:ietf:params:oauth:grant-type:device_code`, rather
+than invented short enum values. A null metadata field is unknown or unavailable
+metadata, not fabricated support. Deployment must separately have working client
+registration and grant support before offering the corresponding command.
+Missing registration or an unsupported requested operation returns an explicit
+`BAD_REQUEST` field error; service failures use `INTERNAL_SERVER_ERROR`, not
+successful empty catalogs or account-state substitutes. A failed account status
+read is an error, not evidence that credentials are absent or expired.
+
+#### Enrollment and account ownership
+
+`authorize` creates an authorization-code request from trusted server/client
+configuration and server-generated correlation and PKCE. The provider redirect
+and callback complete the exchange. `deviceAuthorization` performs the device
+authorization request and starts service-owned token polling. Each returns a
+tracked global Authorization identity; `node(id)` and the owning server's
+`authorizations` connection permit subsequent reads and reconciliation. An
+uncertain initiation response does not authorize automatic retry. Retention is
+service-owned; connections list retained resources, not a promise of indefinite
+history or recovery of pending processing after restart.
+
+```text
+authorize(serverId) or deviceAuthorization(serverId)
+  -> Authorization.id
+  -> provider authorization + server-side token exchange
+  -> validate credentials and provider account identity
+  -> persist Account
+  -> Authorization.account + accounts connection
+```
+
+Omitting `accountId` links an account; supplying it reauthorizes an existing
+account. Optional input fields permit omission, not explicit null. All supplied
+IDs are global IDs of the required kind, never raw server keys or provider
+account identifiers. Verify the account belongs to the selected server and
+initiating user. Validate the provider's returned identity before replacing
+credentials; a different identity must not silently replace the addressed
+account. Failed or cancelled reauthorization preserves existing credentials.
+Deduplicate known provider account identities within the user's server scope;
+reauthorizing one must not publish a duplicate Account. When a provider cannot
+supply identity metadata, do not invent an identifier or claim unsupported
+identity checks. No one-account-per-server limit is imposed by this schema.
+
+There is no `createAccount` mutation: an Account is published only after
+successful authorization, credential validation, and persistence. This links an
+existing provider account; it does not create an account at the provider.
+`Authorization.account` is null before initial enrollment succeeds; for
+reauthorization it refers to the existing target. Completion means the account
+and validated credentials have been persisted, not merely that the user visited
+the provider URL. Account `scope` retains the RFC space-delimited granted scope;
+null means unavailable.
+
+The account service owns credential persistence, refresh, identity checks,
+authorization tracking, cancellation, and disconnect. Keep it separate from
+login to drv.run. Bind callbacks and all authorization lookups to the initiating
+user; validate callback correlation and use PKCE for authorization-code flows.
+Authorization-server destinations, client registrations, redirect URIs, and
+requested permissions are trusted service configuration, not arbitrary
+browser-supplied URLs, secrets, or filesystem paths. Provider configuration and
+narrow adapters handle standard behavior and remaining differences without
+provider-specific frontend pages.
+
+#### Status, protocol errors, and credential removal
+
+`Authorization.status` describes local processing; it does not rename RFC error
+codes. Preserve `authorization_pending`, `slow_down`, `access_denied`,
+`expired_token`, and other protocol codes in `error.error`. Device polling obeys
+RFC intervals, slow-down increments, timeout backoff, and expiry. The backend,
+not a GraphQL read or browser timer, owns token-endpoint polling. No status read
+starts another authorization. Protocol failures are Authorization data; invalid
+commands, access failures, and service failures remain GraphQL field errors.
+Expose only safe public `error_description` and `error_uri` values, never raw
+internal causes or credential-bearing provider messages.
+
+`createdAt` is epoch milliseconds. `expires_in` is the original device-code
+lifetime in seconds, anchored to creation of that authorization; rereads must
+not reset that lifetime. `interval` is the original provider polling interval in
+seconds, with RFC's default applied by backend polling when absent. It is not a
+prescribed browser status-refresh interval. OAuth's request `state` is
+correlation, not Authorization's processing status. Only the relevant request or
+device-response field is populated after successful initiation. Access and
+refresh tokens, `device_code`, client secrets, and PKCE verifiers stay
+server-side; user codes and public challenges are intentionally browser-visible.
+
+`cancelAuthorization` cancels local processing, without claiming provider-side
+revocation. `disconnect` removes local credential use and storage. `revoke`
+performs actual RFC 7009 token revocation only when supported, using credentials
+referenced by Account rather than accepting tokens from the browser.
+`token_type_hint` retains the RFC hint (`access_token` or `refresh_token`);
+omission lets the service choose an applicable stored token. A true result
+acknowledges a successful revocation response, including the RFC's success for
+an already-invalid token; it does not prove cascading revocation of every
+related token. Protocol revocation errors produce field errors carrying their
+safe protocol code rather than a false success. Local removal and provider
+revocation are separate operations; neither is inferred from the other. All
+Boolean acknowledgments return true after success, never false for failures.
 
 Sources: [existing authorization boundary](../../../app/serve/auth.ts),
+[current provider protocol and enrollment](../../../mitm-proxy/auth.py),
+[current credential-service dependencies](../../../mitm-proxy/default.nix),
 [OAuth 2.0](https://www.rfc-editor.org/rfc/rfc6749),
-[PKCE](https://www.rfc-editor.org/rfc/rfc7636), and
-[device authorization](https://www.rfc-editor.org/rfc/rfc8628).
+[authorization-server metadata](https://www.rfc-editor.org/rfc/rfc8414),
+[PKCE](https://www.rfc-editor.org/rfc/rfc7636),
+[device authorization](https://www.rfc-editor.org/rfc/rfc8628), and
+[token revocation](https://www.rfc-editor.org/rfc/rfc7009).
 
 ### Push subscriptions
+
+```graphql
+extend type Query {
+  push: PushService
+}
+
+type PushService {
+  applicationServerKey: String
+  registered(endpoint: String!): Boolean
+}
+
+input PushSubscriptionKeysInput {
+  p256dh: String!
+  auth: String!
+}
+
+input RegisterPushSubscriptionInput {
+  endpoint: String!
+  keys: PushSubscriptionKeysInput!
+}
+
+input RemovePushSubscriptionInput {
+  endpoint: String!
+}
+
+extend type Mutation {
+  registerPushSubscription(input: RegisterPushSubscriptionInput!): Boolean
+  removePushSubscription(input: RemovePushSubscriptionInput!): Boolean
+}
+```
+
+`applicationServerKey` is the public VAPID key; null means delivery is disabled
+by configuration. A failed read is a field error, not that successful null.
+`registered` reads only the authorized user's registration for the browser's
+endpoint. It does not establish browser permission, current browser keys, or
+delivery success. Register upserts the complete endpoint subscription; removal
+is idempotent and remains available when delivery is disabled. Both mutations
+return true only after persistence succeeds; failures are field errors, not
+false acknowledgments. No subscription list, returned encryption secrets,
+test-delivery command, or delivery-history API is required. Reconcile the full
+browser subscription through explicit registration; registration lookup alone
+does not prove stored keys match current browser keys.
 
 GraphQL exposes public push configuration and authorized subscription
 registration/removal. The notification service owns subscription persistence and
@@ -1329,19 +1791,21 @@ Model-catalog executable-schema tests cover:
 Lifecycle tests cover external-ID discovery without owner acquisition, stable
 publication across reopen, key reuse only after deployment deletes the store,
 concurrent/retried opens sharing one owner, factory failure cleanup, and the
-rejection of unauthorized or archived keys. Verify
-`root`, `createConversation`, and `resume` require global Harness IDs rather
-than external IDs. Passive root lookup must not create one; root creation is
-atomic with agent initialization and repeated calls do not reapply options.
-Additional conversation creation preserves explicit ownership and has no retry
-deduplication. Verify opening and creation do not enable scheduling, separate
-commands do not promise rollback, mutation inputs/results contain no correlation
-echo, void acknowledgments follow upstream return, and submission request-ID
-recovery remains unchanged.
+rejection of unauthorized or archived keys. Verify `root`, `createConversation`,
+and `resume` require global Harness IDs rather than external IDs. Passive root
+lookup must not create one; root creation is atomic with agent initialization
+and repeated calls do not reapply options. Additional conversation creation
+preserves explicit ownership and has no retry deduplication. Verify opening and
+creation do not enable scheduling, separate commands do not promise rollback,
+mutation inputs/results contain no correlation echo, void acknowledgments follow
+upstream return, and submission request-ID recovery remains unchanged.
 
-Document tests must cover non-creating absent reads, address and permission
-checks, validated atomic replacement, null versus removed properties,
-persistence across reopen, and the absence of additional workflow side effects.
+Document tests must cover the schema's native address and definition mapping,
+scope/key pairing, non-creating discovery and absent reads, address and
+permission checks, read-only generic `pi.agent`, validated atomic replacement,
+server-owned initialization, null versus removed properties, persistence across
+reopen, and the absence of additional workflow side effects. Verify successful
+replacement returns its committed value, not a racing writer's later snapshot.
 Application-settings tests cover both `App` selectors, union-member resolution,
 aliased reads, separate save mutations, enums, required input fields, defaults,
 numeric bounds, file ownership, atomic persistence, and revision conflicts.
@@ -1353,6 +1817,27 @@ document values survive reopen unchanged. `configure` retains its partial-update
 and null-clearing semantics and never writes application files. Preserve the
 existing SSE wire and lifecycle tests; do not add new stream behavior as part of
 these features.
+
+Application-service tests own their contracts outside the reusable Durable
+suite:
+
+- Inventory: retained and starting-unit discovery, ordering and cursor scope,
+  page boundaries, enumeration failure without partial membership success,
+  unavailable row observations, native state values, and no guest connection.
+  Verify timing unit/field mapping, invocation isolation, incomplete durations,
+  unavailable versus empty phase sources, and host/guest/clock separation.
+- Authorization: Node lookup and kind/access checks for servers, accounts, and
+  authorizations; connection pagination and retention; protocol-field mapping
+  against the selected pinned library; public metadata and safe errors; PKCE,
+  callback correlation, device polling and expiry; successful account
+  publication, duplicate-identity reconciliation, and reauthorization identity
+  checks. Failures and cancellation must preserve prior credentials. Verify
+  refresh, local disconnect, and actual revocation remain distinct and no
+  credential secrets reach GraphQL. Use deterministic local provider fixtures.
+- Push: public configuration, per-user registration lookup, validated complete
+  upsert, idempotent removal while disabled, persistence acknowledgment,
+  ownership checks, secret exclusion, and existing destination/network policy.
+  Do not treat registration as browser permission or delivery confirmation.
 
 The current [coverage configuration](../package.json) targets `src/**/*.ts`; its
 percentage does not establish GraphQL coverage. Do not weaken thresholds or

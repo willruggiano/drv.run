@@ -40,12 +40,14 @@ pinned project dependency.
 
 ## Instance inventory
 
-List accessible drv.run instances through GraphQL. Each row shows the instance
-identity, flake reference when available, and the observed systemd
-`ActiveState`, `SubState`, and `Result`. Preserve the distinction between
-starting, running, stopping, inactive, and failed states; a successful previous
-result does not mean the instance is currently running. Unavailable status is
-not an inactive instance.
+List accessible drv.run instances through the paginated GraphQL `instances`
+connection. Each row shows the global Instance identity, unit, flake reference
+when available, and observed `state.activeState`, `subState`, and `result`.
+Preserve the distinction between starting, running, stopping, inactive, and
+failed states; a successful previous result does not mean the instance is
+currently running. Unavailable status is not an inactive instance. Use More,
+Refresh, and retry controls with the existing `nodes`/`pageInfo.next` contract;
+there is no connection-level completeness flag.
 
 An instance identifies a host's `drv.run@%i.service`, not a Durable session or
 conversation. Do not infer a session link from matching identifiers. Retained
@@ -53,14 +55,24 @@ stopped instances remain visible; an instance still starting must not disappear
 merely because it has not yet written its retained metadata. Missing metadata
 stays unavailable rather than being fabricated.
 
-Show loading, empty, partial, failed, and stale reads distinctly. Refresh is
-read-only and keeps useful prior rows visible during failure. Listing never
-starts or connects to a guest. There are no instance lifecycle controls in this
-iteration.
+Enumeration failures return a failed page, not a successful partial membership
+list. Keep useful prior rows visible and marked stale; nullable row observations
+can fail independently while other fields remain usable. Distinguish loading,
+empty, paginated/incomplete, failed, and stale views. Refresh is read-only.
+Listing never starts or connects to a guest. There are no instance lifecycle
+controls in this iteration.
+
+Show available activation timings with their service invocation identity. The
+API's aggregate durations are microseconds; phase timestamps and resolution are
+seconds on their declared clock. Host and guest phases remain separate. Missing
+or unfinished measurements are unavailable, not zero. Do not mix service
+invocations, subtract host and guest clocks, or label phase timestamps as wall
+clock. Timing data may disappear after runtime cleanup; no historical timing
+store is implied.
 
 Sources: [host inventory](../../nixosModules/host/command.sh),
 [host control](../../nixosModules/host/cli.sh), and
-[[packages/durable/api/graphql/SPEC.md#Application services]].
+[[packages/durable/api/graphql/SPEC.md#Instance inventory]].
 
 ## Sessions and navigation
 
@@ -391,11 +403,23 @@ exit warns when the browser permits it, without promising recovery. Document
 writes do not imply multi-client conflict detection beyond their declared
 contract.
 
-Other accessible application documents can be inspected and edited according to
-their write permissions and validation. Distinguish an absent document from an
-empty object or a failed read. Invalid edits preserve the draft and show the
-failure. Changes to documents outside the existing SSE mount require a GraphQL
-reread to show current state.
+Discover exposed definitions through the owning Harness's
+`documentDefinitions(scope)` and read content through `snapshot(address)`.
+Addresses retain Durable's kind, native owner scope, and optional family key; a
+family key identifies a member of an upstream `defineDocFamily()` definition.
+There is no document-content envelope or client-visible permission wrapper.
+Deployment enforces read/write and initialization policy on each operation.
+Generic `pi.agent` reads are allowed, but edits use typed `configure`, not
+generic replacement.
+
+Other exposed application documents can be edited through `replaceDocument`,
+using the global Harness ID and native document address. This replaces the
+complete JSON object: omitted properties are removed; JSON null remains a value
+where valid. Definition discovery and reads do not initialize documents.
+Distinguish an absent document from an empty object or a failed read. Permission
+and validation failures preserve the draft and show the failure. Changes to
+documents outside the existing SSE mount require a GraphQL reread to show
+current state.
 
 Document access does not add `/review`, `/endreview`, validated `/cd`, or
 execution-environment workflow operations. Reading or editing review/environment
@@ -408,25 +432,48 @@ existing [autosave behavior](../app/serve/elm/src/Autosave.elm).
 
 ## Linked OAuth2 accounts
 
-The accounts view lists configured providers and linked accounts. OpenAI and
-GitHub are not a closed provider list: adding another supported OAuth2 provider
-must not require a new hard-coded page or provider-specific command vocabulary.
-Show account identity when the provider supplies it, granted permissions when
-known, and authorization state independently from model availability.
+The accounts view lists configured `AuthorizationServer` and linked `Account`
+resources through their paginated connections. Servers, accounts, and tracked
+`Authorization` resources have global Node IDs and can be refetched through
+`node(id)`. OpenAI and GitHub are not a closed provider list: another supported
+OAuth2 server must not require a hard-coded page or provider-specific command
+vocabulary. Show provider account identity when available, granted scope when
+known, and credential-service status independently from model availability.
+Account metadata and tracked authorization status are application resources, not
+additional OAuth protocol concepts.
 
-Users can begin authorization, follow the provider's authorization URL or
-device-code instructions as appropriate, check progress, reauthorize, and
-disconnect an account. Distinguish pending, usable, expired/reauthorization
-required, denied, cancelled, and failed outcomes. Leaving a pending flow must
-not display success. An unsupported grant or missing client registration is an
-explicit configuration problem, not a broken login button.
+Use `authorize` for an authorization-code request or `deviceAuthorization` for a
+device authorization request. Follow the returned authorization URL or device
+verification instructions, then read the tracked Authorization. Successful
+server-side authorization, credential validation, and persistence publish an
+Account through `Authorization.account` and the account connections. There is no
+separate `createAccount`, and this does not create an account at the provider.
+Preserve the tracked identity across uncertain responses and reconcile through
+Node lookup or the server's authorization connection rather than automatically
+starting another flow.
+
+Supply an existing global `accountId` to reauthorize it. Failed or cancelled
+reauthorization preserves prior credentials; a different returned provider
+identity must not silently replace the selected account. Distinguish pending,
+usable, expired/reauthorization required, denied, cancelled, and failed
+outcomes. Protocol errors retain codes such as `access_denied` and
+`expired_token`, rather than being renamed into application processing states.
+Device `expires_in` and `interval` are seconds; the former is the original
+lifetime anchored to the Authorization's creation, not a new lifetime after each
+refresh. OAuth request `state` is callback correlation, not the displayed
+processing status. Leaving a pending flow must not display success. An
+unsupported grant or missing client registration is an explicit configuration
+problem, not a broken login button.
 
 GraphQL supplies status and commands; provider redirects/callbacks complete the
 OAuth exchange. Refresh status after returning from authorization and offer
-check-again while a device flow is pending. No OAuth status stream is required.
-Disconnect removes local use of the credentials; claim provider-side revocation
-only if it was supported and confirmed. Linking a provider account does not
-establish login to drv.run itself.
+check-again while a device flow is pending. The backend owns token-endpoint
+polling; browser status reads do not poll the provider or initiate
+authorization. No OAuth status stream is required. `cancelAuthorization` stops
+local processing, `disconnect` removes local credential use and storage, and
+`revoke` performs supported provider-side token revocation. Do not present local
+removal as revocation or claim that revoking one token revokes all related
+tokens. Linking a provider account does not establish login to drv.run itself.
 
 Access tokens, refresh tokens, and client secrets never appear in page state,
 GraphQL results, URLs generated by the application, or browser persistence.
@@ -436,11 +483,15 @@ existing [provider adapter](../app/serve/auth.ts).
 
 ## Push notifications
 
-Users can enable or disable notifications for the current browser, register its
-subscription, and reconcile subscription changes through GraphQL. Distinguish
-unsupported browser, permission denied, unavailable service, pending
-registration, and enabled states. Permission alone is not a registered
-subscription. Disabling delivery and browser permission are separate actions.
+Users can enable or disable notifications for the current browser. Read the
+public application-server key and endpoint registration through `push`, upsert
+the complete browser subscription with `registerPushSubscription`, and remove it
+with `removePushSubscription`. Removal is idempotent and remains available when
+delivery is disabled. Registration lookup does not establish that stored keys
+match the current browser subscription. Distinguish unsupported browser,
+permission denied, unavailable service, pending registration, and enabled
+states. Permission alone is not a registered subscription. Disabling delivery
+and browser permission are separate actions.
 
 Notifications can open the addressed conversation. Handle unavailable or
 inaccessible destinations without opening a different conversation. Delivery is
