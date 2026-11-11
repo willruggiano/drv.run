@@ -3,9 +3,10 @@
 ## Scope and authority
 
 `www` is an Elm application for browsing drv.run instances and persisted
-sessions, working in conversations, and managing application settings and linked
-accounts. It uses `elm-graphql` for queries and commands, and the existing HTTP
-SSE endpoint for live conversation state:
+sessions, creating sessions and conversations, working in conversations, and
+managing application settings and linked accounts. It uses `elm-graphql` for
+queries and commands, and the existing HTTP SSE endpoint for live conversation
+state:
 
 ```text
 Elm frontend
@@ -63,29 +64,38 @@ Sources: [host inventory](../../nixosModules/host/command.sh),
 
 ## Sessions and navigation
 
-The home page lists accessible persisted sessions. Each row identifies the
-session by its service-provided session key and opens its conversation list.
-Loading, an empty catalog, a failed read, and explicitly denied access have
-distinct states. Refresh retries the read without creating anything.
+The home page lists accessible persisted sessions through
+`harnesses { externalId id }`. Each row identifies the session by `externalId`,
+the deployment-owned storage key. Preserve `id`, the opaque global Harness ID,
+for Harness-scoped mutations. The catalog includes closed stores, not just
+currently open Harnesses. Loading, an empty catalog, a failed read, and
+explicitly denied access have distinct states. Refresh retries the read without
+creating anything.
 
-The current catalog has no session name, creation time, or designated root. Do
-not label the first conversation “Main,” sort sessions by invented activity, or
-redirect a session link to a guessed root. Conversation labels use their native
-identities unless a supported contract supplies a name. An empty session shows
-“No conversations,” not a creation form.
+A session link reads `Query.harness(externalId)` and its passive `root` field,
+then opens that conversation when present. If the root is absent, show the
+conversation list and an explicit root-creation action; do not create it while
+navigating. The catalog has no session name or creation time. Do not guess a
+root from scan order or sort by invented activity. Conversation labels use their
+native identities unless a supported contract supplies a name. An empty session
+shows “No conversations” separately from any explicit creation control.
 
-| Address                                                | User-visible destination                 |
-| ------------------------------------------------------ | ---------------------------------------- |
-| `/`                                                    | Session catalog                          |
-| `/instances`                                           | Instance inventory                       |
-| `/settings`                                            | Application settings, accounts, and push |
-| `/sessions/{sessionId}`                                | Conversations in that session            |
-| `/sessions/{sessionId}/conversations/{conversationId}` | Conversation transcript and composer     |
+| Address                                                 | User-visible destination                      |
+| ------------------------------------------------------- | --------------------------------------------- |
+| `/`                                                     | Session catalog                               |
+| `/instances`                                            | Instance inventory                            |
+| `/settings`                                             | Application settings, accounts, and push      |
+| `/sessions/{externalId}`                                | Reserved root, or conversation list if absent |
+| `/sessions/{externalId}/conversations/{conversationId}` | Conversation transcript and composer          |
 
 Deep links, reload, and browser Back/Forward reach the same addressed resource.
 Invalid or unavailable addresses show a scoped error and a home link; they do
 not open another conversation. GraphQL global identities and native conversation
-identities are not interchangeable. Session keys are not assumed to be UUIDs.
+identities are not interchangeable. External IDs are opaque storage keys and are
+not assumed to be UUIDs. Routes and SSE use the external ID and native
+conversation `durableId`; GraphQL mutations use global IDs. Neither `root` nor
+another Harness-scoped mutation takes an external ID; pass `Harness.id` as
+`harnessId`.
 
 On a conversation, `?q={text}` initializes search and `#entry-{entryId}` selects
 an entry. An unloaded anchor is distinguished from an absent entry. Settings,
@@ -99,9 +109,51 @@ page leaves existing results visible and marked incomplete. Listings do not
 claim a transactionally consistent view while the service changes.
 
 Sources:
-[GraphQL catalog and record contracts](../durable/api/graphql/schema.graphql),
-existing [site](../app/serve/elm/src/Site.elm) and
+[[packages/durable/api/graphql/SPEC.md#Discovery and passive root lookup]],
+[implemented record contracts](../durable/api/graphql/schema.graphql), existing
+[site](../app/serve/elm/src/Site.elm) and
 [conversation navigation](../app/serve/elm/src/Main.elm).
+
+## Creating sessions and conversations
+
+Offer an explicit New session action from the home page and through `/new`.
+Collect initial model, thinking level, and literal cwd choices separately from
+the optional first message and attachments. Preserve the draft while creation is
+in progress or fails. Assign one fresh external ID to the new-session draft and
+retain it across uncertain responses; changing message text does not mint
+another store identity.
+
+Create in separate stages:
+
+1. `open(externalId)` obtains a persisted store and its global `Harness.id`.
+2. `root(harnessId, options)` obtains its reserved root, applying initial agent
+   choices only when creating that root.
+3. If needed, save environment or other application document values through the
+   document editor before submitting work.
+4. An explicit Send uses the existing submission draft, including attachments
+   and request ID, addressed by the returned global conversation ID.
+
+Show the completed stage and preserve returned identities. A failure does not
+undo earlier stages. Recover an uncertain open with the same external ID. Read
+an existing root rather than assuming a repeated root call will update its
+settings; subsequent edits use `configure`. Recover uncertain submission through
+its original request ID. Do not replay the whole creation sequence or clear the
+composer merely because storage or root creation succeeded. A session without a
+first message is valid. No stage claims directory validation or target
+discovery.
+
+The conversation list also offers explicit New conversation in the existing
+Harness. It calls `createConversation` with ownerless ownership and chosen agent
+values. This creates a fresh transcript, not a fork or a review conversation,
+and does not submit a message. If its result is uncertain, preserve that state
+and offer refresh/reconciliation, not automatic creation retry or selection of a
+guessed newest conversation.
+
+No session archival action is specified yet. Closing a page or stopping its
+observation neither closes the shared Harness nor archives its store.
+
+Source:
+[[packages/durable/api/graphql/SPEC.md#Harness identity, discovery, and creation]].
 
 ## Live conversation
 
@@ -207,6 +259,7 @@ supported actions, confirmations, and errors:
 
 | Commands              | Action                                                                               |
 | --------------------- | ------------------------------------------------------------------------------------ |
+| `/new`                | Open a new-session draft; opening the draft performs no writes                       |
 | `/sessions`           | Open the session catalog                                                             |
 | `/settings`, `/model` | Open conversation configuration                                                      |
 | `/search`             | Search history                                                                       |

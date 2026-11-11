@@ -26,9 +26,10 @@ organizational directory, not a package.
 
 The frontend uses GraphQL for queries and commands and this API's existing SSE
 watch for live conversation state. Both transports must borrow the same owning
-Harness. This document retains the existing REST contracts; it does not require
-new frontend dependencies on those routes. New document and application-service
-requirements belong to [[packages/durable/api/graphql/SPEC.md]].
+Harness. This document specifies the REST contracts; it does not require new
+frontend dependencies on those routes. New lifecycle, document, and
+application-service requirements belong to
+[[packages/durable/api/graphql/SPEC.md]].
 
 The streaming API is frozen except for bug fixes. Keep its route, full-snapshot
 frames, mounted documents, terminal events, and reconnect behavior intact. Do
@@ -38,10 +39,11 @@ protocol as part of the GraphQL work.
 ## Core surface
 
 Operations are scoped by session and conversation IDs as applicable. A session
-ID addresses a persisted Harness instance. Names below identify logical
-operations; their HTTP routes are listed separately. Execution contexts remain
-server-side; object handles become IDs or records at the transport boundary. The
-model catalog is service-scoped and does not require an existing session.
+key (`externalId`) addresses a persisted Harness store; global GraphQL Harness
+IDs are separate. Names below identify logical operations; their HTTP routes are
+listed separately. Execution contexts remain server-side; object handles become
+IDs or records at the transport boundary. The model catalog is service-scoped
+and does not require an existing session.
 
 Behavioral evidence for this surface comes from the existing
 [frontend commands](../../app/serve/elm/frontend.ts),
@@ -68,7 +70,7 @@ Behavioral evidence for this surface comes from the existing
 ## Routes
 
 ```text
-S = /api/s/{sessionId}
+S = /api/s/{externalId}
 C = S/c/{conversationId}
 ```
 
@@ -209,7 +211,7 @@ type; there is no public result envelope:
 
 Shared conventions:
 
-- Path variables are function arguments in path order: `sessionId`, then
+- Path variables are function arguments in path order: `externalId`, then
   `conversationId` where applicable, before query parameters or a request body.
 - `QueryParameters` describes GET query parameters; `Request` describes a POST
   JSON body. Operations without either take only path arguments.
@@ -236,7 +238,7 @@ export type ProblemDetails = {
   status: number;
   detail?: string;
   instance?: string;
-  sessionId?: string;
+  externalId?: string;
   conversationId?: ConversationId;
 };
 ```
@@ -248,7 +250,7 @@ deferred. `instance`, when present, is a URI reference identifying the
 occurrence.
 
 On non-2xx responses, always populate `status` with the actual HTTP status.
-Include `sessionId` and `conversationId` whenever each is available. Clients
+Include `externalId` and `conversationId` whenever each is available. Clients
 ignore unrecognized extensions and do not parse `title` or `detail` for control
 flow. Do not expose stacks, arbitrary causes, or unsanitized internal error
 messages.
@@ -324,7 +326,7 @@ Sources: pinned Pi AI 1.4.0
 and
 [model types](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-ai/dist/types.d.ts).
 
-### `watch()` — `GET /api/s/{sessionId}/c/{conversationId}/watch`
+### `watch()` — `GET /api/s/{externalId}/c/{conversationId}/watch`
 
 ```typescript
 import type {
@@ -344,7 +346,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function watch(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
 ): EventSource;
 ```
@@ -382,7 +384,7 @@ terminal frame is best-effort; a broken connection may deliver none. On an `end`
 frame, the client closes its EventSource to prevent automatic reconnection.
 Disconnect releases observation, not execution.
 
-### `entries(query, limit, cursor)` — `GET /api/s/{sessionId}/c/{conversationId}/entries`
+### `entries(query, limit, cursor)` — `GET /api/s/{externalId}/c/{conversationId}/entries`
 
 ```typescript
 import type {
@@ -406,7 +408,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function entries(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
   queryParameters: QueryParameters,
 ): Result<Page<PageT>, ErrorT>;
@@ -425,7 +427,7 @@ addressing. `next` is omitted when pagination ends.
 
 Do not rename entry fields or pre-render message content.
 
-### `submit(draft)` — `POST /api/s/{sessionId}/c/{conversationId}/submit`
+### `submit(draft)` — `POST /api/s/{externalId}/c/{conversationId}/submit`
 
 ```typescript
 import type {
@@ -450,7 +452,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function submit(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
   request: Request,
 ): Result<ResponseT, ErrorT>;
@@ -479,7 +481,7 @@ The response identifies durable admission, not placement or completion.
 recovery. Same-key, same-type retries return the existing submission without
 comparing content.
 
-### `submissionByRequest(requestId)` — `GET /api/s/{sessionId}/c/{conversationId}/submissionByRequest`
+### `submissionByRequest(requestId)` — `GET /api/s/{externalId}/c/{conversationId}/submissionByRequest`
 
 ```typescript
 import type {
@@ -500,7 +502,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function submissionByRequest(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
   queryParameters: QueryParameters,
 ): Result<ResponseT, ErrorT>;
@@ -520,7 +522,7 @@ record and its status discriminants.
 `null` means no receipt was found at the lookup's observation point. It does not
 prove a concurrent or disconnected request failed.
 
-### `abortSubmission(id)` — `POST /api/s/{sessionId}/c/{conversationId}/abortSubmission`
+### `abortSubmission(id)` — `POST /api/s/{externalId}/c/{conversationId}/abortSubmission`
 
 ```typescript
 import type { ConversationId, SubmissionId } from "@earendil-works/pi-durable";
@@ -540,7 +542,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function abortSubmission(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
   request: Request,
 ): Result<ResponseT, ErrorT>;
@@ -562,7 +564,7 @@ submissions belonging to another conversation return `"not_found"` as an HTTP
 
 Do not translate `"already_placed"` into an execution abort.
 
-### `abort()` — `POST /api/s/{sessionId}/c/{conversationId}/abort`
+### `abort()` — `POST /api/s/{externalId}/c/{conversationId}/abort`
 
 ```typescript
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -576,7 +578,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function abort(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
 ): Result<ResponseT, ErrorT>;
 ```
@@ -594,7 +596,7 @@ work; preserve background work and queued writes.
 The response follows upstream completion of the abort operation. Initially, do
 not expose the background-abort option.
 
-### `inspect()` — `GET /api/s/{sessionId}/inspect`
+### `inspect()` — `GET /api/s/{externalId}/inspect`
 
 ```typescript
 import type { HarnessInspection } from "@earendil-works/pi-durable";
@@ -607,7 +609,7 @@ type ErrorT =
   | { title: "Method Not Allowed"; status: 405 }
   | { title: "Service Unavailable"; status: 503 };
 
-declare function inspect(sessionId: string): Result<ResponseT, ErrorT>;
+declare function inspect(externalId: string): Result<ResponseT, ErrorT>;
 ```
 
 Errors:
@@ -623,7 +625,7 @@ errors using `JSON.stringify`, as specified above.
 
 This is a point-in-time read, not a stream, and does not enable scheduling.
 
-### `resume()` — `POST /api/s/{sessionId}/resume`
+### `resume()` — `POST /api/s/{externalId}/resume`
 
 ```typescript
 type ResponseT = null;
@@ -634,7 +636,7 @@ type ErrorT =
   | { title: "Method Not Allowed"; status: 405 }
   | { title: "Service Unavailable"; status: 503 };
 
-declare function resume(sessionId: string): Result<ResponseT, ErrorT>;
+declare function resume(externalId: string): Result<ResponseT, ErrorT>;
 ```
 
 Errors:
@@ -647,7 +649,7 @@ Errors:
 Scope: Harness. Enables scheduling. The response does not mean pending work has
 completed.
 
-### `reset(handoff?)` — `POST /api/s/{sessionId}/c/{conversationId}/reset`
+### `reset(handoff?)` — `POST /api/s/{externalId}/c/{conversationId}/reset`
 
 ```typescript
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -667,7 +669,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function reset(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
   request: Request,
 ): Result<ResponseT, ErrorT>;
@@ -685,7 +687,7 @@ Errors:
 Omission means no handoff; preserve an explicitly supplied string unchanged. The
 response acknowledges reset admission, not necessarily placement.
 
-### `compact(instructions?)` — `POST /api/s/{sessionId}/c/{conversationId}/compact`
+### `compact(instructions?)` — `POST /api/s/{externalId}/c/{conversationId}/compact`
 
 ```typescript
 import type { ConversationId, TaskId } from "@earendil-works/pi-durable";
@@ -705,7 +707,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function compact(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
   request: Request,
 ): Result<ResponseT, ErrorT>;
@@ -725,7 +727,7 @@ inventing a compaction receipt.
 
 Task admission, task completion, and summary placement remain distinct.
 
-### `context(at?)` — `GET /api/s/{sessionId}/c/{conversationId}/context`
+### `context(at?)` — `GET /api/s/{externalId}/c/{conversationId}/context`
 
 ```typescript
 import type {
@@ -750,7 +752,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function context(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
   queryParameters: QueryParameters,
 ): Result<ResponseT, ErrorT>;
@@ -770,7 +772,7 @@ Omit `head` when upstream returns `undefined`. Preserve `entries`,
 Omitting `at` requests current context. Providing it requests the upstream
 historical context through that visible entry.
 
-### `scanConversations(query, limit, cursor)` — `GET /api/s/{sessionId}/scanConversations`
+### `scanConversations(query, limit, cursor)` — `GET /api/s/{externalId}/scanConversations`
 
 ```typescript
 import type {
@@ -793,7 +795,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function scanConversations(
-  sessionId: string,
+  externalId: string,
   queryParameters: QueryParameters,
 ): Result<Page<PageT>, ErrorT>;
 ```
@@ -812,7 +814,7 @@ model in the API.
 
 The transaction remains server-side.
 
-### `configure(change)` — `POST /api/s/{sessionId}/c/{conversationId}/configure`
+### `configure(change)` — `POST /api/s/{externalId}/c/{conversationId}/configure`
 
 ```typescript
 import type { AgentChange, ConversationId } from "@earendil-works/pi-durable";
@@ -829,7 +831,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function configure(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
   request: Request,
 ): Result<ResponseT, ErrorT>;
@@ -874,7 +876,7 @@ Sources: pinned Durable 1.4.0
 and
 [configure/agent resolution](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/agent.js).
 
-### `scanTasks(query, limit, cursor)` — `GET /api/s/{sessionId}/scanTasks`
+### `scanTasks(query, limit, cursor)` — `GET /api/s/{externalId}/scanTasks`
 
 ```typescript
 import type { JsonValue } from "@earendil-works/chord";
@@ -895,7 +897,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function scanTasks(
-  sessionId: string,
+  externalId: string,
   queryParameters: QueryParameters,
 ): Result<Page<PageT>, ErrorT>;
 ```
@@ -917,7 +919,7 @@ are not HTTP failures and do not become problem objects.
 
 The transaction remains server-side.
 
-### Submission `status(id)` — `GET /api/s/{sessionId}/c/{conversationId}/submissions/status`
+### Submission `status(id)` — `GET /api/s/{externalId}/c/{conversationId}/submissions/status`
 
 ```typescript
 import type {
@@ -939,7 +941,7 @@ type ErrorT =
   | { title: "Service Unavailable"; status: 503 };
 
 declare function status(
-  sessionId: string,
+  externalId: string,
   conversationId: ConversationId,
   queryParameters: QueryParameters,
 ): Result<ResponseT, ErrorT>;
@@ -1164,7 +1166,11 @@ surface. Their GraphQL requirements are defined in
 [[packages/durable/api/graphql/SPEC.md#Application services]]. Do not introduce
 a dependency on the concrete Harness package to implement them here.
 
-Durable document queries and mutations are the only new Durable operation family
-in this iteration. They do not add review, directory-validation, or environment
-workflow operations. The existing streaming API remains unchanged except for bug
+GraphQL adds explicit Harness opening, reserved-root access, conversation
+creation, and Durable document operations. Their contracts belong to
+[[packages/durable/api/graphql/SPEC.md#Harness identity, discovery, and creation]].
+They do not add REST routes, review workflows, directory validation, or
+execution environment workflows. Storage keys are named `externalId`;
+Harness-scoped GraphQL mutations use global `harnessId` values. The existing
+streaming route, frames, mounts, and lifecycle remain unchanged except for bug
 fixes; synchronization redesign is not part of this work.

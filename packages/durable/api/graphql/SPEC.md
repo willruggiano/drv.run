@@ -6,9 +6,9 @@ The [schema](schema.graphql), including its descriptions, is authoritative for
 the implemented Durable GraphQL surface. Author it in [graphql.ts](graphql.ts)
 and generate it with Grats; do not maintain a second runtime schema or resolver
 map. This specification defines execution, transport, ownership, and deployment
-requirements. The application configuration section declares the target settings
-schema and field semantics for the application surface, which is not yet
-implemented.
+requirements and the target identity, lifecycle, mutation-result, document, and
+application-service contracts. These target changes are not all implemented in
+the generated schema.
 
 Upstream Durable is authoritative for Harness behavior. Use the versions pinned
 in the [package manifest](../package.json) and lockfile. The relevant contracts
@@ -25,18 +25,19 @@ application and document capabilities use GraphQL; they do not extend the REST
 surface or require a new synchronization protocol. The existing REST/SSE
 contract remains separate: [[packages/durable/api/SPEC.md]].
 
-The inventory below describes the implemented schema. The document and
-application-service requirements below define the agreed target, not fields
-already present in that schema. Implement the declared application settings
-contract rather than substituting a generic settings map. Keep generated schema
-descriptions consistent with these field semantics during implementation.
+The inventory below uses the target names and mutation results. Explicit SDL
+below declares the lifecycle and application settings additions and changes; it
+is not a claim that they already exist in the generated schema. Implement these
+contracts rather than substituting generic option or settings maps. Keep
+generated schema descriptions consistent with these semantics during
+implementation.
 
 ## Schema-to-upstream mapping
 
 This inventory covers every declared schema type and operation. It maps names,
-not a second set of field contracts. Unless a conversion is listed, fields,
-arguments, and enum values keep their upstream names. Nullability, selections,
-and defaults remain authoritative in the [schema](schema.graphql).
+not a second runtime schema. Unless a conversion is listed, fields, arguments,
+and enum values keep their upstream names. The explicit target contracts below
+override the implemented [schema](schema.graphql) where they differ.
 
 Source prefixes below refer to the pinned 1.4.0 packages:
 
@@ -66,8 +67,12 @@ Calls to `D.Conversation` methods acquire the handle through
 | Behavior                                        | GraphQL field                            | Upstream procedure or source                                                                                                                                    |
 | ----------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Refetch a global identity                       | `Query.node`                             | Adapter dispatch: session lookup for Harness; `D.Tx.conversation`, `D.Tx.entry`, or `D.Tx.task` for records; `D.Harness.submission().status()` for submissions. |
-| Resolve an accessible session                   | `Query.harness`                          | Deployment's `ResolverContext.session(sessionId)`; no Durable catalog operation.                                                                                |
+| Resolve an accessible session                   | `Query.harness`                          | Deployment's `ResolverContext.session(externalId)`; no Durable catalog operation.                                                                               |
 | List accessible sessions                        | `Query.harnesses`                        | Deployment's `ResolverContext.sessions()`; sorted catalog, without opening Harnesses.                                                                           |
+| Acquire or provision a Harness                  | `Mutation.open`                          | Deployment storage provisioning and shared owner, then `D.Harness.open` when needed.                                                                            |
+| Ensure the reserved root                        | `Mutation.root`                          | `D.Harness.root(context, options)`.                                                                                                                             |
+| Read the reserved root                          | `Harness.root`                           | `D.Tx.conversation(D.ROOT_CONVERSATION_ID)`; no creation.                                                                                                       |
+| Create another conversation                     | `Mutation.createConversation`            | `D.Harness.createConversation(options, context)`.                                                                                                               |
 | List available chat models                      | `Query.models`                           | Deployment's `ResolverContext.models()`, then Pi AI `Models.getAvailable(undefined, { signal })`; no Harness lookup.                                            |
 | Read a conversation record                      | `Harness.conversation`                   | `D.Tx.conversation(id)`; returns the persisted record, not a live `D.Conversation` handle.                                                                      |
 | Inspect scheduling and live work                | `Harness.inspect`                        | `D.Harness.inspect()`.                                                                                                                                          |
@@ -143,20 +148,28 @@ token, not an individual `D.EntryRecord`.
 | `UserInputBlock`          | One-of wrapper for an element of the array branch of `D.UserInput`.                                      |
 | `TextContentInput`        | `Omit<AI.TextContent, "type">`; conversion supplies `type: "text"`.                                      |
 | `ImageContentInput`       | `Omit<AI.ImageContent, "type">`; conversion supplies `type: "image"`.                                    |
-| `SubmitInput`             | Adapter addressing/correlation envelope around `D.SubmissionDraft`.                                      |
+| `SubmitInput`             | Adapter addressing envelope around `D.SubmissionDraft`.                                                  |
 | `SubmitPayload`           | Adapter reference to the admitted `D.Submission.id`.                                                     |
-| `AbortSubmissionInput`    | Adapter addressing/correlation envelope for `D.Harness.abortSubmission()`.                               |
+| `AbortSubmissionInput`    | Adapter addressing envelope for `D.Harness.abortSubmission()`.                                           |
 | `AbortSubmissionPayload`  | Adapter envelope around the return value of `D.Harness.abortSubmission()`.                               |
-| `AbortInput`              | Adapter addressing/correlation envelope for `D.Conversation.abort()`.                                    |
-| `AbortPayload`            | Adapter envelope for successful upstream void completion.                                                |
-| `ResumeInput`             | Adapter addressing/correlation envelope for `D.Harness.resume()`.                                        |
-| `ResumePayload`           | Adapter envelope for successful upstream void completion.                                                |
-| `ResetInput`              | Adapter addressing/correlation envelope around `D.Conversation.reset()`'s handoff.                       |
-| `ResetPayload`            | Adapter envelope for successful upstream void completion.                                                |
-| `CompactInput`            | Adapter addressing/correlation envelope around `D.Conversation.compact()`'s instructions.                |
+| `AbortInput`              | Adapter addressing envelope for `D.Conversation.abort()`.                                                |
+| `ResumeInput`             | Adapter addressing envelope for `D.Harness.resume()`.                                                    |
+| `ResetInput`              | Adapter addressing envelope around `D.Conversation.reset()`'s handoff.                                   |
+| `CompactInput`            | Adapter addressing envelope around `D.Conversation.compact()`'s instructions.                            |
 | `CompactPayload`          | Adapter reference to the task ID returned by `D.Conversation.compact()`.                                 |
-| `ConfigureInput`          | Adapter addressing/correlation envelope around the exposed `D.AgentChange` fields.                       |
-| `ConfigurePayload`        | Adapter envelope for successful upstream void completion.                                                |
+| `ConfigureInput`          | Adapter addressing envelope around the exposed `D.AgentChange` fields.                                   |
+
+Lifecycle input and result mappings:
+
+| Schema name                                            | Upstream name or adapter role                                               |
+| ------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `OpenInput`, `OpenPayload`                             | Deployment storage key and returned Harness reference.                      |
+| `RootInput`, `RootPayload`                             | Adapter Harness addressing and returned conversation reference.             |
+| `RootOptionsInput`                                     | Data-only projection of `D.Harness.root` options; `init` stays server-side. |
+| `CreateConversationInput`, `CreateConversationPayload` | Adapter Harness addressing and returned conversation reference.             |
+| `ConversationCreateOptionsInput`                       | `D.ConversationCreateOptions` without the server-side `init` callback.      |
+| `ConversationOwnershipInput`                           | `D.ConversationOwnership`, with discriminator/payload validation.           |
+| `ConversationOwnershipKind`                            | `D.ConversationOwnership["kind"]`.                                          |
 
 ### Model catalog types
 
@@ -268,8 +281,8 @@ upstream inline literal union rather than a separately exported type.
 | `ID`               | GraphQL built-in used for adapter global identities, not native Durable IDs.                                                                                                         |
 | `Int`              | GraphQL built-in used for page limits; upstream accepts a `number`.                                                                                                                  |
 | `Float`            | GraphQL built-in used for upstream numeric fields, including timestamps and usage.                                                                                                   |
-| `String`           | GraphQL built-in used for upstream strings and adapter session/correlation keys.                                                                                                     |
-| `Boolean`          | GraphQL built-in used for upstream booleans.                                                                                                                                         |
+| `String`           | GraphQL built-in used for upstream strings and adapter external storage keys.                                                                                                        |
+| `Boolean`          | GraphQL built-in used for upstream booleans and successful void acknowledgments.                                                                                                     |
 | `@oneOf`           | GraphQL input-variant constraint generated by Grats for the submission, message, content, and context-edit input unions.                                                             |
 | `__typename`       | GraphQL runtime type name, not upstream `role`, `type`, `kind`, or `status`. Output discriminants remain separate fields; input selections supply discriminators where mapped below. |
 
@@ -289,13 +302,13 @@ renamed.
 | `Node.id`, including record `id` fields                     | Adapter global identity containing session scope, kind, and native ID; Harness has no native record ID.                                              |
 | Record `durableId`                                          | The corresponding upstream record's `id`. Applies to ConversationRecord, EntryRecord, TaskRecord, and SubmissionRecord.                              |
 | Record `harness`                                            | Adapter relationship to the owning persisted session.                                                                                                |
-| `Harness.sessionId`, `Query.harness(sessionId)`             | Deployment's external session key, not a Durable record field.                                                                                       |
+| `Harness.externalId`, `Query.harness(externalId)`           | Deployment's external session key, not a Durable record field.                                                                                       |
 | `Query.node(id)`                                            | Adapter global identity selecting a native read.                                                                                                     |
 | `*Connection.nodes`                                         | `D.Page.items`, after record projection.                                                                                                             |
 | `*Connection.pageInfo.next`                                 | `D.Page.next`; the `pageInfo` container is adapter-only.                                                                                             |
 | Mutation `input`                                            | Adapter envelope; native procedures receive the selected arguments, not this envelope.                                                               |
 | Mutation input `conversationId`                             | Global ConversationRecord identity used to resolve the native conversation. Other `ConversationId`-typed fields/arguments remain native numeric IDs. |
-| `ResumeInput.sessionId`                                     | Global Harness identity, unlike the external key in `Harness.sessionId`.                                                                             |
+| Mutation input `harnessId`                                  | Global Harness identity, never the external key in `Harness.externalId`; used by root, createConversation, and resume.                               |
 | `Model.id`                                                  | Native Pi AI model ID, paired with `provider`; becomes `modelId` in `ModelRefInput`, not a global Node ID.                                           |
 | `Model.thinkingLevels`                                      | `getSupportedThinkingLevels(model)`, using the existing `ModelThinkingLevel` enum.                                                                   |
 | `SubmitInput.submission`                                    | The draft argument of `D.Conversation.submit()`.                                                                                                     |
@@ -308,7 +321,6 @@ renamed.
 | `SubmitPayload.submissionId`                                | `D.Submission.id`, converted to a global SubmissionRecord identity.                                                                                  |
 | `CompactPayload.taskId`                                     | Native result of `D.Conversation.compact()`, converted to a global TaskRecord identity.                                                              |
 | `AbortSubmissionPayload.result`                             | Native result of `D.Harness.abortSubmission()`.                                                                                                      |
-| `clientMutationId`                                          | Adapter-only echo; never forwarded as upstream `requestId`.                                                                                          |
 | `UserInput.text`                                            | Native string content.                                                                                                                               |
 | `UserInput.blocks`                                          | Native ordered content array, after block unwrapping.                                                                                                |
 | `UserInputBlock.text`, `UserInputBlock.image`               | Native text/image block; conversion supplies the corresponding `type` discriminator.                                                                 |
@@ -321,6 +333,228 @@ projection. JSON maps and application payloads stay JSON: for example
 `EntryRecord.data`, `ToolCall.arguments`, `Tool.parameters`, and
 `ToolResultMessage.details`. A shared `JsonValue` scalar does not make those
 fields interchangeable.
+
+## Harness identity, discovery, and creation
+
+`externalId` is the deployment-owned key of one persisted Harness store, not a
+Durable record ID or a filesystem path. Clients may choose a fresh key when
+opening a new store. Deployment validates and authorizes it within its storage
+namespace; it must not interpolate unchecked input into a path. Reopening the
+same store preserves its global identity. Never reuse a key for replacement
+storage or silently restore an archived store.
+
+`Harness.id` is the opaque global GraphQL ID. Operations on an existing Harness
+accept `harnessId: ID!`, including `root`, `createConversation`, and `resume`.
+They validate the decoded object kind and authorized scope. They do not accept
+an external key in place of that ID. Native record IDs remain numeric and scoped
+to their Harness.
+
+### Lifecycle schema
+
+These declarations compose with the other Durable schema types. Existing fields
+with the same names take the signatures below.
+
+```graphql
+extend type Query {
+  harness(externalId: String!): Harness
+  harnesses: [Harness!]!
+}
+
+extend type Harness {
+  externalId: String!
+  root: ConversationRecord
+}
+
+extend type Mutation {
+  open(input: OpenInput!): OpenPayload
+  root(input: RootInput!): RootPayload
+  createConversation(input: CreateConversationInput!): CreateConversationPayload
+}
+
+input OpenInput {
+  externalId: String!
+}
+
+type OpenPayload {
+  harness: Harness!
+}
+
+input RootInput {
+  harnessId: ID!
+  options: RootOptionsInput
+}
+
+input RootOptionsInput {
+  agent: AgentChange
+}
+
+type RootPayload {
+  conversation: ConversationRecord!
+}
+
+input CreateConversationInput {
+  harnessId: ID!
+  options: ConversationCreateOptionsInput!
+}
+
+input ConversationCreateOptionsInput {
+  ownership: ConversationOwnershipInput!
+  agent: AgentChange
+}
+
+input ConversationOwnershipInput {
+  kind: ConversationOwnershipKind!
+  taskId: TaskId
+}
+
+enum ConversationOwnershipKind {
+  ownerless
+  task
+}
+
+type CreateConversationPayload {
+  conversation: ConversationRecord!
+}
+```
+
+### Discovery and passive root lookup
+
+`Query.harnesses` lists the authorized persisted catalog, ordered by ascending
+`externalId`, not the cache of currently open Harnesses. An empty catalog
+returns an empty list. Selecting only identities does not acquire a Harness:
+
+```graphql
+query KnownHarnesses {
+  harnesses {
+    externalId
+    id
+  }
+}
+```
+
+`Query.harness(externalId)` resolves an existing store or returns null; it never
+provisions missing storage. Other selected fields may acquire its shared owner,
+but reads do not enable scheduling.
+
+`Harness.root` reads `Tx.conversation(ROOT_CONVERSATION_ID)` and returns null
+when absent. It never calls the creating `Harness.root()` method. Root identity
+is Durable's reserved identity, not the first scan result or application
+metadata. This is the session-link landing conversation when present.
+
+### Open
+
+`Mutation.open` asks deployment to resolve or provision storage for the
+authorized external ID and acquire its shared Harness owner. Only when no owner
+exists does the factory call `Harness.open(storage, options, context)`. Storage,
+registry, model access, environment factory, runtime settings, hooks, and
+execution context remain server-side. There is no client-supplied
+`HarnessOptions` map or per-open runtime-policy override.
+
+Concurrent opens for the same authorized key share one owner across GraphQL and
+SSE. Successful creation publishes a stable identity to the same persisted
+catalog used by `Query.harnesses`; it survives process restart. An already-open
+Harness is returned without reconfiguration. Opening does not call `resume`,
+create a root, or submit input. An empty store is a valid persisted session.
+
+Repeating `open` with the same external ID reacquires the same store; it does
+not reset it. This is deployment's acquisition guarantee, not Durable submission
+deduplication. Provisioning and publication must recover the same identity after
+an interrupted open, not allocate replacement storage. Reject unauthorized or
+retired keys rather than treating them as absent. Factory failures release
+partially acquired resources without claiming that creation was rolled back.
+Invalid external IDs return `BAD_REQUEST`; inaccessible or retired identities
+return `NOT_FOUND`. Other failures use the existing typed error mapping.
+
+### Root and additional conversations
+
+`Mutation.root` resolves the existing Harness by global ID and calls
+`harness.root(context, options)`. An omitted options object means no agent
+changes. If the root is absent, its creation and supplied agent changes commit
+atomically. If present, return it without reapplying options, even when the new
+values differ. Editing an existing root uses `configure`.
+
+`Mutation.createConversation` calls
+`harness.createConversation(options, context)` on the addressed Harness.
+`ownerless` requires `taskId` to be omitted; `task` requires a non-null native
+task ID in that Harness. Validate the discriminator and task-ID pairing before
+invoking Durable. Other optional inputs permit omission but reject explicit
+null, except null-clearing fields in `AgentChange`. Neither creation operation
+submits input, enables scheduling, creates a fork, or performs a review
+workflow.
+
+The native `init(tx, conversationId)` callback and creation hooks remain
+server-side. Do not expose executable callbacks, arbitrary transactions, or a
+document-initialization language. Application document changes use the separate
+document mutations; they are not part of the conversation-creation commit.
+
+Every successful `createConversation` creates another conversation. An uncertain
+response does not authorize automatic retry, and catalog absence is not proof
+that creation failed. Repeating `root` cannot create a second root, but its
+initial options apply only on the first creation; reread before further edits.
+
+### Composition and archival boundary
+
+```text
+open(externalId)
+  -> Harness.id
+  -> root(harnessId, options)
+  -> ConversationRecord.id
+  -> document writes, when needed
+  -> submit(conversationId, submission)
+```
+
+These are separate commands. Outputs become subsequent request inputs; there is
+no nested mutation execution or remote transaction. Failure may leave an empty
+store or an initialized conversation without a submission. Preserve the original
+external ID, returned identities, and submission request ID while recovering
+each stage. Attachments belong to the submission draft, not `open` or `root`.
+Repeating a GraphQL operation is not a general recovery protocol.
+
+Archival remains an application-owned gap, not a Durable mutation. Closing a
+Harness releases its owner; it neither archives storage nor establishes terminal
+task outcomes. Any future archival operation must coordinate with the shared
+owner, prevent reacquisition, and update the persisted catalog. Do not move live
+SQLite files or disguise archival as an option to `open`.
+
+Sources: [current catalog resolver](graphql.ts),
+[storage and root initialization](../../../app/serve/sessions.ts),
+[Harness factory](../../harness/src/index.ts), pinned
+[Harness creation implementation](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/harness.js),
+[creation options](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/types.d.ts),
+and
+[Session close contract](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/types.d.ts).
+
+## Mutation results
+
+No mutation input or result carries an adapter-only correlation echo. Preserve
+native identities and results: `SubmitPayload.submissionId`,
+`CompactPayload.taskId`, and `AbortSubmissionPayload.result`. Application saves
+return their typed settings and revision. Submission `requestId` remains the
+native admission/recovery key; do not remove it or substitute an external ID.
+
+Methods returning upstream void use nullable Boolean acknowledgments instead of
+empty payload objects:
+
+```graphql
+extend type Mutation {
+  abort(input: AbortInput!): Boolean
+  resume(input: ResumeInput!): Boolean
+  reset(input: ResetInput!): Boolean
+}
+
+input ResumeInput {
+  harnessId: ID!
+}
+```
+
+`configure` has the same Boolean result, declared in the conversation
+configuration section below. Return `true` only after the upstream method
+returns successfully. Do not return `false` for failures; report a GraphQL field
+error and null as for other nullable mutation fields. This acknowledges the
+method, not completion of subsequent agent work. In particular, `resume` enables
+scheduling and `reset` acknowledges admission, not completion or placement.
+There are no void-result payload object types. All other mutation inputs retain
+their operation-specific fields without an echo field.
 
 ## Application data and input content
 
@@ -368,10 +602,10 @@ and
 ## Durable documents
 
 Expose queries and mutations for registered Durable documents, separately from
-transcript entries. This is the only new Durable operation family in this
-iteration. Do not add review start/end, directory validation, environment
-selection, conversation creation, or other workflow operations to support it.
-Existing commands such as `configure` retain their contracts.
+transcript entries and the explicit lifecycle operations above. Document access
+does not add review start/end, directory validation, environment selection, or
+hidden conversation creation. Existing commands such as `configure` retain their
+Durable behavior; mutation result shapes follow the contract above.
 
 Address a document through its owning Harness and registered definition, with
 the native session/conversation/task scope and a family key where applicable.
@@ -566,23 +800,19 @@ input HarnessCompactionSettingsInput {
 input SaveWwwSettingsInput {
   expectedRevision: String!
   settings: WwwSettingsInput!
-  clientMutationId: String
 }
 
 type SaveWwwSettingsPayload {
   settings: WebSettings!
-  clientMutationId: String
 }
 
 input SaveHarnessSettingsInput {
   expectedRevision: String!
   settings: HarnessSettingsInput!
-  clientMutationId: String
 }
 
 type SaveHarnessSettingsPayload {
   settings: HarnessSettings!
-  clientMutationId: String
 }
 ```
 
@@ -706,34 +936,28 @@ types, and values outside its signed 32-bit `Int` range. Negative policy values
 return `BAD_REQUEST`. Error messages do not expose private paths or file
 contents.
 
-`clientMutationId` is echoed unchanged and is not a deduplication key. A lost
-response leaves the save uncertain; reread before offering another explicit
-save. Equality with desired values is an observation, not proof that a
+A lost response leaves the save uncertain; reread before offering another
+explicit save. Equality with desired values is an observation, not proof that a
 particular request succeeded. No automatic replay is required.
 
 #### Durable conversation configuration
 
-Conversation configuration remains the existing typed Durable API:
+Conversation configuration retains the typed Durable change contract:
 
 ```graphql
 extend type Mutation {
-  configure(input: ConfigureInput!): ConfigurePayload
+  configure(input: ConfigureInput!): Boolean
 }
 
 input ConfigureInput {
   conversationId: ID!
   change: AgentChange!
-  clientMutationId: String
 }
 
 input AgentChange {
   model: ModelRefInput
   thinkingLevel: ModelThinkingLevel
   cwd: String
-}
-
-type ConfigurePayload {
-  clientMutationId: String
 }
 ```
 
@@ -885,7 +1109,10 @@ mechanism; see
 
 Do not substitute ambient mutable state, patch generated resolver maps, or
 construct a new schema per request. Deployment enforces access policy for all
-lookup and catalog callbacks; session lookup does not create missing sessions.
+lookup, catalog, and creation callbacks. Non-creating session lookup remains
+separate from explicit provisioning through `open`. Deployment supplies the
+provisioning/catalog boundary and shared owner; the GraphQL adapter must not
+allocate its own storage or import the concrete Harness factory.
 
 ## Execution and observations
 
@@ -1053,7 +1280,8 @@ work already admitted upstream.
 Before exposing the endpoint outside a trusted boundary, deployment must select:
 
 - Authentication and session-access policy, applied to every lookup path,
-  including global IDs and cursor-based traversal.
+  including provisioning, global IDs, ownership targets, and cursor-based
+  traversal.
 - Request, document/selection-work, pagination, and concurrency budgets. A body
   limit alone does not bound nested connection expansion. Reject over-budget
   work rather than silently truncating results or changing pagination semantics.
@@ -1097,6 +1325,18 @@ Model-catalog executable-schema tests cover:
   fallbacks.
 - The schema's metadata allowlist and decoded selections from secret-bearing
   model fixtures; no sensitive fields or generic model JSON escape hatch.
+
+Lifecycle tests cover external-ID discovery without owner acquisition, stable
+publication across reopen, concurrent/retried opens sharing one owner, factory
+failure cleanup, and the rejection of unauthorized or retired keys. Verify
+`root`, `createConversation`, and `resume` require global Harness IDs rather
+than external IDs. Passive root lookup must not create one; root creation is
+atomic with agent initialization and repeated calls do not reapply options.
+Additional conversation creation preserves explicit ownership and has no retry
+deduplication. Verify opening and creation do not enable scheduling, separate
+commands do not promise rollback, mutation inputs/results contain no correlation
+echo, void acknowledgments follow upstream return, and submission request-ID
+recovery remains unchanged.
 
 Document tests must cover non-creating absent reads, address and permission
 checks, validated atomic replacement, null versus removed properties,

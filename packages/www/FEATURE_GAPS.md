@@ -8,25 +8,14 @@ are fully implemented. Specified features are not gaps merely because their
 implementation is pending. This is not an implementation checklist or a request
 to add every old workflow.
 
-## Session creation and archival
+## Session archival
 
-The old home composer and `/new` create a session with selected model,
-environment, directory, and attachments. The target only opens existing
-sessions. It also lacks the old session archival action.
+The target lacks the old session archival action. Session creation and reserved
+root navigation are specified and are not gaps. Archival requires an
+application-owned contract for catalog visibility and coordination with open
+Harnesses; it is not a Durable close operation.
 
-Sources: [creation handlers](../app/serve/elm/pages.ts),
-[creation forms](../app/serve/forms.ts), and
-[session creation and archival](../app/serve/sessions.ts).
-
-## Root-conversation navigation
-
-The old application assigns a root conversation and opens it from a session URL.
-The specified catalog exposes session keys and conversation listings, not a
-designated root. Neither ordinary conversation ancestry nor readable application
-metadata supplies a guaranteed root identity. The session URL therefore opens a
-conversation list rather than the old direct landing page.
-
-Source: [existing root acquisition and catalog](../app/serve/sessions.ts).
+Source: [existing archival](../app/serve/sessions.ts).
 
 ## Execution-target discovery and filesystem access
 
@@ -50,10 +39,11 @@ Sources: [target and directory operations](../app/serve/sessions.ts),
 
 The old `/review` creates a fresh conversation and copies agent/environment
 choices while updating both review documents in one transaction. The specified
-API permits document reads/writes but not conversation creation or a remote
-multi-document transaction. It therefore cannot reproduce that start operation.
-Review metadata access is not a gap, and this does not require a dedicated
-review operation as part of document access.
+API permits conversation creation and individual document reads/writes, but not
+a remote transaction combining creation, copying, and both relationship updates.
+Those separate commands do not reproduce the atomic start operation. Review
+metadata access and generic conversation creation are not gaps, and this does
+not require a dedicated review operation as part of document access.
 
 Source: [review creation](../app/serve/review.ts).
 
