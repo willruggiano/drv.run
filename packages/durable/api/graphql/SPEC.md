@@ -340,8 +340,9 @@ fields interchangeable.
 Durable record ID or a filesystem path. Clients may choose a fresh key when
 opening a new store. Deployment validates and authorizes it within its storage
 namespace; it must not interpolate unchecked input into a path. Reopening the
-same store preserves its global identity. Never reuse a key for replacement
-storage or silently restore an archived store.
+same store preserves its global identity. A key remains bound to that store
+until deployment deletes it; only then may it identify a new store. Opening
+must not replace existing storage or silently restore an archived store.
 
 `Harness.id` is the opaque global GraphQL ID. Operations on an existing Harness
 accept `harnessId: ID!`, including `root`, `createConversation`, and `resume`.
@@ -460,9 +461,9 @@ Repeating `open` with the same external ID reacquires the same store; it does
 not reset it. This is deployment's acquisition guarantee, not Durable submission
 deduplication. Provisioning and publication must recover the same identity after
 an interrupted open, not allocate replacement storage. Reject unauthorized or
-retired keys rather than treating them as absent. Factory failures release
+archived keys rather than treating them as absent. Factory failures release
 partially acquired resources without claiming that creation was rolled back.
-Invalid external IDs return `BAD_REQUEST`; inaccessible or retired identities
+Invalid external IDs return `BAD_REQUEST`; inaccessible or archived identities
 return `NOT_FOUND`. Other failures use the existing typed error mapping.
 
 ### Root and additional conversations
@@ -1148,12 +1149,11 @@ IDs follow the
 [Node identification pattern](https://graphql.org/learn/global-object-identification/);
 pagination is not Relay pagination.
 
-Deployment must provide a persisted session identity that cannot be reused for
-replacement storage. Reopening the same storage preserves identity. Non-reused
-session keys are sufficient; deployments that reuse keys need a persisted
-incarnation identifier. The encoding remains an adapter detail, not a client
-contract. Validate decoded scope and object kind before accessing a mutation
-target. An opaque ID is not an access credential.
+Deployment's external session key identifies the persisted store for its
+lifetime. Reopening the same store preserves identity; a key may be reused only
+after deployment deletes the store. The global ID encoding remains an adapter
+detail, not a client contract. Validate decoded scope and object kind before
+accessing a mutation target. An opaque ID is not an access credential.
 
 Durable's `Cursor` is backend-owned continuation state. Pass the supplied limit
 and cursor to exactly one upstream page read. Project `items` to `nodes` and
@@ -1327,8 +1327,9 @@ Model-catalog executable-schema tests cover:
   model fixtures; no sensitive fields or generic model JSON escape hatch.
 
 Lifecycle tests cover external-ID discovery without owner acquisition, stable
-publication across reopen, concurrent/retried opens sharing one owner, factory
-failure cleanup, and the rejection of unauthorized or retired keys. Verify
+publication across reopen, key reuse only after deployment deletes the store,
+concurrent/retried opens sharing one owner, factory failure cleanup, and the
+rejection of unauthorized or archived keys. Verify
 `root`, `createConversation`, and `resume` require global Harness IDs rather
 than external IDs. Passive root lookup must not create one; root creation is
 atomic with agent initialization and repeated calls do not reapply options.
