@@ -35,7 +35,7 @@ import {
   type TaskQuery,
   type SubmissionId,
 } from "@earendil-works/pi-durable";
-import { createSchema, type ResolverContext } from "./graphql.ts";
+import { createSchema, type ResolverContext } from "../src/index.ts";
 
 const execution = BACKGROUND_CONTEXT;
 const schema = createSchema();
@@ -132,6 +132,13 @@ async function fixture(t: TestContext, externalId = "test") {
     conversationId: ids.harness.conversation.id,
   };
 }
+
+void test("GraphQL entry point exposes only the schema factory", async () => {
+  assert.deepEqual(Object.keys(await import("../src/index.ts")), ["createSchema"]);
+  assert.throws(() => import.meta.resolve("durable-api/graphql/src/graphql.ts"), {
+    code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  });
+});
 
 void test("generated schema remains valid", () => {
   assert.deepEqual(validateSchema(schema), []);

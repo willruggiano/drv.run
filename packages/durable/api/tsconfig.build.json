@@ -3,12 +3,7 @@
   "compilerOptions": {
     "noEmit": false,
     "rootDir": ".",
-    "outDir": "dist",
-    "stripInternal": true
+    "outDir": "dist"
   },
-  "include": [
-    "src/**/*.ts",
-    "graphql/graphql.ts",
-    "graphql/generated/graphql.ts"
-  ]
+  "include": ["src/**/*.ts", "graphql/src/**/*.ts"]
 }

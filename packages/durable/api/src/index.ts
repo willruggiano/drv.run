@@ -18,7 +18,7 @@ import { execute } from "./operations.ts";
 import { Problem } from "./problem.ts";
 import { Sessions } from "./sessions.ts";
 import { stream } from "./stream.ts";
-import { createGraphQLHandler } from "../graphql/graphql.ts";
+import { createGraphQLHandler } from "../graphql/src/graphql.ts";
 
 export interface ApiOptions {
   /** Borrow the factory's Pi AI catalog; resolve a dynamic source per request. */

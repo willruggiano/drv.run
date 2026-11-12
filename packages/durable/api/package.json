@@ -15,9 +15,9 @@
       "default": "./dist/src/telemetry.js"
     },
     "./graphql": {
-      "development": "./graphql/graphql.ts",
-      "types": "./dist/graphql/graphql.d.ts",
-      "default": "./dist/graphql/graphql.js"
+      "development": "./graphql/src/index.ts",
+      "types": "./dist/graphql/src/index.d.ts",
+      "default": "./dist/graphql/src/index.js"
     },
     "./graphql/schema.graphql": "./graphql/schema.graphql"
   },
@@ -28,8 +28,8 @@
   "scripts": {
     "build": "npm run build:graphql && tsc -p tsconfig.build.json",
     "check": "npm run build:graphql && tsc -p tsconfig.json && KNIP_DISABLE_RAW_TRANSFER=1 knip",
-    "test": "c8 node --conditions=development --test \"tests/*.test.ts\" \"graphql/**/*.test.ts\"",
-    "build:graphql": "mkdir -p graphql/generated && grats --tsconfig graphql/tsconfig.grats.json && tsc -p graphql/tsconfig.grats.json"
+    "test": "c8 node --conditions=development --test \"tests/*.test.ts\" \"graphql/tests/*.test.ts\"",
+    "build:graphql": "mkdir -p graphql/src/generated && grats --tsconfig graphql/tsconfig.grats.json && tsc -p graphql/tsconfig.grats.json"
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
@@ -59,7 +59,8 @@
     "all": true,
     "include": [
       "src/**/*.ts",
-      "graphql/graphql.ts"
+      "graphql/src/index.ts",
+      "graphql/src/graphql.ts"
     ],
     "extension": [
       ".ts"
@@ -79,7 +80,7 @@
   "knip": {
     "entry": [
       "tests/*.test.ts",
-      "graphql/generated/graphql.ts",
+      "graphql/src/generated/graphql.ts",
       "graphql/**/*.test.ts"
     ],
     "project": [

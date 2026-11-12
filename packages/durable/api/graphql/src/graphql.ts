@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { MIMEType } from "node:util";
 import { awaitWithContext } from "@earendil-works/chord/context";
-import { Problem } from "../src/problem.ts";
+import { Problem } from "../../src/problem.ts";
 import type { Float, ID, Int, GqlScalar } from "grats";
 import {
   GraphQLError,
@@ -17,11 +17,12 @@ import {
 import Type from "typebox";
 import Value from "typebox/value";
 import { ConversationBusy, SessionFailed, StorageRequestError } from "@earendil-works/pi-durable";
+import type { ResolverContext } from "./index.ts";
 import { getSchema } from "./generated/graphql.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import type * as Chord from "@earendil-works/chord";
 import type * as AI from "@earendil-works/pi-ai";
-import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 
 // TypeScript/Grats is the schema source of truth. The generated factory accepts
 // scalar implementations. Deployment supplies authorized persisted Harness lookup
@@ -59,17 +60,6 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
  * description permits it. A null cursor means no continuation.
  */
 
-// Session keys must never be reused for replacement storage.
-// Deployment enforces access policy for every lookup and catalog.
-// The caller owns Harnesses; storage owns pagination cursors.
-/** @gqlContext */
-export interface ResolverContext {
-  readonly context: Chord.Context;
-  readonly session: (externalId: string) => Promise<Durable.Harness | undefined>;
-  readonly sessions: () => Promise<readonly string[]>;
-  readonly models: () => Models;
-}
-
 type ErrorCode =
   | "BAD_REQUEST"
   | "NOT_FOUND"
@@ -103,7 +93,6 @@ const ConversationId = Type.Unsafe<Durable.ConversationId>(SafeInteger);
  * Upstream ConversationId: a nonnegative safe-integer JSON number in
  * 0..9007199254740991, not a 32-bit GraphQL Int or global Node ID.
  * @gqlScalar
- * @internal
  */
 export type ConversationId = Type.Static<typeof ConversationId>;
 
@@ -111,7 +100,6 @@ const EntryId = Type.Unsafe<Durable.EntryId>(SafeInteger);
 /**
  * Upstream EntryId; the same numeric range and representation as ConversationId.
  * @gqlScalar
- * @internal
  */
 export type EntryId = Type.Static<typeof EntryId>;
 
@@ -119,7 +107,6 @@ const TaskId = Type.Unsafe<Durable.TaskId>(SafeInteger);
 /**
  * Upstream TaskId; the same numeric range and representation as ConversationId.
  * @gqlScalar
- * @internal
  */
 export type TaskId = Type.Static<typeof TaskId>;
 
@@ -127,7 +114,6 @@ const SubmissionId = Type.Unsafe<Durable.SubmissionId>(SafeInteger);
 /**
  * Upstream SubmissionId; the same numeric range and representation as ConversationId.
  * @gqlScalar
- * @internal
  */
 export type SubmissionId = Type.Static<typeof SubmissionId>;
 
@@ -155,7 +141,6 @@ const JsonValue = Type.Cyclic(
 /**
  * A finite JSON value, including null; object keys and payloads are preserved.
  * @gqlScalar
- * @internal
  */
 export type JsonValue = Type.Static<typeof JsonValue>;
 
@@ -165,7 +150,6 @@ const JsonObject = Type.Record(JsonKey, JsonValue, {
 /**
  * Upstream JsonObject: a JSON object with string keys and JsonValue values.
  * @gqlScalar
- * @internal
  */
 export type JsonObject = Type.Static<typeof JsonObject>;
 
@@ -174,7 +158,6 @@ const Cursor = JsonObject;
  * Backend-owned JSON continuation state. Round-trip it unchanged to the same
  * upstream scan; storage validates it. Null means no continuation.
  * @gqlScalar
- * @internal
  */
 export type Cursor = Type.Static<typeof Cursor>;
 
@@ -182,7 +165,6 @@ const TelemetryCarrier = Type.Record(JsonKey, Type.String(), { additionalPropert
 /**
  * Upstream TelemetryCarrier: a JSON object with string keys and string values.
  * @gqlScalar
- * @internal
  */
 export type TelemetryCarrier = Type.Static<typeof TelemetryCarrier>;
 
@@ -338,7 +320,6 @@ const RequestParameters = Type.Object({
   extensions: Type.Optional(Type.Union([Type.Record(JsonKey, Type.Unknown()), Type.Null()])),
 });
 
-/** @internal */
 export function createGraphQLHandler(options: {
   getHarness: ResolverContext["session"];
   listHarnesses: (context: Chord.Context) => Promise<readonly string[]>;
@@ -1054,7 +1035,6 @@ interface Node {
 /**
  * Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
  * @gqlQueryField
- * @internal
  */
 export async function node(id: ID, ctx: ResolverContext): Promise<Node | null> {
   try {
@@ -1112,7 +1092,6 @@ interface Harness extends Node {
 /**
  * Resolve a persisted Harness by its external session key; does not create one.
  * @gqlQueryField
- * @internal
  */
 export async function harness(externalId: string, ctx: ResolverContext): Promise<Harness | null> {
   try {
@@ -1127,7 +1106,6 @@ export async function harness(externalId: string, ctx: ResolverContext): Promise
  * of open Harness instances. Durable does not provide a cross-session catalog.
  * Order by ascending externalId; listing does not create sessions or enable scheduling.
  * @gqlQueryField
- * @internal
  */
 export async function harnesses(ctx: ResolverContext): Promise<Harness[]> {
   try {
@@ -1145,7 +1123,6 @@ export async function harnesses(ctx: ResolverContext): Promise<Harness[]> {
  * refreshes the catalog, or starts generation. Availability does not guarantee
  * that a subsequent model request succeeds. An empty catalog is an empty list.
  * @gqlQueryField
- * @internal
  */
 export async function models(ctx: ResolverContext): Promise<Model[]> {
   try {
@@ -1231,7 +1208,6 @@ interface ModelCostTier {
 /**
  * Resolve Harness.conversation(id); expose its record instead of a live handle.
  * @gqlField
- * @internal
  */
 export function conversation(
   source: Harness,
@@ -1247,7 +1223,6 @@ export function conversation(
 /**
  * Harness.inspect(): live work and scheduling state, without enabling scheduling.
  * @gqlField
- * @internal
  */
 export async function inspect(source: Harness, ctx: ResolverContext): Promise<HarnessInspection> {
   try {
@@ -1274,7 +1249,6 @@ export async function inspect(source: Harness, ctx: ResolverContext): Promise<Ha
 /**
  * Tx.scanConversations(); default order is ascending, or the cursor's order.
  * @gqlField
- * @internal
  */
 export async function scanConversations(
   source: Harness,
@@ -1300,7 +1274,6 @@ export async function scanConversations(
 /**
  * Tx.scanTasks(); default order is ascending, or the cursor's order.
  * @gqlField
- * @internal
  */
 export async function scanTasks(
   source: Harness,
@@ -1347,7 +1320,6 @@ interface ConversationRecord extends Node {
  * Conversation.agent(): settings resolved against the current registry and host
  * settings, not just stored overrides. Does not enable scheduling.
  * @gqlField
- * @internal
  */
 export async function agent(source: ConversationRecord, ctx: ResolverContext): Promise<Agent> {
   try {
@@ -1399,7 +1371,6 @@ interface ModelRef {
 /**
  * Fork-aware history, including inherited entries. Default order is descending.
  * @gqlField
- * @internal
  */
 export async function entries(
   source: ConversationRecord,
@@ -1422,7 +1393,6 @@ export async function entries(
 /**
  * Current context when at is omitted; otherwise context through that visible entry.
  * @gqlField
- * @internal
  */
 export async function context(
   source: ConversationRecord,
@@ -1449,7 +1419,6 @@ export async function context(
  * Conversation-scoped Tx.submissionByRequest(). Null means absent at observation,
  * not that a concurrent or disconnected submission failed to commit.
  * @gqlField
- * @internal
  */
 export async function submissionByRequest(
   source: ConversationRecord,
@@ -1472,7 +1441,6 @@ export async function submissionByRequest(
  * Reacquire Harness.submission(id), then read Submission.status(). Null for an
  * absent submission or one belonging to another conversation; never waits.
  * @gqlField
- * @internal
  */
 export async function status(
   source: ConversationRecord,
@@ -1920,7 +1888,6 @@ const EntryHead = Type.Union([EntryId, Type.Literal("self")]);
 /**
  * Upstream EntryDraft.head: a native EntryId or the literal string "self".
  * @gqlScalar
- * @internal
  */
 export type EntryHead = Type.Static<typeof EntryHead>;
 
@@ -2280,7 +2247,6 @@ interface SubmitPayload {
  * Same requestId and type recover the prior submission without comparing content.
  * A key used for another type retains the untyped-error fallback. ConversationBusy means not admitted.
  * @gqlMutationField
- * @internal
  */
 export async function submit(
   input: SubmitInput,
@@ -2313,7 +2279,6 @@ interface AbortSubmissionPayload {
 /**
  * Withdraw a queued submission; already_placed never becomes an execution abort.
  * @gqlMutationField
- * @internal
  */
 export async function abortSubmission(
   input: AbortSubmissionInput,
@@ -2349,7 +2314,6 @@ interface AbortInput {
  * Withdraw queued inputs and abort ordinary owned work; preserve background work
  * and queued writes. Resolves after upstream abort completes. No background flag.
  * @gqlMutationField
- * @internal
  */
 export async function abort(input: AbortInput, ctx: ResolverContext): Promise<boolean | null> {
   try {
@@ -2370,7 +2334,6 @@ interface ResumeInput {
 /**
  * Return true after enabling Harness scheduling, not after work completes.
  * @gqlMutationField
- * @internal
  */
 export async function resume(input: ResumeInput, ctx: ResolverContext): Promise<boolean | null> {
   try {
@@ -2395,7 +2358,6 @@ interface ResetInput {
 /**
  * Return true after reset admission, not necessarily placement. No idempotency key.
  * @gqlMutationField
- * @internal
  */
 export async function reset(input: ResetInput, ctx: ResolverContext): Promise<boolean | null> {
   try {
@@ -2426,7 +2388,6 @@ interface CompactPayload {
 /**
  * Admit compaction; task completion and summary placement remain separate.
  * @gqlMutationField
- * @internal
  */
 export async function compact(
   input: CompactInput,
@@ -2476,7 +2437,6 @@ type ModelThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh
  * Change model, thinking level, or cwd overrides; return true after the commit.
  * Read resolved settings through agent.
  * @gqlMutationField
- * @internal
  */
 export async function configure(
   input: ConfigureInput,

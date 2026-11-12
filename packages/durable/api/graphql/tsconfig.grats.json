@@ -1,18 +1,13 @@
 {
   "extends": "../tsconfig.json",
-  "include": [
-    "graphql.ts",
-    "graphql.test.ts",
-    "generated/graphql.ts",
-    "tests/**/*.ts"
-  ],
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
   "grats": {
     "graphqlSchema": "./schema.graphql",
-    "tsSchema": "./generated/graphql.ts",
+    "tsSchema": "./src/generated/graphql.ts",
     "nullableByDefault": false,
     "importModuleSpecifierEnding": ".ts",
     "schemaHeader": [
-      "# Generated from graphql.ts by Grats. Do not edit.",
+      "# Generated from src/graphql.ts by Grats. Do not edit.",
       "# Regenerate with: npm --prefix packages/durable/api run build:graphql"
     ],
     "tsSchemaHeader": [

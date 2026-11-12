@@ -1,4 +1,4 @@
-# Generated from graphql.ts by Grats. Do not edit.
+# Generated from src/graphql.ts by Grats. Do not edit.
 # Regenerate with: npm --prefix packages/durable/api run build:graphql
 
 """

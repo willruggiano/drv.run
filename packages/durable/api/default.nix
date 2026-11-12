@@ -20,8 +20,7 @@ in
         ./tsconfig.json
         ./tsconfig.build.json
         ./graphql/tsconfig.grats.json
-        ./graphql/graphql.ts
-        ./graphql/graphql.test.ts
+        ./graphql/src
         ./graphql/tests
         ./src
         ./tests
@@ -85,8 +84,10 @@ in
       } from "graphql";
       import { createApi } from "durable-api";
       import { createSchema, type ResolverContext } from "durable-api/graphql";
+      import * as graphqlApi from "durable-api/graphql";
       import { createTelemetry } from "durable-api/telemetry";
 
+      assert.deepEqual(Object.keys(graphqlApi), ["createSchema"]);
       const require = createRequire(import.meta.url);
       const apiRequire = createRequire(import.meta.resolve("durable-api/graphql"));
       assert.equal(require.resolve("graphql"), apiRequire.resolve("graphql"));
