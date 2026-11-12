@@ -6,14 +6,20 @@
   "exports": {
     ".": {
       "development": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
     },
     "./telemetry": {
       "development": "./src/telemetry.ts",
-      "types": "./dist/telemetry.d.ts",
-      "default": "./dist/telemetry.js"
-    }
+      "types": "./dist/src/telemetry.d.ts",
+      "default": "./dist/src/telemetry.js"
+    },
+    "./graphql": {
+      "development": "./graphql/graphql.ts",
+      "types": "./dist/graphql/graphql.d.ts",
+      "default": "./dist/graphql/graphql.js"
+    },
+    "./graphql/schema.graphql": "./graphql/schema.graphql"
   },
   "files": [
     "dist",
@@ -33,6 +39,9 @@
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/core": "2.12.0",
     "typebox": "1.3.27"
+  },
+  "peerDependencies": {
+    "graphql": "16.14.2"
   },
   "devDependencies": {
     "@opentelemetry/exporter-metrics-otlp-http": "0.223.0",

@@ -1,5 +1,14 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": false, "rootDir": "src", "outDir": "dist" },
-  "include": ["src/**/*.ts"]
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": ".",
+    "outDir": "dist",
+    "stripInternal": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "graphql/graphql.ts",
+    "graphql/generated/graphql.ts"
+  ]
 }
