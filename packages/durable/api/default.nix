@@ -22,6 +22,7 @@ in
         ./graphql/tsconfig.grats.json
         ./graphql/graphql.ts
         ./graphql/graphql.test.ts
+        ./graphql/tests
         ./src
         ./tests
       ];
@@ -129,6 +130,7 @@ in
 
       const api = createApi({
         models,
+        listHarnesses: async () => [],
         async openHarness() { assert.fail("catalog must not open a Harness"); },
       });
       const server = createServer(api.handle);
@@ -140,6 +142,14 @@ in
         const response = await fetch(`http://127.0.0.1:''${address.port}/api/models`);
         assert.equal(response.status, 200);
         assert.deepEqual(await response.json(), []);
+        const graphqlResponse = await fetch(`http://127.0.0.1:''${address.port}/api/graphql`, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/graphql-response+json" },
+          body: JSON.stringify({ query: "{ harnesses { id } models { id } }" }),
+        });
+        assert.equal(graphqlResponse.status, 200);
+        assert.equal(graphqlResponse.headers.get("cache-control"), "no-store");
+        assert.deepEqual(await graphqlResponse.json(), { data: { harnesses: [], models: [] } });
       } finally {
         await api.close();
         await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

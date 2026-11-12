@@ -109,6 +109,7 @@ void test("shutdown attempts every Harness and reports close failures", async (t
   });
   const api = createApi({
     models: createModels(),
+    listHarnesses: async () => ["first", "second"],
     openHarness: async (id) => (id === "first" ? first.harness : second.harness),
   });
   const server = createServer(api.handle).listen(0, "127.0.0.1");

@@ -18,12 +18,15 @@ import { execute } from "./operations.ts";
 import { Problem } from "./problem.ts";
 import { Sessions } from "./sessions.ts";
 import { stream } from "./stream.ts";
+import { createGraphQLHandler } from "../graphql/graphql.ts";
 
 export interface ApiOptions {
   /** Borrow the factory's Pi AI catalog; resolve a dynamic source per request. */
   models: Models | (() => Models);
   /** Return undefined for an absent session. Own partial-open cleanup on failure. */
   openHarness(sessionId: string, context: Context): Promise<Harness | undefined>;
+  /** Enumerate authorized persisted stores, not the open-instance cache. */
+  listHarnesses(context: Context): Promise<readonly string[]>;
   /** Maximum encoded JSON body size in bytes. Defaults to 1 MiB. */
   bodyLimit?: number;
 }
@@ -34,9 +37,28 @@ export function createApi(options: ApiOptions) {
   if (!Number.isSafeInteger(limit) || limit <= 0)
     throw new RangeError("bodyLimit must be a positive safe integer");
   const sessions = new Sessions((id, context) => options.openHarness(id, context));
+  const models = () => (typeof options.models === "function" ? options.models() : options.models);
+  const graphql = createGraphQLHandler({
+    getHarness: (id) => sessions.get(id),
+    listHarnesses: (context) => options.listHarnesses(context),
+    models,
+    bodyLimit: limit,
+  });
+  const active = new Map<Promise<void>, AbortController | undefined>();
+  let closing: Promise<void> | undefined;
   return {
-    close: () => sessions.close(),
+    close() {
+      if (!closing) {
+        // Seal acquisitions, cancel SSE observation, and drain finite requests
+        // before closing Harnesses. Deployment owns the shutdown deadline.
+        closing = sessions.close(Promise.all(active.keys()).then(() => {}));
+        for (const observer of active.values()) observer?.abort();
+      }
+      return closing;
+    },
     async handle(this: void, request: IncomingMessage, response: ServerResponse): Promise<void> {
+      const done = Promise.withResolvers<void>();
+      active.set(done.promise, undefined);
       const controller = new AbortController();
       const cancel = () => controller.abort();
       response.once("close", cancel);
@@ -46,6 +68,10 @@ export function createApi(options: ApiOptions) {
       let operation: string | undefined;
       try {
         const url = new URL(request.url!, "http://durable.invalid");
+        if (url.pathname === "/api/graphql") {
+          await graphql(request, response, context, closing !== undefined);
+          return;
+        }
         if (url.pathname === "/api/models") operation = "models";
         else {
           const path = /^\/api\/s\/([^/]+)\/(?:c\/([^/]+)\/(.+)|([^/]+))$/.exec(url.pathname);
@@ -64,11 +90,11 @@ export function createApi(options: ApiOptions) {
             : conversationId === undefined
               ? "session"
               : "conversation";
+        if (closing) throw new Problem(503);
         const input = await decode(request, url, operation, scope, limit);
         let result: Awaited<ReturnType<typeof execute>>;
         if (input.operation === "models") {
-          const models = typeof options.models === "function" ? options.models() : options.models;
-          const available = await models.getAvailable(undefined, { signal: controller.signal });
+          const available = await models().getAvailable(undefined, { signal: controller.signal });
           result = {
             value: available.map((model) => ({
               id: model.id,
@@ -85,10 +111,17 @@ export function createApi(options: ApiOptions) {
         } else {
           assert(sessionId !== undefined);
           const harness = await awaitWithContext(sessions.get(sessionId), context);
+          if (!harness) throw new Problem(404);
           result = await execute(harness, conversationId, input, context);
         }
-        if ("watch" in result) await stream(response, result.watch);
-        else {
+        if ("watch" in result) {
+          if (closing) {
+            await result.watch.stop();
+            throw new Problem(503);
+          }
+          active.set(done.promise, controller);
+          await stream(response, result.watch);
+        } else {
           const body = JSON.stringify(result.value);
           response
             .writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" })
@@ -126,6 +159,8 @@ export function createApi(options: ApiOptions) {
       } finally {
         request.resume();
         response.off("close", cancel);
+        active.delete(done.promise);
+        done.resolve();
       }
     },
   };

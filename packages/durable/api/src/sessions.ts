@@ -13,7 +13,7 @@ export class Sessions {
     this.open = open;
   }
 
-  async get(id: string): Promise<Harness> {
+  async get(id: string): Promise<Harness | undefined> {
     if (this.closing) throw new Problem(503);
     let instance = this.instances.get(id);
     if (!instance) {
@@ -23,6 +23,7 @@ export class Sessions {
       void instance.then(
         (harness) => {
           if (!harness) this.instances.delete(id);
+          else void harness.closed.then(() => this.instances.delete(id));
         },
         () => {
           this.instances.delete(id);
@@ -31,16 +32,16 @@ export class Sessions {
     }
     const harness = await instance;
     if (this.closing) throw new Problem(503);
-    if (!harness) throw new Problem(404);
     return harness;
   }
 
-  close(): Promise<void> {
-    this.closing ??= this.closeAll();
+  close(drained: Promise<void>): Promise<void> {
+    this.closing ??= this.closeAll(drained);
     return this.closing;
   }
 
-  private async closeAll(): Promise<void> {
+  private async closeAll(drained: Promise<void>): Promise<void> {
+    await drained;
     const results = await Promise.allSettled(
       [...this.instances.values()].map(async (instance) => {
         const harness = await instance.catch(() => undefined);

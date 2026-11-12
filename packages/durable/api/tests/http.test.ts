@@ -264,7 +264,13 @@ void test("serialized inspection diagnostics remain native JSON; serializer fail
 void test("body limits reject invalid deployment configuration", () => {
   for (const bodyLimit of [0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])
     assert.throws(
-      () => createApi({ models: createModels(), openHarness: async () => undefined, bodyLimit }),
+      () =>
+        createApi({
+          models: createModels(),
+          listHarnesses: async () => [],
+          openHarness: async () => undefined,
+          bodyLimit,
+        }),
       RangeError,
     );
 });

@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { MIMEType } from "node:util";
+import { awaitWithContext } from "@earendil-works/chord/context";
+import { Problem } from "../src/problem.ts";
 import type { Float, ID, Int, GqlScalar } from "grats";
-import { GraphQLError, valueFromASTUntyped, type GraphQLSchema } from "graphql";
+import {
+  GraphQLError,
+  execute,
+  getOperationAST,
+  parse,
+  validate,
+  valueFromASTUntyped,
+  type ExecutionResult,
+  type GraphQLSchema,
+} from "graphql";
 import Type from "typebox";
 import Value from "typebox/value";
 import { ConversationBusy, SessionFailed, StorageRequestError } from "@earendil-works/pi-durable";
@@ -31,10 +44,10 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
  * Missing lookup objects are null, not execution errors; storage failures still
  * produce errors. Persisted task failures and blocked inspection states are data.
  *
- * GraphQL execution errors are distinct from HTTP transport errors. Deployment
+ * GraphQL execution errors are distinct from HTTP transport errors. The transport
  * retains no-store responses, body limits, media-type checks, and method checks;
- * mutations cannot run over GET. Disconnect does not abort execution or establish
- * whether a mutation committed. Neither SESSION_FAILED nor a transport failure
+ * mutations cannot run over GET. Disconnect cancels request-bound waits, not durable
+ * execution, and does not establish whether a mutation committed. Neither SESSION_FAILED nor a transport failure
  * authorizes automatic replay or promises a recovery time.
  *
  * ID means an opaque global Node identifier. ConversationId, EntryId, TaskId, and
@@ -270,6 +283,187 @@ export function createSchema(): GraphQLSchema {
       TelemetryCarrier: scalar(TelemetryCarrier),
     },
   });
+}
+
+function mediaType(value: string): MIMEType | undefined {
+  try {
+    return new MIMEType(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function utf8(media: MIMEType): boolean {
+  const charset = media.params.get("charset")?.toLowerCase();
+  return charset === undefined || charset === "utf-8" || charset === "utf8";
+}
+
+function responseType(accept = "*/*"): string | undefined {
+  const ranges = accept.split(",").map(mediaType);
+  const candidates = ["application/json", "application/graphql-response+json"].map((type) => {
+    let quality = 0;
+    let specificity = -1;
+    let order = Infinity;
+    ranges.forEach((range, index) => {
+      if (!range || !utf8(range)) return;
+      for (const [parameter] of range.params) {
+        if (parameter !== "q" && parameter !== "charset") return;
+      }
+      const q = range.params.get("q") ?? "1";
+      if (!/^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(q)) return;
+      const rank =
+        range.essence === type
+          ? 2
+          : range.essence === "application/*"
+            ? 1
+            : range.essence === "*/*"
+              ? 0
+              : -1;
+      if (rank > specificity) {
+        quality = Number(q);
+        specificity = rank;
+        order = index;
+      }
+    });
+    return { type, quality, order };
+  });
+  candidates.sort((a, b) => b.quality - a.quality || a.order - b.order);
+  return candidates.find((candidate) => candidate.quality > 0)?.type;
+}
+
+const RequestParameters = Type.Object({
+  query: Type.String(),
+  operationName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  variables: Type.Optional(Type.Union([Type.Record(JsonKey, Type.Unknown()), Type.Null()])),
+  extensions: Type.Optional(Type.Union([Type.Record(JsonKey, Type.Unknown()), Type.Null()])),
+});
+
+/** @internal */
+export function createGraphQLHandler(options: {
+  getHarness: ResolverContext["session"];
+  listHarnesses: (context: Chord.Context) => Promise<readonly string[]>;
+  models: ResolverContext["models"];
+  bodyLimit: number;
+}) {
+  const schema = createSchema();
+  return async (
+    request: IncomingMessage,
+    response: ServerResponse,
+    context: Chord.Context,
+    closing: boolean,
+  ): Promise<void> => {
+    let media: string | undefined;
+    response.setHeader("Cache-Control", "no-store");
+    const send = (status: number, result?: ExecutionResult) => {
+      if (response.destroyed) return;
+      const body = result === undefined ? undefined : JSON.stringify(result);
+      if (result !== undefined) response.setHeader("Content-Type", `${media}; charset=utf-8`);
+      response.writeHead(status).end(body);
+    };
+    const requestErrors = (errors: readonly GraphQLError[]) =>
+      send(media === "application/json" ? 200 : 400, { errors });
+    try {
+      if (closing) throw new Problem(503);
+      media = responseType(request.headers.accept);
+      if (!media) throw new Problem(406);
+      if (request.method !== "GET" && request.method !== "POST")
+        throw new Problem(405, "GET, POST");
+      let input: unknown;
+      if (request.method === "GET") {
+        const params = new URL(request.url!, "http://durable.invalid").searchParams;
+        for (const key of ["query", "operationName", "variables", "extensions"]) {
+          if (params.getAll(key).length > 1) throw new Problem(400);
+        }
+        try {
+          input = {
+            query: params.get("query"),
+            operationName: params.get("operationName"),
+            variables: JSON.parse(params.get("variables") ?? "null"),
+            extensions: JSON.parse(params.get("extensions") ?? "null"),
+          };
+        } catch {
+          throw new Problem(400);
+        }
+      } else {
+        const contentType = mediaType(request.headers["content-type"] ?? "");
+        if (!contentType || contentType.essence !== "application/json" || !utf8(contentType))
+          throw new Problem(415);
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+          assert(Buffer.isBuffer(chunk));
+          size += chunk.length;
+          if (size > options.bodyLimit) throw new Problem(413);
+          chunks.push(chunk);
+        }
+        try {
+          input = JSON.parse(
+            new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
+          );
+        } catch {
+          throw new Problem(400);
+        }
+      }
+      if (!Value.Check(RequestParameters, input)) throw new Problem(400);
+      let document;
+      try {
+        document = parse(input.query);
+      } catch (error) {
+        assert(error instanceof GraphQLError);
+        return requestErrors([error]);
+      }
+      const operation = getOperationAST(document, input.operationName);
+      if (!operation)
+        return requestErrors([new GraphQLError("Operation name is missing or unknown")]);
+      if (operation.operation === "mutation" && request.method === "GET")
+        throw new Problem(405, "POST");
+      if (operation.operation === "subscription")
+        return requestErrors([new GraphQLError("Subscriptions are not supported")]);
+      const errors = validate(schema, document);
+      if (errors.length) return requestErrors(errors);
+      async function lookup<T>(read: () => Promise<T>): Promise<T> {
+        try {
+          return await awaitWithContext(read(), context);
+        } catch (error) {
+          if (error instanceof StorageRequestError)
+            throw new ResolverError("INTERNAL_SERVER_ERROR");
+          throw error;
+        }
+      }
+      const contextValue: ResolverContext = {
+        context,
+        session: (externalId) => lookup(() => options.getHarness(externalId)),
+        sessions: () => lookup(() => options.listHarnesses(context)),
+        models: options.models,
+      };
+      const result = await execute({
+        schema,
+        document,
+        contextValue,
+        operationName: input.operationName ?? null,
+        variableValues: input.variables ?? null,
+      });
+      const safe = result.errors
+        ? {
+            ...result,
+            errors: result.errors.map((error) => {
+              if (!error.path || error.originalError instanceof ResolverError) return error;
+              return new GraphQLError("INTERNAL_SERVER_ERROR", {
+                nodes: error.nodes ?? null,
+                path: error.path,
+                extensions: { code: "INTERNAL_SERVER_ERROR" },
+              });
+            }),
+          }
+        : result;
+      send("data" in result || media === "application/json" ? 200 : 400, safe);
+    } catch (error) {
+      if (error instanceof Problem) {
+        if (error.allow) response.setHeader("Allow", error.allow);
+        send(error.status);
+      } else send(500);
+    }
+  };
 }
 
 function jsonValue(value: unknown): JsonValue {

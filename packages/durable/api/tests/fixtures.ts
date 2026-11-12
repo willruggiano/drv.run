@@ -18,9 +18,16 @@ import { createApi, type ApiOptions } from "durable-api";
 
 export async function serve(
   t: TestContext,
-  options: Omit<ApiOptions, "models"> & { models?: ApiOptions["models"] },
+  options: Omit<ApiOptions, "models" | "listHarnesses"> & {
+    models?: ApiOptions["models"];
+    listHarnesses?: ApiOptions["listHarnesses"];
+  },
 ) {
-  const api = createApi({ models: createModels(), ...options });
+  const api = createApi({
+    models: createModels(),
+    listHarnesses: async () => ["test"],
+    ...options,
+  });
   const server = createServer(api.handle);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
