@@ -28,7 +28,7 @@
   "scripts": {
     "build": "npm run build:graphql && tsc -p tsconfig.build.json",
     "check": "npm run build:graphql && tsc -p tsconfig.json && KNIP_DISABLE_RAW_TRANSFER=1 knip",
-    "test": "c8 node --conditions=development --test \"tests/*.test.ts\"",
+    "test": "c8 node --conditions=development --test \"tests/*.test.ts\" \"graphql/**/*.test.ts\"",
     "build:graphql": "mkdir -p graphql/generated && grats --tsconfig graphql/tsconfig.grats.json && tsc -p graphql/tsconfig.grats.json"
   },
   "dependencies": {
@@ -58,7 +58,8 @@
   "c8": {
     "all": true,
     "include": [
-      "src/**/*.ts"
+      "src/**/*.ts",
+      "graphql/graphql.ts"
     ],
     "extension": [
       ".ts"
@@ -78,12 +79,13 @@
   "knip": {
     "entry": [
       "tests/*.test.ts",
-      "graphql/generated/graphql.ts"
+      "graphql/generated/graphql.ts",
+      "graphql/**/*.test.ts"
     ],
     "project": [
       "src/**/*.ts!",
       "tests/**/*.ts",
-      "graphql/graphql.ts"
+      "graphql/**/*.ts"
     ],
     "typescript": {
       "config": [

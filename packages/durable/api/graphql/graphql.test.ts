@@ -863,6 +863,7 @@ void test("input validation rejects null overrides outside configure, invalid sc
   assert.equal(wrongKind.errors?.[0]?.extensions.code, "BAD_REQUEST");
   for (const id of [
     "!",
+    "AB",
     Buffer.from("not json").toString("base64url"),
     Buffer.from(JSON.stringify([1, "Harness", "test", 1])).toString("base64url"),
   ]) {
@@ -932,7 +933,7 @@ void test("inspection diagnostics use native JSON serialization and serializatio
   const record = await f.instance.getTask(taskId, execution);
   assert(record);
   let error: unknown = new Error("private");
-  t.mock.method(f.instance, "inspect", async (): Promise<HarnessInspection> => ({
+  const inspect = t.mock.method(f.instance, "inspect", async (): Promise<HarnessInspection> => ({
     scheduling: "paused",
     submissions: [],
     tasks: [{ record, state: { kind: "blocked", reason: "missing_task", error } }],
@@ -950,6 +951,15 @@ void test("inspection diagnostics use native JSON serialization and serializatio
       inspect: { tasks: [{ state: { kind: "blocked", reason: "missing_task", error } }] },
     },
   });
+  error = undefined;
+  assert.deepEqual(await f.success(query), {
+    harness: {
+      inspect: { tasks: [{ state: { kind: "blocked", reason: "missing_task", error: null } }] },
+    },
+  });
+  assert("rawJSON" in JSON && typeof JSON.rawJSON === "function");
+  error = JSON.rawJSON("1e400");
+  assert.equal((await f.run(query)).errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   error = {
     toJSON() {
       throw new Error("private");
@@ -957,6 +967,10 @@ void test("inspection diagnostics use native JSON serialization and serializatio
   };
   const result = await f.run(query);
   assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  inspect.mock.restore();
+  assert.deepEqual(await f.success(query), {
+    harness: { inspect: { tasks: [{ state: { kind: "ready", reason: null, error: null } }] } },
+  });
 });
 
 void test("scalar codecs preserve structured values and reject invalid input/output", () => {
@@ -2196,4 +2210,193 @@ void test("model catalog forwards request cancellation to the upstream availabil
   assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   assert.deepEqual(result.errors?.[0]?.path, ["models"]);
   assert.equal(faux.state.callCount, 0);
+});
+
+void test("missing records and vanished handles remain distinct from failed reads", async (t) => {
+  const f = await fixture(t);
+  for (const kind of ["EntryRecord", "TaskRecord", "SubmissionRecord"]) {
+    const id = Buffer.from(JSON.stringify([1, kind, "test", 999])).toString("base64url");
+    assert.deepEqual(await f.success("query($id: ID!) { node(id: $id) { id } }", { id }), {
+      node: null,
+    });
+  }
+  assert.deepEqual(
+    await f.success(
+      '{ harness(externalId:"test") { conversation(id:1) { submissionByRequest(requestId:"absent") { id } } } }',
+    ),
+    { harness: { conversation: { submissionByRequest: null } } },
+  );
+  let calls = 0;
+  const vanished = await f.run(
+    '{ harness(externalId:"test") { inspect { scheduling } } }',
+    {},
+    f.request({ session: async () => (calls++ === 0 ? f.instance : undefined) }),
+  );
+  assert.equal(vanished.errors?.[0]?.extensions.code, "NOT_FOUND");
+  t.mock.method(f.instance, "conversation", async () => undefined);
+  const missing = await f.run(
+    '{ harness(externalId:"test") { conversation(id:1) { agent { thinkingLevel } } } }',
+  );
+  assert.equal(missing.errors?.[0]?.extensions.code, "NOT_FOUND");
+});
+
+void test("catalog, scan, receipt and abort-submission failures retain typed GraphQL errors", async (t) => {
+  const f = await fixture(t);
+  const catalog = await f.run(
+    "{ harnesses { id } }",
+    {},
+    f.request({
+      sessions: async () => {
+        throw new Error("private");
+      },
+    }),
+  );
+  assert.equal(catalog.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  for (const field of ["scanConversations", "scanTasks"]) {
+    const response = await f.run(
+      `{ harness(externalId:"test") { ${field}(limit:0) { nodes { id } } } }`,
+    );
+    assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  }
+  t.mock.method(f.storage, "submissionByRequest", async () => {
+    throw new StorageRequestError("private");
+  });
+  t.mock.method(f.instance, "submission", async () => {
+    throw new StorageRequestError("private");
+  });
+  for (const field of ['submissionByRequest(requestId:"request")', "status(id:999)"]) {
+    const response = await f.run(
+      `{ harness(externalId:"test") { conversation(id:1) { ${field} { id } } } }`,
+    );
+    assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  }
+  t.mock.method(f.instance, "abortSubmission", async () => {
+    throw new Error("private");
+  });
+  const aborted = await f.run(
+    "mutation($id:ID!) { abortSubmission(input:{conversationId:$id,id:999}) { result } }",
+    { id: f.conversationId },
+  );
+  assert.equal(aborted.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+});
+
+void test("projection rejects malformed upstream messages and non-object tool arguments", async (t) => {
+  const f = await fixture(t);
+  const entry = await f.instance.commit(
+    (tx) => tx.appendEntry(f.root.id, { kind: "app.message" }),
+    execution,
+  );
+  const malformed: readonly unknown[] = [
+    [{ role: "unknown" }],
+    [{ role: "user", content: [{ type: "unknown" }], timestamp: 0 }],
+    [{ ...fauxAssistantMessage(""), content: [{ type: "unknown" }] }],
+    [
+      {
+        ...fauxAssistantMessage(""),
+        content: [{ type: "toolCall", id: "call", name: "tool", arguments: [] }],
+      },
+    ],
+  ];
+  for (const model of malformed) {
+    // One cast at the malformed backend-record boundary; production types stay strict.
+    const record = { ...entry, model } as EntryRecord;
+    const scan = t.mock.method(f.storage, "scanEntries", async () => ({ items: [record] }));
+    const response = await f.run(
+      '{ harness(externalId:"test") { conversation(id:1) { entries(limit:1) { nodes { model { __typename } } } } } }',
+    );
+    assert.equal(response.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    scan.mock.restore();
+  }
+});
+
+void test("generated resolver bindings fail closed on invalid internal one-of variants", async (t) => {
+  const f = await fixture(t);
+  const field = schema.getMutationType()!.getFields().submit!;
+  const resolve = field.resolve!;
+  t.after(() => {
+    field.resolve = resolve;
+  });
+  const mint = t.mock.method(f.storage, "mintId");
+  for (const submission of [
+    {},
+    { input: { content: {} } },
+    { input: { content: { blocks: [{}] } } },
+    { write: { entry: { kind: "app.invalid", model: [{}] } } },
+    { write: { entry: { kind: "app.invalid", edits: [{}] } } },
+    {
+      write: {
+        entry: {
+          kind: "app.invalid",
+          model: [{ assistant: { ...fauxAssistantMessage(""), content: [{}] } }],
+        },
+      },
+    },
+  ]) {
+    // A schema consumer can wrap a field resolver after GraphQL coercion. Reject
+    // invalid variants at that binding boundary too, without admitting a write.
+    field.resolve = (source, _args, context, info) =>
+      resolve(source, { input: { conversationId: f.conversationId, submission } }, context, info);
+    const response = await f.run(
+      'mutation($id:ID!) { submit(input:{conversationId:$id,submission:{input:{content:{text:""}}}}) { submissionId } }',
+      { id: f.conversationId },
+    );
+    assert.equal(response.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  }
+  assert.equal(mint.mock.callCount(), 0);
+});
+
+void test("projection preserves omitted metadata and omit edits", async (t) => {
+  const f = await fixture(t);
+  const first = await f.instance.commit(
+    (tx) => tx.appendEntry(f.root.id, { kind: "app.first" }),
+    execution,
+  );
+  await f.instance.commit(
+    (tx) =>
+      tx.appendEntry(f.root.id, {
+        kind: "app.optional",
+        edits: [{ action: "omit", target: first.id }],
+        model: [
+          {
+            ...fauxAssistantMessage(""),
+            deferred: {
+              id: "pending",
+              provider: "faux",
+              modelId: "test",
+              api: "openai-completions",
+            },
+            diagnostics: [{ type: "retry", timestamp: 0 }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call",
+            toolName: "tool",
+            content: [],
+            isError: false,
+            timestamp: 0,
+          },
+        ],
+      }),
+    execution,
+  );
+  const value = await f.success(
+    '{ harness(externalId:"test") { conversation(id:1) { entries(limit:1) { nodes { edits { action target messages { __typename } } model { ... on AssistantMessage { deferred { data } diagnostics { details } } ... on ToolResultMessage { details } } } } } } }',
+  );
+  assert.deepEqual(value, {
+    harness: {
+      conversation: {
+        entries: {
+          nodes: [
+            {
+              edits: [{ action: "omit", target: first.id, messages: null }],
+              model: [
+                { deferred: { data: null }, diagnostics: [{ details: null }] },
+                { details: null },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  });
 });

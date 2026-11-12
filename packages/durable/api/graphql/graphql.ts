@@ -899,8 +899,6 @@ export async function node(id: ID, ctx: ResolverContext): Promise<Node | null> {
         const record = await handle?.status(ctx.context);
         return record ? projectSubmission(owner, record) : null;
       }
-      default:
-        throw new Error("Invalid record kind");
     }
   } catch (error) {
     throw mapError(error);
