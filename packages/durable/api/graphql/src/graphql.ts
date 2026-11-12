@@ -17,12 +17,11 @@ import {
 import Type from "typebox";
 import Value from "typebox/value";
 import { ConversationBusy, SessionFailed, StorageRequestError } from "@earendil-works/pi-durable";
-import type { ResolverContext } from "./index.ts";
 import { getSchema } from "./generated/graphql.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import type * as Chord from "@earendil-works/chord";
 import type * as AI from "@earendil-works/pi-ai";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
+import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 
 // TypeScript/Grats is the schema source of truth. The generated factory accepts
 // scalar implementations. Deployment supplies authorized persisted Harness lookup
@@ -59,6 +58,17 @@ import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
  * permit omission, but reject explicit null unless their
  * description permits it. A null cursor means no continuation.
  */
+
+// Session keys must never be reused for replacement storage.
+// Deployment enforces access policy for every lookup and catalog.
+// The caller owns Harnesses; storage owns pagination cursors.
+/** @gqlContext */
+export interface ResolverContext {
+  readonly context: Chord.Context;
+  readonly session: (externalId: string) => Promise<Durable.Harness | undefined>;
+  readonly sessions: () => Promise<readonly string[]>;
+  readonly models: () => Models;
+}
 
 type ErrorCode =
   | "BAD_REQUEST"
