@@ -1,12 +1,14 @@
-# Durable GraphQL API
+# GraphQL API
 
 ## Authority and scope
 
-The generated [schema](schema.graphql) describes the implemented Durable API.
-This specification gives the target contracts for execution, transport,
-ownership, deployment, identity, lifecycle, mutations, documents, and
-application services. The generated schema does not yet implement all these
-contracts.
+The generated [schema](schema.graphql) describes the implemented API. This
+specification gives the target contracts for execution, transport, ownership,
+deployment, identity, lifecycle, mutations, documents, and application services.
+The generated schema does not yet implement all these contracts.
+
+Durable, settings, instance inventory, accounts, and push are peers in one
+application schema. GraphQL and REST/SSE are served by one API owner and router.
 
 Upstream Durable controls Harness behavior. The [manifest](../package.json) and
 [lockfile](../package-lock.json) pin dependency versions. The upstream contracts
@@ -27,9 +29,10 @@ these contracts.
 
 ## Schema-to-upstream mapping
 
-These tables map reusable Durable types and operations to upstream names. The
-[application contracts](#application-services) are separate. Fields, arguments,
-and enum values keep upstream names unless a table specifies a conversion.
+These tables map Durable types and operations to upstream names. The
+[other service contracts](#application-services) belong to the same API. Fields,
+arguments, and enum values keep upstream names unless a table specifies a
+conversion.
 
 Source prefixes below refer to the pinned 1.4.0 packages:
 
@@ -342,8 +345,8 @@ their Harness.
 
 ### Lifecycle schema
 
-These declarations compose with the other Durable schema types. Existing fields
-with the same names take the signatures below.
+These declarations use the shared schema types. Existing fields with the same
+names take the signatures below.
 
 ```graphql
 extend type Query {
@@ -745,20 +748,19 @@ and the [existing SSE adapter](../src/stream.ts).
 
 ## Application services
 
-The application API supplies instance inventory, configuration, linked OAuth2
-accounts, and push-subscription management. These services remain outside the
-Durable adapter and its `ResolverContext`. They can share a GraphQL endpoint
-without changes to Durable's factory, storage, or operation contracts. The
-frontend requirements are in [[packages/www/SPEC.md]].
+Instance inventory, configuration, linked OAuth2 accounts, and push-subscription
+management share the application schema with Durable. Resolvers receive typed
+service bindings through the request context. Services own their persistence and
+protocols without changes to Durable's factory, storage, or operation contracts.
+The frontend requirements are in [[packages/www/SPEC.md]].
 
 ### Application identities and connections
 
 `Instance`, `AuthorizationServer`, `Authorization`, and `Account` implement
 `Node`. Their opaque global IDs identify resources in the authorized
 deployment/service namespace, not Durable records. Identity remains stable for
-the resource's lifetime and across restart for retained resources. Application
-composition extends `Query.node(id)` dispatch without changes to Durable's
-`ResolverContext` or identity contract.
+the resource's lifetime and across restart for retained resources.
+`Query.node(id)` dispatches both these identities and Durable record identities.
 
 Lookups return null for missing or inaccessible resources. Commands validate
 decoded kind and scope and return `NOT_FOUND` for unavailable targets. IDs are
@@ -879,8 +881,8 @@ specific settings library is necessary.
 
 #### Settings schema
 
-The application adds these target fields to the Durable schema. The generated
-schema does not yet implement them. They are not Durable operations.
+These target fields use the configuration service, not Durable. The generated
+schema does not yet implement them.
 
 ```graphql
 extend type Query {
@@ -895,10 +897,12 @@ enum App {
 union Settings = WebSettings | HarnessSettings
 
 extend type Mutation {
-  saveWwwSettings(input: SaveWwwSettingsInput!): SaveWwwSettingsPayload
-  saveHarnessSettings(
-    input: SaveHarnessSettingsInput!
-  ): SaveHarnessSettingsPayload
+  saveSettings(input: SaveSettingsInput!): Settings
+}
+
+input SaveSettingsInput @oneOf {
+  web: SaveWwwSettingsInput
+  harness: SaveHarnessSettingsInput
 }
 
 enum WwwDeliveryMode {
@@ -985,17 +989,9 @@ input SaveWwwSettingsInput {
   settings: WwwSettingsInput!
 }
 
-type SaveWwwSettingsPayload {
-  settings: WebSettings!
-}
-
 input SaveHarnessSettingsInput {
   expectedRevision: String!
   settings: HarnessSettingsInput!
-}
-
-type SaveHarnessSettingsPayload {
-  settings: HarnessSettings!
 }
 ```
 
@@ -1082,15 +1078,23 @@ successful save, the initiating page uses the returned settings. Other pages
 read the changes on their next request. A saved delivery default does not alter
 captured or admitted submissions.
 
-The settings query acquires no Harness and uses no session for either
-application. Neither save changes Durable documents or the SSE protocol.
+Settings queries and saves acquire no Harness and use no session. Saving
+settings changes neither Durable documents nor the SSE protocol.
 
 #### Save protocol
 
-The two mutations replace the full application configuration with typed
-`settings` input. All input fields must be present and non-null, also in nested
-objects. There is no implicit patch, null-as-delete, or key-based update. A
-reset supplies the setting's default value without a search of another file.
+`saveSettings` accepts exactly one non-null branch of `SaveSettingsInput`: `web`
+or `harness`. Empty inputs, multiple branches, and null branch values are
+invalid for both variables and inline literals. The branch selects the file and
+its typed settings, without a separate `app` argument.
+
+Each branch requires `expectedRevision` and the full `settings` input. All
+settings fields must be present and non-null, also in nested objects. There is
+no implicit patch, null-as-delete, or key-based update. A reset supplies the
+setting's default value without a search of another file.
+
+The result is `WebSettings` for `web` or `HarnessSettings` for `harness`,
+including the saved revision. It has no payload wrapper.
 
 `revision` is an opaque, nonempty content revision of the file, with a distinct
 value for an absent file. It changes with file contents and remains stable
@@ -1107,7 +1111,7 @@ concurrent writes from unrelated processes.
 
 On a revision match, the service validates the full input and atomically
 replaces the file. It returns the saved settings and new revision. No
-transaction spans the two files. Nullable query fields and mutation payloads can
+transaction spans the two files. Nullable query fields and mutation results can
 return errors with other successful selections. An absent file returns defaults,
 not null.
 
@@ -1580,18 +1584,22 @@ not coerce invalid input or silently remove content.
 
 Execution failures use GraphQL errors with these `extensions.code` values:
 
-| Condition                                                                        | Code                    |
-| -------------------------------------------------------------------------------- | ----------------------- |
-| Adapter validation failure or `StorageRequestError` from a rejected storage read | `BAD_REQUEST`           |
-| Missing mutation target                                                          | `NOT_FOUND`             |
-| Typed `ConversationBusy`                                                         | `CONVERSATION_BUSY`     |
-| Fatal `Storage.commit()` or `mintId()` failure, also for `StorageRequestError`   | `INTERNAL_SERVER_ERROR` |
-| Typed `SessionFailed`                                                            | `SESSION_FAILED`        |
-| Otherwise                                                                        | `INTERNAL_SERVER_ERROR` |
+| Condition                                                                                      | Code                    |
+| ---------------------------------------------------------------------------------------------- | ----------------------- |
+| Adapter validation failure or client-caused `StorageRequestError` from a rejected storage read | `BAD_REQUEST`           |
+| Missing mutation target                                                                        | `NOT_FOUND`             |
+| Typed `ConversationBusy`                                                                       | `CONVERSATION_BUSY`     |
+| Server-caused `StorageRequestError`, or fatal `Storage.commit()` or `mintId()` failure         | `INTERNAL_SERVER_ERROR` |
+| Typed `SessionFailed`                                                                          | `SESSION_FAILED`        |
+| Otherwise                                                                                      | `INTERNAL_SERVER_ERROR` |
 
 Missing lookup objects return null. Storage failures remain errors, not absence.
 Persisted task failures and blocked inspection states are data, not GraphQL
 execution failures.
+
+Resolvers classify server-caused `StorageRequestError` as
+`INTERNAL_SERVER_ERROR` before the default error mapping. The default maps
+`StorageRequestError` to `BAD_REQUEST`.
 
 Error classification uses the failure source, not only the exception type or
 GraphQL operation type. A storage read inside a read-only `Harness.commit()`

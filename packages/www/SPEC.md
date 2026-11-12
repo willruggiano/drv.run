@@ -333,9 +333,9 @@ Present two application settings panels:
 
 Read these through `settings(app: web)` and `settings(app: harness)`, selecting
 fields from the `WebSettings` or `HarnessSettings` union member. `web` names the
-`www` application. Save through the separate `saveWwwSettings` and
-`saveHarnessSettings` mutations. The exact fields, enum choices, defaults, and
-validation are declared in
+`www` application. Save through `saveSettings`, selecting exactly one non-null
+`web` or `harness` branch of its `@oneOf` input. The exact fields, enum choices,
+defaults, and validation are declared in
 [[packages/durable/api/graphql/SPEC.md#Settings schema]] and
 [[packages/durable/api/graphql/SPEC.md#Fields and defaults]]. Use checkboxes,
 choice controls, and integer fields rather than a generic key/value editor.
