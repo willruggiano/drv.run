@@ -1,0 +1,9 @@
+# ASD-STE100 rule 6.3 uses a 25-word limit for descriptive prose.
+# Vale tokenization is approximate: code is masked, and titles are not one word.
+extends: occurrence
+message: "Review this sentence (%s prose tokens). Use at most 25 words for descriptive prose."
+level: suggestion
+scope: sentence & ~heading & ~table
+max: 25
+token: '\b[\p{L}\p{N}]+(?:[-’''][\p{L}\p{N}]+)*\b'
+link: https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf

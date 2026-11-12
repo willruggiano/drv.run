@@ -1,0 +1,8 @@
+extends: existence
+message: "Replace the semicolon with a sentence boundary or a list."
+level: warning
+scope: text
+nonword: true
+tokens:
+  - ';'
+link: https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf

@@ -1,0 +1,9 @@
+extends: existence
+message: "Use a repository-relative wiki link for '%s'."
+level: warning
+scope: text & ~heading & ~link
+tokens:
+  - 'README(?:\.md)?'
+  - 'CONTRIBUTING(?:\.md)?'
+  - 'SPEC(?:\.md)?'
+  - 'ARCHITECTURE(?:\.md)?'

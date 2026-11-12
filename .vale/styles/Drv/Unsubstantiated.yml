@@ -1,0 +1,18 @@
+extends: existence
+message: "Replace '%s' with a concrete property or measurement, or remove it."
+level: suggestion
+scope: text
+ignorecase: true
+tokens:
+  - seamless(?:ly)?
+  - effortless(?:ly)?
+  - robust
+  - powerful
+  - elegant
+  - intuitive
+  - game-changing
+  - world-class
+  - best-in-class
+  - cutting-edge
+  - state-of-the-art
+  - future-proof

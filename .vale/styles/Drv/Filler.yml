@@ -1,0 +1,17 @@
+extends: existence
+message: "Remove '%s' unless it adds necessary information."
+level: suggestion
+scope: text
+ignorecase: true
+tokens:
+  - actually
+  - basically
+  - clearly
+  - just
+  - merely
+  - obviously
+  - simply
+  - 'it is (?:important|worth noting) that'
+  - 'it is important to note that'
+  - 'as (?:mentioned|noted|discussed) (?:above|earlier|previously)'
+  - 'needless to say'

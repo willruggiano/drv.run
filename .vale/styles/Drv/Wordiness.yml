@@ -1,0 +1,18 @@
+extends: substitution
+message: "Consider '%s' instead of '%s'."
+level: suggestion
+scope: text
+ignorecase: true
+swap:
+  'in order to': to
+  'for the purpose of': for
+  'at this point in time': now
+  'prior to': before
+  'subsequent to': after
+  'in the event that': if
+  'due to the fact that': because
+  'a number of': several
+  'utilize': use
+  'utilizes': uses
+  'utilized': used
+  'utilizing': using
