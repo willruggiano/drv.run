@@ -1,48 +1,45 @@
 # Contributing to Durable GraphQL
 
-Read [[packages/durable/api/graphql/SPEC.md]] and
-[[packages/durable/api/graphql/ARCHITECTURE.md]] before changing the package.
-Repository-wide commands and contribution rules are in [[README.md]] and
-[justfile](../../../../justfile).
+Read [[packages/durable/api/graphql/SPEC.md]] before you change the package.
+Then read [[packages/durable/api/graphql/ARCHITECTURE.md]]. Repository
+contribution rules are in [[README.md]].
 
-## Making a change
+## Code changes
 
-1. Identify the affected contract in SPEC and inspect the corresponding pinned
-   upstream interface and implementation. For an intentional contract change,
-   update SPEC; for an internal organization change, update ARCHITECTURE. Keep
-   README as the navigation entry point, not another description of either.
-2. Change the handwritten declarations, descriptions, and resolvers. Regenerate
-   the schema rather than editing generated files. Review the SDL diff for
-   unintended changes to names, nullability, input variants, and exposed fields.
-3. Add regression coverage at the boundary selected by ARCHITECTURE. Exercise
-   the relevant SPEC contracts through the executable schema, not only helpers.
-   For storage-error changes, inject failures at the read, commit, and ID-mint
-   boundaries; an exception-class-only fixture does not establish origin-aware
-   classification. For public projections, use secret-bearing fixtures and
-   inspect decoded selections as well as schema field definitions.
-4. When adding modules or runtime dependencies, check the TypeScript and Grats
-   inputs, package exports, Nix source fileset, installed artifacts, test
-   discovery, and coverage inclusion. Verify the package after pruning
-   development dependencies. Do not lower coverage thresholds or exclude new
-   production code to make checks pass.
+1. Find the affected contract in [[packages/durable/api/graphql/SPEC.md]].
+   Examine the pinned upstream interface and implementation. Update the contract
+   if the intended behavior changes.
+2. Change the handwritten declarations, descriptions, and resolvers. Generate
+   the schema again. Examine the SDL diff for changes to names, nullability,
+   input variants, and public fields. Do not edit generated files.
+3. Add regression tests through the executable schema. Use the test interfaces
+   in [[packages/durable/api/graphql/ARCHITECTURE.md#Tests]].
+4. For new modules or dependencies, examine these files:
+   - [Grats configuration](tsconfig.grats.json).
+   - [TypeScript configuration](../tsconfig.build.json).
+   - [Package exports, tests, and coverage](../package.json).
+   - [Nix inputs and installation](../default.nix).
+5. Update [[packages/durable/api/graphql/ARCHITECTURE.md]] if the architecture
+   changes.
 
-Sources: [manifest and coverage](../package.json),
-[Grats inputs](tsconfig.grats.json), [build inputs](../tsconfig.build.json),
-[package build and dependency patch](../default.nix), and
-[executable-schema tests](graphql.test.ts).
+For storage-error changes, inject failures at reads, commits, and ID allocation.
+Examine the failure source, not only the exception class. For public
+projections, use fixtures that contain secrets. Examine decoded selections and
+schema fields for secret exposure. Do not reduce coverage thresholds or exclude
+new production code.
 
-## Verification commands
+## Verification
 
-Run commands from the repository root. The self-contained package build uses
-pinned dependencies, applies the package's upstream patch, and runs its check
-and installation phases:
+Run commands from the repository root. The [package build](../default.nix)
+installs pinned dependencies and applies the upstream patch. It runs the package
+checks and validates the installed package:
 
 ```sh
 nix build .#durable-api --no-link -L
 ```
 
-For iteration with the package's dependencies available and the Nix-provided
-compiler on PATH:
+For local checks, first make the package dependencies and Nix-provided compiler
+available. Then run:
 
 ```sh
 npm --prefix packages/durable/api run build:graphql
@@ -51,19 +48,21 @@ node --test packages/durable/api/graphql/graphql.test.ts
 npm --prefix packages/durable/api test
 ```
 
-`npm test` selects the enclosing package's `tests/*.test.ts`; it does not select
-the GraphQL suite. Run that suite explicitly. Inspect actual test and coverage
-selection in [package.json](../package.json), not just a successful percentage.
+`npm test` does not select the GraphQL suite. The separate Node command runs
+that suite.
 
-For documentation changes:
+Use
+[ASD-STE100 Issue 9](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf)
+for prose. Use project and upstream names for technical terms. Keep schema
+identifiers and code examples unchanged during prose edits.
+
+For documentation changes, run:
 
 ```sh
 nix fmt -- packages/durable/api/graphql/*.md
 markdownlint-cli2
 ```
 
-Use the repository checks in [justfile](../../../../justfile) for cross-package
-changes. Keep long checks in a task-specific zmx session; wait for completion
-and inspect its exit status. Report exact commands and outcomes, including
-anything not verified. A generated schema or a successful type check alone is
-not proof that the installed server works.
+Use [justfile](../../../../justfile) for repository checks. Run long checks in a
+task-specific zmx session. Wait for completion. Read the exit status. Report the
+commands, results, and checks that did not run.
