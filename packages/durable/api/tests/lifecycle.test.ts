@@ -110,6 +110,7 @@ void test("shutdown attempts every Harness and reports close failures", async (t
   });
   const api = createApi({
     models: createModels(),
+    documents: { definitions: async () => [], resolve: async () => undefined },
     isValidExternalId: (id) => id.length > 0,
     listHarnesses: async () => ["first", "second"],
     openHarness: async (id) => (id === "first" ? first.harness : second.harness),

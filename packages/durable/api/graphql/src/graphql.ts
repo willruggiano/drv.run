@@ -75,6 +75,43 @@ export interface ResolverContext {
   readonly session: (externalId: string, create?: boolean) => Promise<Durable.Harness | undefined>;
   readonly sessions: () => Promise<readonly string[]>;
   readonly models: () => Models;
+  readonly documents: DocumentService;
+}
+
+type DocumentToken =
+  | Durable.DocToken<Durable.JsonObject, Durable.DocDefinition<Durable.JsonObject>>
+  | Durable.DocFamilyToken<
+      Durable.JsonObject,
+      Chord.JsonValue,
+      Durable.DocFamilyDefinition<Durable.JsonObject, Chord.JsonValue>
+    >;
+
+interface DocumentWrite {
+  readonly validate: (content: Readonly<Durable.JsonObject>) => boolean;
+  readonly initialize: boolean;
+  /** Required when initializing a family; never supplied by the client. */
+  readonly seed?: Chord.JsonValue;
+}
+
+interface DocumentAccess {
+  readonly token: DocumentToken;
+  /** Absent means read-only. Runtime-owned pi.* documents are always read-only here. */
+  readonly write?: DocumentWrite;
+}
+
+interface DocumentService {
+  /** Authorized definitions for this exact owner; undefined denies discovery. */
+  definitions(
+    externalId: string,
+    scope: Durable.DocumentAddress["scope"],
+    context: Chord.Context,
+  ): Promise<readonly DocumentToken[] | undefined>;
+  /** Authorize each address, including its family key. Undefined means unexposed/inaccessible. */
+  resolve(
+    externalId: string,
+    address: Durable.DocumentAddress,
+    context: Chord.Context,
+  ): Promise<DocumentAccess | undefined>;
 }
 
 type ErrorCode =
@@ -338,6 +375,7 @@ const RequestParameters = Type.Object({
 });
 
 export function createGraphQLHandler(options: {
+  documents: DocumentService;
   getHarness: ResolverContext["session"];
   isValidExternalId: ResolverContext["isValidExternalId"];
   listHarnesses: (context: Chord.Context) => Promise<readonly string[]>;
@@ -431,6 +469,7 @@ export function createGraphQLHandler(options: {
       }
       const contextValue: ResolverContext = {
         context,
+        documents: options.documents,
         session: (externalId, create) => lookup(() => options.getHarness(externalId, create)),
         isValidExternalId: options.isValidExternalId,
         sessions: () => lookup(() => options.listHarnesses(context)),
@@ -1154,6 +1193,261 @@ export async function harnessRoot(
       ctx.context,
     );
     return record ? projectConversation(source, record) : null;
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/** @gqlEnum */
+type DocumentScopeKind = "session" | "conversation" | "task";
+/** @gqlEnum */
+type DocumentHistory = "latest" | "rewindable";
+/** @gqlEnum */
+type DocumentFork = "asOf" | "current" | "initial";
+
+/** @gqlInput */
+interface DocumentScopeInput {
+  readonly kind: DocumentScopeKind;
+  readonly conversationId?: ConversationId | null;
+  readonly taskId?: TaskId | null;
+}
+
+const DocumentScope = Type.Union([
+  Type.Object({ kind: Type.Literal("session") }, { additionalProperties: false }),
+  Type.Object(
+    { kind: Type.Literal("conversation"), conversationId: ConversationId },
+    { additionalProperties: false },
+  ),
+  Type.Object({ kind: Type.Literal("task"), taskId: TaskId }, { additionalProperties: false }),
+]);
+
+/** @gqlInput */
+interface DocumentAddressInput {
+  readonly kind: string;
+  readonly scope: DocumentScopeInput;
+  readonly key?: string | null;
+}
+
+/** @gqlType */
+interface DocumentDefinition {
+  /** @gqlField */
+  readonly kind: string;
+  /** @gqlField */
+  readonly version: Int;
+  /** @gqlField */
+  readonly scope: DocumentScopeKind;
+  /** @gqlField */
+  readonly family: boolean | null;
+  /** @gqlField */
+  readonly history: DocumentHistory | null;
+  /** @gqlField */
+  readonly fork: DocumentFork | null;
+}
+
+async function documentOwner(
+  tx: Durable.Tx,
+  scope: Durable.DocumentAddress["scope"],
+): Promise<boolean> {
+  switch (scope.kind) {
+    case "session":
+      return true;
+    case "conversation":
+      return (await tx.conversation(scope.conversationId)) !== undefined;
+    case "task":
+      return (await tx.task(scope.taskId)) !== undefined;
+  }
+}
+
+async function documentService<T>(ctx: ResolverContext, call: () => T | Promise<T>): Promise<T> {
+  try {
+    return await awaitWithContext(Promise.resolve(call()), ctx.context);
+  } catch {
+    throw new ResolverError("INTERNAL_SERVER_ERROR");
+  }
+}
+
+/**
+ * Authorized definition metadata for one owner, sorted by kind. Does not enumerate members or initialize documents.
+ * @gqlField
+ */
+export async function documentDefinitions(
+  source: Harness,
+  scope: DocumentScopeInput,
+  ctx: ResolverContext,
+): Promise<DocumentDefinition[] | null> {
+  try {
+    const owner = checked(DocumentScope, scope);
+    const instance = await ctx.session(source.externalId);
+    if (!instance || !(await instance.commit((tx) => documentOwner(tx, owner), ctx.context)))
+      return null;
+    const tokens = await documentService(ctx, () =>
+      ctx.documents.definitions(source.externalId, owner, ctx.context),
+    );
+    if (tokens === undefined) return null;
+    const definitions = tokens.map(({ definition }) => {
+      assert.equal(definition.scope, owner.kind);
+      assert(
+        Number.isInteger(definition.version) &&
+          definition.version > 0 &&
+          definition.version <= 2147483647,
+      );
+      return {
+        kind: definition.kind,
+        version: definition.version,
+        scope: definition.scope,
+        family: "family" in definition ? definition.family : null,
+        history: definition.history ?? null,
+        fork: definition.fork ?? null,
+      };
+    });
+    const byKind = new Map(definitions.map((definition) => [definition.kind, definition]));
+    assert.equal(byKind.size, definitions.length);
+    return [...byKind.keys()].sort().map((kind) => byKind.get(kind)!);
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+async function resolveDocument(source: Harness, input: DocumentAddressInput, ctx: ResolverContext) {
+  const { scope, ...fields } = nonNull(input);
+  const address: Durable.DocumentAddress = { ...fields, scope: checked(DocumentScope, scope) };
+  const instance = await ctx.session(source.externalId);
+  if (!instance || !(await instance.commit((tx) => documentOwner(tx, address.scope), ctx.context)))
+    return undefined;
+  const access = await documentService(ctx, () =>
+    ctx.documents.resolve(source.externalId, address, ctx.context),
+  );
+  if (!access) return undefined;
+  assert.equal(access.token.definition.kind, address.kind);
+  assert.equal(access.token.definition.scope, address.scope.kind);
+  if ("family" in access.token.definition !== (address.key !== undefined))
+    throw new ResolverError("BAD_REQUEST");
+  return { instance, access, address };
+}
+
+/** @gqlField */
+export async function snapshot(
+  source: Harness,
+  address: DocumentAddressInput,
+  ctx: ResolverContext,
+): Promise<JsonObject | null> {
+  try {
+    const resolved = await resolveDocument(source, address, ctx);
+    if (!resolved) return null;
+    const {
+      instance,
+      access: {
+        token: { definition },
+      },
+      address: { scope, key },
+    } = resolved;
+    let value: Readonly<Durable.JsonObject> | undefined;
+    switch (definition.scope) {
+      case "session":
+        value =
+          "family" in definition
+            ? await instance.snapshot({ definition }, key!, ctx.context)
+            : await instance.snapshot({ definition }, ctx.context);
+        break;
+      case "conversation":
+        assert(scope.kind === "conversation");
+        value =
+          "family" in definition
+            ? await instance.snapshot({ definition }, scope.conversationId, key!, ctx.context)
+            : await instance.snapshot({ definition }, scope.conversationId, ctx.context);
+        break;
+      case "task":
+        assert(scope.kind === "task");
+        value =
+          "family" in definition
+            ? await instance.snapshot({ definition }, scope.taskId, key!, ctx.context)
+            : await instance.snapshot({ definition }, scope.taskId, ctx.context);
+        break;
+    }
+    return value === undefined ? null : jsonObject(value);
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/** @gqlInput */
+interface ReplaceDocumentInput {
+  readonly harnessId: ID;
+  readonly address: DocumentAddressInput;
+  readonly content: JsonObject;
+}
+
+/**
+ * Replace one exposed application document in one commit. No merge, compare-and-swap, or automatic replay.
+ * @gqlMutationField
+ */
+export async function replaceDocument(
+  input: ReplaceDocumentInput,
+  ctx: ResolverContext,
+): Promise<JsonObject | null> {
+  try {
+    const target = identity(input.harnessId);
+    if (target.kind !== "Harness") throw new ResolverError("BAD_REQUEST");
+    const resolved = await resolveDocument(harnessNode(target.externalId), input.address, ctx);
+    if (!resolved) throw new ResolverError("NOT_FOUND");
+    const {
+      instance,
+      access,
+      address: { scope, key },
+    } = resolved;
+    const write = access.write;
+    if (!write || access.token.definition.kind.startsWith("pi."))
+      throw new ResolverError("BAD_REQUEST");
+    const content = jsonObject(input.content);
+    if (!(await documentService(ctx, () => write.validate(content))))
+      throw new ResolverError("BAD_REQUEST");
+    const original = access.token.definition;
+    if ("family" in original && write.initialize) assert(write.seed !== undefined);
+    // Tx has no non-creating document read. Guard initial() inside the transaction,
+    // so retirement between authorization and acquisition cannot bypass the policy.
+    // Keep the registered callbacks' receiver; only initialization gains a guard.
+    const definition = {
+      ...original,
+      initial(seed?: Chord.JsonValue) {
+        if (!write.initialize) throw new ResolverError("BAD_REQUEST");
+        if ("family" in original) {
+          assert(seed !== undefined);
+          return original.initial(seed);
+        }
+        return original.initial();
+      },
+      checkpointWhen: original.checkpointWhen.bind(original),
+      ...(original.migrate === undefined ? {} : { migrate: original.migrate.bind(original) }),
+    };
+    return await instance.commit(async (tx) => {
+      if (!(await documentOwner(tx, scope))) throw new ResolverError("NOT_FOUND");
+      let draft: Durable.JsonObject;
+      switch (definition.scope) {
+        case "session":
+          draft =
+            "family" in definition
+              ? await tx.doc({ definition }, key!, write.seed ?? null)
+              : await tx.doc({ definition });
+          break;
+        case "conversation":
+          assert(scope.kind === "conversation");
+          draft =
+            "family" in definition
+              ? await tx.doc({ definition }, scope.conversationId, key!, write.seed ?? null)
+              : await tx.doc({ definition }, scope.conversationId);
+          break;
+        case "task":
+          assert(scope.kind === "task");
+          draft =
+            "family" in definition
+              ? await tx.doc({ definition }, scope.taskId, key!, write.seed ?? null)
+              : await tx.doc({ definition }, scope.taskId);
+          break;
+      }
+      for (const property of Object.keys(draft)) delete draft[property];
+      Object.assign(draft, content);
+      return jsonObject(draft);
+    }, ctx.context);
   } catch (error) {
     throw mapError(error);
   }

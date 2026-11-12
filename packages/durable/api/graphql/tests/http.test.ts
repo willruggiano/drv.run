@@ -10,6 +10,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+  defineDoc,
   StorageRequestError,
   Harness,
   createRegistry,
@@ -703,4 +704,119 @@ void test("HTTP open validates keys before provisioning and distinguishes refusa
   assert.equal(failed.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   assert.equal(failed.errors?.[0]?.message, "INTERNAL_SERVER_ERROR");
   assert.equal(factory.mock.callCount(), 2);
+});
+
+void test("HTTP document operations borrow the shared Harness and pass request context to deployment", async (t) => {
+  const { harness } = await openHarness(t);
+  const token = defineDoc({
+    scope: "session",
+    kind: "app.preferences",
+    version: 1,
+    initial: () => ({}),
+    checkpointWhen: () => false,
+  });
+  const factory = t.mock.fn(async () => harness);
+  const { url } = await serve(t, {
+    openHarness: factory,
+    documents: {
+      async definitions(id, scope, context) {
+        assert.equal(id, "test");
+        assert.deepEqual({ ...scope }, { kind: "session" });
+        assert.equal(context.abortSignal?.aborted, false);
+        return [token];
+      },
+      async resolve(id, address, context) {
+        assert.equal(id, "test");
+        assert.deepEqual(
+          { ...address, scope: { ...address.scope } },
+          {
+            kind: token.definition.kind,
+            scope: { kind: "session" },
+          },
+        );
+        assert.equal(context.abortSignal?.aborted, false);
+        return { token, write: { initialize: true, validate: () => true } };
+      },
+    },
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const read =
+    '{ harness(externalId:"test") { id documentDefinitions(scope:{kind:session}) { kind } snapshot(address:{kind:"app.preferences",scope:{kind:session}}) } }';
+  const initial = await result(await fetch(endpoint, json(read)));
+  const value = initial.data?.harness as { id: string; snapshot: unknown };
+  assert.equal(value.snapshot, null);
+  const content = { setting: true };
+  const written = await result(
+    await fetch(
+      endpoint,
+      json(
+        'mutation($id:ID!,$content:JsonObject!) { replaceDocument(input:{harnessId:$id,address:{kind:"app.preferences",scope:{kind:session}},content:$content}) }',
+        { id: value.id, content },
+      ),
+    ),
+  );
+  assert.deepEqual(written, { data: { replaceDocument: content } });
+  assert.deepEqual(await harness.snapshot(token, BACKGROUND_CONTEXT), content);
+  assert.deepEqual(await result(await fetch(endpoint, json(read))), {
+    data: {
+      harness: {
+        id: value.id,
+        documentDefinitions: [{ kind: token.definition.kind }],
+        snapshot: content,
+      },
+    },
+  });
+  assert.equal((await fetch(`${url}/inspect`)).status, 200);
+  assert.equal(factory.mock.callCount(), 1);
+  assert.equal((await harness.inspect(BACKGROUND_CONTEXT)).scheduling, "paused");
+});
+
+void test("disconnect cancels document authorization waits before mutation admission", async (t) => {
+  const { harness, storage } = await openHarness(t);
+  const token = defineDoc({
+    scope: "session",
+    kind: "app.pending",
+    version: 1,
+    initial: () => ({}),
+    checkpointWhen: () => false,
+  });
+  const entered = Promise.withResolvers<AbortSignal>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const { api, url, server } = await serve(t, {
+    openHarness: async () => harness,
+    documents: {
+      definitions: async () => [],
+      async resolve(_id, _address, context) {
+        assert(context.abortSignal);
+        entered.resolve(context.abortSignal);
+        await release.promise;
+        return { token, write: { initialize: true, validate: () => true } };
+      },
+    },
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const lookup = await result(await fetch(endpoint, json('{ harness(externalId:"test") { id } }')));
+  const value = lookup.data?.harness as { id: string };
+  const writes = t.mock.method(storage, "commit");
+  const disconnected = Promise.withResolvers<void>();
+  server.once("request", (_request, response) => response.once("close", disconnected.resolve));
+  const controller = new AbortController();
+  const request = fetch(endpoint, {
+    ...json(
+      'mutation($id:ID!) { replaceDocument(input:{harnessId:$id,address:{kind:"app.pending",scope:{kind:session}},content:{}}) }',
+      { id: value.id },
+    ),
+    signal: controller.signal,
+  });
+  const signal = await entered.promise;
+  controller.abort();
+  await assert.rejects(request, { name: "AbortError" });
+  await disconnected.promise;
+  assert.equal(signal.aborted, true);
+  await api.close();
+  assert.deepEqual(await harness.closed, { reason: "closed" });
+  release.resolve();
+  await release.promise;
+  assert.equal(writes.mock.callCount(), 0);
 });

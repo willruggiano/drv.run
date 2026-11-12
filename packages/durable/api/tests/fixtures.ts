@@ -14,18 +14,20 @@ import {
   type ConversationView,
   type WatchEnd,
 } from "@earendil-works/pi-durable";
-import { createApi, type ApiOptions } from "durable-api";
+import { createApi, type ApiOptions } from "../src/index.ts";
 
 export async function serve(
   t: TestContext,
-  options: Omit<ApiOptions, "models" | "listHarnesses" | "isValidExternalId"> & {
+  options: Omit<ApiOptions, "models" | "listHarnesses" | "isValidExternalId" | "documents"> & {
     models?: ApiOptions["models"];
+    documents?: ApiOptions["documents"];
     isValidExternalId?: ApiOptions["isValidExternalId"];
     listHarnesses?: ApiOptions["listHarnesses"];
   },
 ) {
   const api = createApi({
     models: createModels(),
+    documents: { definitions: async () => [], resolve: async () => undefined },
     isValidExternalId: (id) => id.length > 0,
     listHarnesses: async () => ["test"],
     ...options,

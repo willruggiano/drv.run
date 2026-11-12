@@ -267,6 +267,7 @@ void test("body limits reject invalid deployment configuration", () => {
       () =>
         createApi({
           models: createModels(),
+          documents: { definitions: async () => [], resolve: async () => undefined },
           isValidExternalId: (id) => id.length > 0,
           listHarnesses: async () => [],
           openHarness: async () => undefined,

@@ -11,6 +11,7 @@ import {
   parseValue,
   validateSchema,
 } from "graphql";
+import type { JsonValue } from "@earendil-works/chord";
 import type * as AI from "@earendil-works/pi-ai";
 import {
   BACKGROUND_CONTEXT,
@@ -21,6 +22,10 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import {
   Harness,
+  defineDoc,
+  defineDocFamily,
+  AgentDoc,
+  type DocumentAddress,
   MemoryStorage,
   createRegistry,
   CompactionTask,
@@ -62,6 +67,7 @@ function catalogContext(models: ResolverContext["models"], context = execution):
   return {
     context,
     models,
+    documents: { definitions: async () => [], resolve: async () => undefined },
     isValidExternalId() {
       assert.fail("catalog reads must not validate external IDs");
     },
@@ -95,6 +101,7 @@ async function fixture(t: TestContext, externalId = "test") {
   function request(overrides: Partial<ResolverContext> = {}): ResolverContext {
     return {
       context: execution,
+      documents: { definitions: async () => [], resolve: async () => undefined },
       isValidExternalId: (id) => id.length > 0,
       session: async (id) => (id === externalId ? instance : undefined),
       sessions: async () => [externalId],
@@ -2705,4 +2712,499 @@ void test("open distinguishes invalid keys, unavailable storage, and validation 
   const missing = await f.run(source, { id: "absent" });
   assert.equal(missing.errors?.[0]?.extensions.code, "NOT_FOUND");
   assert.deepEqual(missing.errors?.[0]?.path, ["open"]);
+});
+
+async function documentFixture(t: TestContext) {
+  const f = await fixture(t);
+  const taskId = await f.instance.commit(
+    (tx) =>
+      tx.createTask(
+        CompactionTask,
+        { reason: "manual" },
+        { conversationId: f.root.id, ownership: { kind: "conversation" } },
+      ),
+    execution,
+  );
+  const common = { version: 1, initial: () => ({ initial: true }), checkpointWhen: () => false };
+  const family = {
+    version: 1,
+    family: true as const,
+    initial: (seed: JsonValue) => ({ seed }),
+    checkpointWhen: () => false,
+  };
+  const session = defineDoc({ ...common, scope: "session", kind: "z.session" });
+  const sessionFamily = defineDocFamily({ ...family, scope: "session", kind: "a.session" });
+  const conversation = defineDoc({
+    ...common,
+    scope: "conversation",
+    kind: "z.conversation",
+    history: "rewindable",
+    fork: "asOf",
+  });
+  const conversationFamily = defineDocFamily({
+    ...family,
+    scope: "conversation",
+    kind: "a.conversation",
+    history: "latest",
+    fork: "initial",
+  });
+  const task = defineDoc({ ...common, scope: "task", kind: "z.task" });
+  const taskFamily = defineDocFamily({ ...family, scope: "task", kind: "a.task" });
+  const tokens = [session, sessionFamily, conversation, conversationFamily, task, taskFamily];
+  const policy = {
+    validate: (_content: Readonly<Record<string, JsonValue>>) => true,
+    initialize: true,
+    seed: { from: "server" },
+  };
+  const documents: ResolverContext["documents"] = {
+    definitions: async (_id, scope) =>
+      tokens.filter((token) => token.definition.scope === scope.kind),
+    resolve: async (_id, address) => {
+      const token = tokens.find(
+        (token) =>
+          token.definition.kind === address.kind && token.definition.scope === address.scope.kind,
+      );
+      return token && { token, write: policy };
+    },
+  };
+  const ctx = f.request({ documents });
+  const scopes: DocumentAddress["scope"][] = [
+    { kind: "session" },
+    { kind: "conversation", conversationId: f.root.id },
+    { kind: "task", taskId },
+  ];
+  const addresses = scopes.flatMap((scope) =>
+    tokens
+      .filter((token) => token.definition.scope === scope.kind)
+      .map((token): DocumentAddress => ({
+        kind: token.definition.kind,
+        scope,
+        ...("family" in token.definition ? { key: "member" } : {}),
+      })),
+  );
+  const replace = (
+    address: unknown,
+    content: unknown = {},
+    context = ctx,
+    harnessId = f.harnessId,
+  ) =>
+    f.run(
+      "mutation($input:ReplaceDocumentInput!) { replaceDocument(input:$input) }",
+      { input: { harnessId, address, content } },
+      context,
+    );
+  const read = async (address: DocumentAddress, context = ctx) =>
+    (
+      await f.success<{ harness: { snapshot: unknown } }>(
+        'query($address:DocumentAddressInput!) { harness(externalId:"test") { snapshot(address:$address) } }',
+        { address },
+        context,
+      )
+    ).harness.snapshot;
+  return {
+    ...f,
+    tokens,
+    scopes,
+    addresses,
+    session,
+    sessionFamily,
+    conversation,
+    conversationFamily,
+    task,
+    taskFamily,
+    taskId,
+    documents,
+    ctx,
+    policy,
+    replace,
+    read,
+  };
+}
+
+void test("documents expose only definition metadata and passive snapshots across all scopes", async (t) => {
+  const f = await documentFixture(t);
+  const writes = t.mock.method(f.storage, "commit");
+  const initial = f.tokens.map((token) => t.mock.method(token.definition, "initial"));
+  for (const scope of f.scopes) {
+    const response = await f.success<{ harness: { documentDefinitions: unknown } }>(
+      'query($scope:DocumentScopeInput!) { harness(externalId:"test") { documentDefinitions(scope:$scope) { kind version scope family history fork } } }',
+      { scope },
+      f.ctx,
+    );
+    const definitions = f.tokens
+      .filter((token) => token.definition.scope === scope.kind)
+      .reverse()
+      .map(({ definition }) => ({
+        kind: definition.kind,
+        version: 1,
+        scope: scope.kind,
+        family: "family" in definition ? true : null,
+        history: definition.scope === "conversation" ? definition.history : null,
+        fork: definition.scope === "conversation" ? definition.fork : null,
+      }));
+    assert.deepEqual(response.harness.documentDefinitions, definitions);
+  }
+  for (const address of f.addresses) assert.equal(await f.read(address), null);
+  assert.equal(writes.mock.callCount(), 0);
+  assert(initial.every((call) => call.mock.callCount() === 0));
+  assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
+  for (const address of f.addresses) {
+    for (const content of [
+      { keep: true, remove: "old" },
+      { keep: null, nested: [1, false, {}] },
+      {},
+      JSON.parse('{"__proto__":{"test":true},"constructor":null}') as Record<string, JsonValue>,
+    ]) {
+      const before = writes.mock.callCount();
+      const response = await f.replace(address, content);
+      assert.equal(response.errors, undefined);
+      assert.deepEqual(response.data?.replaceDocument, content);
+      assert.deepEqual(await f.read(address), content);
+      assert.equal(writes.mock.callCount(), before + 1);
+    }
+  }
+  for (const [index, call] of initial.entries()) {
+    assert.equal(call.mock.callCount(), 1);
+    assert.deepEqual(call.mock.calls[0]?.arguments, index % 2 ? [f.policy.seed] : []);
+  }
+  assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
+  assert.equal(f.faux.state.callCount, 0);
+});
+
+void test("document access validates scope and family keys and denies unavailable owners", async (t) => {
+  const f = await documentFixture(t);
+  const invalid = [
+    { kind: "session", conversationId: 1 },
+    { kind: "session", taskId: null },
+    { kind: "conversation" },
+    { kind: "conversation", conversationId: null },
+    { kind: "conversation", conversationId: 1, taskId: 1 },
+    { kind: "task" },
+    { kind: "task", taskId: 1, conversationId: 1 },
+  ];
+  for (const scope of invalid) {
+    for (const field of [
+      "documentDefinitions(scope:$scope) { kind }",
+      'snapshot(address:{kind:"z.session",scope:$scope})',
+    ]) {
+      const session = t.mock.fn(f.ctx.session);
+      const response = await f.run(
+        `query($scope:DocumentScopeInput!) { harnesses { ${field} } }`,
+        { scope },
+        { ...f.ctx, session },
+      );
+      assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+      assert.equal(session.mock.callCount(), 0);
+    }
+    assert.equal(
+      (await f.replace({ kind: "z.session", scope })).errors?.[0]?.extensions.code,
+      "BAD_REQUEST",
+    );
+  }
+  for (const address of [
+    { kind: "z.session", scope: { kind: "session" }, key: "extra" },
+    { kind: "z.session", scope: { kind: "session" }, key: null },
+    { kind: "a.session", scope: { kind: "session" } },
+  ]) {
+    const read = await f.run(
+      'query($address:DocumentAddressInput!) { harness(externalId:"test") { snapshot(address:$address) } }',
+      { address },
+      f.ctx,
+    );
+    assert.equal(read.errors?.[0]?.extensions.code, "BAD_REQUEST");
+    assert.equal((await f.replace(address)).errors?.[0]?.extensions.code, "BAD_REQUEST");
+  }
+  for (const scope of [
+    { kind: "conversation", conversationId: 999 },
+    { kind: "task", taskId: 999 },
+  ]) {
+    const address = { kind: `z.${scope.kind}`, scope };
+    const read = await f.success(
+      'query($scope:DocumentScopeInput!,$address:DocumentAddressInput!) { harness(externalId:"test") { documentDefinitions(scope:$scope) { kind } snapshot(address:$address) } }',
+      { scope, address },
+      f.ctx,
+    );
+    assert.deepEqual(read, { harness: { documentDefinitions: null, snapshot: null } });
+    assert.equal((await f.replace(address)).errors?.[0]?.extensions.code, "NOT_FOUND");
+  }
+  const address = f.addresses[0]!;
+  for (const ctx of [
+    { ...f.ctx, session: async () => undefined },
+    { ...f.ctx, documents: { definitions: async () => undefined, resolve: async () => undefined } },
+  ]) {
+    assert.deepEqual(
+      await f.success(
+        "query($address:DocumentAddressInput!) { harnesses { documentDefinitions(scope:{kind:session}) { kind } snapshot(address:$address) } }",
+        { address },
+        ctx,
+      ),
+      { harnesses: [{ documentDefinitions: null, snapshot: null }] },
+    );
+    assert.equal((await f.replace(address, {}, ctx)).errors?.[0]?.extensions.code, "NOT_FOUND");
+  }
+  assert.deepEqual(
+    await f.success(
+      '{ harness(externalId:"test") { documentDefinitions(scope:{kind:session}) { kind } } }',
+    ),
+    { harness: { documentDefinitions: [] } },
+  );
+  assert.equal(await f.read({ kind: "hidden", scope: { kind: "session" } }), null);
+  assert.equal(
+    (await f.replace({ kind: "hidden", scope: { kind: "session" } })).errors?.[0]?.extensions.code,
+    "NOT_FOUND",
+  );
+  assert.equal(
+    (await f.replace(address, {}, f.ctx, f.conversationId)).errors?.[0]?.extensions.code,
+    "BAD_REQUEST",
+  );
+});
+
+void test("document writes require permission, valid content, and explicit initialization", async (t) => {
+  const f = await documentFixture(t);
+  const address = f.addresses[0]!;
+  const writes = t.mock.method(f.storage, "commit");
+  const ctx = {
+    ...f.ctx,
+    documents: { ...f.documents, resolve: async () => ({ token: f.session }) },
+  };
+  assert.equal((await f.replace(address, {}, ctx)).errors?.[0]?.extensions.code, "BAD_REQUEST");
+  f.policy.validate = () => false;
+  assert.equal((await f.replace(address)).errors?.[0]?.extensions.code, "BAD_REQUEST");
+  f.policy.validate = () => {
+    throw new StorageRequestError("private validator error");
+  };
+  assert.equal((await f.replace(address)).errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(writes.mock.callCount(), 0);
+  f.policy.validate = () => true;
+  f.policy.initialize = false;
+  for (const target of f.addresses) {
+    assert.equal((await f.replace(target)).errors?.[0]?.extensions.code, "BAD_REQUEST");
+    assert.equal(await f.read(target), null);
+  }
+  assert.equal(writes.mock.callCount(), 0);
+  f.policy.initialize = true;
+  for (const target of f.addresses)
+    assert.equal((await f.replace(target, { old: true })).errors, undefined);
+  f.policy.initialize = false;
+  const noSeed = {
+    ...f.ctx,
+    documents: {
+      ...f.documents,
+      resolve: async (_id: string, target: DocumentAddress) => {
+        const token = f.tokens.find((token) => token.definition.kind === target.kind)!;
+        return { token, write: { initialize: false, validate: () => true } };
+      },
+    },
+  };
+  for (const target of f.addresses) {
+    assert.equal((await f.replace(target, { replacement: null }, noSeed)).errors, undefined);
+    assert.deepEqual(await f.read(target), { replacement: null });
+  }
+  const family = f.addresses[1]!;
+  const missingSeed = {
+    ...f.ctx,
+    documents: {
+      ...f.documents,
+      resolve: async () => ({
+        token: f.sessionFamily,
+        write: { initialize: true, validate: () => true },
+      }),
+    },
+  };
+  assert.equal(
+    (await f.replace(family, {}, missingSeed)).errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+  const agent = { kind: AgentDoc.definition.kind, scope: f.scopes[1]! };
+  const runtime = {
+    ...f.ctx,
+    documents: {
+      ...f.documents,
+      resolve: async () => ({ token: AgentDoc, write: { initialize: true, validate: () => true } }),
+    },
+  };
+  assert.notEqual(await f.read(agent, runtime), null);
+  assert.equal((await f.replace(agent, {}, runtime)).errors?.[0]?.extensions.code, "BAD_REQUEST");
+});
+
+void test("document replacement guards retirement races and returns its own committed value", async (t) => {
+  const f = await documentFixture(t);
+  const address = f.addresses[0]!;
+  assert.equal((await f.replace(address, { old: true })).errors, undefined);
+  f.policy.initialize = false;
+  const initial = t.mock.method(f.session.definition, "initial");
+  const retired = {
+    ...f.ctx,
+    documents: {
+      ...f.documents,
+      resolve: async () => {
+        await f.instance.commit((tx) => tx.retireDoc(f.session), execution);
+        return { token: f.session, write: f.policy };
+      },
+    },
+  };
+  assert.equal((await f.replace(address, {}, retired)).errors?.[0]?.extensions.code, "BAD_REQUEST");
+  assert.equal(initial.mock.callCount(), 0);
+  assert.equal(await f.read(address), null);
+  f.policy.initialize = true;
+  const commit = f.instance.commit.bind(f.instance);
+  let commits = 0;
+  t.mock.method(
+    f.instance,
+    "commit",
+    async <T>(
+      change: Parameters<typeof f.instance.commit<T>>[0],
+      context: ResolverContext["context"],
+    ) => {
+      const result = await commit(change, context);
+      if (++commits === 2)
+        await commit(async (tx) => {
+          const draft = await tx.doc(f.session);
+          Object.assign(draft, { later: true });
+        }, execution);
+      return result;
+    },
+  );
+  const result = await f.replace(address, { own: true });
+  assert.equal(result.errors, undefined);
+  assert.deepEqual(result.data?.replaceDocument, { own: true });
+  assert.deepEqual(await f.read(address), { own: true, later: true });
+});
+
+void test("document service failures and inconsistent definitions are internal errors, not absence", async (t) => {
+  const f = await documentFixture(t);
+  for (const definitions of [
+    async () => {
+      throw new StorageRequestError("private discovery failure");
+    },
+    async () => [f.conversation],
+    async () => [f.session, f.session],
+    ...[0, 1.5, 2147483648].map((version) => async () => [
+      { definition: { ...f.session.definition, version } },
+    ]),
+  ]) {
+    const response = await f.run(
+      '{ harness(externalId:"test") { documentDefinitions(scope:{kind:session}) { kind } } }',
+      {},
+      { ...f.ctx, documents: { ...f.documents, definitions } },
+    );
+    assert.equal(response.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  }
+  for (const resolve of [
+    async () => {
+      throw new StorageRequestError("private exposure failure");
+    },
+    async () => ({ token: f.task }),
+    async () => ({
+      token: { definition: { ...f.conversation.definition, kind: f.session.definition.kind } },
+    }),
+  ]) {
+    const ctx = { ...f.ctx, documents: { ...f.documents, resolve } };
+    const response = await f.run(
+      'query($address:DocumentAddressInput!) { harness(externalId:"test") { snapshot(address:$address) } }',
+      { address: f.addresses[0] },
+      ctx,
+    );
+    assert.equal(response.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    assert.equal(
+      (await f.replace(f.addresses[0], {}, ctx)).errors?.[0]?.extensions.code,
+      "INTERNAL_SERVER_ERROR",
+    );
+  }
+  const read = t.mock.method(f.storage, "findDocument", async () => {
+    throw new StorageRequestError("private rejected read");
+  });
+  const response = await f.run(
+    'query($address:DocumentAddressInput!) { harness(externalId:"test") { snapshot(address:$address) } }',
+    { address: f.addresses[0] },
+    f.ctx,
+  );
+  assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  read.mock.restore();
+});
+
+void test("document policy preserves registered migration/checkpoint receivers without permitting initialization", async (t) => {
+  const f = await documentFixture(t);
+  const address = f.addresses[0]!;
+  assert.equal((await f.replace(address, { old: true })).errors, undefined);
+  let migrations = 0;
+  let checkpoints = 0;
+  const definition = {
+    ...f.session.definition,
+    version: 2,
+    migrate(value: Record<string, JsonValue>, from: number): Record<string, JsonValue> {
+      assert.equal(this, definition);
+      assert.equal(from, 1);
+      migrations++;
+      return { ...this.initial(), ...value };
+    },
+    checkpointWhen(): boolean {
+      assert.equal(this, definition);
+      checkpoints++;
+      return false;
+    },
+  };
+  const token = defineDoc(definition);
+  const ctx = {
+    ...f.ctx,
+    documents: {
+      ...f.documents,
+      resolve: async () => ({ token, write: { initialize: false, validate: () => true } }),
+    },
+  };
+  for (const content of [{ first: true }, { second: true }]) {
+    assert.equal((await f.replace(address, content, ctx)).errors, undefined);
+    assert.deepEqual(await f.read(address, ctx), content);
+  }
+  assert.equal(migrations, 1);
+  assert(checkpoints > 0);
+});
+
+void test("document replacement rechecks its owner on the commit line", async (t) => {
+  const f = await documentFixture(t);
+  const read = f.storage.task.bind(f.storage);
+  let calls = 0;
+  t.mock.method(f.storage, "task", async (...args: Parameters<typeof read>) =>
+    ++calls === 1 ? read(...args) : undefined,
+  );
+  const writes = t.mock.method(f.storage, "commit");
+  const response = await f.replace({
+    kind: f.task.definition.kind,
+    scope: { kind: "task", taskId: f.taskId },
+  });
+  assert.equal(response.errors?.[0]?.extensions.code, "NOT_FOUND");
+  assert.equal(writes.mock.callCount(), 0);
+  assert.equal(calls, 2);
+});
+
+void test("document family access authorizes the exact key and accepts a server-supplied null seed", async (t) => {
+  const f = await documentFixture(t);
+  const address: DocumentAddress = {
+    kind: f.sessionFamily.definition.kind,
+    scope: { kind: "session" },
+    key: "",
+  };
+  const initial = t.mock.method(f.sessionFamily.definition, "initial");
+  const ctx = {
+    ...f.ctx,
+    documents: {
+      ...f.documents,
+      resolve: async (id: string, target: DocumentAddress, context: ResolverContext["context"]) => {
+        assert.equal(id, "test");
+        assert.equal(context, execution);
+        return target.key === ""
+          ? {
+              token: f.sessionFamily,
+              write: { initialize: true, seed: null, validate: () => true },
+            }
+          : undefined;
+      },
+    },
+  };
+  assert.equal((await f.replace(address, {}, ctx)).errors, undefined);
+  assert.deepEqual(initial.mock.calls[0]?.arguments, [null]);
+  assert.deepEqual(await f.read(address, ctx), {});
+  const denied = { ...address, key: "private" };
+  assert.equal(await f.read(denied, ctx), null);
+  assert.equal((await f.replace(denied, {}, ctx)).errors?.[0]?.extensions.code, "NOT_FOUND");
 });

@@ -73,6 +73,23 @@ enum ConversationOwnershipKind {
   task
 }
 
+enum DocumentFork {
+  asOf
+  current
+  initial
+}
+
+enum DocumentHistory {
+  latest
+  rewindable
+}
+
+enum DocumentScopeKind {
+  conversation
+  session
+  task
+}
+
 """GraphQL name for Awaited<ReturnType<Harness["abortSubmission"]>>."""
 enum HarnessAbortSubmissionResult {
   aborted
@@ -338,6 +355,18 @@ input DiagnosticErrorInput {
   stack: String
 }
 
+input DocumentAddressInput {
+  key: String
+  kind: String!
+  scope: DocumentScopeInput!
+}
+
+input DocumentScopeInput {
+  conversationId: ConversationId
+  kind: DocumentScopeKind!
+  taskId: TaskId
+}
+
 input EntryDraft {
   """Optional JSON payload; explicit null is allowed."""
   data: JsonValue
@@ -418,6 +447,12 @@ input NestedToolCallsInput {
 
 input OpenInput {
   externalId: String!
+}
+
+input ReplaceDocumentInput {
+  address: DocumentAddressInput!
+  content: JsonObject!
+  harnessId: ID!
 }
 
 input ResetInput {
@@ -706,6 +741,15 @@ type DiagnosticError {
   stack: String
 }
 
+type DocumentDefinition {
+  family: Boolean
+  fork: DocumentFork
+  history: DocumentHistory
+  kind: String!
+  scope: DocumentScopeKind!
+  version: Int!
+}
+
 type EntryRecord implements Node {
   byTaskId: TaskId
   conversationId: ConversationId!
@@ -733,6 +777,10 @@ type Harness implements Node {
   Resolve Harness.conversation(id); expose its record instead of a live handle.
   """
   conversation(id: ConversationId!): ConversationRecord
+  """
+  Authorized definition metadata for one owner, sorted by kind. Does not enumerate members or initialize documents.
+  """
+  documentDefinitions(scope: DocumentScopeInput!): [DocumentDefinition!]
   externalId: String!
   id: ID!
   """
@@ -749,6 +797,7 @@ type Harness implements Node {
   scanConversations(cursor: Cursor, limit: Int!, query: ConversationQuery! = {}): ConversationRecordConnection!
   """Tx.scanTasks(); default order is ascending, or the cursor's order."""
   scanTasks(cursor: Cursor, limit: Int!, query: TaskQuery! = {}): TaskRecordConnection!
+  snapshot(address: DocumentAddressInput!): JsonObject
 }
 
 type HarnessInspection {
@@ -842,6 +891,10 @@ type Mutation {
   Does not create a root, change an existing Harness, or enable scheduling.
   """
   open(input: OpenInput!): OpenPayload
+  """
+  Replace one exposed application document in one commit. No merge, compare-and-swap, or automatic replay.
+  """
+  replaceDocument(input: ReplaceDocumentInput!): JsonObject
   """
   Return true after reset admission, not necessarily placement. No idempotency key.
   """
