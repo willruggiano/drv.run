@@ -2407,3 +2407,250 @@ void test("projection preserves omitted metadata and omit edits", async (t) => {
     },
   });
 });
+
+void test("passive root lookup uses the reserved ID and creation applies initial agent changes once", async (t) => {
+  const f = await fixture(t);
+  const storage = new MemoryStorage();
+  const instance = await Harness.open(
+    storage,
+    { models: createModels(), registry: createRegistry() },
+    execution,
+  );
+  t.after(() => instance.close(execution));
+  const ctx = f.request({ session: async () => instance });
+  const read =
+    '{ harness(externalId:"test") { root { id durableId agent { cwd } } inspect { scheduling } } }';
+  const empty = { harness: { root: null, inspect: { scheduling: "paused" } } };
+  assert.deepEqual(await f.success(read, {}, ctx), empty);
+  const writes = t.mock.method(storage, "commit");
+  const extra = await f.success<{ createConversation: { conversation: Identity } }>(
+    "mutation($id:ID!) { createConversation(input:{harnessId:$id,options:{ownership:{kind:ownerless}}}) { conversation { id durableId } } }",
+    { id: f.harnessId },
+    ctx,
+  );
+  assert.notEqual(extra.createConversation.conversation.durableId, 1);
+  assert.equal(writes.mock.callCount(), 1);
+  assert.deepEqual(await f.success(read, {}, ctx), empty);
+  assert.equal(writes.mock.callCount(), 1);
+  const mutate =
+    "mutation($id:ID!,$options:RootOptionsInput) { root(input:{harnessId:$id,options:$options}) { conversation { id durableId agent { cwd } } } }";
+  const created = await f.success<{
+    root: { conversation: Identity & { agent: { cwd: string } } };
+  }>(
+    mutate,
+    { id: f.harnessId, options: { agent: { cwd: "/initial", model: null, thinkingLevel: null } } },
+    ctx,
+  );
+  assert.equal(created.root.conversation.durableId, 1);
+  assert.equal(created.root.conversation.agent.cwd, "/initial");
+  assert.equal(writes.mock.callCount(), 2);
+  for (const options of [undefined, {}, { agent: { cwd: "/ignored" } }]) {
+    assert.deepEqual(
+      await f.success(
+        mutate,
+        { id: f.harnessId, ...(options === undefined ? {} : { options }) },
+        ctx,
+      ),
+      created,
+    );
+  }
+  assert.equal(writes.mock.callCount(), 2);
+  assert.deepEqual(await f.success(read, {}, ctx), {
+    harness: { root: created.root.conversation, inspect: { scheduling: "paused" } },
+  });
+  assert.deepEqual(await instance.inspect(execution), {
+    scheduling: "paused",
+    tasks: [],
+    submissions: [],
+  });
+});
+
+void test("root creation without options is atomic and failed initialization leaves it absent", async (t) => {
+  const f = await fixture(t);
+  for (const fail of [false, true]) {
+    const storage = new MemoryStorage();
+    const instance = await Harness.open(
+      storage,
+      {
+        models: createModels(),
+        registry: createRegistry(),
+        conversationCreated: () => {
+          if (fail) throw new Error("private initialization error");
+        },
+      },
+      execution,
+    );
+    t.after(() => instance.close(execution));
+    const ctx = f.request({ session: async () => instance });
+    const writes = t.mock.method(storage, "commit");
+    const response = await f.run(
+      "mutation($id:ID!) { root(input:{harnessId:$id}) { conversation { durableId } } }",
+      { id: f.harnessId },
+      ctx,
+    );
+    if (fail) {
+      assert.equal(response.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+      assert.equal(response.data?.root, null);
+    } else {
+      assert.equal(response.errors, undefined);
+      assert.equal((response.data?.root as { conversation: Identity }).conversation.durableId, 1);
+    }
+    const record = await instance.commit((tx) => tx.conversation(f.root.id), execution);
+    assert.equal(record !== undefined, !fail);
+    assert.equal(writes.mock.callCount(), fail ? 0 : 1);
+    assert.equal((await instance.inspect(execution)).scheduling, "paused");
+  }
+});
+
+void test("conversation creation keeps owner scope, agent settings, and distinct identities", async (t) => {
+  const f = await fixture(t);
+  const taskId = await f.instance.commit(
+    (tx) =>
+      tx.createTask(
+        CompactionTask,
+        { reason: "manual" },
+        { conversationId: f.root.id, ownership: { kind: "conversation" } },
+      ),
+    execution,
+  );
+  const create =
+    "mutation($input:CreateConversationInput!) { createConversation(input:$input) { conversation { id durableId parent { at } owner { taskId conversationId } agent { cwd model { provider modelId } thinkingLevel } } } }";
+  const ids = new Set<string>();
+  for (const ownership of [{ kind: "ownerless" }, { kind: "task", taskId }]) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const before = t.mock.method(f.storage, "commit");
+      const response = await f.success<{
+        createConversation: {
+          conversation: Identity & {
+            parent: null;
+            owner: { taskId: number; conversationId: number } | null;
+            agent: {
+              cwd: string;
+              model: { provider: string; modelId: string };
+              thinkingLevel: string;
+            };
+          };
+        };
+      }>(create, {
+        input: {
+          harnessId: f.harnessId,
+          options: {
+            ownership,
+            agent: {
+              cwd: "/new",
+              model: { provider: "faux", modelId: "test" },
+              thinkingLevel: "high",
+            },
+          },
+        },
+      });
+      const conversation = response.createConversation.conversation;
+      assert.equal(ids.has(conversation.id), false);
+      ids.add(conversation.id);
+      assert.equal(conversation.parent, null);
+      assert.deepEqual(
+        conversation.owner,
+        ownership.kind === "task" ? { taskId, conversationId: f.root.id } : null,
+      );
+      assert.deepEqual(conversation.agent, {
+        cwd: "/new",
+        model: { provider: "faux", modelId: "test" },
+        thinkingLevel: "high",
+      });
+      assert.equal(before.mock.callCount(), 1);
+      before.mock.restore();
+      const read = await f.success<{ node: Identity }>(
+        "query($id:ID!) { node(id:$id) { id ... on ConversationRecord { durableId } } }",
+        { id: conversation.id },
+      );
+      assert.equal(read.node.id, conversation.id);
+      assert.equal(read.node.durableId, conversation.durableId);
+    }
+  }
+  assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
+  assert.equal(f.faux.state.callCount, 0);
+});
+
+void test("lifecycle mutations validate optional inputs and ownership before acquiring a Harness", async (t) => {
+  const f = await fixture(t);
+  const session = t.mock.fn(f.request().session);
+  const ctx = f.request({ session });
+  for (const options of [null, { agent: null }]) {
+    const response = await f.run(
+      "mutation($id:ID!,$options:RootOptionsInput) { root(input:{harnessId:$id,options:$options}) { conversation { id } } }",
+      { id: f.harnessId, options },
+      ctx,
+    );
+    assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  }
+  for (const options of [
+    { ownership: { kind: "ownerless", taskId: 1 } },
+    { ownership: { kind: "ownerless", taskId: null } },
+    { ownership: { kind: "task" } },
+    { ownership: { kind: "task", taskId: null } },
+    { ownership: { kind: "ownerless" }, agent: null },
+  ]) {
+    const response = await f.run(
+      "mutation($input:CreateConversationInput!) { createConversation(input:$input) { conversation { id } } }",
+      { input: { harnessId: f.harnessId, options } },
+      ctx,
+    );
+    assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  }
+  assert.equal(session.mock.callCount(), 0);
+});
+
+void test("lifecycle commands reject wrong identities and missing Harnesses or task owners", async (t) => {
+  const f = await fixture(t);
+  const fields = [
+    "root(input:{harnessId:$id})",
+    "createConversation(input:{harnessId:$id,options:{ownership:{kind:ownerless}}})",
+  ];
+  for (const field of fields) {
+    const query = `mutation($id:ID!) { ${field} { conversation { id } } }`;
+    const wrong = await f.run(query, { id: f.conversationId });
+    assert.equal(wrong.errors?.[0]?.extensions.code, "BAD_REQUEST");
+    const missing = await f.run(
+      query,
+      { id: f.harnessId },
+      f.request({ session: async () => undefined }),
+    );
+    assert.equal(missing.errors?.[0]?.extensions.code, "NOT_FOUND");
+  }
+  const creates = t.mock.method(f.instance, "createConversation");
+  const response = await f.run(
+    "mutation($id:ID!) { createConversation(input:{harnessId:$id,options:{ownership:{kind:task,taskId:999}}}) { conversation { id } } }",
+    { id: f.harnessId },
+  );
+  assert.equal(response.errors?.[0]?.extensions.code, "NOT_FOUND");
+  assert.equal(creates.mock.callCount(), 0);
+  assert.deepEqual(
+    await f.success(
+      "{ harnesses { root { id } } }",
+      {},
+      f.request({ session: async () => undefined }),
+    ),
+    { harnesses: [{ root: null }] },
+  );
+});
+
+void test("root reads and creation-result reads propagate failures without inventing records", async (t) => {
+  const f = await fixture(t);
+  const read = t.mock.method(f.storage, "conversation", async () => {
+    throw new StorageRequestError("private read failure");
+  });
+  const response = await f.run('{ harness(externalId:"test") { root { id } } }');
+  assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  assert.deepEqual(response.errors?.[0]?.path, ["harness", "root"]);
+  read.mock.restore();
+  t.mock.method(f.instance, "commit", async () => undefined);
+  for (const field of [
+    "root(input:{harnessId:$id})",
+    "createConversation(input:{harnessId:$id,options:{ownership:{kind:ownerless}}})",
+  ]) {
+    const failed = await f.run(`mutation($id:ID!) { ${field} { conversation { id } } }`, {
+      id: f.harnessId,
+    });
+    assert.equal(failed.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  }
+});

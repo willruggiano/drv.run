@@ -16,7 +16,12 @@ import {
 } from "graphql";
 import Type from "typebox";
 import Value from "typebox/value";
-import { ConversationBusy, SessionFailed, StorageRequestError } from "@earendil-works/pi-durable";
+import {
+  ConversationBusy,
+  SessionFailed,
+  StorageRequestError,
+  ROOT_CONVERSATION_ID,
+} from "@earendil-works/pi-durable";
 import { getSchema } from "./generated/graphql.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import type * as Chord from "@earendil-works/chord";
@@ -570,6 +575,24 @@ function connection<T, N extends Node>(
   };
 }
 
+async function mutationHarness(ctx: ResolverContext, id: ID) {
+  const target = identity(id);
+  if (target.kind !== "Harness") throw new ResolverError("BAD_REQUEST");
+  const source = harnessNode(target.externalId);
+  return { source, instance: await requireHarness(ctx, source) };
+}
+
+async function createdConversation(
+  instance: Durable.Harness,
+  source: Harness,
+  id: ConversationId,
+  ctx: ResolverContext,
+) {
+  const record = await instance.commit((tx) => tx.conversation(id), ctx.context);
+  assert(record);
+  return projectConversation(source, record);
+}
+
 async function mutationConversation(ctx: ResolverContext, id: ID) {
   if (identity(id).kind !== "ConversationRecord") throw new ResolverError("BAD_REQUEST");
   const source = await node(id, ctx);
@@ -1106,6 +1129,27 @@ interface Harness extends Node {
 export async function harness(externalId: string, ctx: ResolverContext): Promise<Harness | null> {
   try {
     return (await ctx.session(externalId)) ? harnessNode(externalId) : null;
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/**
+ * Read the reserved root without creating a conversation or enabling scheduling.
+ * @gqlField root
+ */
+export async function harnessRoot(
+  source: Harness,
+  ctx: ResolverContext,
+): Promise<ConversationRecord | null> {
+  try {
+    const instance = await ctx.session(source.externalId);
+    if (!instance) return null;
+    const record = await instance.commit(
+      (tx) => tx.conversation(ROOT_CONVERSATION_ID),
+      ctx.context,
+    );
+    return record ? projectConversation(source, record) : null;
   } catch (error) {
     throw mapError(error);
   }
@@ -2336,6 +2380,94 @@ export async function abort(input: AbortInput, ctx: ResolverContext): Promise<bo
 }
 
 /** @gqlInput */
+interface RootInput {
+  readonly harnessId: ID;
+  readonly options?: RootOptionsInput | null;
+}
+
+/** @gqlInput */
+interface RootOptionsInput {
+  readonly agent?: AgentChange | null;
+}
+
+/** @gqlType */
+interface RootPayload {
+  /** @gqlField */
+  readonly conversation: ConversationRecord;
+}
+
+/**
+ * Get or create the reserved root. Initial agent changes apply only at creation.
+ * Does not submit input or enable scheduling.
+ * @gqlMutationField
+ */
+export async function root(input: RootInput, ctx: ResolverContext): Promise<RootPayload | null> {
+  try {
+    if (input.options === null) throw new ResolverError("BAD_REQUEST");
+    const options = input.options === undefined ? undefined : nonNull(input.options);
+    const { source, instance } = await mutationHarness(ctx, input.harnessId);
+    const handle = await instance.root(ctx.context, options);
+    return { conversation: await createdConversation(instance, source, handle.id, ctx) };
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/** @gqlEnum */
+type ConversationOwnershipKind = "ownerless" | "task";
+
+/** @gqlInput */
+interface ConversationOwnershipInput {
+  readonly kind: ConversationOwnershipKind;
+  readonly taskId?: TaskId | null;
+}
+
+const ConversationOwnership = Type.Union([
+  Type.Object({ kind: Type.Literal("ownerless") }, { additionalProperties: false }),
+  Type.Object({ kind: Type.Literal("task"), taskId: TaskId }, { additionalProperties: false }),
+]);
+
+/** @gqlInput */
+interface ConversationCreateOptionsInput {
+  readonly ownership: ConversationOwnershipInput;
+  readonly agent?: AgentChange | null;
+}
+
+/** @gqlInput */
+interface CreateConversationInput {
+  readonly harnessId: ID;
+  readonly options: ConversationCreateOptionsInput;
+}
+
+/** @gqlType */
+interface CreateConversationPayload {
+  /** @gqlField */
+  readonly conversation: ConversationRecord;
+}
+
+/**
+ * Create another conversation with explicit ownership and initial agent settings.
+ * Each call creates a new conversation; no submission, scheduling, or automatic replay.
+ * @gqlMutationField
+ */
+export async function createConversation(
+  input: CreateConversationInput,
+  ctx: ResolverContext,
+): Promise<CreateConversationPayload | null> {
+  try {
+    const options = nonNull(input.options);
+    const ownership = checked(ConversationOwnership, options.ownership);
+    const { source, instance } = await mutationHarness(ctx, input.harnessId);
+    if (ownership.kind === "task" && !(await instance.getTask(ownership.taskId, ctx.context)))
+      throw new ResolverError("NOT_FOUND");
+    const handle = await instance.createConversation({ ...options, ownership }, ctx.context);
+    return { conversation: await createdConversation(instance, source, handle.id, ctx) };
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/** @gqlInput */
 interface ResumeInput {
   /** Global Harness ID, not its externalId key. */
   readonly harnessId: ID;
@@ -2347,10 +2479,7 @@ interface ResumeInput {
  */
 export async function resume(input: ResumeInput, ctx: ResolverContext): Promise<boolean | null> {
   try {
-    const target = identity(input.harnessId);
-    if (target.kind !== "Harness") throw new ResolverError("BAD_REQUEST");
-    const instance = await ctx.session(target.externalId);
-    if (!instance) throw new ResolverError("NOT_FOUND");
+    const { instance } = await mutationHarness(ctx, input.harnessId);
     instance.resume();
     return true;
   } catch (error) {

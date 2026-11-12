@@ -68,6 +68,11 @@ enum ContextEditAction {
   replace
 }
 
+enum ConversationOwnershipKind {
+  ownerless
+  task
+}
+
 """GraphQL name for Awaited<ReturnType<Harness["abortSubmission"]>>."""
 enum HarnessAbortSubmissionResult {
   aborted
@@ -293,10 +298,25 @@ input ContextReplacementInput {
   target: EntryId!
 }
 
+input ConversationCreateOptionsInput {
+  agent: AgentChange
+  ownership: ConversationOwnershipInput!
+}
+
+input ConversationOwnershipInput {
+  kind: ConversationOwnershipKind!
+  taskId: TaskId
+}
+
 input ConversationQuery {
   order: ScanOrder
   ownerConversationId: ConversationId
   ownerTaskId: TaskId
+}
+
+input CreateConversationInput {
+  harnessId: ID!
+  options: ConversationCreateOptionsInput!
 }
 
 input DeferredHandleInput {
@@ -407,6 +427,15 @@ input ResetInput {
 input ResumeInput {
   """Global Harness ID, not its externalId key."""
   harnessId: ID!
+}
+
+input RootInput {
+  harnessId: ID!
+  options: RootOptionsInput
+}
+
+input RootOptionsInput {
+  agent: AgentChange
 }
 
 """
@@ -651,6 +680,10 @@ type ConversationRecordParent {
   conversationId: ConversationId!
 }
 
+type CreateConversationPayload {
+  conversation: ConversationRecord!
+}
+
 type DeferredHandle {
   api: String!
   data: JsonValue
@@ -702,6 +735,10 @@ type Harness implements Node {
   Harness.inspect(): live work and scheduling state, without enabling scheduling.
   """
   inspect: HarnessInspection!
+  """
+  Read the reserved root without creating a conversation or enabling scheduling.
+  """
+  root: ConversationRecord
   """
   Tx.scanConversations(); default order is ascending, or the cursor's order.
   """
@@ -792,6 +829,11 @@ type Mutation {
   """
   configure(input: ConfigureInput!): Boolean
   """
+  Create another conversation with explicit ownership and initial agent settings.
+  Each call creates a new conversation; no submission, scheduling, or automatic replay.
+  """
+  createConversation(input: CreateConversationInput!): CreateConversationPayload
+  """
   Return true after reset admission, not necessarily placement. No idempotency key.
   """
   reset(input: ResetInput!): Boolean
@@ -799,6 +841,11 @@ type Mutation {
   Return true after enabling Harness scheduling, not after work completes.
   """
   resume(input: ResumeInput!): Boolean
+  """
+  Get or create the reserved root. Initial agent changes apply only at creation.
+  Does not submit input or enable scheduling.
+  """
+  root(input: RootInput!): RootPayload
   """
   Admit input or a passive entry write, not necessarily placement or completion.
   Same requestId and type recover the prior submission without comparing content.
@@ -851,6 +898,10 @@ type Query {
   Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
   """
   node(id: ID!): Node
+}
+
+type RootPayload {
+  conversation: ConversationRecord!
 }
 
 type StringContent {
