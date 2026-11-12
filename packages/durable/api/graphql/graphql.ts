@@ -39,12 +39,11 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
  *
  * ID means an opaque global Node identifier. ConversationId, EntryId, TaskId, and
  * SubmissionId retain their upstream numeric representations, scoped to a session.
- * Record nodes expose durableId for the upstream id; Harness exposes its external
- * sessionId key. Other record fields retain their upstream names and values.
+ * Record nodes expose durableId for the upstream id; Harness exposes its
+ * externalId key. Other record fields retain their upstream names and values.
  * Missing optional output fields become null. Optional upstream input fields
  * permit omission, but reject explicit null unless their
  * description permits it. A null cursor means no continuation.
- * clientMutationId permits null and is only echoed, never used as an idempotency key.
  */
 
 // Session keys must never be reused for replacement storage.
@@ -53,7 +52,7 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
 /** @gqlContext */
 export interface ResolverContext {
   readonly context: Chord.Context;
-  readonly session: (sessionId: string) => Promise<Durable.Harness | undefined>;
+  readonly session: (externalId: string) => Promise<Durable.Harness | undefined>;
   readonly sessions: () => Promise<readonly string[]>;
   readonly models: () => Models;
 }
@@ -303,22 +302,22 @@ const Identity = Type.Tuple([
   Type.Union([SafeInteger, Type.Null()]),
 ]);
 function identity(id: ID) {
-  const [_, kind, sessionId, durableId] = checked(Identity, decodeId(id));
+  const [_, kind, externalId, durableId] = checked(Identity, decodeId(id));
   if (
-    encodeId([1, kind, sessionId, durableId]) !== id ||
+    encodeId([1, kind, externalId, durableId]) !== id ||
     (kind === "Harness") !== (durableId === null)
   )
     throw new ResolverError("BAD_REQUEST");
-  return { kind, sessionId, durableId };
+  return { kind, externalId, durableId };
 }
-function globalId(kind: NodeKind, sessionId: string, id: number | null = null): ID {
-  return encodeId([1, kind, sessionId, id]);
+function globalId(kind: NodeKind, externalId: string, id: number | null = null): ID {
+  return encodeId([1, kind, externalId, id]);
 }
-function harnessNode(sessionId: string): Harness {
-  return { __typename: "Harness", id: globalId("Harness", sessionId), sessionId };
+function harnessNode(externalId: string): Harness {
+  return { __typename: "Harness", id: globalId("Harness", externalId), externalId };
 }
 async function requireHarness(ctx: ResolverContext, source: Harness) {
-  const instance = await ctx.session(source.sessionId);
+  const instance = await ctx.session(source.externalId);
   if (!instance) throw new ResolverError("NOT_FOUND");
   return instance;
 }
@@ -336,7 +335,7 @@ function projectConversation(
   return {
     ...record,
     __typename: "ConversationRecord",
-    id: globalId("ConversationRecord", owner.sessionId, record.id),
+    id: globalId("ConversationRecord", owner.externalId, record.id),
     durableId: record.id,
     harness: owner,
   };
@@ -348,7 +347,7 @@ function projectTask(
   return {
     ...record,
     __typename: "TaskRecord",
-    id: globalId("TaskRecord", owner.sessionId, record.id),
+    id: globalId("TaskRecord", owner.externalId, record.id),
     durableId: record.id,
     harness: owner,
   };
@@ -357,7 +356,7 @@ function projectSubmission(owner: Harness, record: Durable.SubmissionRecord): Su
   return {
     ...record,
     __typename: "SubmissionRecord",
-    id: globalId("SubmissionRecord", owner.sessionId, record.id),
+    id: globalId("SubmissionRecord", owner.externalId, record.id),
     durableId: record.id,
     harness: owner,
   };
@@ -824,7 +823,7 @@ function entryRecord(owner: Harness, record: Durable.EntryRecord): EntryRecord {
   return {
     ...record,
     __typename: "EntryRecord",
-    id: globalId("EntryRecord", owner.sessionId, record.id),
+    id: globalId("EntryRecord", owner.externalId, record.id),
     durableId: record.id,
     harness: owner,
     model: record.model?.map(message) ?? null,
@@ -857,9 +856,9 @@ interface Node {
 export async function node(id: ID, ctx: ResolverContext): Promise<Node | null> {
   try {
     const target = identity(id);
-    const instance = await ctx.session(target.sessionId);
+    const instance = await ctx.session(target.externalId);
     if (!instance) return null;
-    const owner = harnessNode(target.sessionId);
+    const owner = harnessNode(target.externalId);
     if (target.kind === "Harness") return owner;
     switch (target.kind) {
       case "ConversationRecord": {
@@ -906,16 +905,16 @@ interface Harness extends Node {
   /** @gqlField */
   readonly id: ID;
   /** @gqlField */
-  readonly sessionId: string;
+  readonly externalId: string;
 }
 
 /**
  * Resolve a persisted Harness by its external session key; does not create one.
  * @gqlQueryField
  */
-export async function harness(sessionId: string, ctx: ResolverContext): Promise<Harness | null> {
+export async function harness(externalId: string, ctx: ResolverContext): Promise<Harness | null> {
   try {
-    return (await ctx.session(sessionId)) ? harnessNode(sessionId) : null;
+    return (await ctx.session(externalId)) ? harnessNode(externalId) : null;
   } catch (error) {
     throw mapError(error);
   }
@@ -924,7 +923,7 @@ export async function harness(sessionId: string, ctx: ResolverContext): Promise<
 /**
  * List accessible persisted sessions from the deployment's catalog, not the cache
  * of open Harness instances. Durable does not provide a cross-session catalog.
- * Order by ascending sessionId; listing does not create sessions or enable scheduling.
+ * Order by ascending externalId; listing does not create sessions or enable scheduling.
  * @gqlQueryField
  */
 export async function harnesses(ctx: ResolverContext): Promise<Harness[]> {
@@ -1035,7 +1034,7 @@ export function conversation(
   ctx: ResolverContext,
 ): Promise<ConversationRecord | null> {
   return node(
-    globalId("ConversationRecord", source.sessionId, id),
+    globalId("ConversationRecord", source.externalId, id),
     ctx,
   ) as Promise<ConversationRecord | null>;
 }
@@ -1269,7 +1268,7 @@ export async function status(
 ): Promise<SubmissionRecord | null> {
   try {
     const record = (await node(
-      globalId("SubmissionRecord", source.harness.sessionId, id),
+      globalId("SubmissionRecord", source.harness.externalId, id),
       ctx,
     )) as SubmissionRecord | null;
     return record?.conversationId === source.durableId ? record : null;
@@ -1657,7 +1656,6 @@ interface SubmitInput {
   /** Global ConversationRecord ID, not its numeric durableId. */
   readonly conversationId: ID;
   readonly submission: SubmissionDraft;
-  readonly clientMutationId?: string | null;
 }
 
 /**
@@ -2061,8 +2059,6 @@ interface SubmitPayload {
    * @gqlField
    */
   readonly submissionId: ID;
-  /** @gqlField */
-  readonly clientMutationId?: string | null;
 }
 
 /**
@@ -2079,8 +2075,7 @@ export async function submit(
     const { source, handle } = await mutationConversation(ctx, input.conversationId);
     const result = await handle.submit(submissionDraft(input.submission), ctx.context);
     return {
-      submissionId: globalId("SubmissionRecord", source.harness.sessionId, result.id),
-      clientMutationId: input.clientMutationId ?? null,
+      submissionId: globalId("SubmissionRecord", source.harness.externalId, result.id),
     };
   } catch (error) {
     throw mapError(error);
@@ -2092,15 +2087,12 @@ interface AbortSubmissionInput {
   /** Global ConversationRecord ID; upstream abort is constrained to this conversation. */
   readonly conversationId: ID;
   readonly id: SubmissionId;
-  readonly clientMutationId?: string | null;
 }
 
 /** @gqlType */
 interface AbortSubmissionPayload {
   /** @gqlField */
   readonly result: HarnessAbortSubmissionResult;
-  /** @gqlField */
-  readonly clientMutationId?: string | null;
 }
 
 /**
@@ -2115,7 +2107,7 @@ export async function abortSubmission(
     const { source } = await mutationConversation(ctx, input.conversationId);
     const instance = await requireHarness(ctx, source.harness);
     const result = await instance.abortSubmission(input.id, ctx.context, source.durableId);
-    return { result, clientMutationId: input.clientMutationId ?? null };
+    return { result };
   } catch (error) {
     throw mapError(error);
   }
@@ -2135,16 +2127,6 @@ type HarnessAbortSubmissionResult =
 /** @gqlInput */
 interface AbortInput {
   readonly conversationId: ID;
-  readonly clientMutationId?: string | null;
-}
-
-/**
- * Successful void result; only the optional correlation value is returned.
- * @gqlType
- */
-interface AbortPayload {
-  /** @gqlField */
-  readonly clientMutationId?: string | null;
 }
 
 /**
@@ -2152,11 +2134,11 @@ interface AbortPayload {
  * and queued writes. Resolves after upstream abort completes. No background flag.
  * @gqlMutationField
  */
-export async function abort(input: AbortInput, ctx: ResolverContext): Promise<AbortPayload | null> {
+export async function abort(input: AbortInput, ctx: ResolverContext): Promise<boolean | null> {
   try {
     const { handle } = await mutationConversation(ctx, input.conversationId);
     await handle.abort(ctx.context);
-    return { clientMutationId: input.clientMutationId ?? null };
+    return true;
   } catch (error) {
     throw mapError(error);
   }
@@ -2164,32 +2146,22 @@ export async function abort(input: AbortInput, ctx: ResolverContext): Promise<Ab
 
 /** @gqlInput */
 interface ResumeInput {
-  /** Global Harness ID, not its external sessionId key. */
-  readonly sessionId: ID;
-  readonly clientMutationId?: string | null;
-}
-
-/** @gqlType */
-interface ResumePayload {
-  /** @gqlField */
-  readonly clientMutationId?: string | null;
+  /** Global Harness ID, not its externalId key. */
+  readonly harnessId: ID;
 }
 
 /**
- * Enable Harness scheduling; successful return does not mean work has completed.
+ * Return true after enabling Harness scheduling, not after work completes.
  * @gqlMutationField
  */
-export async function resume(
-  input: ResumeInput,
-  ctx: ResolverContext,
-): Promise<ResumePayload | null> {
+export async function resume(input: ResumeInput, ctx: ResolverContext): Promise<boolean | null> {
   try {
-    const target = identity(input.sessionId);
+    const target = identity(input.harnessId);
     if (target.kind !== "Harness") throw new ResolverError("BAD_REQUEST");
-    const instance = await ctx.session(target.sessionId);
+    const instance = await ctx.session(target.externalId);
     if (!instance) throw new ResolverError("NOT_FOUND");
     instance.resume();
-    return { clientMutationId: input.clientMutationId ?? null };
+    return true;
   } catch (error) {
     throw mapError(error);
   }
@@ -2200,25 +2172,18 @@ interface ResetInput {
   readonly conversationId: ID;
   /** Omit for no handoff; preserve a supplied string, including the empty string. */
   readonly handoff?: string | null;
-  readonly clientMutationId?: string | null;
-}
-
-/** @gqlType */
-interface ResetPayload {
-  /** @gqlField */
-  readonly clientMutationId?: string | null;
 }
 
 /**
- * Admit a reset, not necessarily its placement. No idempotency key.
+ * Return true after reset admission, not necessarily placement. No idempotency key.
  * @gqlMutationField
  */
-export async function reset(input: ResetInput, ctx: ResolverContext): Promise<ResetPayload | null> {
+export async function reset(input: ResetInput, ctx: ResolverContext): Promise<boolean | null> {
   try {
     if (input.handoff === null) throw new ResolverError("BAD_REQUEST");
     const { handle } = await mutationConversation(ctx, input.conversationId);
     await handle.reset(input.handoff, ctx.context);
-    return { clientMutationId: input.clientMutationId ?? null };
+    return true;
   } catch (error) {
     throw mapError(error);
   }
@@ -2228,7 +2193,6 @@ export async function reset(input: ResetInput, ctx: ResolverContext): Promise<Re
 interface CompactInput {
   readonly conversationId: ID;
   readonly instructions?: string | null;
-  readonly clientMutationId?: string | null;
 }
 
 /** @gqlType */
@@ -2238,8 +2202,6 @@ interface CompactPayload {
    * @gqlField
    */
   readonly taskId: ID;
-  /** @gqlField */
-  readonly clientMutationId?: string | null;
 }
 
 /**
@@ -2255,8 +2217,7 @@ export async function compact(
     const { source, handle } = await mutationConversation(ctx, input.conversationId);
     const id = await handle.compact(input.instructions, ctx.context);
     return {
-      taskId: globalId("TaskRecord", source.harness.sessionId, id),
-      clientMutationId: input.clientMutationId ?? null,
+      taskId: globalId("TaskRecord", source.harness.externalId, id),
     };
   } catch (error) {
     throw mapError(error);
@@ -2267,7 +2228,6 @@ export async function compact(
 interface ConfigureInput {
   readonly conversationId: ID;
   readonly change: AgentChange;
-  readonly clientMutationId?: string | null;
 }
 
 /**
@@ -2292,24 +2252,19 @@ interface ModelRefInput {
 /** @gqlEnum */
 type ModelThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
-/** @gqlType */
-interface ConfigurePayload {
-  /** @gqlField */
-  readonly clientMutationId?: string | null;
-}
-
 /**
- * Change model, thinking level, or cwd overrides; read resolved settings through agent.
+ * Change model, thinking level, or cwd overrides; return true after the commit.
+ * Read resolved settings through agent.
  * @gqlMutationField
  */
 export async function configure(
   input: ConfigureInput,
   ctx: ResolverContext,
-): Promise<ConfigurePayload | null> {
+): Promise<boolean | null> {
   try {
     const { handle } = await mutationConversation(ctx, input.conversationId);
     await handle.configure(input.change, ctx.context);
-    return { clientMutationId: input.clientMutationId ?? null };
+    return true;
   } catch (error) {
     throw mapError(error);
   }

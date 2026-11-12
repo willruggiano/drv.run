@@ -71,7 +71,7 @@ function catalogContext(models: ResolverContext["models"], context = execution):
   };
 }
 
-async function fixture(t: TestContext, sessionId = "test") {
+async function fixture(t: TestContext, externalId = "test") {
   const models = createModels();
   const faux = fauxProvider({ models: [{ id: "test", reasoning: true }] });
   models.setProvider(faux.provider);
@@ -92,8 +92,8 @@ async function fixture(t: TestContext, sessionId = "test") {
   function request(overrides: Partial<ResolverContext> = {}): ResolverContext {
     return {
       context: execution,
-      session: async (id) => (id === sessionId ? instance : undefined),
-      sessions: async () => [sessionId],
+      session: async (id) => (id === externalId ? instance : undefined),
+      sessions: async () => [externalId],
       models: () => models,
       ...overrides,
     };
@@ -117,8 +117,8 @@ async function fixture(t: TestContext, sessionId = "test") {
     return JSON.parse(JSON.stringify(result.data)) as T;
   }
   const ids = await success<{ harness: { id: string; conversation: Identity } }>(
-    `query($session: String!) { harness(sessionId: $session) { id conversation(id: 1) { id durableId } } }`,
-    { session: sessionId },
+    `query($session: String!) { harness(externalId: $session) { id conversation(id: 1) { id durableId } } }`,
+    { session: externalId },
   );
   return {
     storage,
@@ -159,18 +159,66 @@ void test("generated schema remains valid", () => {
   }
 });
 
+void test("schema distinguishes external keys from global IDs and has no correlation echoes", () => {
+  const harness = schema.getType("Harness");
+  assert(isObjectType(harness));
+  const externalId = harness.getFields().externalId;
+  assert(externalId);
+  assert.equal(getNamedType(externalId.type), schema.getType("String"));
+  assert.equal(harness.getFields().sessionId, undefined);
+  const query = schema.getQueryType();
+  assert(query);
+  const lookup = query.getFields().harness;
+  assert(lookup);
+  assert.deepEqual(
+    lookup.args.map((argument) => argument.name),
+    ["externalId"],
+  );
+  const resume = schema.getType("ResumeInput");
+  assert(isInputObjectType(resume));
+  assert.deepEqual(Object.keys(resume.getFields()), ["harnessId"]);
+  const harnessId = resume.getFields().harnessId;
+  assert(harnessId);
+  assert.equal(getNamedType(harnessId.type), schema.getType("ID"));
+  for (const type of Object.values(schema.getTypeMap())) {
+    if (isObjectType(type) || isInputObjectType(type)) {
+      assert.equal(type.getFields().clientMutationId, undefined);
+    }
+  }
+  const mutation = schema.getMutationType();
+  assert(mutation);
+  for (const [operation, payload] of [
+    ["abort", "AbortPayload"],
+    ["resume", "ResumePayload"],
+    ["reset", "ResetPayload"],
+    ["configure", "ConfigurePayload"],
+  ] as const) {
+    assert.equal(mutation.getFields()[operation]?.type, schema.getType("Boolean"));
+    assert.equal(schema.getType(payload), undefined);
+  }
+  for (const [payload, field] of [
+    ["SubmitPayload", "submissionId"],
+    ["CompactPayload", "taskId"],
+    ["AbortSubmissionPayload", "result"],
+  ] as const) {
+    const type = schema.getType(payload);
+    assert(isObjectType(type));
+    assert.deepEqual(Object.keys(type.getFields()), [field]);
+  }
+});
+
 void test("catalog list, authorized sessions, missing nodes, and independent reads", async (t) => {
   const f = await fixture(t);
   const session = t.mock.fn(async (id: string) => (id === "test" ? f.instance : undefined));
   const ctx = () => f.request({ session, sessions: async () => ["z", "test", "a / 雪"] });
-  const list = `{ harnesses { id sessionId } }`;
-  const all = await f.success<{ harnesses: Array<{ id: string; sessionId: string }> }>(
+  const list = `{ harnesses { id externalId } }`;
+  const all = await f.success<{ harnesses: Array<{ id: string; externalId: string }> }>(
     list,
     {},
     ctx(),
   );
   assert.deepEqual(
-    all.harnesses.map((item) => item.sessionId),
+    all.harnesses.map((item) => item.externalId),
     ["a / 雪", "test", "z"],
   );
   assert.equal(session.mock.callCount(), 0);
@@ -183,7 +231,7 @@ void test("catalog list, authorized sessions, missing nodes, and independent rea
     node: { id: string };
     absent: null;
   }>(
-    `query($id: ID!) { a: harness(sessionId: "test") { id } b: harness(sessionId: "test") { id } node(id: $id) { id } absent: harness(sessionId: "absent") { id } }`,
+    `query($id: ID!) { a: harness(externalId: "test") { id } b: harness(externalId: "test") { id } node(id: $id) { id } absent: harness(externalId: "absent") { id } }`,
     { id: f.harnessId },
     ctx(),
   );
@@ -204,7 +252,7 @@ void test("catalog list, authorized sessions, missing nodes, and independent rea
 
 void test("resolved configuration, omission, clearing, and serial mutation fields", async (t) => {
   const f = await fixture(t);
-  const read = `{ harness(sessionId: "test") { conversation(id: 1) { agent { cwd model { ... on ModelRef { provider modelId } } thinkingLevel instructions } } } }`;
+  const read = `{ harness(externalId: "test") { conversation(id: 1) { agent { cwd model { ... on ModelRef { provider modelId } } thinkingLevel instructions } } } }`;
   type Settings = {
     harness: {
       conversation: {
@@ -217,14 +265,13 @@ void test("resolved configuration, omission, clearing, and serial mutation field
       };
     };
   };
-  const change = `mutation($id: ID!, $change: AgentChange!, $tag: String) { configure(input: { conversationId: $id, change: $change, clientMutationId: $tag }) { clientMutationId } }`;
+  const change = `mutation($id: ID!, $change: AgentChange!) { configure(input: { conversationId: $id, change: $change }) }`;
   assert.deepEqual(
     await f.success(change, {
       id: f.conversationId,
       change: { cwd: "/work", thinkingLevel: "high" },
-      tag: "correlation",
     }),
-    { configure: { clientMutationId: "correlation" } },
+    { configure: true },
   );
   await f.success(change, { id: f.conversationId, change: {} });
   let value = (await f.success<Settings>(read)).harness.conversation.agent;
@@ -242,7 +289,7 @@ void test("resolved configuration, omission, clearing, and serial mutation field
   assert.deepEqual(value, { cwd: null, model: null, thinkingLevel: "off", instructions: null });
   await f.success(
     `mutation($id: ID!, $model: ModelRefInput!) {
-      configure(input: { conversationId: $id, change: { model: $model } }) { clientMutationId }
+      configure(input: { conversationId: $id, change: { model: $model } })
     }`,
     { id: f.conversationId, model: { provider: "faux", modelId: "test" } },
   );
@@ -251,8 +298,8 @@ void test("resolved configuration, omission, clearing, and serial mutation field
   await f.root.configure({ instructions: "extra" }, execution);
   await f.success(
     `mutation($id: ID!) {
-    a: configure(input: { conversationId: $id, change: { cwd: "first" } }) { clientMutationId }
-    b: configure(input: { conversationId: $id, change: { cwd: "second" } }) { clientMutationId }
+    a: configure(input: { conversationId: $id, change: { cwd: "first" } })
+    b: configure(input: { conversationId: $id, change: { cwd: "second" } })
   }`,
     { id: f.conversationId },
   );
@@ -275,7 +322,7 @@ void test("entry connections return exactly one upstream page and its continuati
   }
   const expected = await f.root.entries({ order: "ascending" }, 130, undefined, execution);
   const scan = t.mock.method(f.storage, "scanEntries");
-  const query = `query($limit: Int!, $cursor: Cursor, $filter: EntryQuery!) { harness(sessionId: "test") { conversation(id: 1) { entries(limit: $limit, cursor: $cursor, query: $filter) { nodes { id durableId data } ${pageFields} } } } }`;
+  const query = `query($limit: Int!, $cursor: Cursor, $filter: EntryQuery!) { harness(externalId: "test") { conversation(id: 1) { entries(limit: $limit, cursor: $cursor, query: $filter) { nodes { id durableId data } ${pageFields} } } } }`;
   type Result = { harness: { conversation: { entries: Connection<Identity & { data: number }> } } };
   async function page(limit: number, filter: Record<string, unknown> = {}, cursor?: Cursor | null) {
     return (await f.success<Result>(query, { limit, filter, cursor })).harness.conversation.entries;
@@ -333,7 +380,7 @@ void test("opaque backend continuations pass through without lookahead, decoding
     async (_query: TaskQuery, _limit: number, cursor: Cursor | undefined) =>
       cursor === undefined ? { items: [], next: opaque } : { items: [] },
   );
-  const query = `query($cursor: Cursor) { harness(sessionId: "test") { scanTasks(limit: 7, cursor: $cursor) { nodes { id } pageInfo { next } } } }`;
+  const query = `query($cursor: Cursor) { harness(externalId: "test") { scanTasks(limit: 7, cursor: $cursor) { nodes { id } pageInfo { next } } } }`;
   const first = await f.success<{ harness: { scanTasks: Connection<Identity> } }>(query);
   assert.equal(scan.mock.callCount(), 1);
   assert.deepEqual(first.harness.scanTasks, { nodes: [], pageInfo: { next: opaque } });
@@ -362,7 +409,7 @@ void test("fork-aware entries keep identity and context preserves message conten
   );
   const fork = await f.root.fork(second.id, { ownership: { kind: "ownerless" } }, execution);
   const query = `query($fork: ConversationId!, $at: EntryId!) {
-    harness(sessionId: "test") {
+    harness(externalId: "test") {
       root: conversation(id: 1) { entries(limit: 5) { nodes { id durableId model { ${userMessageFields} } data edits { target action messages { ${userMessageFields} } } head } } }
       fork: conversation(id: $fork) { parent { conversationId at } entries(limit: 5) { nodes { id durableId model { ${userMessageFields} } data edits { target action messages { ${userMessageFields} } } head } } context { entries { id durableId } contributions { ${userMessageFields} } messages { ${userMessageFields} } head { id } } historical: context(at: $at) { messages { ${userMessageFields} } entries { durableId } } }
     }
@@ -419,7 +466,7 @@ void test("conversation/task scans, inspection, and node refetch read records in
       ),
     execution,
   );
-  const read = `{ harness(sessionId: "test") {
+  const read = `{ harness(externalId: "test") {
     scanConversations(limit: 1) { nodes { id durableId parent { at } owner { taskId } } ${pageFields} }
     scanTasks(limit: 2, query: { kind: "pi.compaction", status: pending, background: false, abortRequested: false, conversationId: 1 }) { nodes { id durableId state { status checkpoint outcome { status result } } input memos } ${pageFields} }
     inspect { scheduling tasks { record { id durableId state { status checkpoint outcome { status result } } input memos } state { kind migrates error } } submissions { id } }
@@ -440,7 +487,7 @@ void test("conversation/task scans, inspection, and node refetch read records in
   assert(value.scanConversations.pageInfo.next);
   assert.equal(value.scanConversations.nodes[0]?.durableId, f.root.id);
   const tail = await f.success<{ harness: { scanConversations: Connection<Identity> } }>(
-    `query($cursor: Cursor!) { harness(sessionId: "test") { scanConversations(limit: 1, cursor: $cursor) { nodes { id durableId } ${pageFields} } } }`,
+    `query($cursor: Cursor!) { harness(externalId: "test") { scanConversations(limit: 1, cursor: $cursor) { nodes { id durableId } ${pageFields} } } }`,
     { cursor: value.scanConversations.pageInfo.next },
   );
   assert.equal(tail.harness.scanConversations.nodes[0]?.durableId, other.id);
@@ -470,7 +517,7 @@ void test("conversation/task scans, inspection, and node refetch read records in
   }>(
     `query($id: ID!) {
     a: node(id: $id) { id ... on TaskRecord { durableId state { status checkpoint } } }
-    harness(sessionId: "test") { scanTasks(limit: 5) { nodes { id durableId state { status checkpoint } } } inspect { tasks { record { id durableId state { status checkpoint } } } } }
+    harness(externalId: "test") { scanTasks(limit: 5) { nodes { id durableId state { status checkpoint } } } inspect { tasks { record { id durableId state { status checkpoint } } } } }
   }`,
     { id: task.id },
   );
@@ -491,7 +538,7 @@ void test("agent aliases read independently within and between operations", asyn
     assert.equal(received, context);
     return { ...value, cwd: String(++calls) };
   });
-  const query = `{ harness(sessionId: "test") { a: conversation(id: 1) { agent { cwd } } b: conversation(id: 1) { agent { cwd } } } }`;
+  const query = `{ harness(externalId: "test") { a: conversation(id: 1) { agent { cwd } } b: conversation(id: 1) { agent { cwd } } } }`;
   const result = await f.success<{ harness: { a: unknown; b: unknown } }>(
     query,
     {},
@@ -521,8 +568,8 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
     },
   ]);
   t.after(() => release.resolve());
-  const mutation = `mutation($id: ID!, $draft: InputSubmissionDraft!) { submit(input: { conversationId: $id, submission: { input: $draft }, clientMutationId: "echo" }) { submissionId clientMutationId } }`;
-  type Result = { submit: { submissionId: string; clientMutationId: string } };
+  const mutation = `mutation($id: ID!, $draft: InputSubmissionDraft!) { submit(input: { conversationId: $id, submission: { input: $draft } }) { submissionId } }`;
+  type Result = { submit: { submissionId: string } };
   const content = [
     { type: "text", text: "hello", textSignature: "sig" },
     { type: "image", data: "aGk=", mimeType: "image/png" },
@@ -543,7 +590,7 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   await started.promise;
   const live = await f.success<{
     harness: { inspect: { submissions: Array<{ id: string; status: string }> } };
-  }>(`{ harness(sessionId: "test") { inspect { submissions { id status } } } }`);
+  }>(`{ harness(externalId: "test") { inspect { submissions { id status } } } }`);
   assert.deepEqual(live.harness.inspect.submissions, [
     { id: admitted.submit.submissionId, status: "placed" },
   ]);
@@ -567,7 +614,7 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   const recovery = await f.success<{
     harness: { conversation: { submissionByRequest: unknown; status: unknown } };
   }>(
-    `query($id: SubmissionId!) { harness(sessionId: "test") { conversation(id: 1) { submissionByRequest(requestId: "key") { id durableId conversationId status requestId } status(id: $id) { id durableId conversationId status requestId } } } }`,
+    `query($id: SubmissionId!) { harness(externalId: "test") { conversation(id: 1) { submissionByRequest(requestId: "key") { id durableId conversationId status requestId } status(id: $id) { id durableId conversationId status requestId } } } }`,
     { id: receipt.node.durableId },
   );
   assert.deepEqual(recovery.harness.conversation.submissionByRequest, receipt.node);
@@ -577,7 +624,7 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
     execution,
   );
   const foreign = await f.success<{ harness: { conversation: { id: string; status: null } } }>(
-    `query($conversation: ConversationId!, $id: SubmissionId!) { harness(sessionId: "test") { conversation(id: $conversation) { id status(id: $id) { id } } } }`,
+    `query($conversation: ConversationId!, $id: SubmissionId!) { harness(externalId: "test") { conversation(id: $conversation) { id status(id: $id) { id } } } }`,
     { conversation: other.id, id: receipt.node.durableId },
   );
   assert.equal(foreign.harness.conversation.status, null);
@@ -610,9 +657,11 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
     await f.success(withdraw, { conversation: f.conversationId, id: queuedReceipt.node.durableId }),
     { abortSubmission: { result: "settled" } },
   );
-  await f.success(
-    `mutation($id: ID!) { abort(input: { conversationId: $id }) { clientMutationId } }`,
-    { id: f.conversationId },
+  assert.deepEqual(
+    await f.success(`mutation($id: ID!) { abort(input: { conversationId: $id }) }`, {
+      id: f.conversationId,
+    }),
+    { abort: true },
   );
   assert.equal(cancelled, true);
   const history = await f.root.entries({}, 50, undefined, execution);
@@ -621,11 +670,83 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   assert.deepEqual(user?.model?.[0]?.content, content);
 });
 
+for (const operation of ["abort", "reset", "configure"] as const) {
+  void test(`${operation} acknowledges upstream return and rejects upstream failure`, async (t) => {
+    const f = await fixture(t);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.mock.method(f.instance, "conversation", async () => f.root);
+    const upstream = t.mock.method(f.root, operation, async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const change = operation === "configure" ? ", change: {}" : "";
+    const mutation = `mutation($id: ID!) { ${operation}(input: { conversationId: $id${change} }) }`;
+    let acknowledged = false;
+    const pending = f.run(mutation, { id: f.conversationId }).then((result) => {
+      acknowledged = true;
+      return result;
+    });
+    try {
+      await entered.promise;
+      assert.equal(acknowledged, false);
+    } finally {
+      release.resolve();
+    }
+    const success = await pending;
+    assert.equal(success.errors, undefined);
+    assert.equal(success.data?.[operation], true);
+    upstream.mock.mockImplementation(async () => {
+      throw new Error("private upstream failure");
+    });
+    const failure = await f.run(mutation, { id: f.conversationId });
+    assert.equal(failure.errors?.length, 1);
+    assert.equal(failure.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    assert.deepEqual(failure.errors?.[0]?.path, [operation]);
+    assert.equal(failure.data?.[operation], null);
+    assert.equal(upstream.mock.callCount(), 2);
+  });
+}
+
+void test("resume requires an authorized Harness global ID and reports synchronous failure", async (t) => {
+  const f = await fixture(t, "tenant / 雪");
+  const mutation = `mutation($id: ID!) { resume(input: { harnessId: $id }) }`;
+  for (const id of ["tenant / 雪", f.conversationId]) {
+    const result = await f.run(mutation, { id });
+    assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
+    assert.equal(result.data?.resume, null);
+  }
+  const missing = await f.run(
+    mutation,
+    { id: f.harnessId },
+    f.request({ session: async () => undefined }),
+  );
+  assert.equal(missing.errors?.[0]?.extensions.code, "NOT_FOUND");
+  assert.equal(missing.data?.resume, null);
+  assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
+  const session = t.mock.fn(async (externalId: string) => {
+    assert.equal(externalId, "tenant / 雪");
+    return f.instance;
+  });
+  t.mock.method(f.instance, "resume", () => {
+    throw new SessionFailed(new Error("private upstream failure"));
+  });
+  const failure = await f.run(mutation, { id: f.harnessId }, f.request({ session }));
+  assert.equal(session.mock.callCount(), 1);
+  assert.equal(failure.errors?.length, 1);
+  assert.equal(failure.errors?.[0]?.extensions.code, "SESSION_FAILED");
+  assert.deepEqual(failure.errors?.[0]?.path, ["resume"]);
+  assert.equal(failure.data?.resume, null);
+});
+
 void test("resume, reset and compaction preserve upstream admission semantics", async (t) => {
   const f = await fixture(t);
-  await f.success(`mutation($id: ID!) { resume(input: { sessionId: $id }) { clientMutationId } }`, {
-    id: f.harnessId,
-  });
+  assert.deepEqual(
+    await f.success(`mutation($id: ID!) { resume(input: { harnessId: $id }) }`, {
+      id: f.harnessId,
+    }),
+    { resume: true },
+  );
   assert.equal((await f.instance.inspect(execution)).scheduling, "running");
   f.faux.setResponses([fauxAssistantMessage("answer"), fauxAssistantMessage("summary")]);
   await (await f.root.submit({ type: "input", content: "question" }, execution)).wait(execution);
@@ -647,16 +768,18 @@ void test("resume, reset and compaction preserve upstream admission semantics", 
   assert.equal(terminal.node.state.status, "terminal");
   assert.equal(terminal.node.state.outcome.status, "completed");
   assert.equal(terminal.node.memos, null);
-  await f.success(
-    `mutation($id: ID!) { reset(input: { conversationId: $id, handoff: "" }) { clientMutationId } }`,
-    { id: f.conversationId },
+  assert.deepEqual(
+    await f.success(`mutation($id: ID!) { reset(input: { conversationId: $id, handoff: "" }) }`, {
+      id: f.conversationId,
+    }),
+    { reset: true },
   );
   const current = await f.root.context(execution);
   assert.equal(current.head?.kind, "pi.reset");
   const value = await f.success<{
     harness: { conversation: { context: { head: { durableId: number }; messages: unknown[] } } };
   }>(
-    `{ harness(sessionId: "test") { conversation(id: 1) { context { head { durableId } messages { ${messageIdentity} } } } } }`,
+    `{ harness(externalId: "test") { conversation(id: 1) { context { head { durableId } messages { ${messageIdentity} } } } } }`,
   );
   assert.equal(value.harness.conversation.context.head.durableId, current.head?.id);
   const typenames = {
@@ -706,33 +829,35 @@ void test("input validation rejects null overrides outside configure, invalid sc
     assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
   }
   for (const body of [
-    `reset(input: { conversationId: $id, handoff: null }) { clientMutationId }`,
+    `reset(input: { conversationId: $id, handoff: null })`,
     `compact(input: { conversationId: $id, instructions: null }) { taskId }`,
   ]) {
     const result = await f.run(`mutation($id: ID!) { ${body} }`, { id: f.conversationId });
     assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
   }
   const nullAt = await f.run(
-    `{ harness(sessionId: "test") { conversation(id: 1) { context(at: null) { messages { __typename } } } } }`,
+    `{ harness(externalId: "test") { conversation(id: 1) { context(at: null) { messages { __typename } } } } }`,
   );
   assert.equal(nullAt.errors?.[0]?.extensions.code, "BAD_REQUEST");
   for (const id of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1"]) {
     const result = await f.run(
-      `query($id: ConversationId!) { harness(sessionId: "test") { conversation(id: $id) { id } } }`,
+      `query($id: ConversationId!) { harness(externalId: "test") { conversation(id: $id) { id } } }`,
       { id },
     );
     assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
   }
   assert.deepEqual(
-    await f.success(`{ harness(sessionId: "test") { conversation(id: 9007199254740991) { id } } }`),
+    await f.success(
+      `{ harness(externalId: "test") { conversation(id: 9007199254740991) { id } } }`,
+    ),
     { harness: { conversation: null } },
   );
   const invalidLiteral = await f.run(
-    `{ harness(sessionId: "test") { conversation(id: -1) { id } } }`,
+    `{ harness(externalId: "test") { conversation(id: -1) { id } } }`,
   );
   assert.equal(invalidLiteral.errors?.[0]?.extensions.code, "BAD_REQUEST");
   const wrongKind = await f.run(
-    `mutation($id: ID!) { configure(input: { conversationId: $id, change: {} }) { clientMutationId } }`,
+    `mutation($id: ID!) { configure(input: { conversationId: $id, change: {} }) }`,
     { id: f.harnessId },
   );
   assert.equal(wrongKind.errors?.[0]?.extensions.code, "BAD_REQUEST");
@@ -761,7 +886,7 @@ void test("error classification depends only on typed failures, not the operatio
     t.mock.method(f.instance, "inspect", async () => {
       throw error;
     });
-    const result = await f.run(`{ harness(sessionId: "test") { inspect { scheduling } } }`);
+    const result = await f.run(`{ harness(externalId: "test") { inspect { scheduling } } }`);
     assert.equal(result.errors?.[0]?.extensions.code, code);
     assert.deepEqual(result.errors?.[0]?.path, ["harness", "inspect"]);
     assert.equal(result.data?.harness, null);
@@ -778,7 +903,7 @@ void test("error classification depends only on typed failures, not the operatio
       throw error;
     });
     const result = await f.run(
-      `mutation($id: ID!) { configure(input: { conversationId: $id, change: {} }) { clientMutationId } }`,
+      `mutation($id: ID!) { configure(input: { conversationId: $id, change: {} }) }`,
       { id: f.conversationId },
     );
     assert.equal(result.errors?.[0]?.extensions.code, code);
@@ -786,7 +911,7 @@ void test("error classification depends only on typed failures, not the operatio
     t.mock.restoreAll();
   }
   const missing = await f.run(
-    `mutation($id: ID!) { abort(input: { conversationId: $id }) { clientMutationId } }`,
+    `mutation($id: ID!) { abort(input: { conversationId: $id }) }`,
     { id: f.conversationId },
     f.request({ session: async () => undefined }),
   );
@@ -812,7 +937,7 @@ void test("inspection diagnostics use native JSON serialization and serializatio
     submissions: [],
     tasks: [{ record, state: { kind: "blocked", reason: "missing_task", error } }],
   }));
-  const query = `{ harness(sessionId: "test") { inspect { tasks { state { kind reason error } } } } }`;
+  const query = `{ harness(externalId: "test") { inspect { tasks { state { kind reason error } } } } }`;
   const data = await f.success(query);
   assert.deepEqual(data, {
     harness: {
@@ -885,21 +1010,21 @@ void test("IDs retain their session scope for reads and mutation authorization",
     session: async (id) => (id === "a" ? a.instance : id === "b" ? b.instance : undefined),
   });
   const result = await a.success<{
-    a: { id: string; harness: { sessionId: string } };
-    b: { id: string; harness: { sessionId: string } };
+    a: { id: string; harness: { externalId: string } };
+    b: { id: string; harness: { externalId: string } };
   }>(
-    `query($a: ID!, $b: ID!) { a: node(id: $a) { id ... on ConversationRecord { harness { sessionId } } } b: node(id: $b) { id ... on ConversationRecord { harness { sessionId } } } }`,
+    `query($a: ID!, $b: ID!) { a: node(id: $a) { id ... on ConversationRecord { harness { externalId } } } b: node(id: $b) { id ... on ConversationRecord { harness { externalId } } } }`,
     { a: a.conversationId, b: b.conversationId },
     both,
   );
-  assert.equal(result.a.harness.sessionId, "a");
-  assert.equal(result.b.harness.sessionId, "b");
+  assert.equal(result.a.harness.externalId, "a");
+  assert.equal(result.b.harness.externalId, "b");
   assert.deepEqual(
     await a.success(`query($id: ID!) { node(id: $id) { id } }`, { id: b.conversationId }),
     { node: null },
   );
   const denied = await a.run(
-    `mutation($id: ID!) { configure(input: { conversationId: $id, change: { cwd: "/forbidden" } }) { clientMutationId } }`,
+    `mutation($id: ID!) { configure(input: { conversationId: $id, change: { cwd: "/forbidden" } }) }`,
     { id: b.conversationId },
   );
   assert.equal(denied.errors?.[0]?.extensions.code, "NOT_FOUND");
@@ -910,8 +1035,8 @@ void test("a later mutation failure does not roll back an earlier mutation", asy
   const f = await fixture(t);
   const result = await f.run(
     `mutation($id: ID!) {
-    first: configure(input: { conversationId: $id, change: { cwd: "/committed" }, clientMutationId: "first" }) { clientMutationId }
-    second: reset(input: { conversationId: $id, handoff: null }) { clientMutationId }
+    first: configure(input: { conversationId: $id, change: { cwd: "/committed" } })
+    second: reset(input: { conversationId: $id, handoff: null })
   }`,
     { id: f.conversationId },
   );
@@ -919,7 +1044,7 @@ void test("a later mutation failure does not roll back an earlier mutation", asy
   assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
   assert.deepEqual(result.errors?.[0]?.path, ["second"]);
   assert.deepEqual(JSON.parse(JSON.stringify(result.data)), {
-    first: { clientMutationId: "first" },
+    first: true,
     second: null,
   });
   assert.equal((await f.root.agent(execution)).cwd, "/committed");
@@ -932,7 +1057,7 @@ void test("session failures are not cached and never masquerade as absence", asy
     if (fail) throw new StorageRequestError("failure while opening storage");
     return f.instance;
   });
-  const query = `{ a: harness(sessionId: "test") { id } b: harness(sessionId: "test") { id } }`;
+  const query = `{ a: harness(externalId: "test") { id } b: harness(externalId: "test") { id } }`;
   const failed = await f.run(query, {}, f.request({ session }));
   assert.equal(failed.errors?.length, 2);
   assert(failed.errors?.every((error) => error.extensions.code === "BAD_REQUEST"));
@@ -1126,7 +1251,7 @@ void test("message unions expose every upstream variant, content block, and meta
   `;
   type Result = { id: string; durableId: number; model: Array<Record<string, unknown>> };
   const result = await f.success<{ harness: { conversation: { entries: { nodes: Result[] } } } }>(
-    `{ harness(sessionId: "test") { conversation(id: 1) { entries(limit: 1) { nodes { id durableId model { ...MessageFields } } } } } } ${fragments}`,
+    `{ harness(externalId: "test") { conversation(id: 1) { entries(limit: 1) { nodes { id durableId model { ...MessageFields } } } } } } ${fragments}`,
   );
   const entry = result.harness.conversation.entries.nodes[0]!;
   assert.equal(entry.durableId, record.id);
@@ -1259,7 +1384,7 @@ void test("typed messages are projected in edit replacements, current/historical
       };
     };
   }>(
-    `query($at: EntryId!) { harness(sessionId: "test") { conversation(id: 1) {
+    `query($at: EntryId!) { harness(externalId: "test") { conversation(id: 1) {
     entries(limit: 2) { nodes { edits { target action messages { ${userMessageFields} } } } }
     context { messages { ${userMessageFields} } contributions { ${userMessageFields} } }
     historical: context(at: $at) { messages { ${userMessageFields} } }
@@ -1399,7 +1524,7 @@ void test("message projection preserves absent metadata, empty arrays and JSON p
   const result = await f.success<{
     harness: { conversation: { entries: { nodes: Array<{ model: unknown[] }> } } };
   }>(`{
-    harness(sessionId: "test") { conversation(id: 1) { entries(limit: 1) { nodes { model {
+    harness(externalId: "test") { conversation(id: 1) { entries(limit: 1) { nodes { model {
       __typename
       ... on SystemMessage { content { ... on TextContentList { blocks { text } } } toolsAdded { constrainedSampling } }
       ... on AssistantMessage { assistantContent: content { __typename } diagnostics { type } deferred { id } usage { cacheWrite1h reasoning } }
@@ -1431,16 +1556,12 @@ void test("message projection preserves absent metadata, empty arrays and JSON p
 
 void test("write submissions place metadata without generation and recover by request ID", async (t) => {
   const f = await fixture(t);
-  const mutation = `mutation($id: ID!, $draft: SubmissionDraft!) { submit(input: { conversationId: $id, submission: $draft, clientMutationId: "echo" }) { submissionId clientMutationId } }`;
+  const mutation = `mutation($id: ID!, $draft: SubmissionDraft!) { submit(input: { conversationId: $id, submission: $draft }) { submissionId } }`;
   const data = { "file.path": "/workspace/image.png", "line\nbreak": [null, true, 3] };
-  const admitted = await f.success<{ submit: { submissionId: string; clientMutationId: string } }>(
-    mutation,
-    {
-      id: f.conversationId,
-      draft: { write: { requestId: "write-key", entry: { kind: "app.attachment", data } } },
-    },
-  );
-  assert.equal(admitted.submit.clientMutationId, "echo");
+  const admitted = await f.success<{ submit: { submissionId: string } }>(mutation, {
+    id: f.conversationId,
+    draft: { write: { requestId: "write-key", entry: { kind: "app.attachment", data } } },
+  });
   assert.deepEqual(
     await f.success(mutation, {
       id: f.conversationId,

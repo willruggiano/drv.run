@@ -218,12 +218,10 @@ interface Node {
 }
 
 input AbortInput {
-  clientMutationId: String
   conversationId: ID!
 }
 
 input AbortSubmissionInput {
-  clientMutationId: String
   """
   Global ConversationRecord ID; upstream abort is constrained to this conversation.
   """
@@ -276,14 +274,12 @@ input AssistantMessageInput {
 }
 
 input CompactInput {
-  clientMutationId: String
   conversationId: ID!
   instructions: String
 }
 
 input ConfigureInput {
   change: AgentChange!
-  clientMutationId: String
   conversationId: ID!
 }
 
@@ -401,7 +397,6 @@ input NestedToolCallsInput {
 }
 
 input ResetInput {
-  clientMutationId: String
   conversationId: ID!
   """
   Omit for no handoff; preserve a supplied string, including the empty string.
@@ -410,9 +405,8 @@ input ResetInput {
 }
 
 input ResumeInput {
-  clientMutationId: String
-  """Global Harness ID, not its external sessionId key."""
-  sessionId: ID!
+  """Global Harness ID, not its externalId key."""
+  harnessId: ID!
 }
 
 """
@@ -424,7 +418,6 @@ input SubmissionDraft @oneOf {
 }
 
 input SubmitInput {
-  clientMutationId: String
   """Global ConversationRecord ID, not its numeric durableId."""
   conversationId: ID!
   submission: SubmissionDraft!
@@ -539,15 +532,7 @@ input WriteSubmissionDraft {
   requestId: String
 }
 
-"""
-Successful void result; only the optional correlation value is returned.
-"""
-type AbortPayload {
-  clientMutationId: String
-}
-
 type AbortSubmissionPayload {
-  clientMutationId: String
   result: HarnessAbortSubmissionResult!
 }
 
@@ -586,15 +571,10 @@ type AssistantMessage {
 }
 
 type CompactPayload {
-  clientMutationId: String
   """
   Global TaskRecord ID corresponding to compact()'s admitted upstream TaskId.
   """
   taskId: ID!
-}
-
-type ConfigurePayload {
-  clientMutationId: String
 }
 
 type ContextEdit {
@@ -716,6 +696,7 @@ type Harness implements Node {
   Resolve Harness.conversation(id); expose its record instead of a live handle.
   """
   conversation(id: ConversationId!): ConversationRecord
+  externalId: String!
   id: ID!
   """
   Harness.inspect(): live work and scheduling state, without enabling scheduling.
@@ -727,7 +708,6 @@ type Harness implements Node {
   scanConversations(cursor: Cursor, limit: Int!, query: ConversationQuery! = {}): ConversationRecordConnection!
   """Tx.scanTasks(); default order is ascending, or the cursor's order."""
   scanTasks(cursor: Cursor, limit: Int!, query: TaskQuery! = {}): TaskRecordConnection!
-  sessionId: String!
 }
 
 type HarnessInspection {
@@ -797,7 +777,7 @@ type Mutation {
   Withdraw queued inputs and abort ordinary owned work; preserve background work
   and queued writes. Resolves after upstream abort completes. No background flag.
   """
-  abort(input: AbortInput!): AbortPayload
+  abort(input: AbortInput!): Boolean
   """
   Withdraw a queued submission; already_placed never becomes an execution abort.
   """
@@ -807,15 +787,18 @@ type Mutation {
   """
   compact(input: CompactInput!): CompactPayload
   """
-  Change model, thinking level, or cwd overrides; read resolved settings through agent.
+  Change model, thinking level, or cwd overrides; return true after the commit.
+  Read resolved settings through agent.
   """
-  configure(input: ConfigureInput!): ConfigurePayload
-  """Admit a reset, not necessarily its placement. No idempotency key."""
-  reset(input: ResetInput!): ResetPayload
+  configure(input: ConfigureInput!): Boolean
   """
-  Enable Harness scheduling; successful return does not mean work has completed.
+  Return true after reset admission, not necessarily placement. No idempotency key.
   """
-  resume(input: ResumeInput!): ResumePayload
+  reset(input: ResetInput!): Boolean
+  """
+  Return true after enabling Harness scheduling, not after work completes.
+  """
+  resume(input: ResumeInput!): Boolean
   """
   Admit input or a passive entry write, not necessarily placement or completion.
   Same requestId and type recover the prior submission without comparing content.
@@ -850,11 +833,11 @@ type Query {
   """
   Resolve a persisted Harness by its external session key; does not create one.
   """
-  harness(sessionId: String!): Harness
+  harness(externalId: String!): Harness
   """
   List accessible persisted sessions from the deployment's catalog, not the cache
   of open Harness instances. Durable does not provide a cross-session catalog.
-  Order by ascending sessionId; listing does not create sessions or enable scheduling.
+  Order by ascending externalId; listing does not create sessions or enable scheduling.
   """
   harnesses: [Harness!]!
   """
@@ -868,14 +851,6 @@ type Query {
   Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
   """
   node(id: ID!): Node
-}
-
-type ResetPayload {
-  clientMutationId: String
-}
-
-type ResumePayload {
-  clientMutationId: String
 }
 
 type StringContent {
@@ -904,7 +879,6 @@ type SubmissionRecord implements Node {
 }
 
 type SubmitPayload {
-  clientMutationId: String
   """
   Transport reference to Submission.id as a global SubmissionRecord ID.
   node(id) reads its receipt; this payload is not itself the submission Node.
