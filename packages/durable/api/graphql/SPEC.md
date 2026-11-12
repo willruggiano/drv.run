@@ -3,12 +3,10 @@
 ## Authority and scope
 
 The [schema](schema.graphql), including its descriptions, is authoritative for
-the implemented Durable GraphQL surface. Author it in [graphql.ts](graphql.ts)
-and generate it with Grats; do not maintain a second runtime schema or resolver
-map. This specification defines execution, transport, ownership, and deployment
-requirements and the target identity, lifecycle, mutation-result, document, and
-application-service contracts. These target changes are not all implemented in
-the generated schema.
+the implemented Durable GraphQL surface. This specification defines execution,
+transport, ownership, and deployment requirements and the target identity,
+lifecycle, mutation-result, document, and application-service contracts. These
+target changes are not all implemented in the generated schema.
 
 Upstream Durable is authoritative for Harness behavior. Use the versions pinned
 in the [package manifest](../package.json) and lockfile. The relevant contracts
@@ -17,7 +15,6 @@ are
 and
 [Harness and conversations](../node_modules/@earendil-works/pi-durable/dist/harness/types.d.ts).
 
-This directory belongs to the enclosing API package, not a separate npm package.
 The schema covers non-streaming operations. Do not add subscriptions, remote
 transactions, execution callbacks, or task-control operations as server
 plumbing. The existing SSE API remains unchanged except for bug fixes. New
@@ -28,9 +25,7 @@ contract remains separate: [[packages/durable/api/SPEC.md]].
 The inventory below uses the target names and mutation results. Explicit SDL
 below declares the lifecycle and application settings additions and changes; it
 is not a claim that they already exist in the generated schema. Implement these
-contracts rather than substituting generic option or settings maps. Keep
-generated schema descriptions consistent with these semantics during
-implementation.
+contracts rather than substituting generic option or settings maps.
 
 ## Schema-to-upstream mapping
 
@@ -1536,52 +1531,7 @@ Sources: pinned Pi AI
 [model types](../node_modules/@earendil-works/pi-ai/dist/types.d.ts), and
 [cost and modality types](../node_modules/@earendil-works/pi-ai/dist/providers/model-schema.d.ts).
 
-## Composition
-
-```text
-deployment: listener + access policy + persisted Harness factory
-    |
-bounded HTTP adapter
-    |
-GraphQL-over-HTTP handler -> GraphQL.js -> Grats-generated schema
-                                             |
-                                      functional resolvers
-                                             |
-                                      upstream Harness
-```
-
-Keep all handwritten Durable GraphQL code in [graphql.ts](graphql.ts). Use
-exported functional resolvers colocated with their associated interfaces; do not
-put methods on GraphQL interfaces. Generated code is a build artifact.
-
-Depend on upstream Harness interfaces, not the application Harness
-implementation. Deployment supplies the factory, storage, execution environment,
-model settings, and telemetry. Resolvers borrow Harnesses through the injected
-session callback; the owning service supplies shutdown and failed-instance
-recovery. Listener ownership remains with deployment. The
-[REST API](../src/index.ts) provides an instance-ownership reference, not a
-route decoder or dispatcher for GraphQL.
-
-### Dependency injection
-
-The [ResolverContext](graphql.ts) supplies the Chord context, an authorized
-session lookup, the authorized session catalog, and the borrowed model source.
-It contains no observation cache. Grats supplies it through its native context
-mechanism; see
-[[packages/durable/api/node_modules/grats/llm-docs/docblock-tags/context.md]].
-
-Do not substitute ambient mutable state, patch generated resolver maps, or
-construct a new schema per request. Deployment enforces access policy for all
-lookup, catalog, and creation callbacks. Non-creating session lookup remains
-separate from explicit provisioning through `open`. Deployment supplies the
-provisioning/catalog boundary and shared owner; the GraphQL adapter must not
-allocate its own storage or import the concrete Harness factory.
-
 ## Execution and observations
-
-Call the corresponding upstream operations directly. The
-[REST dispatcher](../src/operations.ts) is a reference for those calls, not an
-additional transport layer for GraphQL.
 
 Reads do not enable scheduling. Keep each read-only transaction short and use
 only its `tx` inside the callback. Never hold a `Harness.commit()` transaction
@@ -1628,20 +1578,11 @@ Source: upstream
 
 ## Validation and errors
 
-Configure custom scalars when constructing the generated schema. TypeScript
-aliases do not validate runtime values. Enforce the scalar and input contracts
-from the schema for both variables and inline literals. Preserve payloads and
-the distinction between omission and explicit null; do not coerce invalid input
-or silently drop content. Reuse existing TypeBox validators only where their
-contracts match.
+Scalar and input contracts apply to both variables and inline literals. Preserve
+payloads and the distinction between omission and explicit null; do not coerce
+invalid input or silently drop content.
 
-GraphQL.js defaults unspecified scalar coercion functions to identity functions;
-empty configurations are not sufficient validation. See its
-[scalar implementation](../node_modules/graphql/type/definition.js) and
-[[packages/durable/api/node_modules/grats/llm-docs/docblock-tags/scalars.md]].
-
-The production implementation must classify execution failures into GraphQL
-errors with these `extensions.code` values:
+Execution failures use GraphQL errors with these `extensions.code` values:
 
 | Condition                                                                        | Code                    |
 | -------------------------------------------------------------------------------- | ----------------------- |
@@ -1656,13 +1597,9 @@ Missing lookup objects return null; storage failures do not masquerade as
 absence. Persisted task failures and blocked inspection states are data, not
 GraphQL execution failures.
 
-The current resolver's `mapError` is provisional: it classifies by exception
-type alone and maps every `StorageRequestError` to `BAD_REQUEST`. Production
-must distinguish rejected storage reads from fatal commit/mint failures; the
-current implementation does not yet satisfy that requirement. Establish the
-failure's origin, not merely whether its GraphQL operation is a query or a
-mutation. A storage read inside a read-only `Harness.commit()` is still a read,
-not a `Storage.commit()` call.
+Classification depends on the failure's origin, not merely its exception type or
+whether its GraphQL operation is a query or a mutation. A storage read inside a
+read-only `Harness.commit()` is still a read, not a `Storage.commit()` call.
 
 Upstream may propagate the original exception for the first fatal storage
 failure; classify it as `INTERNAL_SERVER_ERROR`, even when its class is
@@ -1670,11 +1607,11 @@ failure; classify it as `INTERNAL_SERVER_ERROR`, even when its class is
 `SESSION_FAILED`. Neither outcome proves that a mutation failed to commit or
 authorizes automatic replay.
 
-Existing `ResolverError` instances pass through; `ReadAfterWrite` and untyped
-exceptions take the internal-error fallback. Never classify by message text.
-Preserve GraphQL error paths, null propagation, and partial results. Return safe
-messages, not internal exception messages, stacks, or causes. Keep diagnostics
-server-side without rewriting persisted failure data.
+`ReadAfterWrite` and untyped exceptions take the internal-error fallback. Never
+classify by message text. Preserve GraphQL error paths, null propagation, and
+partial results. Return safe messages, not internal exception messages, stacks,
+or causes. Keep diagnostics server-side without rewriting persisted failure
+data.
 
 GraphQL request errors, execution errors, and HTTP transport errors are
 distinct. Use protocol-appropriate statuses; do not map every execution error to
@@ -1687,34 +1624,17 @@ and [[packages/durable/api/SPEC.md#HTTP errors]].
 
 ## HTTP transport
 
-The proposed transport is the core `graphql-http` handler behind a small
-`node:http` adapter. The reviewed candidate is
-[`graphql-http` 1.23.1](https://github.com/graphql/graphql-http/blob/v1.23.1/package.json);
-it is not yet a package dependency. Pin the selected release when integrating
-it. No additional HTTP framework is needed.
+The endpoint supports standard JSON requests and negotiates GraphQL response
+media types. Method and media-type checks apply before execution; mutations must
+not execute over GET. Request-array batching, uploads, WebSockets, and a browser
+IDE are outside this surface.
 
-Use the library for GraphQL request parsing, operation selection, validation,
-execution, and response negotiation. Support standard JSON requests and
-negotiate GraphQL response media types. Mutations must not execute over GET. Do
-not add request-array batching, uploads, WebSockets, or a browser IDE to this
-boundary.
-
-The adapter must enforce encoded body limits before unbounded buffering, reject
-invalid UTF-8, handle interrupted uploads, and set `Cache-Control: no-store` on
-responses. Preserve method and media-type checks. Apply body limits to streamed
-bytes, not just `Content-Length`.
-
-The reviewed
-[Node adapter](https://github.com/graphql/graphql-http/blob/v1.23.1/src/use/http.ts)
-buffers bodies without a limit. Its
-[core handler](https://github.com/graphql/graphql-http/blob/v1.23.1/src/handler.ts)
-turns body-reader exceptions into malformed-body errors and defaults to
-returning errors unchanged. Supply bounded reading and explicit error
-formatting; handle oversized bodies as HTTP 413 outside that generic parser
-failure path.
-
-Use one executable schema per API instance. Do not reload SDL or run Grats on
-requests. The endpoint mount and listener address belong to deployment.
+Encoded body limits apply to streamed bytes, not just `Content-Length`, before
+unbounded buffering. Oversized bodies return HTTP 413, not a generic
+malformed-body error. Invalid UTF-8 and interrupted uploads are rejected.
+Responses carry `Cache-Control: no-store`. Request parsing, operation selection,
+validation, execution, and response negotiation follow GraphQL-over-HTTP
+semantics without changing the execution-error contract above.
 
 ## Ownership, recovery, and deployment
 
@@ -1730,16 +1650,11 @@ mutation. Neither `SESSION_FAILED`, a disconnected response, nor a transport
 failure establishes whether admission committed or authorizes automatic replay.
 Do not invent a recovery time or emit `Retry-After` without one.
 
-The existing [instance manager](../src/sessions.ts) shares opens and closes
-owned instances, but does not evict an opened Harness when it subsequently
-fails. Its reuse requires an explicit recovery policy, not an assumption that
-factory injection already provides recovery.
-
 Disconnecting an observer must not call `Conversation.abort()` or cancel durable
 agent execution. Cancellation of request-bound reads or waits is separate from
 work already admitted upstream.
 
-Before exposing the endpoint outside a trusted boundary, deployment must select:
+An endpoint exposed outside a trusted boundary has explicit policies for:
 
 - Authentication and session-access policy, applied to every lookup path,
   including provisioning, global IDs, ownership targets, and cursor-based
@@ -1752,93 +1667,5 @@ Before exposing the endpoint outside a trusted boundary, deployment must select:
 
 Stop request admission before shutdown. Settle or cancel request-bound work
 under the selected policy, close owned Harnesses, then shut down telemetry.
-Reuse the existing [telemetry adapter](../src/telemetry.ts) and the deployment
-ownership in [[packages/durable/api/SPEC.md#Telemetry]]. GraphQL-specific
-tracing is not a prerequisite for serving requests.
-
-## Build and verification
-
-Grats remains a build-time tool; GraphQL.js and the selected transport are
-runtime dependencies. Keep the Nix-provided TypeScript compiler. Compile and
-install the handwritten module and generated executable schema with the API
-entry point; shipping SDL alone does not provide a server. Package exports and
-Nix installation must agree about artifact locations.
-
-Before calling the server working, verify the executable schema and the
-installed package after development dependencies have been pruned. Cover scalar
-coercion, identity and independent reads, upstream cursor round trips,
-pagination boundaries, admission recovery, typed errors, and lifecycle behavior.
-Verify that reads do not enable scheduling and disconnects do not abort admitted
-work.
-
-Before production, add regression tests distinguishing rejected storage reads
-from fatal commit/mint failures of the same `StorageRequestError` class,
-including the original fatal exception and subsequent `SessionFailed`. The
-current operation-independent error tests do not establish this distinction.
-
-Model-catalog executable-schema tests cover:
-
-- Catalog reads without sessions and without invoking either session callback.
-- Dynamic source replacement, independent alias reads, upstream ordering,
-  auth-based availability, and empty catalogs.
-- Supported thinking levels, complete public metadata including cost tiers, and
-  native model identity.
-- Cancellation forwarding and failure classification, without empty-list
-  fallbacks.
-- The schema's metadata allowlist and decoded selections from secret-bearing
-  model fixtures; no sensitive fields or generic model JSON escape hatch.
-
-Lifecycle tests cover external-ID discovery without owner acquisition, stable
-publication across reopen, key reuse only after deployment deletes the store,
-concurrent/retried opens sharing one owner, factory failure cleanup, and the
-rejection of unauthorized or archived keys. Verify `root`, `createConversation`,
-and `resume` require global Harness IDs rather than external IDs. Passive root
-lookup must not create one; root creation is atomic with agent initialization
-and repeated calls do not reapply options. Additional conversation creation
-preserves explicit ownership and has no retry deduplication. Verify opening and
-creation do not enable scheduling, separate commands do not promise rollback,
-mutation inputs/results contain no correlation echo, void acknowledgments follow
-upstream return, and submission request-ID recovery remains unchanged.
-
-Document tests must cover the schema's native address and definition mapping,
-scope/key pairing, non-creating discovery and absent reads, address and
-permission checks, read-only generic `pi.agent`, validated atomic replacement,
-server-owned initialization, null versus removed properties, persistence across
-reopen, and the absence of additional workflow side effects. Verify successful
-replacement returns its committed value, not a racing writer's later snapshot.
-Application-settings tests cover both `App` selectors, union-member resolution,
-aliased reads, separate save mutations, enums, required input fields, defaults,
-numeric bounds, file ownership, atomic persistence, and revision conflicts.
-Verify absent files return defaults without writes, invalid files fail rather
-than reset, and changing one user's settings does not affect another user's
-file. Saves must not acquire Harnesses or mutate Durable docs. Verify new
-Harness opens use the saved runtime configuration while existing conversation
-document values survive reopen unchanged. `configure` retains its partial-update
-and null-clearing semantics and never writes application files. Preserve the
-existing SSE wire and lifecycle tests; do not add new stream behavior as part of
-these features.
-
-Application-service tests own their contracts outside the reusable Durable
-suite:
-
-- Inventory: retained and starting-unit discovery, ordering and cursor scope,
-  page boundaries, enumeration failure without partial membership success,
-  unavailable row observations, native state values, and no guest connection.
-  Verify timing unit/field mapping, invocation isolation, incomplete durations,
-  unavailable versus empty phase sources, and host/guest/clock separation.
-- Authorization: Node lookup and kind/access checks for servers, accounts, and
-  authorizations; connection pagination and retention; protocol-field mapping
-  against the selected pinned library; public metadata and safe errors; PKCE,
-  callback correlation, device polling and expiry; successful account
-  publication, duplicate-identity reconciliation, and reauthorization identity
-  checks. Failures and cancellation must preserve prior credentials. Verify
-  refresh, local disconnect, and actual revocation remain distinct and no
-  credential secrets reach GraphQL. Use deterministic local provider fixtures.
-- Push: public configuration, per-user registration lookup, validated complete
-  upsert, idempotent removal while disabled, persistence acknowledgment,
-  ownership checks, secret exclusion, and existing destination/network policy.
-  Do not treat registration as browser permission or delivery confirmation.
-
-The current [coverage configuration](../package.json) targets `src/**/*.ts`; its
-percentage does not establish GraphQL coverage. Do not weaken thresholds or
-exclude new production code to accommodate implementation.
+Telemetry ownership follows [[packages/durable/api/SPEC.md#Telemetry]].
+GraphQL-specific tracing is not required.
