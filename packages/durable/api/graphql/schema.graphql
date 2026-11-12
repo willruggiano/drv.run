@@ -416,6 +416,10 @@ input NestedToolCallsInput {
   complete: Boolean!
 }
 
+input OpenInput {
+  externalId: String!
+}
+
 input ResetInput {
   conversationId: ID!
   """
@@ -834,6 +838,11 @@ type Mutation {
   """
   createConversation(input: CreateConversationInput!): CreateConversationPayload
   """
+  Find or create authorized persisted storage through the shared Harness owner.
+  Does not create a root, change an existing Harness, or enable scheduling.
+  """
+  open(input: OpenInput!): OpenPayload
+  """
   Return true after reset admission, not necessarily placement. No idempotency key.
   """
   reset(input: ResetInput!): Boolean
@@ -867,6 +876,10 @@ type NestedToolCallRecord {
 type NestedToolCalls {
   calls: [NestedToolCallRecord!]!
   complete: Boolean!
+}
+
+type OpenPayload {
+  harness: Harness!
 }
 
 """

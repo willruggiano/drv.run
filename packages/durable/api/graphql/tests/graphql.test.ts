@@ -62,6 +62,9 @@ function catalogContext(models: ResolverContext["models"], context = execution):
   return {
     context,
     models,
+    isValidExternalId() {
+      assert.fail("catalog reads must not validate external IDs");
+    },
     async session() {
       assert.fail("catalog reads must not acquire a Harness");
     },
@@ -92,6 +95,7 @@ async function fixture(t: TestContext, externalId = "test") {
   function request(overrides: Partial<ResolverContext> = {}): ResolverContext {
     return {
       context: execution,
+      isValidExternalId: (id) => id.length > 0,
       session: async (id) => (id === externalId ? instance : undefined),
       sessions: async () => [externalId],
       models: () => models,
@@ -2653,4 +2657,52 @@ void test("root reads and creation-result reads propagate failures without inven
     });
     assert.equal(failed.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   }
+});
+
+void test("open requests provisioning and returns the same Harness identity without changing it", async (t) => {
+  const f = await fixture(t);
+  const session = t.mock.fn(f.request().session);
+  const ctx = f.request({ session });
+  const before = await f.instance.inspect(execution);
+  const write = t.mock.method(f.storage, "commit");
+  for (const source of [
+    'mutation { open(input:{externalId:"test"}) { harness { id externalId } } }',
+    "mutation($id:String!) { open(input:{externalId:$id}) { harness { id externalId } } }",
+  ]) {
+    assert.deepEqual(await f.success(source, { id: "test" }, ctx), {
+      open: { harness: { id: f.harnessId, externalId: "test" } },
+    });
+  }
+  assert.deepEqual(
+    session.mock.calls.map((call) => call.arguments),
+    [
+      ["test", true],
+      ["test", true],
+    ],
+  );
+  assert.deepEqual(await f.instance.inspect(execution), before);
+  assert.equal(write.mock.callCount(), 0);
+});
+
+void test("open distinguishes invalid keys, unavailable storage, and validation failures", async (t) => {
+  const f = await fixture(t);
+  const source = "mutation($id:String!) { open(input:{externalId:$id}) { harness { id } } }";
+  const session = t.mock.fn(f.request().session);
+  for (const [isValidExternalId, code] of [
+    [() => false, "BAD_REQUEST"],
+    [
+      () => {
+        throw new StorageRequestError("private validator failure");
+      },
+      "INTERNAL_SERVER_ERROR",
+    ],
+  ] as const) {
+    const result = await f.run(source, { id: "test" }, f.request({ session, isValidExternalId }));
+    assert.equal(result.data?.open, null);
+    assert.equal(result.errors?.[0]?.extensions.code, code);
+  }
+  assert.equal(session.mock.callCount(), 0);
+  const missing = await f.run(source, { id: "absent" });
+  assert.equal(missing.errors?.[0]?.extensions.code, "NOT_FOUND");
+  assert.deepEqual(missing.errors?.[0]?.path, ["open"]);
 });

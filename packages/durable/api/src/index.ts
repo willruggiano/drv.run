@@ -23,8 +23,14 @@ import { createGraphQLHandler } from "../graphql/src/graphql.ts";
 export interface ApiOptions {
   /** Borrow the factory's Pi AI catalog; resolve a dynamic source per request. */
   models: Models | (() => Models);
-  /** Return undefined for an absent session. Own partial-open cleanup on failure. */
-  openHarness(sessionId: string, context: Context): Promise<Harness | undefined>;
+  /** Validate external-ID syntax for provisioning; authorization remains in the factory. */
+  isValidExternalId(externalId: string): boolean;
+  /**
+   * Authorize the key and return undefined for absent or inaccessible storage.
+   * With create=true, find or create the same persisted store and publish its catalog identity.
+   * Never create a root or enable scheduling. Own partial-open cleanup on failure.
+   */
+  openHarness(sessionId: string, context: Context, create: boolean): Promise<Harness | undefined>;
   /** Enumerate authorized persisted stores, not the open-instance cache. */
   listHarnesses(context: Context): Promise<readonly string[]>;
   /** Maximum encoded JSON body size in bytes. Defaults to 1 MiB. */
@@ -36,10 +42,11 @@ export function createApi(options: ApiOptions) {
   const limit = options.bodyLimit ?? 1024 * 1024;
   if (!Number.isSafeInteger(limit) || limit <= 0)
     throw new RangeError("bodyLimit must be a positive safe integer");
-  const sessions = new Sessions((id, context) => options.openHarness(id, context));
+  const sessions = new Sessions((id, context, create) => options.openHarness(id, context, create));
   const models = () => (typeof options.models === "function" ? options.models() : options.models);
   const graphql = createGraphQLHandler({
-    getHarness: (id) => sessions.get(id),
+    getHarness: (id, create) => sessions.get(id, create),
+    isValidExternalId: (id) => options.isValidExternalId(id),
     listHarnesses: (context) => options.listHarnesses(context),
     models,
     bodyLimit: limit,

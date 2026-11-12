@@ -70,7 +70,9 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
 /** @gqlContext */
 export interface ResolverContext {
   readonly context: Chord.Context;
-  readonly session: (externalId: string) => Promise<Durable.Harness | undefined>;
+  readonly isValidExternalId: (externalId: string) => boolean;
+  /** Omitted/false never creates storage. True requests authorized provisioning. */
+  readonly session: (externalId: string, create?: boolean) => Promise<Durable.Harness | undefined>;
   readonly sessions: () => Promise<readonly string[]>;
   readonly models: () => Models;
 }
@@ -337,6 +339,7 @@ const RequestParameters = Type.Object({
 
 export function createGraphQLHandler(options: {
   getHarness: ResolverContext["session"];
+  isValidExternalId: ResolverContext["isValidExternalId"];
   listHarnesses: (context: Chord.Context) => Promise<readonly string[]>;
   models: ResolverContext["models"];
   bodyLimit: number;
@@ -428,7 +431,8 @@ export function createGraphQLHandler(options: {
       }
       const contextValue: ResolverContext = {
         context,
-        session: (externalId) => lookup(() => options.getHarness(externalId)),
+        session: (externalId, create) => lookup(() => options.getHarness(externalId, create)),
+        isValidExternalId: options.isValidExternalId,
         sessions: () => lookup(() => options.listHarnesses(context)),
         models: options.models,
       };
@@ -2374,6 +2378,38 @@ export async function abort(input: AbortInput, ctx: ResolverContext): Promise<bo
     const { handle } = await mutationConversation(ctx, input.conversationId);
     await handle.abort(ctx.context);
     return true;
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/** @gqlInput */
+interface OpenInput {
+  readonly externalId: string;
+}
+
+/** @gqlType */
+interface OpenPayload {
+  /** @gqlField */
+  readonly harness: Harness;
+}
+
+/**
+ * Find or create authorized persisted storage through the shared Harness owner.
+ * Does not create a root, change an existing Harness, or enable scheduling.
+ * @gqlMutationField
+ */
+export async function open(input: OpenInput, ctx: ResolverContext): Promise<OpenPayload | null> {
+  try {
+    let valid: boolean;
+    try {
+      valid = ctx.isValidExternalId(input.externalId);
+    } catch {
+      throw new ResolverError("INTERNAL_SERVER_ERROR");
+    }
+    if (!valid) throw new ResolverError("BAD_REQUEST");
+    if (!(await ctx.session(input.externalId, true))) throw new ResolverError("NOT_FOUND");
+    return { harness: harnessNode(input.externalId) };
   } catch (error) {
     throw mapError(error);
   }

@@ -18,13 +18,15 @@ import { createApi, type ApiOptions } from "durable-api";
 
 export async function serve(
   t: TestContext,
-  options: Omit<ApiOptions, "models" | "listHarnesses"> & {
+  options: Omit<ApiOptions, "models" | "listHarnesses" | "isValidExternalId"> & {
     models?: ApiOptions["models"];
+    isValidExternalId?: ApiOptions["isValidExternalId"];
     listHarnesses?: ApiOptions["listHarnesses"];
   },
 ) {
   const api = createApi({
     models: createModels(),
+    isValidExternalId: (id) => id.length > 0,
     listHarnesses: async () => ["test"],
     ...options,
   });

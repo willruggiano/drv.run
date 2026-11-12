@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest } from "node:http";
@@ -244,45 +244,54 @@ void test("HTTP body limits count streamed bytes; interrupted uploads never exec
   assert.equal(calls, 0);
 });
 
-void test("GraphQL and SSE share acquisition, disconnect does not cancel opening, and shutdown ends both", async (t) => {
-  const { harness } = await openHarness(t);
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<Harness>();
-  const open = t.mock.fn(async (_id: string, context: typeof BACKGROUND_CONTEXT) => {
-    assert.equal(context.abortSignal, undefined);
-    entered.resolve();
-    return release.promise;
+for (const create of [false, true]) {
+  void test(`GraphQL and SSE share acquisition (create=${create}), disconnect does not cancel opening, and shutdown ends both`, async (t) => {
+    const { harness } = await openHarness(t);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<Harness>();
+    const open = t.mock.fn(
+      async (_id: string, context: typeof BACKGROUND_CONTEXT, requested: boolean) => {
+        assert.equal(requested, create);
+        assert.equal(context.abortSignal, undefined);
+        entered.resolve();
+        return release.promise;
+      },
+    );
+    const { url, api, server } = await serve(t, { openHarness: open });
+    const endpoint = new URL("/api/graphql", url);
+    const controller = new AbortController();
+    const disconnected = Promise.withResolvers<void>();
+    server.once("request", (_request, response) => response.once("close", disconnected.resolve));
+    const first = fetch(endpoint, {
+      ...json(
+        create
+          ? 'mutation { open(input:{externalId:"test"}) { harness { id } } }'
+          : '{ harness(externalId:"test") { id } }',
+      ),
+      signal: controller.signal,
+    });
+    await entered.promise;
+    controller.abort();
+    await assert.rejects(first, { name: "AbortError" });
+    await disconnected.promise;
+    const stream = fetch(`${url}/c/1/watch`);
+    const second = fetch(endpoint, json('{ harness(externalId:"test") { externalId } }'));
+    release.resolve(harness);
+    assert.deepEqual(await result(await second), { data: { harness: { externalId: "test" } } });
+    const iterator = events(await stream);
+    assert.equal((await iterator.next()).value?.type, "snapshot");
+    assert.equal(open.mock.callCount(), 1);
+    const closing = api.close();
+    assert.equal(api.close(), closing);
+    const end = await iterator.next();
+    assert.deepEqual(end.value, { type: "end", value: { reason: "cancelled" } });
+    await iterator.next();
+    await closing;
+    assert.deepEqual(await harness.closed, { reason: "closed" });
+    assert.equal((await fetch(endpoint, json("{ __typename }"))).status, 503);
+    assert.equal((await fetch(new URL("/api/models", url))).status, 503);
   });
-  const { url, api, server } = await serve(t, { openHarness: open });
-  const endpoint = new URL("/api/graphql", url);
-  const controller = new AbortController();
-  const disconnected = Promise.withResolvers<void>();
-  server.once("request", (_request, response) => response.once("close", disconnected.resolve));
-  const first = fetch(endpoint, {
-    ...json('{ harness(externalId:"test") { id } }'),
-    signal: controller.signal,
-  });
-  await entered.promise;
-  controller.abort();
-  await assert.rejects(first, { name: "AbortError" });
-  await disconnected.promise;
-  const stream = fetch(`${url}/c/1/watch`);
-  const second = fetch(endpoint, json('{ harness(externalId:"test") { externalId } }'));
-  release.resolve(harness);
-  assert.deepEqual(await result(await second), { data: { harness: { externalId: "test" } } });
-  const iterator = events(await stream);
-  assert.equal((await iterator.next()).value?.type, "snapshot");
-  assert.equal(open.mock.callCount(), 1);
-  const closing = api.close();
-  assert.equal(api.close(), closing);
-  const end = await iterator.next();
-  assert.deepEqual(end.value, { type: "end", value: { reason: "cancelled" } });
-  await iterator.next();
-  await closing;
-  assert.deepEqual(await harness.closed, { reason: "closed" });
-  assert.equal((await fetch(endpoint, json("{ __typename }"))).status, 503);
-  assert.equal((await fetch(new URL("/api/models", url))).status, 503);
-});
+}
 
 void test("catalog comes from deployment and acquisition failures remain execution errors", async (t) => {
   let failing = true;
@@ -570,4 +579,128 @@ void test("shutdown releases a watch acquired by an already admitted request", a
   assert.equal((await pending).status, 503);
   await closing;
   assert.deepEqual(await harness.closed, { reason: "closed" });
+});
+
+void test("open publishes persisted storage without a root and keeps its identity across API restart", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "graphql-provision-"));
+  const owners: Array<{ close(): Promise<void> }> = [];
+  t.after(async () => {
+    for (const owner of owners) await owner.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const models = createModels();
+  const acquisitions: boolean[] = [];
+  const options = {
+    models,
+    isValidExternalId: (id: string) => /^[a-z]+$/.test(id),
+    listHarnesses: () => readdir(directory),
+    async openHarness(id: string, context: typeof BACKGROUND_CONTEXT, create: boolean) {
+      assert.equal(context.abortSignal, undefined);
+      assert.equal(options.isValidExternalId(id), true);
+      acquisitions.push(create);
+      if (!create && !(await readdir(directory)).includes(id)) return undefined;
+      return Harness.open(
+        await openNodeJsonlStorage(join(directory, id), context),
+        { models, registry: createRegistry() },
+        context,
+      );
+    },
+  };
+  const first = await serve(t, options);
+  owners.push(first.api);
+  const endpoint = new URL("/api/graphql", first.url);
+  const catalog = "{ harnesses { id externalId } }";
+  assert.deepEqual(await result(await fetch(endpoint, json(catalog))), { data: { harnesses: [] } });
+  assert.deepEqual(acquisitions, []);
+  assert.deepEqual(
+    await result(await fetch(endpoint, json('{ harness(externalId:"test") { id } }'))),
+    { data: { harness: null } },
+  );
+  assert.equal((await fetch(`${first.url}/inspect`)).status, 404);
+  assert.deepEqual(await readdir(directory), []);
+  const query =
+    'mutation { open(input:{externalId:"test"}) { harness { id externalId root { id } inspect { scheduling } } } }';
+  const [one, two] = await Promise.all([
+    fetch(endpoint, json(query)),
+    fetch(endpoint, json(query)),
+  ]);
+  const opened = await result(one);
+  assert.deepEqual(await result(two), opened);
+  assert.deepEqual(await result(await fetch(endpoint, json(query))), opened);
+  const value = opened.data?.open as { harness: { id: string } };
+  assert.equal(typeof value.harness.id, "string");
+  const identity = { id: value.harness.id, externalId: "test" };
+  assert.deepEqual(opened, {
+    data: { open: { harness: { ...identity, root: null, inspect: { scheduling: "paused" } } } },
+  });
+  assert.deepEqual(acquisitions, [false, false, true]);
+  assert.deepEqual(await result(await fetch(endpoint, json(catalog))), {
+    data: { harnesses: [identity] },
+  });
+  const root = await result(
+    await fetch(
+      endpoint,
+      json("mutation($id:ID!) { root(input:{harnessId:$id}) { conversation { durableId } } }", {
+        id: identity.id,
+      }),
+    ),
+  );
+  assert.deepEqual(root.data, { root: { conversation: { durableId: 1 } } });
+  const iterator = events(await fetch(`${first.url}/c/1/watch`));
+  assert.equal((await iterator.next()).value?.type, "snapshot");
+  const closing = first.api.close();
+  assert.deepEqual((await iterator.next()).value, { type: "end", value: { reason: "cancelled" } });
+  await iterator.next();
+  await closing;
+  const second = await serve(t, options);
+  owners.push(second.api);
+  const reopened = new URL("/api/graphql", second.url);
+  assert.deepEqual(await result(await fetch(reopened, json(catalog))), {
+    data: { harnesses: [identity] },
+  });
+  assert.deepEqual(acquisitions, [false, false, true]);
+  const lookup = await result(
+    await fetch(
+      reopened,
+      json(
+        '{ harness(externalId:"test") { id externalId root { durableId } inspect { scheduling } } }',
+      ),
+    ),
+  );
+  assert.deepEqual(lookup.data, {
+    harness: { ...identity, root: { durableId: 1 }, inspect: { scheduling: "paused" } },
+  });
+  assert.deepEqual(acquisitions, [false, false, true, false]);
+  await second.api.close();
+});
+
+void test("HTTP open validates keys before provisioning and distinguishes refusal from factory failure", async (t) => {
+  let fail = false;
+  const factory = t.mock.fn(
+    async (_id: string, _context: typeof BACKGROUND_CONTEXT, create: boolean) => {
+      assert.equal(create, true);
+      if (fail) throw new StorageRequestError("private provisioning failure");
+      return undefined;
+    },
+  );
+  const { url } = await serve(t, {
+    isValidExternalId: (id) => /^[a-z]+$/.test(id),
+    openHarness: factory,
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const query = "mutation($id:String!) { open(input:{externalId:$id}) { harness { id } } }";
+  for (const id of ["", "../escape", "/absolute"]) {
+    const response = await result(await fetch(endpoint, json(query, { id })));
+    assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+    assert.deepEqual(response.data, { open: null });
+  }
+  assert.equal(factory.mock.callCount(), 0);
+  const denied = await result(await fetch(endpoint, json(query, { id: "archived" })));
+  assert.equal(denied.errors?.[0]?.extensions.code, "NOT_FOUND");
+  assert.equal(factory.mock.callCount(), 1);
+  fail = true;
+  const failed = await result(await fetch(endpoint, json(query, { id: "test" })));
+  assert.equal(failed.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(failed.errors?.[0]?.message, "INTERNAL_SERVER_ERROR");
+  assert.equal(factory.mock.callCount(), 2);
 });
