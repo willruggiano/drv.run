@@ -891,7 +891,7 @@ void test("input validation rejects null overrides outside configure, invalid sc
   assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
 });
 
-void test("error classification depends only on typed failures, not the operation", async (t) => {
+void test("healthy Harness failures retain the default typed error mapping", async (t) => {
   const f = await fixture(t);
   for (const [error, code] of [
     [new StorageRequestError("private"), "BAD_REQUEST"],
@@ -3207,4 +3207,168 @@ void test("document family access authorizes the exact key and accepts a server-
   const denied = { ...address, key: "private" };
   assert.equal(await f.read(denied, ctx), null);
   assert.equal((await f.replace(denied, {}, ctx)).errors?.[0]?.extensions.code, "NOT_FOUND");
+});
+
+for (const method of ["commit", "mintId"] as const) {
+  void test(`fatal Storage.${method} request errors are internal and subsequent calls report SessionFailed`, async (t) => {
+    const f = await fixture(t);
+    const error = new StorageRequestError("private fatal write");
+    const fault = t.mock.method(f.storage, method, async () => {
+      throw error;
+    });
+    const request =
+      "mutation($id:ID!) { createConversation(input:{harnessId:$id,options:{ownership:{kind:ownerless}}}) { conversation { id } } }";
+    const response = await f.run(request, { id: f.harnessId });
+    assert.equal(response.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    assert.equal(response.errors?.[0]?.message, "INTERNAL_SERVER_ERROR");
+    assert.deepEqual(response.errors?.[0]?.path, ["createConversation"]);
+    assert.equal(response.data?.createConversation, null);
+    assert.deepEqual(await f.instance.closed, { reason: "failed", error });
+    const next = await f.run(request, { id: f.harnessId });
+    assert.equal(next.errors?.[0]?.extensions.code, "SESSION_FAILED");
+    assert.equal(fault.mock.callCount(), 1);
+  });
+}
+
+void test("root creation and document replacement classify fatal storage request errors", async (t) => {
+  const f = await fixture(t);
+  const storage = new MemoryStorage();
+  const instance = await Harness.open(
+    storage,
+    { models: createModels(), registry: createRegistry() },
+    execution,
+  );
+  t.after(() => instance.close(execution));
+  t.mock.method(storage, "commit", async () => {
+    throw new StorageRequestError("private root write");
+  });
+  const root = await f.run(
+    "mutation($id:ID!) { root(input:{harnessId:$id}) { conversation { id } } }",
+    { id: f.harnessId },
+    f.request({ session: async () => instance }),
+  );
+  assert.equal(root.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  const docs = await documentFixture(t);
+  t.mock.method(docs.storage, "commit", async () => {
+    throw new StorageRequestError("private document write");
+  });
+  const document = await docs.replace(docs.addresses[0], { saved: true });
+  assert.equal(document.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(document.data?.replaceDocument, null);
+});
+
+void test("a rejected read inside a write-capable commit remains BAD_REQUEST without failing the Harness", async (t) => {
+  const f = await documentFixture(t);
+  const read = f.storage.task.bind(f.storage);
+  let calls = 0;
+  const fault = t.mock.method(f.storage, "task", async (...args: Parameters<typeof read>) => {
+    if (++calls === 2) throw new StorageRequestError("private rejected owner read");
+    return read(...args);
+  });
+  const writes = t.mock.method(f.storage, "commit");
+  const response = await f.replace({
+    kind: f.task.definition.kind,
+    scope: { kind: "task", taskId: f.taskId },
+  });
+  assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  assert.equal(writes.mock.callCount(), 0);
+  fault.mock.restore();
+  assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
+  await f.instance.close(execution);
+  assert.deepEqual(await f.instance.closed, { reason: "closed" });
+});
+
+void test("normal closure and an unrelated terminal cause do not reclassify a rejected request", async (t) => {
+  for (const failed of [false, true]) {
+    const f = await fixture(t);
+    const rejected = new StorageRequestError("private rejected read");
+    const fatal = new StorageRequestError("different terminal cause");
+    t.mock.method(f.instance, "root", async () => {
+      if (failed) {
+        t.mock.method(f.storage, "commit", async () => {
+          throw fatal;
+        });
+        await assert.rejects(
+          f.root.configure({ cwd: "/failure" }, execution),
+          (error: unknown) => error === fatal,
+        );
+      } else {
+        await f.instance.close(execution);
+      }
+      throw rejected;
+    });
+    const response = await f.run(
+      "mutation($id:ID!) { root(input:{harnessId:$id}) { conversation { id } } }",
+      { id: f.harnessId },
+    );
+    assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+    assert.deepEqual(
+      await f.instance.closed,
+      failed ? { reason: "failed", error: fatal } : { reason: "closed" },
+    );
+  }
+});
+
+void test("fatal-error classification waits for the terminal cause but remains request-cancellable", async (t) => {
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const f = await fixture(t);
+  const closing = Promise.withResolvers<void>();
+  const waiting = Promise.withResolvers<void>();
+  const terminal = f.instance.closed;
+  t.mock.getter(f.instance, "closed", () => {
+    waiting.resolve();
+    return terminal;
+  });
+  const close = f.storage.close.bind(f.storage);
+  t.mock.method(f.storage, "close", async (context: ResolverContext["context"]) => {
+    closing.resolve();
+    await release.promise;
+    await close(context);
+  });
+  const error = new StorageRequestError("private fatal storage request");
+  t.mock.method(f.storage, "commit", async () => {
+    throw error;
+  });
+  const controller = new AbortController();
+  const response = f.run(
+    'mutation($id:ID!) { configure(input:{conversationId:$id,change:{cwd:"/changed"}}) }',
+    { id: f.conversationId },
+    f.request({ context: withAbortSignal(controller.signal, execution) }),
+  );
+  await closing.promise;
+  await waiting.promise;
+  controller.abort();
+  const result = await response;
+  assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(result.data?.configure, null);
+  release.resolve();
+  assert.deepEqual(await f.instance.closed, { reason: "failed", error });
+});
+
+void test("write operations release their close observer after success and rejection", async (t) => {
+  const f = await fixture(t);
+  const listeners = new Set<() => void>();
+  const subscribe = f.instance.subscribeClose.bind(f.instance);
+  t.mock.method(f.instance, "subscribeClose", (listener: () => void) => {
+    listeners.add(listener);
+    const stop = subscribe(listener);
+    return () => {
+      assert.equal(listeners.delete(listener), true);
+      stop();
+    };
+  });
+  const request =
+    'mutation($id:ID!) { configure(input:{conversationId:$id,change:{cwd:"/value"}}) }';
+  assert.equal((await f.run(request, { id: f.conversationId })).errors, undefined);
+  assert.equal(listeners.size, 0);
+  t.mock.method(f.instance, "conversation", async () => f.root);
+  t.mock.method(f.root, "configure", async () => {
+    throw new StorageRequestError("rejected");
+  });
+  assert.equal(
+    (await f.run(request, { id: f.conversationId })).errors?.[0]?.extensions.code,
+    "BAD_REQUEST",
+  );
+  assert.equal(listeners.size, 0);
 });

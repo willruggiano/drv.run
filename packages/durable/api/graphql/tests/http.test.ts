@@ -369,7 +369,7 @@ void test("failed Harnesses reopen from persisted storage for both protocols wit
   const commit = storage.commit.bind(storage);
   const fault = t.mock.method(storage, "commit", async (...args: Parameters<typeof commit>) => {
     await commit(...args);
-    throw new Error("private failure after persistence");
+    throw new StorageRequestError("private failure after persistence");
   });
   const failed = await result(
     await fetch(

@@ -40,7 +40,7 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
  * SPEC.md. There is no watch, subscription, remote wait, or task-control API.
  *
  * Execution failures use GraphQL errors, not success payloads. extensions.code is
- * BAD_REQUEST for adapter validation and typed StorageRequestError,
+ * BAD_REQUEST for adapter validation and rejected storage reads,
  * NOT_FOUND for missing mutation targets, CONVERSATION_BUSY for typed
  * ConversationBusy, SESSION_FAILED for typed SessionFailed, and INTERNAL_SERVER_ERROR
  * otherwise. Mapping is independent of the operation. ReadAfterWrite, untyped
@@ -127,11 +127,6 @@ class ResolverError extends GraphQLError {
   }
 }
 
-// TODO(production): distinguish StorageRequestError from rejected storage reads
-// (BAD_REQUEST) from fatal Storage.commit()/mintId() failures (INTERNAL_SERVER_ERROR).
-// This type-only mapping is provisional; subsequent SessionFailed remains SESSION_FAILED.
-// A read inside Harness.commit() is still a read, not a Storage.commit() failure.
-// See SPEC.md "Validation and errors" and pi-durable/dist/session/session.js's storage guard.
 function mapError(error?: unknown): ResolverError {
   if (error instanceof ResolverError) return error;
   if (error instanceof SessionFailed) return new ResolverError("SESSION_FAILED");
@@ -557,6 +552,34 @@ function globalId(kind: NodeKind, externalId: string, id: number | null = null):
 function harnessNode(externalId: string): Harness {
   return { __typename: "Harness", id: globalId("Harness", externalId), externalId };
 }
+// StorageRequestError from a rejected read does not fail the Session. A fatal
+// commit()/mintId() failure closes it synchronously, then closed reports its cause.
+// Observe that outcome rather than classifying every error from a mutation as fatal.
+async function harnessOperation<T>(
+  instance: Durable.Harness,
+  ctx: ResolverContext,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let closing = false;
+  const stop = instance.subscribeClose(() => {
+    closing = true;
+  });
+  let result: T;
+  try {
+    result = await operation();
+  } catch (error) {
+    stop();
+    if (error instanceof StorageRequestError && closing) {
+      const end = await awaitWithContext(instance.closed, ctx.context);
+      if (end.reason === "failed" && end.error === error)
+        throw new ResolverError("INTERNAL_SERVER_ERROR");
+    }
+    throw error;
+  }
+  stop();
+  return result;
+}
+
 async function requireHarness(ctx: ResolverContext, source: Harness) {
   const instance = await ctx.session(source.externalId);
   if (!instance) throw new ResolverError("NOT_FOUND");
@@ -566,7 +589,7 @@ async function requireConversation(ctx: ResolverContext, source: ConversationRec
   const instance = await requireHarness(ctx, source.harness);
   const handle = await instance.conversation(source.durableId, ctx.context);
   if (!handle) throw new ResolverError("NOT_FOUND");
-  return handle;
+  return { instance, handle };
 }
 
 function projectConversation(
@@ -643,7 +666,7 @@ async function mutationConversation(ctx: ResolverContext, id: ID) {
   assert("__typename" in source && source.__typename === "ConversationRecord");
   return {
     source: source as ConversationRecord,
-    handle: await requireConversation(ctx, source as ConversationRecord),
+    ...(await requireConversation(ctx, source as ConversationRecord)),
   };
 }
 
@@ -1419,35 +1442,37 @@ export async function replaceDocument(
       checkpointWhen: original.checkpointWhen.bind(original),
       ...(original.migrate === undefined ? {} : { migrate: original.migrate.bind(original) }),
     };
-    return await instance.commit(async (tx) => {
-      if (!(await documentOwner(tx, scope))) throw new ResolverError("NOT_FOUND");
-      let draft: Durable.JsonObject;
-      switch (definition.scope) {
-        case "session":
-          draft =
-            "family" in definition
-              ? await tx.doc({ definition }, key!, write.seed ?? null)
-              : await tx.doc({ definition });
-          break;
-        case "conversation":
-          assert(scope.kind === "conversation");
-          draft =
-            "family" in definition
-              ? await tx.doc({ definition }, scope.conversationId, key!, write.seed ?? null)
-              : await tx.doc({ definition }, scope.conversationId);
-          break;
-        case "task":
-          assert(scope.kind === "task");
-          draft =
-            "family" in definition
-              ? await tx.doc({ definition }, scope.taskId, key!, write.seed ?? null)
-              : await tx.doc({ definition }, scope.taskId);
-          break;
-      }
-      for (const property of Object.keys(draft)) delete draft[property];
-      Object.assign(draft, content);
-      return jsonObject(draft);
-    }, ctx.context);
+    return await harnessOperation(instance, ctx, () =>
+      instance.commit(async (tx) => {
+        if (!(await documentOwner(tx, scope))) throw new ResolverError("NOT_FOUND");
+        let draft: Durable.JsonObject;
+        switch (definition.scope) {
+          case "session":
+            draft =
+              "family" in definition
+                ? await tx.doc({ definition }, key!, write.seed ?? null)
+                : await tx.doc({ definition });
+            break;
+          case "conversation":
+            assert(scope.kind === "conversation");
+            draft =
+              "family" in definition
+                ? await tx.doc({ definition }, scope.conversationId, key!, write.seed ?? null)
+                : await tx.doc({ definition }, scope.conversationId);
+            break;
+          case "task":
+            assert(scope.kind === "task");
+            draft =
+              "family" in definition
+                ? await tx.doc({ definition }, scope.taskId, key!, write.seed ?? null)
+                : await tx.doc({ definition }, scope.taskId);
+            break;
+        }
+        for (const property of Object.keys(draft)) delete draft[property];
+        Object.assign(draft, content);
+        return jsonObject(draft);
+      }, ctx.context),
+    );
   } catch (error) {
     throw mapError(error);
   }
@@ -1675,7 +1700,8 @@ interface ConversationRecord extends Node {
  */
 export async function agent(source: ConversationRecord, ctx: ResolverContext): Promise<Agent> {
   try {
-    const value = await (await requireConversation(ctx, source)).agent(ctx.context);
+    const { handle } = await requireConversation(ctx, source);
+    const value = await handle.agent(ctx.context);
     return {
       model: value.model ?? null,
       thinkingLevel: value.thinkingLevel,
@@ -1734,8 +1760,8 @@ export async function entries(
   try {
     checked(PageLimit, limit);
     const filters = nonNull(query);
-    const instance = await requireConversation(ctx, source);
-    const page = await instance.entries(filters, limit, cursor ?? undefined, ctx.context);
+    const { handle } = await requireConversation(ctx, source);
+    const page = await handle.entries(filters, limit, cursor ?? undefined, ctx.context);
     return connection(page, (record) => entryRecord(source.harness, record));
   } catch (error) {
     throw mapError(error);
@@ -1753,9 +1779,8 @@ export async function context(
 ): Promise<ContextView> {
   try {
     if (at === null) throw new ResolverError("BAD_REQUEST");
-    const value = await (
-      await requireConversation(ctx, source)
-    ).context(ctx.context, at === undefined ? {} : { at });
+    const { handle } = await requireConversation(ctx, source);
+    const value = await handle.context(ctx.context, at === undefined ? {} : { at });
     return {
       head: value.head ? entryRecord(source.harness, value.head) : null,
       entries: value.entries.map((entry) => entryRecord(source.harness, entry)),
@@ -2605,8 +2630,10 @@ export async function submit(
   ctx: ResolverContext,
 ): Promise<SubmitPayload | null> {
   try {
-    const { source, handle } = await mutationConversation(ctx, input.conversationId);
-    const result = await handle.submit(submissionDraft(input.submission), ctx.context);
+    const { source, handle, instance } = await mutationConversation(ctx, input.conversationId);
+    const result = await harnessOperation(instance, ctx, () =>
+      handle.submit(submissionDraft(input.submission), ctx.context),
+    );
     return {
       submissionId: globalId("SubmissionRecord", source.harness.externalId, result.id),
     };
@@ -2637,9 +2664,10 @@ export async function abortSubmission(
   ctx: ResolverContext,
 ): Promise<AbortSubmissionPayload | null> {
   try {
-    const { source } = await mutationConversation(ctx, input.conversationId);
-    const instance = await requireHarness(ctx, source.harness);
-    const result = await instance.abortSubmission(input.id, ctx.context, source.durableId);
+    const { source, instance } = await mutationConversation(ctx, input.conversationId);
+    const result = await harnessOperation(instance, ctx, () =>
+      instance.abortSubmission(input.id, ctx.context, source.durableId),
+    );
     return { result };
   } catch (error) {
     throw mapError(error);
@@ -2669,8 +2697,8 @@ interface AbortInput {
  */
 export async function abort(input: AbortInput, ctx: ResolverContext): Promise<boolean | null> {
   try {
-    const { handle } = await mutationConversation(ctx, input.conversationId);
-    await handle.abort(ctx.context);
+    const { handle, instance } = await mutationConversation(ctx, input.conversationId);
+    await harnessOperation(instance, ctx, () => handle.abort(ctx.context));
     return true;
   } catch (error) {
     throw mapError(error);
@@ -2736,7 +2764,7 @@ export async function root(input: RootInput, ctx: ResolverContext): Promise<Root
     if (input.options === null) throw new ResolverError("BAD_REQUEST");
     const options = input.options === undefined ? undefined : nonNull(input.options);
     const { source, instance } = await mutationHarness(ctx, input.harnessId);
-    const handle = await instance.root(ctx.context, options);
+    const handle = await harnessOperation(instance, ctx, () => instance.root(ctx.context, options));
     return { conversation: await createdConversation(instance, source, handle.id, ctx) };
   } catch (error) {
     throw mapError(error);
@@ -2790,7 +2818,9 @@ export async function createConversation(
     const { source, instance } = await mutationHarness(ctx, input.harnessId);
     if (ownership.kind === "task" && !(await instance.getTask(ownership.taskId, ctx.context)))
       throw new ResolverError("NOT_FOUND");
-    const handle = await instance.createConversation({ ...options, ownership }, ctx.context);
+    const handle = await harnessOperation(instance, ctx, () =>
+      instance.createConversation({ ...options, ownership }, ctx.context),
+    );
     return { conversation: await createdConversation(instance, source, handle.id, ctx) };
   } catch (error) {
     throw mapError(error);
@@ -2830,9 +2860,10 @@ interface ResetInput {
  */
 export async function reset(input: ResetInput, ctx: ResolverContext): Promise<boolean | null> {
   try {
-    if (input.handoff === null) throw new ResolverError("BAD_REQUEST");
-    const { handle } = await mutationConversation(ctx, input.conversationId);
-    await handle.reset(input.handoff, ctx.context);
+    const { handoff } = input;
+    if (handoff === null) throw new ResolverError("BAD_REQUEST");
+    const { handle, instance } = await mutationConversation(ctx, input.conversationId);
+    await harnessOperation(instance, ctx, () => handle.reset(handoff, ctx.context));
     return true;
   } catch (error) {
     throw mapError(error);
@@ -2863,9 +2894,12 @@ export async function compact(
   ctx: ResolverContext,
 ): Promise<CompactPayload | null> {
   try {
-    if (input.instructions === null) throw new ResolverError("BAD_REQUEST");
-    const { source, handle } = await mutationConversation(ctx, input.conversationId);
-    const id = await handle.compact(input.instructions, ctx.context);
+    const { instructions } = input;
+    if (instructions === null) throw new ResolverError("BAD_REQUEST");
+    const { source, handle, instance } = await mutationConversation(ctx, input.conversationId);
+    const id = await harnessOperation(instance, ctx, () =>
+      handle.compact(instructions, ctx.context),
+    );
     return {
       taskId: globalId("TaskRecord", source.harness.externalId, id),
     };
@@ -2912,8 +2946,8 @@ export async function configure(
   ctx: ResolverContext,
 ): Promise<boolean | null> {
   try {
-    const { handle } = await mutationConversation(ctx, input.conversationId);
-    await handle.configure(input.change, ctx.context);
+    const { handle, instance } = await mutationConversation(ctx, input.conversationId);
+    await harnessOperation(instance, ctx, () => handle.configure(input.change, ctx.context));
     return true;
   } catch (error) {
     throw mapError(error);
