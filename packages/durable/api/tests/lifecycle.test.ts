@@ -6,7 +6,7 @@ import type { Harness } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createApi } from "durable-api";
 import { Sessions } from "../src/sessions.ts";
-import { openHarness, serve, unavailableSettings } from "./fixtures.ts";
+import { openHarness, serve, unavailableSettings, unavailableInventory } from "./fixtures.ts";
 
 void test("concurrent requests share one open; cancelling a waiter does not cancel opening", async (t) => {
   const { harness } = await openHarness(t);
@@ -112,6 +112,7 @@ void test("shutdown attempts every Harness and reports close failures", async (t
     models: createModels(),
     documents: { definitions: async () => [], resolve: async () => undefined },
     settings: unavailableSettings,
+    inventory: unavailableInventory,
     isValidExternalId: (id) => id.length > 0,
     listHarnesses: async () => ["first", "second"],
     openHarness: async (id) => (id === "first" ? first.harness : second.harness),

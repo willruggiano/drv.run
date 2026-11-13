@@ -78,6 +78,7 @@ export interface ResolverContext {
   readonly models: () => Models;
   readonly documents: DocumentService;
   readonly settings: SettingsService;
+  readonly inventory: InventoryService;
 }
 
 type DocumentToken =
@@ -208,7 +209,7 @@ export type JsonObject = Type.Static<typeof JsonObject>;
 const Cursor = JsonObject;
 /**
  * Backend-owned JSON continuation state. Round-trip it unchanged to the same
- * upstream scan; storage validates it. Null means no continuation.
+ * list or scan; its owning service validates scope. Null means no continuation.
  * @gqlScalar
  */
 export type Cursor = Type.Static<typeof Cursor>;
@@ -375,6 +376,7 @@ const RequestParameters = Type.Object({
 export function createGraphQLHandler(options: {
   documents: DocumentService;
   settings: SettingsService;
+  inventory: InventoryService;
   getHarness: ResolverContext["session"];
   isValidExternalId: ResolverContext["isValidExternalId"];
   listHarnesses: (context: Chord.Context) => Promise<readonly string[]>;
@@ -470,6 +472,7 @@ export function createGraphQLHandler(options: {
         context,
         documents: options.documents,
         settings: options.settings,
+        inventory: options.inventory,
         session: (externalId, create) => lookup(() => options.getHarness(externalId, create)),
         isValidExternalId: options.isValidExternalId,
         sessions: () => lookup(() => options.listHarnesses(context)),
@@ -536,20 +539,17 @@ const NodeKind = Type.Enum([
   "SubmissionRecord",
 ]);
 type NodeKind = Type.Static<typeof NodeKind>;
-const Identity = Type.Tuple([
-  Type.Literal(1),
-  NodeKind,
-  Type.String(),
-  Type.Union([SafeInteger, Type.Null()]),
+const ServiceKey = Type.String({ minLength: 1 });
+const Identity = Type.Union([
+  Type.Tuple([Type.Literal(1), NodeKind, Type.String(), Type.Union([SafeInteger, Type.Null()])]),
+  Type.Tuple([Type.Literal(1), Type.Literal("Instance"), ServiceKey, ServiceKey]),
 ]);
 function identity(id: ID) {
-  const [_, kind, externalId, durableId] = checked(Identity, decodeId(id));
-  if (
-    encodeId([1, kind, externalId, durableId]) !== id ||
-    (kind === "Harness") !== (durableId === null)
-  )
-    throw new ResolverError("BAD_REQUEST");
-  return { kind, externalId, durableId };
+  const [_, kind, scope, key] = checked(Identity, decodeId(id));
+  if (encodeId([1, kind, scope, key]) !== id) throw new ResolverError("BAD_REQUEST");
+  if (kind === "Instance") return { kind, namespace: scope, serviceId: key };
+  if ((kind === "Harness") !== (key === null)) throw new ResolverError("BAD_REQUEST");
+  return { kind, externalId: scope, durableId: key };
 }
 function globalId(kind: NodeKind, externalId: string, id: number | null = null): ID {
   return encodeId([1, kind, externalId, id]);
@@ -1122,10 +1122,10 @@ function entryRecord(owner: Harness, record: Durable.EntryRecord): EntryRecord {
 }
 
 /**
- * Globally refetchable identity. IDs encode object type, persisted session identity,
- * and the durable ID where applicable. They survive Harness reopen and are never
- * reused for replacement storage. An inherited entry has the same ID in every
- * conversation. Clients must not decode IDs.
+ * Globally refetchable identity. IDs encode object type and an authorized service
+ * namespace/resource key, or persisted session identity and a durable ID. Durable IDs
+ * survive Harness reopen and are never reused for replacement storage. An inherited
+ * entry has the same ID in every conversation. Clients must not decode IDs.
  *
  * Each resolver reads independently. Repeated IDs do not imply a shared snapshot
  * across node(), connections, or inspection while the Harness is mutating.
@@ -1143,6 +1143,17 @@ interface Node {
 export async function node(id: ID, ctx: ResolverContext): Promise<Node | null> {
   try {
     const target = identity(id);
+    if (target.kind === "Instance") {
+      return await serviceCall(ctx, async () => {
+        const namespace = checked(ServiceKey, ctx.inventory.namespace);
+        if (target.namespace !== namespace) return null;
+        const record = await ctx.inventory.lookup(target.serviceId, ctx.context);
+        if (record === undefined) return null;
+        const result = instanceNode(namespace, record);
+        assert.equal(result.serviceId, target.serviceId);
+        return result;
+      });
+    }
     const instance = await ctx.session(target.externalId);
     if (!instance) return null;
     const owner = harnessNode(target.externalId);
@@ -1289,7 +1300,13 @@ async function documentOwner(
 async function serviceCall<T>(ctx: ResolverContext, call: () => T | Promise<T>): Promise<T> {
   try {
     ctx.context.abortSignal?.throwIfAborted();
-    return await awaitWithContext(Promise.resolve(call()), ctx.context);
+    // Attach the waiter before invoking the service: synchronous cancellation
+    // must not leave a rejected service promise unobserved.
+    const pending = Promise.resolve().then(() => {
+      ctx.context.abortSignal?.throwIfAborted();
+      return call();
+    });
+    return await awaitWithContext(pending, ctx.context);
   } catch {
     throw new ResolverError("INTERNAL_SERVER_ERROR");
   }
@@ -3220,4 +3237,239 @@ export async function saveSettings(
   } catch (error) {
     throw mapError(error);
   }
+}
+
+interface InventoryRecord {
+  readonly id: string;
+  readonly unit: string;
+}
+interface InventoryPage {
+  readonly items: readonly InventoryRecord[];
+  readonly next?: Cursor | null;
+}
+interface InventoryPhase {
+  readonly phase: string;
+  readonly clock: string;
+  readonly monotonic_s: number;
+  readonly resolution_s: number;
+}
+interface InventoryTimings {
+  readonly invocation_id: string;
+  readonly activation_us?: number | null;
+  readonly worker_us?: number | null;
+  readonly boot_wait_us?: number | null;
+  readonly provision_us?: number | null;
+  readonly manager_gaps_us?: number | null;
+  readonly host_phases?: readonly InventoryPhase[] | null;
+  readonly guest_phases?: readonly InventoryPhase[] | null;
+}
+
+// Authorized read-only binding. Membership combines retained inventory and known
+// units, including stopped/starting instances. Enumeration failure must throw,
+// never return partial membership. No operation starts or connects to a guest.
+interface InventoryService {
+  /** Stable, non-secret owner/deployment namespace; never reuse resource IDs. */
+  readonly namespace: string;
+  /** One page in ascending service-owned identity order; validate cursor scope. */
+  list(
+    limit: number,
+    cursor: Cursor | undefined,
+    context: Chord.Context,
+  ): Promise<InventoryPage | { readonly invalidCursor: true }>;
+  lookup(id: string, context: Chord.Context): Promise<InventoryRecord | undefined>;
+  /** Authorize each observation. Undefined means unavailable, not a read failure. */
+  flakeReference(id: string, context: Chord.Context): Promise<string | undefined>;
+  state(id: string, context: Chord.Context): Promise<InstanceState | undefined>;
+  /** One invocation only. Omit unavailable/invalid/unfinished startup durations. */
+  timings(id: string, context: Chord.Context): Promise<InventoryTimings | undefined>;
+}
+
+/** @gqlType */
+interface Instance extends Node {
+  readonly __typename: "Instance";
+  readonly serviceId: string;
+  /** @gqlField */
+  readonly id: ID;
+  /** @gqlField */
+  readonly unit: string;
+}
+/** @gqlType */
+interface InstanceState {
+  /** @gqlField */
+  readonly activeState: string;
+  /** @gqlField */
+  readonly subState: string;
+  /** @gqlField */
+  readonly result?: string | null;
+}
+/** @gqlType */
+interface InstanceTimings {
+  /** @gqlField */
+  readonly invocationId: string;
+  /** @gqlField */
+  readonly activationUs?: Float | null;
+  /** @gqlField */
+  readonly workerUs?: Float | null;
+  /** @gqlField */
+  readonly bootWaitUs?: Float | null;
+  /** @gqlField */
+  readonly provisionUs?: Float | null;
+  /** @gqlField */
+  readonly managerGapsUs?: Float | null;
+  /** @gqlField */
+  readonly hostPhases?: readonly InstanceTimingPhase[] | null;
+  /** @gqlField */
+  readonly guestPhases?: readonly InstanceTimingPhase[] | null;
+}
+/** @gqlType */
+interface InstanceTimingPhase {
+  /** @gqlField */
+  readonly phase: string;
+  /** @gqlField */
+  readonly clock: string;
+  /** @gqlField */
+  readonly monotonicSeconds: Float;
+  /** @gqlField */
+  readonly resolutionSeconds: Float;
+}
+
+const InventoryRecord = Type.Object({ id: ServiceKey, unit: ServiceKey });
+const InstanceState = Type.Object({
+  activeState: Type.String(),
+  subState: Type.String(),
+  result: Type.Union([Type.String(), Type.Null()]),
+});
+const Duration = Type.Union([Type.Number({ minimum: 0 }), Type.Null()]);
+const TimingPhases = Type.Union([
+  Type.Array(
+    Type.Object({
+      phase: Type.String(),
+      clock: Type.String(),
+      monotonicSeconds: Type.Number({ minimum: 0 }),
+      resolutionSeconds: Type.Number({ exclusiveMinimum: 0 }),
+    }),
+  ),
+  Type.Null(),
+]);
+const InstanceTimings = Type.Object({
+  invocationId: ServiceKey,
+  activationUs: Duration,
+  workerUs: Duration,
+  bootWaitUs: Duration,
+  provisionUs: Duration,
+  managerGapsUs: Duration,
+  hostPhases: TimingPhases,
+  guestPhases: TimingPhases,
+});
+
+function instanceNode(namespace: string, record: InventoryRecord): Instance {
+  const { id, unit } = record;
+  assert(Value.Check(InventoryRecord, { id, unit }));
+  return {
+    __typename: "Instance",
+    id: encodeId([1, "Instance", namespace, id]),
+    serviceId: id,
+    unit,
+  };
+}
+
+/**
+ * Read one inventory page without acquiring a Harness or connecting to guests.
+ * Membership and ordering belong to the inventory service, not the Harness catalog.
+ * @gqlQueryField
+ */
+export async function instances(
+  limit: Int,
+  ctx: ResolverContext,
+  cursor?: Cursor | null,
+): Promise<Connection<Instance> | null> {
+  try {
+    checked(PageLimit, limit);
+    const result = await serviceCall(ctx, async () => {
+      const namespace = checked(ServiceKey, ctx.inventory.namespace);
+      const page = await ctx.inventory.list(limit, cursor ?? undefined, ctx.context);
+      if ("invalidCursor" in page) {
+        assert.equal(page.invalidCursor, true);
+        return undefined;
+      }
+      const { items, next } = page;
+      assert(Array.isArray(items) && items.length <= limit);
+      const nodes = items.map((record) => instanceNode(namespace, record));
+      assert.equal(new Set(nodes.map((record) => record.serviceId)).size, nodes.length);
+      const continuation = structuredClone(next ?? null);
+      assert(continuation === null || Value.Check(Cursor, continuation));
+      return { nodes, pageInfo: { next: continuation } };
+    });
+    if (result === undefined) throw new ResolverError("BAD_REQUEST");
+    return result;
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/** Unavailable metadata is null; observation errors do not erase membership. @gqlField flakeReference */
+export async function instanceFlakeReference(
+  source: Instance,
+  ctx: ResolverContext,
+): Promise<string | null> {
+  return serviceCall(ctx, async () => {
+    const value = await ctx.inventory.flakeReference(source.serviceId, ctx.context);
+    if (value === undefined) return null;
+    assert(typeof value === "string");
+    return value;
+  });
+}
+
+/** Observed systemd strings, without conversion to a closed enum. @gqlField state */
+export async function instanceState(
+  source: Instance,
+  ctx: ResolverContext,
+): Promise<InstanceState | null> {
+  return serviceCall(ctx, async () => {
+    const value = await ctx.inventory.state(source.serviceId, ctx.context);
+    if (value === undefined) return null;
+    const result = {
+      activeState: value.activeState,
+      subState: value.subState,
+      result: value.result ?? null,
+    };
+    assert(Value.Check(InstanceState, result));
+    return result;
+  });
+}
+
+function instancePhase(value: InventoryPhase): InstanceTimingPhase {
+  return {
+    phase: value.phase,
+    clock: value.clock,
+    monotonicSeconds: value.monotonic_s,
+    resolutionSeconds: value.resolution_s,
+  };
+}
+
+/**
+ * Durations are microseconds; phase samples retain their clock and seconds.
+ * The service validates invocation coherence and activation success. No clocks are combined here.
+ * @gqlField timings
+ */
+export async function instanceTimings(
+  source: Instance,
+  ctx: ResolverContext,
+): Promise<InstanceTimings | null> {
+  return serviceCall(ctx, async () => {
+    const value = await ctx.inventory.timings(source.serviceId, ctx.context);
+    if (value === undefined) return null;
+    const result: InstanceTimings = {
+      invocationId: value.invocation_id,
+      activationUs: value.activation_us ?? null,
+      workerUs: value.worker_us ?? null,
+      bootWaitUs: value.boot_wait_us ?? null,
+      provisionUs: value.provision_us ?? null,
+      managerGapsUs: value.manager_gaps_us ?? null,
+      hostPhases: value.host_phases?.map(instancePhase) ?? null,
+      guestPhases: value.guest_phases?.map(instancePhase) ?? null,
+    };
+    assert(Value.Check(InstanceTimings, result));
+    return result;
+  });
 }

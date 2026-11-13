@@ -42,7 +42,12 @@ import {
 } from "@earendil-works/pi-durable";
 import { createSchema, type ResolverContext } from "../src/index.ts";
 
-import { unavailableSettings, settingsFixture } from "../../tests/fixtures.ts";
+import {
+  unavailableSettings,
+  settingsFixture,
+  unavailableInventory,
+  inventoryFixture,
+} from "../../tests/fixtures.ts";
 
 const execution = BACKGROUND_CONTEXT;
 const schema = createSchema();
@@ -71,6 +76,7 @@ function catalogContext(models: ResolverContext["models"], context = execution):
     models,
     documents: { definitions: async () => [], resolve: async () => undefined },
     settings: unavailableSettings,
+    inventory: unavailableInventory,
     isValidExternalId() {
       assert.fail("catalog reads must not validate external IDs");
     },
@@ -106,6 +112,7 @@ async function fixture(t: TestContext, externalId = "test") {
       context: execution,
       documents: { definitions: async () => [], resolve: async () => undefined },
       settings: unavailableSettings,
+      inventory: unavailableInventory,
       isValidExternalId: (id) => id.length > 0,
       session: async (id) => (id === externalId ? instance : undefined),
       sessions: async () => [externalId],
@@ -3754,4 +3761,560 @@ void test("settings and Durable fields coexist without changing an open Harness 
   });
   assert.deepEqual(await f.instance.inspect(execution), before);
   assert.deepEqual(await f.root.agent(execution), agentBefore);
+});
+
+const instanceFields = `id unit flakeReference state { activeState subState result }
+  timings { invocationId activationUs workerUs bootWaitUs provisionUs managerGapsUs
+    hostPhases { phase clock monotonicSeconds resolutionSeconds }
+    guestPhases { phase clock monotonicSeconds resolutionSeconds }
+  }`;
+function inventoryContext(inventory = inventoryFixture()): ResolverContext {
+  return { ...catalogContext(() => assert.fail("inventory must not acquire models")), inventory };
+}
+async function inventoryPage(ctx: ResolverContext, limit = 3, cursor?: Cursor | null) {
+  const result = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `query($limit:Int!,$cursor:Cursor) { instances(limit:$limit,cursor:$cursor) { nodes { id unit } pageInfo { next } } }`,
+    variableValues: { limit, cursor },
+  });
+  assert.equal(result.errors, undefined);
+  assert(result.data?.instances);
+  // Response boundary: service identity and page state, not serialized text.
+  return result.data.instances as {
+    nodes: { id: string; unit: string }[];
+    pageInfo: { next: Cursor | null };
+  };
+}
+
+void test("instance inventory pages preserve service order and cursors without lookahead or Harness acquisition", async (t) => {
+  const ctx = inventoryContext();
+  const list = t.mock.method(ctx.inventory, "list");
+  const metadata = [
+    t.mock.method(ctx.inventory, "flakeReference"),
+    t.mock.method(ctx.inventory, "state"),
+    t.mock.method(ctx.inventory, "timings"),
+  ];
+  const first = await inventoryPage(ctx, 2, null);
+  assert.deepEqual(
+    first.nodes.map((row) => row.unit),
+    ["drv.run@retained.service", "drv.run@running.service"],
+  );
+  assert.deepEqual(first.pageInfo.next, { namespace: ctx.inventory.namespace, after: "running" });
+  assert.equal(list.mock.callCount(), 1);
+  assert.deepEqual(list.mock.calls[0]!.arguments, [2, undefined, execution]);
+  const second = await inventoryPage(ctx, 2, first.pageInfo.next);
+  assert.deepEqual(
+    second.nodes.map((row) => row.unit),
+    ["drv.run@starting.service"],
+  );
+  assert.equal(second.pageInfo.next, null);
+  assert.equal(list.mock.callCount(), 2);
+  assert.deepEqual(list.mock.calls[1]!.arguments, [2, first.pageInfo.next, execution]);
+  const empty = await inventoryPage(ctx, 2, {
+    namespace: ctx.inventory.namespace,
+    after: "starting",
+  });
+  assert.deepEqual(empty.nodes, []);
+  assert.equal(empty.pageInfo.next, null);
+  for (const read of metadata) assert.equal(read.mock.callCount(), 0);
+});
+
+void test("inventory identities survive service recreation, isolate namespaces, and refetch without enumeration", async (t) => {
+  const ctx = inventoryContext();
+  const page = await inventoryPage(ctx);
+  const restored = inventoryContext(inventoryFixture());
+  assert.deepEqual(await inventoryPage(restored), page);
+  const other = inventoryContext(inventoryFixture("other-owner"));
+  const otherPage = await inventoryPage(other);
+  assert.notEqual(otherPage.nodes[0]!.id, page.nodes[0]!.id);
+  const list = t.mock.method(restored.inventory, "list", async () =>
+    assert.fail("node must not enumerate inventory"),
+  );
+  const lookup = t.mock.method(restored.inventory, "lookup");
+  const id = page.nodes[0]!.id;
+  const response = await graphql({
+    schema,
+    contextValue: restored,
+    source: `query($id:ID!) { node(id:$id) { __typename id ... on Instance { unit } } }`,
+    variableValues: { id },
+  });
+  assert.equal(response.errors, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(response.data)), {
+    node: { __typename: "Instance", ...page.nodes[0] },
+  });
+  assert.deepEqual(lookup.mock.calls[0]!.arguments, ["retained", execution]);
+  assert.equal(list.mock.callCount(), 0);
+  const foreign = t.mock.method(other.inventory, "lookup", async () =>
+    assert.fail("foreign namespace must not reach lookup"),
+  );
+  assert.equal(
+    (
+      await graphql({
+        schema,
+        contextValue: other,
+        source: `query($id:ID!) { node(id:$id) { id } }`,
+        variableValues: { id },
+      })
+    ).data?.node,
+    null,
+  );
+  assert.equal(foreign.mock.callCount(), 0);
+  t.mock.method(restored.inventory, "lookup", async () => undefined);
+  assert.equal(
+    (
+      await graphql({
+        schema,
+        contextValue: restored,
+        source: `query($id:ID!) { node(id:$id) { id } }`,
+        variableValues: { id },
+      })
+    ).data?.node,
+    null,
+  );
+});
+
+void test("inventory identity validation rejects malformed scopes and Durable mutation targets", async () => {
+  const ctx = inventoryContext();
+  for (const parts of [
+    [1, "Instance", "", "id"],
+    [1, "Instance", "ns", ""],
+    [1, "Instance", "ns", null],
+    [1, "Instance", "ns", 1],
+    [1, "Instance", "ns"],
+    [2, "Instance", "ns", "id"],
+    [1, "Harness", "ns", "id"],
+  ]) {
+    const id = Buffer.from(JSON.stringify(parts)).toString("base64url");
+    const response = await graphql({
+      schema,
+      contextValue: ctx,
+      source: `query($id:ID!) { node(id:$id) { id } }`,
+      variableValues: { id },
+    });
+    assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  }
+  const noncanonical = Buffer.from(
+    JSON.stringify([1, "Instance", "host/user", "running"], null, 2),
+  ).toString("base64url");
+  const rejected = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `query($id:ID!) { node(id:$id) { id } }`,
+    variableValues: { id: noncanonical },
+  });
+  assert.equal(rejected.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  const id = (await inventoryPage(ctx)).nodes[0]!.id;
+  for (const source of [
+    `mutation($id:ID!) { resume(input:{harnessId:$id}) }`,
+    `mutation($id:ID!) { configure(input:{conversationId:$id,change:{}}) }`,
+  ]) {
+    const response = await graphql({ schema, contextValue: ctx, source, variableValues: { id } });
+    assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  }
+});
+
+void test("instance observations preserve unavailable metadata, systemd strings, invocation IDs, units and phase clocks", async () => {
+  const ctx = inventoryContext();
+  const page = await inventoryPage(ctx);
+  const result = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `{ instances(limit:3) { nodes { ${instanceFields} } pageInfo { next } } }`,
+  });
+  assert.equal(result.errors, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.data)), {
+    instances: {
+      nodes: [
+        { ...page.nodes[0], flakeReference: "github:owner/retained", state: null, timings: null },
+        {
+          ...page.nodes[1],
+          flakeReference: "github:owner/running",
+          state: { activeState: "active", subState: "running", result: "success" },
+          timings: {
+            invocationId: "running-invocation",
+            activationUs: 4294967296,
+            workerUs: 1000000,
+            bootWaitUs: 2000000,
+            provisionUs: 3000000,
+            managerGapsUs: 4288967296,
+            hostPhases: [
+              {
+                phase: "preparation-start",
+                clock: "boottime",
+                monotonicSeconds: 10.12,
+                resolutionSeconds: 0.01,
+              },
+              {
+                phase: "preparation-ready",
+                clock: "boottime",
+                monotonicSeconds: 11.12,
+                resolutionSeconds: 0.01,
+              },
+            ],
+            guestPhases: [
+              {
+                phase: "mounts-ready",
+                clock: "boottime",
+                monotonicSeconds: 0.25,
+                resolutionSeconds: 0.01,
+              },
+            ],
+          },
+        },
+        {
+          ...page.nodes[2],
+          flakeReference: null,
+          state: { activeState: "activating", subState: "start-pre", result: null },
+          timings: {
+            invocationId: "starting-invocation",
+            activationUs: null,
+            workerUs: null,
+            bootWaitUs: null,
+            provisionUs: null,
+            managerGapsUs: null,
+            hostPhases: [],
+            guestPhases: null,
+          },
+        },
+      ],
+      pageInfo: { next: null },
+    },
+  });
+});
+
+void test("inventory pagination validates client limits and reports service cursor rejection explicitly", async (t) => {
+  const ctx = inventoryContext();
+  const list = t.mock.method(ctx.inventory, "list");
+  for (const limit of [0, -1]) {
+    const result = await graphql({
+      schema,
+      contextValue: ctx,
+      source: `query($limit:Int!) { instances(limit:$limit) { nodes { id } } }`,
+      variableValues: { limit },
+    });
+    assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  }
+  for (const limit of [null, 0.5, 2147483648])
+    assert(
+      (
+        await graphql({
+          schema,
+          contextValue: ctx,
+          source: `query($limit:Int!) { instances(limit:$limit) { nodes { id } } }`,
+          variableValues: { limit },
+        })
+      ).errors?.length,
+    );
+  assert.equal(list.mock.callCount(), 0);
+  for (const cursor of [
+    { namespace: "foreign", after: "retained" },
+    { namespace: ctx.inventory.namespace, after: "absent" },
+  ]) {
+    const result = await graphql({
+      schema,
+      contextValue: ctx,
+      source: `query($cursor:Cursor) { instances(limit:1,cursor:$cursor) { nodes { id } } }`,
+      variableValues: { cursor },
+    });
+    assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
+    assert.equal(result.data?.instances, null);
+  }
+});
+
+void test("inventory enumeration and lookup failures stay internal rather than returning partial membership or absence", async (t) => {
+  for (const error of [
+    new Error("private inventory path"),
+    new StorageRequestError("private systemd request"),
+  ]) {
+    const ctx = inventoryContext();
+    const id = (await inventoryPage(ctx)).nodes[0]!.id;
+    t.mock.method(ctx.inventory, "list", async () => {
+      throw error;
+    });
+    t.mock.method(ctx.inventory, "lookup", async () => {
+      throw error;
+    });
+    const response = await graphql({
+      schema,
+      contextValue: { ...ctx, settings: settingsFixture() },
+      source: `query($id:ID!) { instances(limit:1) { nodes { id } } node(id:$id) { id } settings(app:web) { __typename } }`,
+      variableValues: { id },
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(response.data)), {
+      instances: null,
+      node: null,
+      settings: { __typename: "WebSettings" },
+    });
+    assert.deepEqual(
+      response.errors?.map((error) => error.path),
+      [["instances"], ["node"]],
+    );
+    for (const error of response.errors!) {
+      assert.equal(error.extensions.code, "INTERNAL_SERVER_ERROR");
+      assert.equal(error.message, "INTERNAL_SERVER_ERROR");
+    }
+  }
+});
+
+void test("inventory observation failures preserve membership, sibling fields, and row error paths", async (t) => {
+  const ctx = inventoryContext();
+  const page = await inventoryPage(ctx);
+  for (const field of ["flakeReference", "state", "timings"] as const) {
+    const method = ctx.inventory[field].bind(ctx.inventory);
+    t.mock.method(ctx.inventory, field, async (...args: Parameters<typeof method>) => {
+      if (args[0] === "running") throw new StorageRequestError("private observation");
+      return method(args[0], args[1]);
+    });
+  }
+  const response = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `{ instances(limit:3) { nodes { ${instanceFields} } } }`,
+  });
+  assert.deepEqual(
+    response.errors?.map((error) => error.path),
+    [
+      ["instances", "nodes", 1, "flakeReference"],
+      ["instances", "nodes", 1, "state"],
+      ["instances", "nodes", 1, "timings"],
+    ],
+  );
+  const data = response.data?.instances as { nodes: object[] };
+  assert.equal(data.nodes.length, 3);
+  assert.deepEqual(JSON.parse(JSON.stringify(data.nodes[1])), {
+    ...page.nodes[1],
+    flakeReference: null,
+    state: null,
+    timings: null,
+  });
+  for (const error of response.errors!)
+    assert.equal(error.extensions.code, "INTERNAL_SERVER_ERROR");
+});
+
+void test("inventory rejects invalid service membership, overflow, cursors and mismatched lookup identities", async (t) => {
+  const ctx = inventoryContext();
+  const id = (await inventoryPage(ctx)).nodes[0]!.id;
+  const row = { id: "x", unit: "drv.run@x.service" };
+  for (const value of [
+    { items: [row, row] },
+    { items: [row, { id: "y", unit: "u" }] },
+    { items: [{ id: "", unit: "u" }] },
+    { items: [{ id: "x", unit: "" }] },
+    { items: [], next: [] },
+    { items: null },
+    { invalidCursor: false },
+  ]) {
+    // Malformed service responses at the typed boundary.
+    t.mock.method(
+      ctx.inventory,
+      "list",
+      async () => value as Awaited<ReturnType<typeof ctx.inventory.list>>,
+    );
+    const response = await graphql({
+      schema,
+      contextValue: ctx,
+      source: `{ instances(limit:1) { nodes { id } } }`,
+    });
+    assert.equal(response.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  }
+  t.mock.method(ctx.inventory, "list", async () => ({ items: [row, row] }));
+  assert.equal(
+    (
+      await graphql({
+        schema,
+        contextValue: ctx,
+        source: `{ instances(limit:2) { nodes { id } } }`,
+      })
+    ).errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+  t.mock.method(ctx.inventory, "lookup", async () => row);
+  assert.equal(
+    (
+      await graphql({
+        schema,
+        contextValue: ctx,
+        source: `query($id:ID!) { node(id:$id) { id } }`,
+        variableValues: { id },
+      })
+    ).errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+  const invalidNamespace = inventoryContext({ ...inventoryFixture(), namespace: "" });
+  assert.equal(
+    (
+      await graphql({
+        schema,
+        contextValue: invalidNamespace,
+        source: `{ instances(limit:1) { nodes { id } } }`,
+      })
+    ).errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+});
+
+void test("invalid instance observations never leak through scalar completion", async (t) => {
+  const ctx = inventoryContext();
+  t.mock.method(
+    ctx.inventory,
+    "flakeReference",
+    async () => ({ private: true }) as unknown as string,
+  );
+  t.mock.method(
+    ctx.inventory,
+    "state",
+    async () =>
+      ({ activeState: 7, subState: "running" }) as unknown as Awaited<
+        ReturnType<typeof ctx.inventory.state>
+      >,
+  );
+  const invalid = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `{ instances(limit:1) { nodes { id flakeReference state { activeState } } } }`,
+  });
+  assert.equal(invalid.errors?.length, 2);
+  for (const error of invalid.errors!) assert.equal(error.extensions.code, "INTERNAL_SERVER_ERROR");
+  const valid = await ctx.inventory.timings("running", execution);
+  assert(valid);
+  for (const timing of [
+    { ...valid, invocation_id: "" },
+    { ...valid, activation_us: -1 },
+    { ...valid, worker_us: Infinity },
+    {
+      ...valid,
+      host_phases: [{ phase: "x", clock: "boottime", monotonic_s: NaN, resolution_s: 0.01 }],
+    },
+    {
+      ...valid,
+      guest_phases: [{ phase: "x", clock: "boottime", monotonic_s: 1, resolution_s: 0 }],
+    },
+  ]) {
+    t.mock.method(ctx.inventory, "timings", async () => timing);
+    const result = await graphql({
+      schema,
+      contextValue: ctx,
+      source: `{ instances(limit:1) { nodes { timings { invocationId } } } }`,
+    });
+    assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    assert.deepEqual(result.errors?.[0]?.path, ["instances", "nodes", 0, "timings"]);
+  }
+  t.mock.method(ctx.inventory, "state", async () => ({
+    activeState: "vendor-active",
+    subState: "vendor-substate",
+    result: "",
+  }));
+  t.mock.method(ctx.inventory, "timings", async () => ({
+    invocation_id: "failed-invocation",
+    host_phases: null,
+    guest_phases: [],
+  }));
+  const result = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `{ instances(limit:1) { nodes { state { activeState subState result } timings { invocationId activationUs hostPhases { phase } guestPhases { phase } } } } }`,
+  });
+  assert.equal(result.errors, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.data)), {
+    instances: {
+      nodes: [
+        {
+          state: { activeState: "vendor-active", subState: "vendor-substate", result: "" },
+          timings: {
+            invocationId: "failed-invocation",
+            activationUs: null,
+            hostPhases: null,
+            guestPhases: [],
+          },
+        },
+      ],
+    },
+  });
+});
+
+void test("inventory waits are cancellable without retry and an aborted context admits no new read", async (t) => {
+  const ctx = inventoryContext();
+  const controller = new AbortController();
+  const contextValue = { ...ctx, context: withAbortSignal(controller.signal, execution) };
+  const entered = Promise.withResolvers<void>();
+  const pending = Promise.withResolvers<{ items: [] }>();
+  const list = t.mock.method(
+    ctx.inventory,
+    "list",
+    async (_limit: number, _cursor: Cursor | undefined, context: ResolverContext["context"]) => {
+      assert.equal(context, contextValue.context);
+      entered.resolve();
+      return pending.promise;
+    },
+  );
+  const request = { schema, contextValue, source: `{ instances(limit:1) { nodes { id } } }` };
+  const response = graphql(request);
+  await entered.promise;
+  controller.abort();
+  assert.equal((await response).errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  pending.resolve({ items: [] });
+  assert.equal((await graphql(request)).errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(list.mock.callCount(), 1);
+});
+
+void test("inventory exposes only read-only public fields and uses Float microseconds", () => {
+  const instance = schema.getType("Instance");
+  assert(isObjectType(instance));
+  assert.deepEqual(Object.keys(instance.getFields()).sort(), [
+    "flakeReference",
+    "id",
+    "state",
+    "timings",
+    "unit",
+  ]);
+  assert.equal(instance.getInterfaces()[0], schema.getType("Node"));
+  const timings = schema.getType("InstanceTimings");
+  assert(isObjectType(timings));
+  for (const field of ["activationUs", "workerUs", "bootWaitUs", "provisionUs", "managerGapsUs"]) {
+    assert.equal(timings.getFields()[field]!.type, schema.getType("Float"));
+  }
+  const phase = schema.getType("InstanceTimingPhase");
+  assert(isObjectType(phase));
+  assert.deepEqual(Object.keys(phase.getFields()).sort(), [
+    "clock",
+    "monotonicSeconds",
+    "phase",
+    "resolutionSeconds",
+  ]);
+  for (const command of ["startInstance", "stopInstance", "restartInstance", "connectInstance"])
+    assert.equal(schema.getMutationType()!.getFields()[command], undefined);
+});
+
+void test("inventory service failure stays observed when the service synchronously cancels its caller", async (t) => {
+  const ctx = inventoryContext();
+  const controller = new AbortController();
+  const contextValue = { ...ctx, context: withAbortSignal(controller.signal, execution) };
+  const list = t.mock.method(ctx.inventory, "list", async () => {
+    controller.abort();
+    throw new StorageRequestError("private failure after cancellation");
+  });
+  const result = await graphql({
+    schema,
+    contextValue,
+    source: `{ instances(limit:1) { nodes { id } } }`,
+  });
+  assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(result.data?.instances, null);
+  assert.equal(list.mock.callCount(), 1);
+});
+
+void test("cancellation before queued inventory admission prevents the service call", async (t) => {
+  const ctx = inventoryContext();
+  const controller = new AbortController();
+  const contextValue = { ...ctx, context: withAbortSignal(controller.signal, execution) };
+  const list = t.mock.method(ctx.inventory, "list");
+  queueMicrotask(() => controller.abort());
+  const result = await graphql({
+    schema,
+    contextValue,
+    source: `{ instances(limit:1) { nodes { id } } }`,
+  });
+  assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(list.mock.callCount(), 0);
 });

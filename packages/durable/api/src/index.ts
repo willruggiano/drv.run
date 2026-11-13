@@ -25,6 +25,8 @@ export interface ApiOptions {
   documents: ResolverContext["documents"];
   /** Authorized per-user application configuration, independent of Durable storage. */
   settings: ResolverContext["settings"];
+  /** Authorized host inventory, independent of the persisted Harness catalog. */
+  inventory: ResolverContext["inventory"];
   /** Borrow the factory's Pi AI catalog; resolve a dynamic source per request. */
   models: Models | (() => Models);
   /** Validate external-ID syntax for provisioning; authorization remains in the factory. */
@@ -51,6 +53,7 @@ export function createApi(options: ApiOptions) {
   const graphql = createGraphQLHandler({
     documents: options.documents,
     settings: options.settings,
+    inventory: options.inventory,
     getHarness: (id, create) => sessions.get(id, create),
     isValidExternalId: (id) => options.isValidExternalId(id),
     listHarnesses: (context) => options.listHarnesses(context),

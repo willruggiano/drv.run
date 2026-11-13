@@ -30,15 +30,35 @@ export const unavailableSettings: ApiOptions["settings"] = {
   harness: unavailableConfiguration,
 };
 
+export const unavailableInventory: ApiOptions["inventory"] = {
+  namespace: "unbound",
+  async list() {
+    assert.fail("inventory service is not bound in this test");
+  },
+  async lookup() {
+    assert.fail("inventory service is not bound in this test");
+  },
+  async flakeReference() {
+    assert.fail("inventory service is not bound in this test");
+  },
+  async state() {
+    assert.fail("inventory service is not bound in this test");
+  },
+  async timings() {
+    assert.fail("inventory service is not bound in this test");
+  },
+};
+
 export async function serve(
   t: TestContext,
   options: Omit<
     ApiOptions,
-    "models" | "listHarnesses" | "isValidExternalId" | "documents" | "settings"
+    "models" | "listHarnesses" | "isValidExternalId" | "documents" | "settings" | "inventory"
   > & {
     models?: ApiOptions["models"];
     documents?: ApiOptions["documents"];
     settings?: ApiOptions["settings"];
+    inventory?: ApiOptions["inventory"];
     isValidExternalId?: ApiOptions["isValidExternalId"];
     listHarnesses?: ApiOptions["listHarnesses"];
   },
@@ -46,6 +66,7 @@ export async function serve(
   const api = createApi({
     models: createModels(),
     settings: unavailableSettings,
+    inventory: unavailableInventory,
     documents: { definitions: async () => [], resolve: async () => undefined },
     isValidExternalId: (id) => id.length > 0,
     listHarnesses: async () => ["test"],
@@ -156,5 +177,62 @@ export function settingsFixture(): ApiOptions["settings"] {
         backgroundTokens: 32768,
       },
     }),
+  };
+}
+
+export function inventoryFixture(namespace = "host/user"): ApiOptions["inventory"] {
+  const rows = ["retained", "running", "starting"].map((id) => ({
+    id,
+    unit: `drv.run@${id}.service`,
+  }));
+  return {
+    namespace,
+    async list(limit, cursor) {
+      let start = 0;
+      if (cursor !== undefined) {
+        if (cursor.namespace !== namespace) return { invalidCursor: true };
+        const previous = rows.findIndex((row) => row.id === cursor.after);
+        if (previous < 0) return { invalidCursor: true };
+        start = previous + 1;
+      }
+      const items = rows.slice(start, start + limit);
+      return {
+        items,
+        ...(start + items.length < rows.length
+          ? { next: { namespace, after: items.at(-1)!.id } }
+          : {}),
+      };
+    },
+    async lookup(id) {
+      return rows.find((row) => row.id === id);
+    },
+    async flakeReference(id) {
+      return id === "starting" ? undefined : `github:owner/${id}`;
+    },
+    async state(id) {
+      if (id === "retained") return undefined;
+      return id === "starting"
+        ? { activeState: "activating", subState: "start-pre" }
+        : { activeState: "active", subState: "running", result: "success" };
+    },
+    async timings(id) {
+      if (id === "retained") return undefined;
+      if (id === "starting") return { invocation_id: "starting-invocation", host_phases: [] };
+      return {
+        invocation_id: "running-invocation",
+        activation_us: 4294967296,
+        worker_us: 1000000,
+        boot_wait_us: 2000000,
+        provision_us: 3000000,
+        manager_gaps_us: 4288967296,
+        host_phases: [
+          { phase: "preparation-start", clock: "boottime", monotonic_s: 10.12, resolution_s: 0.01 },
+          { phase: "preparation-ready", clock: "boottime", monotonic_s: 11.12, resolution_s: 0.01 },
+        ],
+        guest_phases: [
+          { phase: "mounts-ready", clock: "boottime", monotonic_s: 0.25, resolution_s: 0.01 },
+        ],
+      };
+    },
   };
 }

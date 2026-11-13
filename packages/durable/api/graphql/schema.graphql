@@ -9,7 +9,7 @@ scalar ConversationId
 
 """
 Backend-owned JSON continuation state. Round-trip it unchanged to the same
-upstream scan; storage validates it. Null means no continuation.
+list or scan; its owning service validates scope. Null means no continuation.
 """
 scalar Cursor
 
@@ -251,10 +251,10 @@ union UserContent = ImageContent | TextContent
 union UserMessageContent = StringContent | UserContentList
 
 """
-Globally refetchable identity. IDs encode object type, persisted session identity,
-and the durable ID where applicable. They survive Harness reopen and are never
-reused for replacement storage. An inherited entry has the same ID in every
-conversation. Clients must not decode IDs.
+Globally refetchable identity. IDs encode object type and an authorized service
+namespace/resource key, or persisted session identity and a durable ID. Durable IDs
+survive Harness reopen and are never reused for replacement storage. An inherited
+entry has the same ID in every conversation. Clients must not decode IDs.
 
 Each resolver reads independently. Repeated IDs do not imply a shared snapshot
 across node(), connections, or inspection while the Harness is mutating.
@@ -905,6 +905,54 @@ type ImageContent {
   type: ContentType!
 }
 
+type Instance implements Node {
+  """
+  Unavailable metadata is null; observation errors do not erase membership.
+  """
+  flakeReference: String
+  id: ID!
+  """Observed systemd strings, without conversion to a closed enum."""
+  state: InstanceState
+  """
+  Durations are microseconds; phase samples retain their clock and seconds.
+  The service validates invocation coherence and activation success. No clocks are combined here.
+  """
+  timings: InstanceTimings
+  unit: String!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type InstanceConnection {
+  nodes: [Instance!]!
+  pageInfo: PageInfo!
+}
+
+type InstanceState {
+  activeState: String!
+  result: String
+  subState: String!
+}
+
+type InstanceTimingPhase {
+  clock: String!
+  monotonicSeconds: Float!
+  phase: String!
+  resolutionSeconds: Float!
+}
+
+type InstanceTimings {
+  activationUs: Float
+  bootWaitUs: Float
+  guestPhases: [InstanceTimingPhase!]
+  hostPhases: [InstanceTimingPhase!]
+  invocationId: String!
+  managerGapsUs: Float
+  provisionUs: Float
+  workerUs: Float
+}
+
 type MessageDiagnostic {
   details: JsonObject
   error: DiagnosticError
@@ -1050,6 +1098,11 @@ type Query {
   Order by ascending externalId; listing does not create sessions or enable scheduling.
   """
   harnesses: [Harness!]!
+  """
+  Read one inventory page without acquiring a Harness or connecting to guests.
+  Membership and ordering belong to the inventory service, not the Harness catalog.
+  """
+  instances(cursor: Cursor, limit: Int!): InstanceConnection
   """
   Service-scoped available chat models in upstream order, without pagination.
   Reads the deployment's current model source per call; never acquires a Harness,

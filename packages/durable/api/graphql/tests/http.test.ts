@@ -16,7 +16,13 @@ import {
   createRegistry,
   CompactionTask,
 } from "@earendil-works/pi-durable";
-import { openHarness, serve, events, settingsFixture } from "../../tests/fixtures.ts";
+import {
+  openHarness,
+  serve,
+  events,
+  settingsFixture,
+  inventoryFixture,
+} from "../../tests/fixtures.ts";
 
 const modern = "application/graphql-response+json";
 const json = (query: string, variables?: object, operationName?: string): RequestInit => ({
@@ -949,4 +955,146 @@ void test("API shutdown drains a pending settings replacement and rejects new wo
     saveSettings: { revision: (await settings.harness.read(BACKGROUND_CONTEXT)).revision },
   });
   await closing;
+});
+
+void test("HTTP inventory and node lookup share service identities without opening Harnesses", async (t) => {
+  const inventory = inventoryFixture();
+  const list = t.mock.method(inventory, "list");
+  const { url } = await serve(t, {
+    inventory,
+    settings: settingsFixture(),
+    openHarness: async () => assert.fail("inventory must not open a Harness"),
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const response = await result(
+    await fetch(
+      endpoint,
+      json(
+        `{ instances(limit:2) { nodes { id unit } pageInfo { next } } settings(app:web) { __typename } harnesses { externalId } }`,
+      ),
+    ),
+  );
+  assert.equal(response.errors, undefined);
+  const page = response.data?.instances as {
+    nodes: { id: string; unit: string }[];
+    pageInfo: { next: object };
+  };
+  assert.equal(page.nodes.length, 2);
+  assert.deepEqual(response.data?.settings, { __typename: "WebSettings" });
+  assert.deepEqual(response.data?.harnesses, [{ externalId: "test" }]);
+  assert.equal(list.mock.callCount(), 1);
+  const id = page.nodes[0]!.id;
+  const lookup = await result(
+    await fetch(
+      endpoint,
+      json(
+        `query($id:ID!) { node(id:$id) { __typename id ... on Instance { unit flakeReference state { activeState } } } }`,
+        { id },
+      ),
+    ),
+  );
+  assert.deepEqual(lookup.data, {
+    node: {
+      __typename: "Instance",
+      ...page.nodes[0],
+      flakeReference: "github:owner/retained",
+      state: null,
+    },
+  });
+  assert.equal(list.mock.callCount(), 1);
+  const next = await result(
+    await fetch(
+      endpoint,
+      json(
+        `query($cursor:Cursor) { instances(limit:2,cursor:$cursor) { nodes { unit } pageInfo { next } } }`,
+        { cursor: page.pageInfo.next },
+      ),
+    ),
+  );
+  assert.deepEqual(next.data, {
+    instances: { nodes: [{ unit: "drv.run@starting.service" }], pageInfo: { next: null } },
+  });
+  const rejected = await result(
+    await fetch(
+      endpoint,
+      json(`query($cursor:Cursor) { instances(limit:2,cursor:$cursor) { nodes { id } } }`, {
+        cursor: { namespace: "another-owner", after: "running" },
+      }),
+    ),
+  );
+  assert.equal(rejected.errors?.[0]?.extensions?.code, "BAD_REQUEST");
+});
+
+void test("HTTP inventory observation errors retain row identity and unrelated Durable data", async (t) => {
+  const { harness } = await openHarness(t);
+  const inventory = inventoryFixture();
+  t.mock.method(inventory, "timings", async () => {
+    throw new StorageRequestError("private host path");
+  });
+  const { url } = await serve(t, { inventory, openHarness: async () => harness });
+  const endpoint = new URL("/api/graphql", url);
+  const response = await result(
+    await fetch(
+      endpoint,
+      json(
+        `{ instances(limit:1) { nodes { id unit flakeReference timings { invocationId } } } harness(externalId:"test") { externalId inspect { scheduling } } }`,
+      ),
+    ),
+  );
+  assert.deepEqual(response.errors?.[0]?.path, ["instances", "nodes", 0, "timings"]);
+  assert.equal(response.errors?.[0]?.extensions?.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(response.errors?.[0]?.message, "INTERNAL_SERVER_ERROR");
+  const page = response.data?.instances as {
+    nodes: { id: string; unit: string; flakeReference: string; timings: null }[];
+  };
+  assert.equal(page.nodes[0]?.unit, "drv.run@retained.service");
+  assert.equal(page.nodes[0]?.flakeReference, "github:owner/retained");
+  assert.equal(page.nodes[0]?.timings, null);
+  assert.deepEqual(response.data?.harness, {
+    externalId: "test",
+    inspect: { scheduling: "paused" },
+  });
+  const allFailed = t.mock.method(inventory, "list", async () => {
+    throw new Error("enumeration failed");
+  });
+  const failed = await result(
+    await fetch(endpoint, json(`{ instances(limit:1) { nodes { id } } harnesses { externalId } }`)),
+  );
+  assert.deepEqual(failed.data, { instances: null, harnesses: [{ externalId: "test" }] });
+  assert.equal(failed.errors?.[0]?.extensions?.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(allFailed.mock.callCount(), 1);
+});
+
+void test("HTTP inventory cancellation reaches its read context and does not retry enumeration", async (t) => {
+  const inventory = inventoryFixture();
+  const entered = Promise.withResolvers<void>();
+  const cancelled = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<{ items: [] }>();
+  t.after(() => release.resolve({ items: [] }));
+  const list = t.mock.method(
+    inventory,
+    "list",
+    async (_limit: number, _cursor: unknown, context: Parameters<typeof inventory.list>[2]) => {
+      assert(context.abortSignal);
+      context.abortSignal.addEventListener("abort", () => cancelled.resolve(), { once: true });
+      entered.resolve();
+      return release.promise;
+    },
+  );
+  const { api, url } = await serve(t, {
+    inventory,
+    openHarness: async () => assert.fail("inventory must not open a Harness"),
+  });
+  const controller = new AbortController();
+  const request = fetch(new URL("/api/graphql", url), {
+    ...json(`{ instances(limit:1) { nodes { id } } }`),
+    signal: controller.signal,
+  });
+  await entered.promise;
+  controller.abort();
+  await assert.rejects(request, { name: "AbortError" });
+  await cancelled.promise;
+  await api.close();
+  assert.equal(list.mock.callCount(), 1);
+  release.resolve({ items: [] });
 });

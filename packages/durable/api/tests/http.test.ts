@@ -13,7 +13,7 @@ import {
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { createApi } from "durable-api";
-import { openHarness, serve, unavailableSettings } from "./fixtures.ts";
+import { openHarness, serve, unavailableSettings, unavailableInventory } from "./fixtures.ts";
 
 async function problem(response: Response, status: number, ids: object = { sessionId: "test" }) {
   assert.equal(response.status, status);
@@ -269,6 +269,7 @@ void test("body limits reject invalid deployment configuration", () => {
           models: createModels(),
           documents: { definitions: async () => [], resolve: async () => undefined },
           settings: unavailableSettings,
+          inventory: unavailableInventory,
           isValidExternalId: (id) => id.length > 0,
           listHarnesses: async () => [],
           openHarness: async () => undefined,
