@@ -9,6 +9,7 @@
     "src/**/*.ts",
     "graphql/src/**/*.ts",
     "watch/watch.ts",
-    "serve/serve.ts"
+    "serve/serve.ts",
+    "serve/sse.ts"
   ]
 }
