@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { copyJson } from "@earendil-works/chord";
-import { Type } from "@earendil-works/pi-ai";
+import { copyJson } from "@earendil-works/chord/json";
+import { Type } from "typebox";
 import { AssistantEntry, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import {
   AssistantMessageSchema,

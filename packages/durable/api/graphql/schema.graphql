@@ -69,7 +69,6 @@ enum AuthorizationStatus {
 enum BlockedReason {
   migration_failed
   missing_task
-  restart_limit
   task_too_old
 }
 
@@ -204,6 +203,7 @@ enum SubmissionRecordStatus {
 
 """GraphQL name for SubmissionRecord["type"]."""
 enum SubmissionRecordType {
+  continue
   input
   write
 }
@@ -212,7 +212,7 @@ enum SubmissionRecordType {
 enum TaskInspectionStateKind {
   blocked
   completing
-  ready
+  pending
   running
   sleeping
   waiting
@@ -1302,8 +1302,9 @@ type StringContent {
 
 """
 Complete SubmissionRecord. Status-dependent fields follow upstream invariants:
-input done has entry and answer; write done has entry only; placed is input-only;
-unanswered has reason and optional detail, with optional entry only for input.
+input done has entry and answer; write done has entry only; continue done has
+answer only. Placed applies to input and continue. Unanswered has reason and
+optional detail, with optional entry only for input.
 Queued records have none of entry, answer, reason, or detail.
 """
 type SubmissionRecord implements Node {
@@ -1347,7 +1348,7 @@ type TaskInspection {
 
 """
 GraphQL name for TaskInspection["state"].
-Every upstream inspection discriminant is retained. ready carries migrates;
+Every upstream inspection discriminant is retained. pending carries migrates;
 waiting carries on; sleeping carries until; blocked carries reason and optional
 error. running/completing carry only kind. Other fields return null.
 """

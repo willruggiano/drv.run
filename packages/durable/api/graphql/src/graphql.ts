@@ -24,14 +24,15 @@ import {
 } from "@earendil-works/pi-durable";
 import { getSchema } from "./generated/graphql.ts";
 import type * as Durable from "@earendil-works/pi-durable";
-import type * as Chord from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type * as Chord from "@earendil-works/chord/json";
 import type * as AI from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
 
 // TypeScript/Grats is the schema source of truth. The generated factory accepts
 // scalar implementations. Deployment supplies authorized persisted Harness lookup
 // and the session/model catalogs. Listener, lifetime, and recovery policy remain external.
-// Upstream: pi-durable 1.4.0 dist/types.d.ts and dist/harness/types.d.ts.
+// Upstream: pi-durable 1.5.2 dist/types.d.ts and dist/harness/types.d.ts.
 // Global identities, connection wrappers, and transport inputs remain adapter types.
 
 /*
@@ -70,7 +71,7 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
 // The caller owns Harnesses; storage owns pagination cursors.
 /** @gqlContext */
 export interface ResolverContext {
-  readonly context: Chord.Context;
+  readonly context: Context;
   readonly isValidExternalId: (externalId: string) => boolean;
   /** Omitted/false never creates storage. True requests authorized provisioning. */
   readonly session: (externalId: string, create?: boolean) => Promise<Durable.Harness | undefined>;
@@ -109,13 +110,13 @@ interface DocumentService {
   definitions(
     externalId: string,
     scope: Durable.DocumentAddress["scope"],
-    context: Chord.Context,
+    context: Context,
   ): Promise<readonly DocumentToken[] | undefined>;
   /** Authorize each address, including its family key. Undefined means unexposed/inaccessible. */
   resolve(
     externalId: string,
     address: Durable.DocumentAddress,
-    context: Chord.Context,
+    context: Context,
   ): Promise<DocumentAccess | undefined>;
 }
 
@@ -384,7 +385,7 @@ export function createGraphQLHandler(options: {
   push: PushBinding;
   getHarness: ResolverContext["session"];
   isValidExternalId: ResolverContext["isValidExternalId"];
-  listHarnesses: (context: Chord.Context) => Promise<readonly string[]>;
+  listHarnesses: (context: Context) => Promise<readonly string[]>;
   models: ResolverContext["models"];
   bodyLimit: number;
 }) {
@@ -392,7 +393,7 @@ export function createGraphQLHandler(options: {
   return async (
     request: IncomingMessage,
     response: ServerResponse,
-    context: Chord.Context,
+    context: Context,
     closing: boolean,
   ): Promise<void> => {
     let media: string | undefined;
@@ -601,7 +602,7 @@ async function harnessOperation<T>(
     stop();
     if (error instanceof StorageRequestError && closing) {
       const end = await awaitWithContext(instance.closed, ctx.context);
-      if (end.reason === "failed" && end.error === error)
+      if (end.kind === "failed" && end.error === error)
         throw new ResolverError("INTERNAL_SERVER_ERROR");
     }
     throw error;
@@ -1331,10 +1332,7 @@ async function documentOwner(
   }
 }
 
-async function invokeWithContext<T>(
-  context: Chord.Context,
-  call: () => T | Promise<T>,
-): Promise<T> {
+async function invokeWithContext<T>(context: Context, call: () => T | Promise<T>): Promise<T> {
   context.abortSignal?.throwIfAborted();
   // Attach the waiter before invoking the callback: synchronous cancellation
   // must not leave a rejected callback promise unobserved.
@@ -1579,7 +1577,7 @@ export async function models(ctx: ResolverContext): Promise<Model[]> {
       reasoning: model.reasoning,
       contextWindow: model.contextWindow,
       maxTokens: model.maxTokens,
-      cost: model.cost,
+      cost: { ...model.cost, tiers: model.cost.tiers ?? null },
       thinkingLevels: getSupportedThinkingLevels(model),
     }));
   } catch (error) {
@@ -1986,8 +1984,9 @@ interface ContextView {
 
 /**
  * Complete SubmissionRecord. Status-dependent fields follow upstream invariants:
- * input done has entry and answer; write done has entry only; placed is input-only;
- * unanswered has reason and optional detail, with optional entry only for input.
+ * input done has entry and answer; write done has entry only; continue done has
+ * answer only. Placed applies to input and continue. Unanswered has reason and
+ * optional detail, with optional entry only for input.
  * Queued records have none of entry, answer, reason, or detail.
  * @gqlType
  */
@@ -2024,7 +2023,7 @@ interface SubmissionRecord extends Node {
  * GraphQL name for SubmissionRecord["type"].
  * @gqlEnum
  */
-type SubmissionRecordType = "input" | "write";
+type SubmissionRecordType = "input" | "write" | "continue";
 
 /**
  * GraphQL name for SubmissionRecord["status"].
@@ -2182,7 +2181,7 @@ interface TaskInspection {
 
 /**
  * GraphQL name for TaskInspection["state"].
- * Every upstream inspection discriminant is retained. ready carries migrates;
+ * Every upstream inspection discriminant is retained. pending carries migrates;
  * waiting carries on; sleeping carries until; blocked carries reason and optional
  * error. running/completing carry only kind. Other fields return null.
  * @gqlType
@@ -2211,14 +2210,14 @@ interface TaskInspectionState {
  */
 type TaskInspectionStateKind =
   | "running"
-  | "ready"
+  | "pending"
   | "waiting"
   | "sleeping"
   | "completing"
   | "blocked";
 
 /** @gqlEnum */
-type BlockedReason = "missing_task" | "task_too_old" | "migration_failed" | "restart_limit";
+type BlockedReason = "missing_task" | "task_too_old" | "migration_failed";
 
 /** @gqlEnum */
 type ScanOrder = "ascending" | "descending";
@@ -2506,7 +2505,7 @@ interface NestedToolCallRecordInput {
   readonly error?: string | null;
 }
 
-// pi-ai 1.4.0 dist/types.d.ts: SystemMessage.sections and ConstrainedSamplingConfig.
+// pi-ai 1.5.2 dist/types.d.ts: SystemMessage.sections and ConstrainedSamplingConfig.
 const PromptSections = Type.Record(JsonKey, Type.Union([Type.String(), Type.Null()]), {
   additionalProperties: false,
 });
@@ -2530,7 +2529,7 @@ const ConstrainedSampling = Type.Union([
     { additionalProperties: false },
   ),
 ]);
-// pi-ai 1.4.0 dist/utils/diagnostics.d.ts: DiagnosticErrorInfo.code.
+// pi-ai 1.5.2 dist/utils/diagnostics.d.ts: DiagnosticErrorInfo.code.
 const DiagnosticCode = Type.Union([Type.String(), Type.Number()]);
 
 function assistantInputContent(
@@ -3145,7 +3144,7 @@ interface ConfigurationSnapshot<T> {
 // Serialize saves per user/file and reread the revision before writing. Never
 // acquire a Harness, modify Durable documents, or reconfigure an open Harness.
 interface Configuration<T> {
-  read(context: Chord.Context): Promise<ConfigurationSnapshot<T>>;
+  read(context: Context): Promise<ConfigurationSnapshot<T>>;
   /**
    * Undefined means revision conflict, with no write. No automatic replay.
    * Context cancellation may stop admission, not an admitted replacement.
@@ -3154,7 +3153,7 @@ interface Configuration<T> {
   replace(
     expectedRevision: string,
     settings: T,
-    context: Chord.Context,
+    context: Context,
   ): Promise<ConfigurationSnapshot<T> | undefined>;
 }
 interface SettingsService {
@@ -3315,14 +3314,14 @@ interface InventoryService {
   list(
     limit: number,
     cursor: Cursor | undefined,
-    context: Chord.Context,
+    context: Context,
   ): Promise<InventoryPage | { readonly invalidCursor: true }>;
-  lookup(id: string, context: Chord.Context): Promise<InventoryRecord | undefined>;
+  lookup(id: string, context: Context): Promise<InventoryRecord | undefined>;
   /** Authorize each observation. Undefined means unavailable, not a read failure. */
-  flakeReference(id: string, context: Chord.Context): Promise<string | undefined>;
-  state(id: string, context: Chord.Context): Promise<InstanceState | undefined>;
+  flakeReference(id: string, context: Context): Promise<string | undefined>;
+  state(id: string, context: Context): Promise<InstanceState | undefined>;
   /** One invocation only. Omit unavailable/invalid/unfinished startup durations. */
-  timings(id: string, context: Chord.Context): Promise<InventoryTimings | undefined>;
+  timings(id: string, context: Context): Promise<InventoryTimings | undefined>;
 }
 
 /** @gqlType */
@@ -3659,41 +3658,41 @@ interface AccountsService {
   servers(
     limit: number,
     cursor: Cursor | undefined,
-    context: Chord.Context,
+    context: Context,
   ): Promise<ApplicationPageResult<AuthorizationServerRecord>>;
   accounts(
     serverId: string | undefined,
     limit: number,
     cursor: Cursor | undefined,
-    context: Chord.Context,
+    context: Context,
   ): Promise<ApplicationPageResult<AccountRecord>>;
   authorizations(
     serverId: string,
     limit: number,
     cursor: Cursor | undefined,
-    context: Chord.Context,
+    context: Context,
   ): Promise<ApplicationPageResult<AuthorizationRecord>>;
-  server(id: string, context: Chord.Context): Promise<AuthorizationServerRecord | undefined>;
-  account(id: string, context: Chord.Context): Promise<AccountRecord | undefined>;
-  authorization(id: string, context: Chord.Context): Promise<AuthorizationRecord | undefined>;
+  server(id: string, context: Context): Promise<AuthorizationServerRecord | undefined>;
+  account(id: string, context: Context): Promise<AccountRecord | undefined>;
+  authorization(id: string, context: Context): Promise<AuthorizationRecord | undefined>;
   /** Recheck ownership and registration at admission. Never replay uncertain initiation. */
   authorize(
     serverId: string,
     accountId: string | undefined,
-    context: Chord.Context,
+    context: Context,
   ): Promise<ApplicationResult<AuthorizationRecord>>;
   deviceAuthorization(
     serverId: string,
     accountId: string | undefined,
-    context: Chord.Context,
+    context: Context,
   ): Promise<ApplicationResult<AuthorizationRecord>>;
-  cancelAuthorization(id: string, context: Chord.Context): Promise<ApplicationResult<void>>;
-  disconnect(id: string, context: Chord.Context): Promise<ApplicationResult<void>>;
+  cancelAuthorization(id: string, context: Context): Promise<ApplicationResult<void>>;
+  disconnect(id: string, context: Context): Promise<ApplicationResult<void>>;
   /** Revocation is independent of local removal. Protocol errors must be safe public codes. */
   revoke(
     id: string,
     hint: "access_token" | "refresh_token" | undefined,
-    context: Chord.Context,
+    context: Context,
   ): Promise<ApplicationResult<void> | { readonly protocolError: string }>;
 }
 
@@ -3856,7 +3855,7 @@ async function accountPage<T, N extends Node & { readonly serviceId: string }>(
   read: (
     limit: number,
     cursor: Cursor | undefined,
-    context: Chord.Context,
+    context: Context,
   ) => Promise<ApplicationPageResult<T>>,
   project: (namespace: string, record: T) => N,
 ): Promise<Connection<N>> {
@@ -4112,15 +4111,15 @@ interface RemovePushSubscriptionInput {
 // Delivery and service lifetime are independent of this API and its Harnesses.
 interface PushBinding {
   /** Public VAPID key; undefined means delivery is disabled, not a read failure. */
-  applicationServerKey(context: Chord.Context): Promise<string | undefined>;
-  registered(endpoint: string, context: Chord.Context): Promise<ApplicationResult<boolean>>;
+  applicationServerKey(context: Context): Promise<string | undefined>;
+  registered(endpoint: string, context: Context): Promise<ApplicationResult<boolean>>;
   /** Full subscription upsert. Admitted persistence survives a disconnected waiter. */
   register(
     subscription: RegisterPushSubscriptionInput,
-    context: Chord.Context,
+    context: Context,
   ): Promise<ApplicationResult<void>>;
   /** Idempotent removal remains available when delivery is disabled. */
-  remove(endpoint: string, context: Chord.Context): Promise<ApplicationResult<void>>;
+  remove(endpoint: string, context: Context): Promise<ApplicationResult<void>>;
 }
 /** @gqlType */
 interface PushService {

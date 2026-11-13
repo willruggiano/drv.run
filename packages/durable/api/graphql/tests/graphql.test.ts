@@ -11,7 +11,7 @@ import {
   parseValue,
   validateSchema,
 } from "graphql";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type * as AI from "@earendil-works/pi-ai";
 import {
   BACKGROUND_CONTEXT,
@@ -39,6 +39,8 @@ import {
   type Cursor,
   type TaskQuery,
   type SubmissionId,
+  type Tx,
+  type CommitOptions,
 } from "@earendil-works/pi-durable";
 import { createSchema, type ResolverContext } from "../src/index.ts";
 
@@ -708,6 +710,70 @@ void test("submission admission, idempotent recovery, busy rejection, scoped wit
   assert.deepEqual(user?.model?.[0]?.content, content);
 });
 
+void test("continue submissions expose placed, answered, and unanswered records without an input entry", async (t) => {
+  const f = await fixture(t);
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  f.faux.setResponses([
+    async (_request, options) => {
+      assert(options?.signal);
+      started.resolve();
+      await awaitWithContext(release.promise, withAbortSignal(options.signal, execution));
+      return fauxAssistantMessage("answer");
+    },
+  ]);
+  await f.instance.commit(
+    (tx) =>
+      tx.appendEntry(f.root.id, {
+        kind: "app.user",
+        model: [{ role: "user", content: "question", timestamp: 0 }],
+      }),
+    execution,
+  );
+  const submission = await f.root.submit({ type: "continue" }, execution);
+  await started.promise;
+  const read = async (id: SubmissionId) =>
+    (
+      await f.success<{ harness: { conversation: { status: unknown } } }>(
+        `query($id: SubmissionId!) {
+        harness(externalId: "test") { conversation(id: 1) {
+          status(id: $id) { type status entry answer reason }
+        } }
+      }`,
+        { id },
+      )
+    ).harness.conversation.status;
+  assert.deepEqual(await read(submission.id), {
+    type: "continue",
+    status: "placed",
+    entry: null,
+    answer: null,
+    reason: null,
+  });
+  release.resolve();
+  const done = await submission.wait(execution);
+  assert.equal(done.status, "done");
+  assert.deepEqual(await read(submission.id), {
+    type: "continue",
+    status: "done",
+    entry: null,
+    answer: done.answer,
+    reason: null,
+  });
+  await f.root.waitForIdle(execution);
+  const empty = await f.root.submit({ type: "continue" }, execution);
+  const unanswered = await empty.wait(execution);
+  assert.equal(unanswered.status, "unanswered");
+  assert.deepEqual(await read(empty.id), {
+    type: "continue",
+    status: "unanswered",
+    entry: null,
+    answer: null,
+    reason: "nothing_to_answer",
+  });
+});
+
 for (const operation of ["abort", "reset", "configure"] as const) {
   void test(`${operation} acknowledges upstream return and rejects upstream failure`, async (t) => {
     const f = await fixture(t);
@@ -1007,7 +1073,7 @@ void test("inspection diagnostics use native JSON serialization and serializatio
   assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   inspect.mock.restore();
   assert.deepEqual(await f.success(query), {
-    harness: { inspect: { tasks: [{ state: { kind: "ready", reason: null, error: null } }] } },
+    harness: { inspect: { tasks: [{ state: { kind: "pending", reason: null, error: null } }] } },
   });
 });
 
@@ -2667,7 +2733,7 @@ void test("lifecycle commands reject wrong identities and missing Harnesses or t
 
 void test("root reads and creation-result reads propagate failures without inventing records", async (t) => {
   const f = await fixture(t);
-  const read = t.mock.method(f.storage, "conversation", async () => {
+  const read = t.mock.method(f.instance, "commit", async () => {
     throw new StorageRequestError("private read failure");
   });
   const response = await f.run('{ harness(externalId:"test") { root { id } } }');
@@ -2733,6 +2799,27 @@ void test("open distinguishes invalid keys, unavailable storage, and validation 
   assert.equal(missing.errors?.[0]?.extensions.code, "NOT_FOUND");
   assert.deepEqual(missing.errors?.[0]?.path, ["open"]);
 });
+
+function mockTransactionReads(t: TestContext, instance: Harness, prepare: (tx: Tx) => void) {
+  const commit = instance.commit.bind(instance);
+  return t.mock.method(
+    instance,
+    "commit",
+    <T>(
+      change: (tx: Tx) => T | Promise<T>,
+      context: ResolverContext["context"],
+      options?: CommitOptions,
+    ) =>
+      commit(
+        (tx) => {
+          prepare(tx);
+          return change(tx);
+        },
+        context,
+        options,
+      ),
+  );
+}
 
 async function documentFixture(t: TestContext) {
   const f = await fixture(t);
@@ -3182,11 +3269,15 @@ void test("document policy preserves registered migration/checkpoint receivers w
 
 void test("document replacement rechecks its owner on the commit line", async (t) => {
   const f = await documentFixture(t);
-  const read = f.storage.task.bind(f.storage);
-  let calls = 0;
-  t.mock.method(f.storage, "task", async (...args: Parameters<typeof read>) =>
-    ++calls === 1 ? read(...args) : undefined,
-  );
+  t.mock.method(f.policy, "validate", () => {
+    mockTransactionReads(t, f.instance, (tx) => {
+      t.mock.method(tx, "task", async (id: TaskId) => {
+        assert.equal(id, f.taskId);
+        return undefined;
+      });
+    });
+    return true;
+  });
   const writes = t.mock.method(f.storage, "commit");
   const response = await f.replace({
     kind: f.task.definition.kind,
@@ -3194,7 +3285,6 @@ void test("document replacement rechecks its owner on the commit line", async (t
   });
   assert.equal(response.errors?.[0]?.extensions.code, "NOT_FOUND");
   assert.equal(writes.mock.callCount(), 0);
-  assert.equal(calls, 2);
 });
 
 void test("document family access authorizes the exact key and accepts a server-supplied null seed", async (t) => {
@@ -3243,7 +3333,7 @@ for (const method of ["commit", "mintId"] as const) {
     assert.equal(response.errors?.[0]?.message, "INTERNAL_SERVER_ERROR");
     assert.deepEqual(response.errors?.[0]?.path, ["createConversation"]);
     assert.equal(response.data?.createConversation, null);
-    assert.deepEqual(await f.instance.closed, { reason: "failed", error });
+    assert.deepEqual(await f.instance.closed, { kind: "failed", error });
     const next = await f.run(request, { id: f.harnessId });
     assert.equal(next.errors?.[0]?.extensions.code, "SESSION_FAILED");
     assert.equal(fault.mock.callCount(), 1);
@@ -3279,11 +3369,13 @@ void test("root creation and document replacement classify fatal storage request
 
 void test("a rejected read inside a write-capable commit remains BAD_REQUEST without failing the Harness", async (t) => {
   const f = await documentFixture(t);
-  const read = f.storage.task.bind(f.storage);
-  let calls = 0;
-  const fault = t.mock.method(f.storage, "task", async (...args: Parameters<typeof read>) => {
-    if (++calls === 2) throw new StorageRequestError("private rejected owner read");
-    return read(...args);
+  t.mock.method(f.policy, "validate", () => {
+    mockTransactionReads(t, f.instance, (tx) => {
+      t.mock.method(tx, "task", async () => {
+        throw new StorageRequestError("private rejected owner read");
+      });
+    });
+    return true;
   });
   const writes = t.mock.method(f.storage, "commit");
   const response = await f.replace({
@@ -3292,10 +3384,9 @@ void test("a rejected read inside a write-capable commit remains BAD_REQUEST wit
   });
   assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
   assert.equal(writes.mock.callCount(), 0);
-  fault.mock.restore();
   assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
   await f.instance.close(execution);
-  assert.deepEqual(await f.instance.closed, { reason: "closed" });
+  assert.deepEqual(await f.instance.closed, { kind: "closed" });
 });
 
 void test("normal closure and an unrelated terminal cause do not reclassify a rejected request", async (t) => {
@@ -3324,7 +3415,7 @@ void test("normal closure and an unrelated terminal cause do not reclassify a re
     assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
     assert.deepEqual(
       await f.instance.closed,
-      failed ? { reason: "failed", error: fatal } : { reason: "closed" },
+      failed ? { kind: "failed", error: fatal } : { kind: "closed" },
     );
   }
 });
@@ -3363,7 +3454,7 @@ void test("fatal-error classification waits for the terminal cause but remains r
   assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   assert.equal(result.data?.configure, null);
   release.resolve();
-  assert.deepEqual(await f.instance.closed, { reason: "failed", error });
+  assert.deepEqual(await f.instance.closed, { kind: "failed", error });
 });
 
 void test("write operations release their close observer after success and rejection", async (t) => {

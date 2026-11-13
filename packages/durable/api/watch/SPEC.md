@@ -2,9 +2,8 @@
 
 ## Status and scope
 
-Draft for review. This contract targets Pi 1.5.2. The
-[manifest](../package.json) still pins 1.4.0, and [watch.ts](watch.ts) is a
-stub. Upgrade the dependencies in a separate change before implementation.
+This contract targets Pi 1.5.2, pinned in the [manifest](../package.json).
+[watch.ts](watch.ts) is still a stub.
 
 Use Durable's records, bounded conversation view, and Chord operations. Do not
 add a conversation store, event replay log, custom delta language, or Chord
@@ -201,9 +200,7 @@ integration with the existing Node server and SSE adapter.
 ## Dependency references
 
 These references select upstream commit
-`b4afdddf44e059c67ccf5097e5317d913521b470` (Pi 1.5.2), the investigated target,
-not the current project pin. Use these source contracts when reviewing the
-draft.
+`b4afdddf44e059c67ccf5097e5317d913521b470` (Pi 1.5.2), matching the package pin.
 
 [view]:
   https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/packages/durable/src/harness/view.ts

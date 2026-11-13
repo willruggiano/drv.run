@@ -1,6 +1,6 @@
-import { Type } from "@earendil-works/pi-ai";
-import { ModelThinkingLevelSchema } from "@earendil-works/pi-ai/providers/model-schema";
-import type { JsonValue } from "@earendil-works/chord";
+import { Type } from "typebox";
+import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ConversationId, EntryId, TaskId } from "@earendil-works/pi-durable";
 
 // Brands are erased on the wire; validation establishes the numeric representation, not existence.
@@ -124,7 +124,7 @@ export const AssistantMessageSchema = Type.Object({
   responseModel: Type.Optional(Type.String()),
   responseId: Type.Optional(Type.String()),
   providerThinkingLevel: Type.Optional(Type.String()),
-  thinkingLevel: Type.Optional(ModelThinkingLevelSchema),
+  thinkingLevel: Type.Optional(Type.Enum(MODEL_THINKING_LEVELS)),
   diagnostics: Type.Optional(Type.Array(AssistantMessageDiagnosticSchema)),
   usage: UsageSchema,
   stopReason: StopReasonSchema,
