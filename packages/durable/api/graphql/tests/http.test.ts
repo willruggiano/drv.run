@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type ServerResponse } from "node:http";
 import { test } from "node:test";
 import { GraphQLError, type ExecutionResult } from "graphql";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -301,6 +301,112 @@ for (const create of [false, true]) {
     assert.equal((await fetch(new URL("/api/models", url))).status, 503);
   });
 }
+
+void test("lookup cancellation skips later mutation acquisitions after an HTTP disconnect", async (t) => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<Harness | undefined>();
+  t.after(() => release.resolve(undefined));
+  const validate = t.mock.fn((id: string) => id.length > 0);
+  const factory = t.mock.fn(
+    async (id: string, context: typeof BACKGROUND_CONTEXT, create: boolean) => {
+      assert.equal(context.abortSignal, undefined);
+      assert.equal(create, true);
+      if (id === "first") {
+        entered.resolve();
+        return release.promise;
+      }
+      throw new StorageRequestError("later acquisition must not start");
+    },
+  );
+  const { api, server, url } = await serve(t, {
+    openHarness: factory,
+    isValidExternalId: validate,
+  });
+  // Observe handler completion without sealing acquisition via api.close().
+  const handled = Promise.withResolvers<void>();
+  server.removeListener("request", api.handle);
+  server.on("request", (request, response) => {
+    void api.handle(request, response).then(handled.resolve, handled.reject);
+  });
+  const disconnected = Promise.withResolvers<void>();
+  server.once("request", (_request, response) => response.once("close", disconnected.resolve));
+  const controller = new AbortController();
+  const endpoint = new URL("/api/graphql", url);
+  const response = fetch(endpoint, {
+    ...json(`mutation {
+      first: open(input:{externalId:"first"}) { harness { id } }
+      second: open(input:{externalId:"second"}) { harness { id } }
+    }`),
+    signal: controller.signal,
+  });
+  await entered.promise;
+  controller.abort();
+  await assert.rejects(response, { name: "AbortError" });
+  await disconnected.promise;
+  await handled.promise;
+  assert.deepEqual(
+    validate.mock.calls.map((call) => call.arguments[0]),
+    ["first", "second"],
+  );
+  assert.deepEqual(
+    factory.mock.calls.map((call) => call.arguments[0]),
+    ["first"],
+  );
+  // The admitted acquisition may fail after its HTTP waiter has gone away.
+  release.reject(new StorageRequestError("late acquisition failure"));
+  await api.close();
+  assert.equal((await fetch(endpoint, json("{ __typename }"))).status, 503);
+});
+
+void test("lookup cancellation observes a catalog rejection when invocation synchronously aborts", async (t) => {
+  let response: ServerResponse;
+  const catalog = t.mock.fn(
+    async (context: typeof BACKGROUND_CONTEXT): Promise<readonly string[]> => {
+      assert.equal(context.abortSignal?.aborted, false);
+      // Exercise cancellation inside the callback, before it returns its rejection.
+      response.emit("close");
+      assert.equal(context.abortSignal?.aborted, true);
+      throw new StorageRequestError("private catalog failure");
+    },
+  );
+  const { server, url } = await serve(t, {
+    openHarness: async () => assert.fail("catalog must not acquire a Harness"),
+    listHarnesses: catalog,
+  });
+  server.once("request", (_request, outgoing) => {
+    response = outgoing;
+  });
+  const value = await result(
+    await fetch(new URL("/api/graphql", url), json("{ harnesses { id } }")),
+  );
+  assert.equal(value.data, null);
+  assert.equal(value.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(catalog.mock.callCount(), 1);
+});
+
+void test("lookup cancellation before queued admission prevents acquisition", async (t) => {
+  let response: ServerResponse;
+  const factory = t.mock.fn(async () => undefined);
+  const { server, url } = await serve(t, {
+    openHarness: factory,
+    isValidExternalId: () => {
+      queueMicrotask(() => response.emit("close"));
+      return true;
+    },
+  });
+  server.once("request", (_request, outgoing) => {
+    response = outgoing;
+  });
+  const value = await result(
+    await fetch(
+      new URL("/api/graphql", url),
+      json('mutation { open(input:{externalId:"test"}) { harness { id } } }'),
+    ),
+  );
+  assert.deepEqual(value.data, { open: null });
+  assert.equal(value.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(factory.mock.callCount(), 0);
+});
 
 void test("catalog comes from deployment and acquisition failures remain execution errors", async (t) => {
   let failing = true;

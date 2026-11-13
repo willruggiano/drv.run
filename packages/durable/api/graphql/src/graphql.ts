@@ -466,7 +466,7 @@ export function createGraphQLHandler(options: {
       if (errors.length) return requestErrors(errors);
       async function lookup<T>(read: () => Promise<T>): Promise<T> {
         try {
-          return await awaitWithContext(read(), context);
+          return await invokeWithContext(context, read);
         } catch (error) {
           if (error instanceof StorageRequestError)
             throw new ResolverError("INTERNAL_SERVER_ERROR");
@@ -1331,16 +1331,23 @@ async function documentOwner(
   }
 }
 
+async function invokeWithContext<T>(
+  context: Chord.Context,
+  call: () => T | Promise<T>,
+): Promise<T> {
+  context.abortSignal?.throwIfAborted();
+  // Attach the waiter before invoking the callback: synchronous cancellation
+  // must not leave a rejected callback promise unobserved.
+  const pending = Promise.resolve().then(() => {
+    context.abortSignal?.throwIfAborted();
+    return call();
+  });
+  return awaitWithContext(pending, context);
+}
+
 async function serviceCall<T>(ctx: ResolverContext, call: () => T | Promise<T>): Promise<T> {
   try {
-    ctx.context.abortSignal?.throwIfAborted();
-    // Attach the waiter before invoking the service: synchronous cancellation
-    // must not leave a rejected service promise unobserved.
-    const pending = Promise.resolve().then(() => {
-      ctx.context.abortSignal?.throwIfAborted();
-      return call();
-    });
-    return await awaitWithContext(pending, ctx.context);
+    return await invokeWithContext(ctx.context, call);
   } catch {
     throw new ResolverError("INTERNAL_SERVER_ERROR");
   }
