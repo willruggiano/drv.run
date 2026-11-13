@@ -25,6 +25,7 @@ in
         ./src
         ./tests
         ./watch
+        ./serve
       ];
     };
     npmDeps = importNpmLock {npmRoot = ./.;};

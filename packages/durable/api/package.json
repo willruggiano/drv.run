@@ -24,6 +24,11 @@
       "development": "./watch/watch.ts",
       "types": "./dist/watch/watch.d.ts",
       "default": "./dist/watch/watch.js"
+    },
+    "./serve": {
+      "development": "./serve/serve.ts",
+      "types": "./dist/serve/serve.d.ts",
+      "default": "./dist/serve/serve.js"
     }
   },
   "files": [
@@ -33,7 +38,7 @@
   "scripts": {
     "build": "npm run build:graphql && tsc -p tsconfig.build.json",
     "check": "npm run build:graphql && tsc -p tsconfig.json && KNIP_DISABLE_RAW_TRANSFER=1 knip",
-    "test": "c8 node --conditions=development --test \"tests/*.test.ts\" \"graphql/tests/*.test.ts\"",
+    "test": "c8 node --conditions=development --test \"tests/*.test.ts\" \"graphql/tests/*.test.ts\" \"serve/serve.test.ts\"",
     "build:graphql": "mkdir -p graphql/src/generated && grats --tsconfig graphql/tsconfig.grats.json && tsc -p graphql/tsconfig.grats.json"
   },
   "dependencies": {
@@ -66,7 +71,8 @@
       "src/**/*.ts",
       "graphql/src/index.ts",
       "graphql/src/graphql.ts",
-      "watch/watch.ts"
+      "watch/watch.ts",
+      "serve/serve.ts"
     ],
     "extension": [
       ".ts"
@@ -87,13 +93,15 @@
     "entry": [
       "tests/*.test.ts",
       "graphql/src/generated/graphql.ts",
-      "graphql/**/*.test.ts"
+      "graphql/**/*.test.ts",
+      "serve/serve.test.ts"
     ],
     "project": [
       "src/**/*.ts!",
       "tests/**/*.ts",
       "graphql/**/*.ts",
-      "watch/**/*.ts"
+      "watch/**/*.ts",
+      "serve/**/*.ts"
     ],
     "typescript": {
       "config": [

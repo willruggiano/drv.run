@@ -5,5 +5,10 @@
     "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "graphql/src/**/*.ts", "watch/watch.ts"]
+  "include": [
+    "src/**/*.ts",
+    "graphql/src/**/*.ts",
+    "watch/watch.ts",
+    "serve/serve.ts"
+  ]
 }

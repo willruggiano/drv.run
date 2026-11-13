@@ -21,6 +21,7 @@
     "src/**/*.ts",
     "tests/**/*.ts",
     "graphql/**/*.ts",
-    "watch/**/*.ts"
+    "watch/**/*.ts",
+    "serve/**/*.ts"
   ]
 }
