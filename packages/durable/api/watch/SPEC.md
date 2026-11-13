@@ -3,7 +3,6 @@
 ## Status and scope
 
 This contract targets Pi 1.5.2, pinned in the [manifest](../package.json).
-[watch.ts](watch.ts) is still a stub.
 
 Use Durable's records, bounded conversation view, and Chord operations. Do not
 add a conversation store, event replay log, custom delta language, or Chord
