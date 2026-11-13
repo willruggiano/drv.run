@@ -43,7 +43,8 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
  * BAD_REQUEST for adapter validation and rejected storage reads,
  * NOT_FOUND for missing mutation targets, CONVERSATION_BUSY for typed
  * ConversationBusy, SESSION_FAILED for typed SessionFailed, and INTERNAL_SERVER_ERROR
- * otherwise. Mapping is independent of the operation. ReadAfterWrite, untyped
+ * otherwise. Settings revision conflicts use CONFIGURATION_CONFLICT.
+ * Mapping is independent of the operation. ReadAfterWrite, untyped
  * exceptions, and invisible historical entries retain the internal-error fallback. Never classify
  * by error-message text or expose stacks, causes, or internal error messages.
  * Missing lookup objects are null, not execution errors; storage failures still
@@ -76,6 +77,7 @@ export interface ResolverContext {
   readonly sessions: () => Promise<readonly string[]>;
   readonly models: () => Models;
   readonly documents: DocumentService;
+  readonly settings: SettingsService;
 }
 
 type DocumentToken =
@@ -116,6 +118,7 @@ interface DocumentService {
 
 type ErrorCode =
   | "BAD_REQUEST"
+  | "CONFIGURATION_CONFLICT"
   | "NOT_FOUND"
   | "CONVERSATION_BUSY"
   | "SESSION_FAILED"
@@ -371,6 +374,7 @@ const RequestParameters = Type.Object({
 
 export function createGraphQLHandler(options: {
   documents: DocumentService;
+  settings: SettingsService;
   getHarness: ResolverContext["session"];
   isValidExternalId: ResolverContext["isValidExternalId"];
   listHarnesses: (context: Chord.Context) => Promise<readonly string[]>;
@@ -465,6 +469,7 @@ export function createGraphQLHandler(options: {
       const contextValue: ResolverContext = {
         context,
         documents: options.documents,
+        settings: options.settings,
         session: (externalId, create) => lookup(() => options.getHarness(externalId, create)),
         isValidExternalId: options.isValidExternalId,
         sessions: () => lookup(() => options.listHarnesses(context)),
@@ -1281,8 +1286,9 @@ async function documentOwner(
   }
 }
 
-async function documentService<T>(ctx: ResolverContext, call: () => T | Promise<T>): Promise<T> {
+async function serviceCall<T>(ctx: ResolverContext, call: () => T | Promise<T>): Promise<T> {
   try {
+    ctx.context.abortSignal?.throwIfAborted();
     return await awaitWithContext(Promise.resolve(call()), ctx.context);
   } catch {
     throw new ResolverError("INTERNAL_SERVER_ERROR");
@@ -1303,7 +1309,7 @@ export async function documentDefinitions(
     const instance = await ctx.session(source.externalId);
     if (!instance || !(await instance.commit((tx) => documentOwner(tx, owner), ctx.context)))
       return null;
-    const tokens = await documentService(ctx, () =>
+    const tokens = await serviceCall(ctx, () =>
       ctx.documents.definitions(source.externalId, owner, ctx.context),
     );
     if (tokens === undefined) return null;
@@ -1337,7 +1343,7 @@ async function resolveDocument(source: Harness, input: DocumentAddressInput, ctx
   const instance = await ctx.session(source.externalId);
   if (!instance || !(await instance.commit((tx) => documentOwner(tx, address.scope), ctx.context)))
     return undefined;
-  const access = await documentService(ctx, () =>
+  const access = await serviceCall(ctx, () =>
     ctx.documents.resolve(source.externalId, address, ctx.context),
   );
   if (!access) return undefined;
@@ -1422,7 +1428,7 @@ export async function replaceDocument(
     if (!write || access.token.definition.kind.startsWith("pi."))
       throw new ResolverError("BAD_REQUEST");
     const content = jsonObject(input.content);
-    if (!(await documentService(ctx, () => write.validate(content))))
+    if (!(await serviceCall(ctx, () => write.validate(content))))
       throw new ResolverError("BAD_REQUEST");
     const original = access.token.definition;
     if ("family" in original && write.initialize) assert(write.seed !== undefined);
@@ -2949,6 +2955,268 @@ export async function configure(
     const { handle, instance } = await mutationConversation(ctx, input.conversationId);
     await harnessOperation(instance, ctx, () => handle.configure(input.change, ctx.context));
     return true;
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/** @gqlEnum */
+type App = "web" | "harness";
+/** @gqlEnum */
+type WwwDeliveryMode = "followUp" | "steer";
+/** @gqlEnum */
+type HarnessTransport = "auto" | "sse" | "websocket" | "websocketCached";
+/** @gqlEnum */
+type HarnessQueueMode = "oneAtATime" | "all";
+
+/** @gqlInput */
+interface WwwSettingsInput {
+  readonly wrapCode: boolean;
+  readonly bottomAlign: boolean;
+  readonly hideThinkingBlock: boolean;
+  readonly showImages: boolean;
+  readonly defaultDeliveryMode: WwwDeliveryMode;
+}
+
+/** @gqlType */
+interface WebSettings {
+  readonly __typename: "WebSettings";
+  /** @gqlField */
+  readonly revision: string;
+  /** @gqlField */
+  readonly wrapCode: boolean;
+  /** @gqlField */
+  readonly bottomAlign: boolean;
+  /** @gqlField */
+  readonly hideThinkingBlock: boolean;
+  /** @gqlField */
+  readonly showImages: boolean;
+  /** @gqlField */
+  readonly defaultDeliveryMode: WwwDeliveryMode;
+}
+
+/** @gqlInput */
+interface HarnessRetrySettingsInput {
+  readonly enabled: boolean;
+  readonly maxRetries: Int;
+  readonly baseDelayMs: Int;
+  readonly maxAgentDelayMs: Int;
+}
+
+/** @gqlType */
+interface HarnessRetrySettings {
+  /** @gqlField */
+  readonly enabled: boolean;
+  /** @gqlField */
+  readonly maxRetries: Int;
+  /** @gqlField */
+  readonly baseDelayMs: Int;
+  /** @gqlField */
+  readonly maxAgentDelayMs: Int;
+}
+
+/** @gqlInput */
+interface HarnessCompactionSettingsInput {
+  readonly enabled: boolean;
+  readonly reserveTokens: Int;
+  readonly keepRecentTokens: Int;
+  readonly backgroundTokens: Int;
+}
+
+/** @gqlType */
+interface HarnessCompactionSettings {
+  /** @gqlField */
+  readonly enabled: boolean;
+  /** @gqlField */
+  readonly reserveTokens: Int;
+  /** @gqlField */
+  readonly keepRecentTokens: Int;
+  /** @gqlField */
+  readonly backgroundTokens: Int;
+}
+
+/** @gqlInput */
+interface HarnessSettingsInput {
+  readonly transport: HarnessTransport;
+  readonly steeringMode: HarnessQueueMode;
+  readonly followUpMode: HarnessQueueMode;
+  readonly retry: HarnessRetrySettingsInput;
+  readonly compaction: HarnessCompactionSettingsInput;
+}
+
+/** @gqlType */
+interface HarnessSettings {
+  readonly __typename: "HarnessSettings";
+  /** @gqlField */
+  readonly revision: string;
+  /** @gqlField */
+  readonly transport: HarnessTransport;
+  /** @gqlField */
+  readonly steeringMode: HarnessQueueMode;
+  /** @gqlField */
+  readonly followUpMode: HarnessQueueMode;
+  /** @gqlField */
+  readonly retry: HarnessRetrySettings;
+  /** @gqlField */
+  readonly compaction: HarnessCompactionSettings;
+}
+
+/** @gqlUnion */
+type Settings = WebSettings | HarnessSettings;
+
+/** @gqlInput */
+type SaveSettingsInput = { web: SaveWwwSettingsInput } | { harness: SaveHarnessSettingsInput };
+/** @gqlInput */
+interface SaveWwwSettingsInput {
+  readonly expectedRevision: string;
+  readonly settings: WwwSettingsInput;
+}
+/** @gqlInput */
+interface SaveHarnessSettingsInput {
+  readonly expectedRevision: string;
+  readonly settings: HarnessSettingsInput;
+}
+
+interface ConfigurationSnapshot<T> {
+  readonly revision: string;
+  readonly settings: T;
+}
+
+// Bind each service to the authorized user. The service owns XDG resolution,
+// defaults, strict file validation, content revisions, and atomic replacement.
+// Serialize saves per user/file and reread the revision before writing. Never
+// acquire a Harness, modify Durable documents, or reconfigure an open Harness.
+interface Configuration<T> {
+  read(context: Chord.Context): Promise<ConfigurationSnapshot<T>>;
+  /**
+   * Undefined means revision conflict, with no write. No automatic replay.
+   * Context cancellation may stop admission, not an admitted replacement.
+   * Deployment owns service lifetime and cleanup after a disconnected waiter.
+   */
+  replace(
+    expectedRevision: string,
+    settings: T,
+    context: Chord.Context,
+  ): Promise<ConfigurationSnapshot<T> | undefined>;
+}
+interface SettingsService {
+  readonly web: Configuration<WwwSettingsInput>;
+  readonly harness: Configuration<HarnessSettingsInput>;
+}
+
+const PolicyInteger = Type.Integer({ minimum: 0, maximum: 2147483647 });
+const ConfigurationRevision = Type.String({ minLength: 1 });
+const WwwSettingsInput = Type.Object(
+  {
+    wrapCode: Type.Boolean(),
+    bottomAlign: Type.Boolean(),
+    hideThinkingBlock: Type.Boolean(),
+    showImages: Type.Boolean(),
+    defaultDeliveryMode: Type.Union([Type.Literal("followUp"), Type.Literal("steer")]),
+  },
+  { additionalProperties: false },
+);
+const HarnessQueueMode = Type.Union([Type.Literal("oneAtATime"), Type.Literal("all")]);
+const HarnessSettingsInput = Type.Object(
+  {
+    transport: Type.Union([
+      Type.Literal("auto"),
+      Type.Literal("sse"),
+      Type.Literal("websocket"),
+      Type.Literal("websocketCached"),
+    ]),
+    steeringMode: HarnessQueueMode,
+    followUpMode: HarnessQueueMode,
+    retry: Type.Object(
+      {
+        enabled: Type.Boolean(),
+        maxRetries: PolicyInteger,
+        baseDelayMs: PolicyInteger,
+        maxAgentDelayMs: PolicyInteger,
+      },
+      { additionalProperties: false },
+    ),
+    compaction: Type.Object(
+      {
+        enabled: Type.Boolean(),
+        reserveTokens: PolicyInteger,
+        keepRecentTokens: PolicyInteger,
+        backgroundTokens: PolicyInteger,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+function configurationSnapshot<S extends Type.TSchema>(
+  schema: S,
+  value: ConfigurationSnapshot<Type.Static<S>>,
+): ConfigurationSnapshot<Type.Static<S>> {
+  try {
+    const revision = value.revision;
+    // Detach the projection from service state before validation and field execution.
+    const settings = structuredClone(value.settings);
+    assert(Value.Check(ConfigurationRevision, revision) && Value.Check(schema, settings));
+    return { revision, settings };
+  } catch {
+    throw new ResolverError("INTERNAL_SERVER_ERROR");
+  }
+}
+
+/**
+ * Read resolved application configuration without acquiring a Harness or creating files.
+ * @gqlQueryField
+ */
+export async function settings(app: App, ctx: ResolverContext): Promise<Settings | null> {
+  try {
+    if (app === "web") {
+      const value = configurationSnapshot(
+        WwwSettingsInput,
+        await serviceCall(ctx, () => ctx.settings.web.read(ctx.context)),
+      );
+      return { ...value.settings, revision: value.revision, __typename: "WebSettings" };
+    }
+    const value = configurationSnapshot(
+      HarnessSettingsInput,
+      await serviceCall(ctx, () => ctx.settings.harness.read(ctx.context)),
+    );
+    return { ...value.settings, revision: value.revision, __typename: "HarnessSettings" };
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
+/**
+ * Full replacement with an opaque expected revision. A conflict writes nothing.
+ * Saves affect later Harness opens, not current execution. Never replay after a lost response.
+ * @gqlMutationField
+ */
+export async function saveSettings(
+  input: SaveSettingsInput,
+  ctx: ResolverContext,
+): Promise<Settings | null> {
+  try {
+    if ("web" in input) {
+      const { expectedRevision, settings } = input.web;
+      checked(ConfigurationRevision, expectedRevision);
+      checked(WwwSettingsInput, settings);
+      const saved = await serviceCall(ctx, () =>
+        ctx.settings.web.replace(expectedRevision, settings, ctx.context),
+      );
+      if (saved === undefined) throw new ResolverError("CONFIGURATION_CONFLICT");
+      const value = configurationSnapshot(WwwSettingsInput, saved);
+      return { ...value.settings, revision: value.revision, __typename: "WebSettings" };
+    }
+    const { expectedRevision, settings } = input.harness;
+    checked(ConfigurationRevision, expectedRevision);
+    checked(HarnessSettingsInput, settings);
+    const saved = await serviceCall(ctx, () =>
+      ctx.settings.harness.replace(expectedRevision, settings, ctx.context),
+    );
+    if (saved === undefined) throw new ResolverError("CONFIGURATION_CONFLICT");
+    const value = configurationSnapshot(HarnessSettingsInput, saved);
+    return { ...value.settings, revision: value.revision, __typename: "HarnessSettings" };
   } catch (error) {
     throw mapError(error);
   }

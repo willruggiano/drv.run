@@ -48,6 +48,11 @@ Upstream TelemetryCarrier: a JSON object with string keys and string values.
 """
 scalar TelemetryCarrier
 
+enum App {
+  harness
+  web
+}
+
 enum BlockedReason {
   migration_failed
   missing_task
@@ -106,6 +111,18 @@ enum HarnessInspectionScheduling {
   closing
   paused
   running
+}
+
+enum HarnessQueueMode {
+  all
+  oneAtATime
+}
+
+enum HarnessTransport {
+  auto
+  sse
+  websocket
+  websocketCached
 }
 
 """GraphQL name for NonNullable<InputSubmissionDraft["whenBusy"]>."""
@@ -212,6 +229,11 @@ enum TaskStateStatus {
   waiting
 }
 
+enum WwwDeliveryMode {
+  followUp
+  steer
+}
+
 union AssistantContent = TextContent | ThinkingContent | ToolCall
 
 """
@@ -219,6 +241,8 @@ Upstream pi-ai message variants. String/array content stays distinct through
 typed wrappers; JSON maps and application payloads remain JSON.
 """
 union Message = AssistantMessage | SystemMessage | ToolResultMessage | UserMessage
+
+union Settings = HarnessSettings | WebSettings
 
 union SystemMessageContent = StringContent | TextContentList
 
@@ -391,6 +415,28 @@ input EntryQuery {
   order: ScanOrder
 }
 
+input HarnessCompactionSettingsInput {
+  backgroundTokens: Int!
+  enabled: Boolean!
+  keepRecentTokens: Int!
+  reserveTokens: Int!
+}
+
+input HarnessRetrySettingsInput {
+  baseDelayMs: Int!
+  enabled: Boolean!
+  maxAgentDelayMs: Int!
+  maxRetries: Int!
+}
+
+input HarnessSettingsInput {
+  compaction: HarnessCompactionSettingsInput!
+  followUpMode: HarnessQueueMode!
+  retry: HarnessRetrySettingsInput!
+  steeringMode: HarnessQueueMode!
+  transport: HarnessTransport!
+}
+
 input ImageContentInput {
   """Base64-encoded image bytes."""
   data: String!
@@ -475,6 +521,21 @@ input RootInput {
 
 input RootOptionsInput {
   agent: AgentChange
+}
+
+input SaveHarnessSettingsInput {
+  expectedRevision: String!
+  settings: HarnessSettingsInput!
+}
+
+input SaveSettingsInput @oneOf {
+  harness: SaveHarnessSettingsInput
+  web: SaveWwwSettingsInput
+}
+
+input SaveWwwSettingsInput {
+  expectedRevision: String!
+  settings: WwwSettingsInput!
 }
 
 """
@@ -598,6 +659,14 @@ input UserMessageInput {
 input WriteSubmissionDraft {
   entry: EntryDraft!
   requestId: String
+}
+
+input WwwSettingsInput {
+  bottomAlign: Boolean!
+  defaultDeliveryMode: WwwDeliveryMode!
+  hideThinkingBlock: Boolean!
+  showImages: Boolean!
+  wrapCode: Boolean!
 }
 
 type AbortSubmissionPayload {
@@ -800,11 +869,34 @@ type Harness implements Node {
   snapshot(address: DocumentAddressInput!): JsonObject
 }
 
+type HarnessCompactionSettings {
+  backgroundTokens: Int!
+  enabled: Boolean!
+  keepRecentTokens: Int!
+  reserveTokens: Int!
+}
+
 type HarnessInspection {
   scheduling: HarnessInspectionScheduling!
   """Queued and placed submissions, in upstream ID order."""
   submissions: [SubmissionRecord!]!
   tasks: [TaskInspection!]!
+}
+
+type HarnessRetrySettings {
+  baseDelayMs: Int!
+  enabled: Boolean!
+  maxAgentDelayMs: Int!
+  maxRetries: Int!
+}
+
+type HarnessSettings {
+  compaction: HarnessCompactionSettings!
+  followUpMode: HarnessQueueMode!
+  retry: HarnessRetrySettings!
+  revision: String!
+  steeringMode: HarnessQueueMode!
+  transport: HarnessTransport!
 }
 
 type ImageContent {
@@ -909,6 +1001,11 @@ type Mutation {
   """
   root(input: RootInput!): RootPayload
   """
+  Full replacement with an opaque expected revision. A conflict writes nothing.
+  Saves affect later Harness opens, not current execution. Never replay after a lost response.
+  """
+  saveSettings(input: SaveSettingsInput!): Settings
+  """
   Admit input or a passive entry write, not necessarily placement or completion.
   Same requestId and type recover the prior submission without comparing content.
   A key used for another type retains the untyped-error fallback. ConversationBusy means not admitted.
@@ -964,6 +1061,10 @@ type Query {
   Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
   """
   node(id: ID!): Node
+  """
+  Read resolved application configuration without acquiring a Harness or creating files.
+  """
+  settings(app: App!): Settings
 }
 
 type RootPayload {
@@ -1187,4 +1288,13 @@ type UserMessage {
   content: UserMessageContent!
   role: MessageRole!
   timestamp: Float!
+}
+
+type WebSettings {
+  bottomAlign: Boolean!
+  defaultDeliveryMode: WwwDeliveryMode!
+  hideThinkingBlock: Boolean!
+  revision: String!
+  showImages: Boolean!
+  wrapCode: Boolean!
 }

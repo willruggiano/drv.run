@@ -16,7 +16,7 @@ import {
   createRegistry,
   CompactionTask,
 } from "@earendil-works/pi-durable";
-import { openHarness, serve, events } from "../../tests/fixtures.ts";
+import { openHarness, serve, events, settingsFixture } from "../../tests/fixtures.ts";
 
 const modern = "application/graphql-response+json";
 const json = (query: string, variables?: object, operationName?: string): RequestInit => ({
@@ -819,4 +819,134 @@ void test("disconnect cancels document authorization waits before mutation admis
   release.resolve();
   await release.promise;
   assert.equal(writes.mock.callCount(), 0);
+});
+
+void test("HTTP settings save returns typed results and conflicts without acquiring a Harness", async (t) => {
+  const settings = settingsFixture();
+  const initial = await settings.web.read(BACKGROUND_CONTEXT);
+  const { url } = await serve(t, {
+    settings,
+    openHarness: async () => assert.fail("settings must not acquire a Harness"),
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const mutation = `mutation($input:SaveSettingsInput!) { saveSettings(input:$input) { __typename ... on WebSettings { revision wrapCode } } }`;
+  const variables = {
+    input: {
+      web: {
+        expectedRevision: initial.revision,
+        settings: { ...initial.settings, wrapCode: true },
+      },
+    },
+  };
+  const response = await result(await fetch(endpoint, json(mutation, variables)));
+  assert.equal(response.errors, undefined);
+  const saved = await settings.web.read(BACKGROUND_CONTEXT);
+  assert.deepEqual(response.data, {
+    saveSettings: { __typename: "WebSettings", revision: saved.revision, wrapCode: true },
+  });
+  const conflict = await result(await fetch(endpoint, json(mutation, variables)));
+  assert.equal(conflict.errors?.[0]?.extensions?.code, "CONFIGURATION_CONFLICT");
+  assert.equal(conflict.errors?.[0]?.message, "CONFIGURATION_CONFLICT");
+  assert.equal(conflict.data?.saveSettings, null);
+  assert.deepEqual(await settings.web.read(BACKGROUND_CONTEXT), saved);
+  assert.deepEqual(
+    await settings.harness.read(BACKGROUND_CONTEXT),
+    await settingsFixture().harness.read(BACKGROUND_CONTEXT),
+  );
+  endpoint.search = new URLSearchParams({
+    query: mutation,
+    variables: JSON.stringify(variables),
+  }).toString();
+  assert.equal((await fetch(endpoint)).status, 405);
+});
+
+void test("HTTP disconnect leaves an admitted settings save with its service and never replays it", async (t) => {
+  const settings = settingsFixture();
+  const initial = await settings.web.read(BACKGROUND_CONTEXT);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const committed = Promise.withResolvers<void>();
+  const replace = settings.web.replace.bind(settings.web);
+  const save = t.mock.method(
+    settings.web,
+    "replace",
+    async (...args: Parameters<typeof replace>) => {
+      entered.resolve();
+      await release.promise;
+      const value = await replace(...args);
+      committed.resolve();
+      return value;
+    },
+  );
+  const { url } = await serve(t, {
+    settings,
+    openHarness: async () => assert.fail("settings must not acquire a Harness"),
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const controller = new AbortController();
+  const request = fetch(endpoint, {
+    ...json(`mutation($input:SaveSettingsInput!) { saveSettings(input:$input) { __typename } }`, {
+      input: {
+        web: {
+          expectedRevision: initial.revision,
+          settings: { ...initial.settings, wrapCode: true },
+        },
+      },
+    }),
+    signal: controller.signal,
+  });
+  await entered.promise;
+  controller.abort();
+  await assert.rejects(request, { name: "AbortError" });
+  release.resolve();
+  await committed.promise;
+  const read = await result(
+    await fetch(
+      endpoint,
+      json(`{ settings(app:web) { ... on WebSettings { wrapCode revision } } }`),
+    ),
+  );
+  const saved = await settings.web.read(BACKGROUND_CONTEXT);
+  assert.deepEqual(read.data, { settings: { wrapCode: true, revision: saved.revision } });
+  assert.equal(save.mock.callCount(), 1);
+});
+
+void test("API shutdown drains a pending settings replacement and rejects new work", async (t) => {
+  const settings = settingsFixture();
+  const initial = await settings.harness.read(BACKGROUND_CONTEXT);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const replace = settings.harness.replace.bind(settings.harness);
+  t.mock.method(settings.harness, "replace", async (...args: Parameters<typeof replace>) => {
+    entered.resolve();
+    await release.promise;
+    return replace(...args);
+  });
+  const { api, url } = await serve(t, {
+    settings,
+    openHarness: async () => assert.fail("settings must not acquire a Harness"),
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const request = fetch(
+    endpoint,
+    json(
+      `mutation($input:SaveSettingsInput!) { saveSettings(input:$input) { ... on HarnessSettings { revision } } }`,
+      { input: { harness: { expectedRevision: initial.revision, settings: initial.settings } } },
+    ),
+  );
+  await entered.promise;
+  const closing = api.close();
+  assert.equal(
+    (await fetch(endpoint, json(`{ settings(app:harness) { __typename } }`))).status,
+    503,
+  );
+  release.resolve();
+  const response = await result(await request);
+  assert.equal(response.errors, undefined);
+  assert.deepEqual(response.data, {
+    saveSettings: { revision: (await settings.harness.read(BACKGROUND_CONTEXT)).revision },
+  });
+  await closing;
 });

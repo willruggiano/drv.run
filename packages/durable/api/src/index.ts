@@ -23,6 +23,8 @@ import { createGraphQLHandler, type ResolverContext } from "../graphql/src/graph
 export interface ApiOptions {
   /** Authorized document exposure and write policy; callbacks and tokens stay server-side. */
   documents: ResolverContext["documents"];
+  /** Authorized per-user application configuration, independent of Durable storage. */
+  settings: ResolverContext["settings"];
   /** Borrow the factory's Pi AI catalog; resolve a dynamic source per request. */
   models: Models | (() => Models);
   /** Validate external-ID syntax for provisioning; authorization remains in the factory. */
@@ -48,6 +50,7 @@ export function createApi(options: ApiOptions) {
   const models = () => (typeof options.models === "function" ? options.models() : options.models);
   const graphql = createGraphQLHandler({
     documents: options.documents,
+    settings: options.settings,
     getHarness: (id, create) => sessions.get(id, create),
     isValidExternalId: (id) => options.isValidExternalId(id),
     listHarnesses: (context) => options.listHarnesses(context),

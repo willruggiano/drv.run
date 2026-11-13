@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { TestContext } from "node:test";
@@ -16,17 +17,35 @@ import {
 } from "@earendil-works/pi-durable";
 import { createApi, type ApiOptions } from "../src/index.ts";
 
+const unavailableConfiguration = {
+  async read(): Promise<never> {
+    throw new Error("settings service is not bound in this test");
+  },
+  async replace(): Promise<never> {
+    throw new Error("settings service is not bound in this test");
+  },
+};
+export const unavailableSettings: ApiOptions["settings"] = {
+  web: unavailableConfiguration,
+  harness: unavailableConfiguration,
+};
+
 export async function serve(
   t: TestContext,
-  options: Omit<ApiOptions, "models" | "listHarnesses" | "isValidExternalId" | "documents"> & {
+  options: Omit<
+    ApiOptions,
+    "models" | "listHarnesses" | "isValidExternalId" | "documents" | "settings"
+  > & {
     models?: ApiOptions["models"];
     documents?: ApiOptions["documents"];
+    settings?: ApiOptions["settings"];
     isValidExternalId?: ApiOptions["isValidExternalId"];
     listHarnesses?: ApiOptions["listHarnesses"];
   },
 ) {
   const api = createApi({
     models: createModels(),
+    settings: unavailableSettings,
     documents: { definitions: async () => [], resolve: async () => undefined },
     isValidExternalId: (id) => id.length > 0,
     listHarnesses: async () => ["test"],
@@ -97,4 +116,45 @@ export async function* events(
       if (frame.startsWith("data: ")) yield JSON.parse(frame.slice(6));
     }
   }
+}
+
+// In-memory service double. File persistence and XDG resolution belong to deployment.
+export function settingsFixture(): ApiOptions["settings"] {
+  function configuration<T>(initial: T) {
+    let current = { revision: "absent", settings: initial };
+    return {
+      async read() {
+        return structuredClone(current);
+      },
+      async replace(expectedRevision: string, settings: T) {
+        if (expectedRevision !== current.revision) return undefined;
+        current = {
+          revision: createHash("sha256").update(JSON.stringify(settings)).digest("hex"),
+          settings: structuredClone(settings),
+        };
+        return structuredClone(current);
+      },
+    };
+  }
+  return {
+    web: configuration({
+      wrapCode: false,
+      bottomAlign: true,
+      hideThinkingBlock: false,
+      showImages: true,
+      defaultDeliveryMode: "followUp",
+    }),
+    harness: configuration({
+      transport: "auto",
+      steeringMode: "oneAtATime",
+      followUpMode: "oneAtATime",
+      retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60000 },
+      compaction: {
+        enabled: true,
+        reserveTokens: 16384,
+        keepRecentTokens: 20000,
+        backgroundTokens: 32768,
+      },
+    }),
+  };
 }
