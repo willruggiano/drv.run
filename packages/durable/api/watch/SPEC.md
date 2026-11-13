@@ -16,6 +16,13 @@ Start with a recent, bounded window of fork-visible history. Do not read the
 whole transcript or derive the whole model context before sending the first
 frame. Window size is policy; it is not the active-context boundary.
 
+Use Durable's default window: start with 50 entries, grow to 100, then remove
+the oldest entries to return to 50. Configure `min` and `max` at application
+startup; `min` defaults to 50 and `max` defaults to twice `min`. Apply Durable's
+integer and ordering constraints, with no additional application-imposed
+ceiling. Read these values from application startup settings; environment
+variables can supply those settings. Dynamic configuration is not required.
+
 ```text
 recent bounded window
   -> optional bounded backfill within active context
@@ -31,25 +38,28 @@ recent bounded window
   Retained entries can precede the summary. A reset with `head: "self"` starts
   at itself.
 - With no head marker, the boundary is the start of fork-visible history.
-- Automatic page requests must not extend below the current boundary. Loading
-  older ranges requires an explicit user request. A reconnect is not that
+- Check the current boundary before each automatic page request. Do not request
+  entries below it without an explicit user request. A reconnect is not that
   request.
-- Removing an entry from the live window does not delete its immutable record or
-  require a client to discard a previously loaded page.
+- If a reset or compaction changes the boundary while a page request runs, let
+  that request finish. Accept its result without changing the current head or
+  live state. Apply the new boundary to subsequent automatic requests; do not
+  add special cancellation logic.
 
 Durable's [window][view] contains chronological history. [Context
 derivation][context] defines the active boundary.
 `ConversationTranscript.loadEarlier()` and `fillGap()` are [paging
 helpers][transcript], not enforcement of this loading policy. Do not call them
 automatically without checking the requested range. Specify the history-loading
-API separately through GraphQL; do not add another REST route here.
+API separately through GraphQL; do not add another REST route here. That API is
+not a prerequisite for implementing the watch stream.
 
-## Proposed stream contract
+## Stream contract
 
-`watch/watch.ts` has one export, `watch`. Propose an asynchronous acquisition
-that returns a native `ReadableStream` of Chord operation batches. Keep
-supporting types internal. The application binds shared resources; the final
-dependency injection signature remains open.
+`watch/watch.ts` has one export, `watch`. Acquisition is asynchronous and
+returns a native `ReadableStream` of Chord operation batches. Keep supporting
+types internal. The application supplies its shared
+[Sessions](../src/sessions.ts) instance and startup window settings.
 
 Each connection synchronizes this JSON state:
 
@@ -74,14 +84,14 @@ Each stream item is a Chord `Op[]`:
   Do not calculate differences across the full documents on every update.
 
 Use the existing [Chord operation format][delta]. No separate snapshot/delta
-operation language, frame sequence, or replay cursor is proposed. The baseline
-contains a bounded view, not every entry the client has previously loaded.
+operation language, frame sequence, or replay cursor is used. The baseline
+contains a bounded view.
 
 ## Acquisition and consistency
 
-Borrow the application's Harness with a non-creating lookup. A missing Harness
-or conversation fails acquisition; watching must not provision either or start
-execution. Do not create documents to read their values.
+Borrow the Harness through `Sessions.get(externalId)`, a non-creating lookup. A
+missing Harness or conversation fails acquisition; watching must not provision
+either or start execution. Do not create documents to read their values.
 
 The tested composition uses public APIs only:
 
@@ -108,17 +118,12 @@ Session helpers. No storage write is needed for the head read.
 ## Reconnect and history
 
 First connection, reconnect, and live delivery converge on authoritative state.
-For the first implementation, propose a fresh bounded baseline on each
-connection, with no replay requirement or client cursor parameter.
+Each connection starts with a fresh bounded baseline, with no replay requirement
+or client cursor parameter.
 
-The client replaces its live replica with that baseline. It may retain immutable
-entries loaded earlier for the same conversation. A gap is missing history, not
-a requirement to load it immediately. Apply the same boundary and
+The client replaces its live replica with that baseline. A gap is missing
+history, not a requirement to load it immediately. Apply the same boundary and
 explicit-request rules to gap filling as to earlier-page loading.
-
-`ConversationTranscript` can merge windows and identify gaps, but it retains
-accumulated history and has O(items) merge cost. Its use and client retention
-limits remain client policy, not a required server-side cache.
 
 ## HTTP boundary
 
@@ -147,6 +152,9 @@ adapter. HTTP listener behavior belongs to
 - Entry limits and pending-operation limits are not byte limits. Large entries,
   head records, documents, and individual commit batches can still be large. Do
   not claim a fixed memory or response-size bound from the window count alone.
+  Add no byte limit or byte-limit configuration to the initial implementation.
+  Do not truncate entries, documents, or operation batches. Deferred loading of
+  large tool outputs or attachment bodies is outside the initial contract.
 - Request abort, stream cancellation, acquisition failure, and consumer failure
   release the observer and request-owned delivery resources. Cleanup is
   idempotent. Disconnect does not abort conversation execution or close the
@@ -155,6 +163,10 @@ adapter. HTTP listener behavior belongs to
 - Cancellation must detach observation without waiting for a storage operation.
   A pending read or already-running listener may still need to settle. Observe
   late failures and prevent late acquisition from leaving a subscription alive.
+- Do not send terminal application frames. A completed answer appears in state;
+  it does not end the connection. After a lost connection, the client reconnects
+  for a new baseline. When the user leaves the conversation, the client closes
+  the connection.
 - Source termination ends delivery. For 1.5.2, synchronous observers report
   Session close as `failed`; the ordinary conversation watch reports `ended`. Do
   not interpret the observer tag alone as a storage failure.
@@ -181,22 +193,10 @@ delivered batch against the previous state.
 
 History integration must also test that automatic requests stop at the boundary,
 explicit requests can cross it, and reconnect does not cause historical
-backfill. Measure read volume and delivery cost before making performance
-claims. Test transport integration with the existing Node server and SSE
-adapter.
-
-## Decisions before implementation
-
-- Approve the proposed stream return type, state shape, root-replacement
-  baseline, and connection-local synchronization contract.
-- Select window defaults, configuration limits, and the shared-resource binding.
-- Define explicit history requests, client retention, and handling of an
-  automatic page already in flight when the head changes.
-- Decide whether terminal application frames are needed and how the client
-  handles normal closure versus reconnectable failure. Do not forward raw
-  `WatchEnd` errors.
-- Set any required byte limits and oversized-payload behavior. Deferred loading
-  of large tool outputs or attachment bodies is outside the initial contract.
+backfill. A page request started before a reset or compaction must be allowed to
+finish; subsequent automatic requests must use the new boundary. Measure read
+volume and delivery cost before making performance claims. Test transport
+integration with the existing Node server and SSE adapter.
 
 ## Dependency references
 
