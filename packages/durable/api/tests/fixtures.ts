@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { once } from "node:events";
-import { createServer } from "node:http";
 import type { TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -12,10 +10,8 @@ import {
   createRegistry,
   type HarnessOptions,
   type Conversation,
-  type ConversationView,
-  type WatchEnd,
 } from "@earendil-works/pi-durable";
-import { createApi, type ApiOptions } from "../src/index.ts";
+import type { ResolverContext } from "../graphql/src/index.ts";
 
 const unavailableConfiguration = {
   async read(): Promise<never> {
@@ -25,12 +21,12 @@ const unavailableConfiguration = {
     throw new Error("settings service is not bound in this test");
   },
 };
-export const unavailableSettings: ApiOptions["settings"] = {
+export const unavailableSettings: ResolverContext["settings"] = {
   web: unavailableConfiguration,
   harness: unavailableConfiguration,
 };
 
-export const unavailableInventory: ApiOptions["inventory"] = {
+export const unavailableInventory: ResolverContext["inventory"] = {
   namespace: "unbound",
   async list() {
     assert.fail("inventory service is not bound in this test");
@@ -52,7 +48,7 @@ export const unavailableInventory: ApiOptions["inventory"] = {
 async function unboundAccounts(): Promise<never> {
   assert.fail("accounts service is not bound in this test");
 }
-export const unavailableAccounts: ApiOptions["accounts"] = {
+export const unavailableAccounts: ResolverContext["accounts"] = {
   namespace: "unbound",
   servers: unboundAccounts,
   accounts: unboundAccounts,
@@ -70,61 +66,12 @@ export const unavailableAccounts: ApiOptions["accounts"] = {
 async function unboundPush(): Promise<never> {
   assert.fail("push service is not bound in this test");
 }
-export const unavailablePush: ApiOptions["push"] = {
+export const unavailablePush: ResolverContext["push"] = {
   applicationServerKey: unboundPush,
   registered: unboundPush,
   register: unboundPush,
   remove: unboundPush,
 };
-
-export async function serve(
-  t: TestContext,
-  options: Omit<
-    ApiOptions,
-    | "models"
-    | "listHarnesses"
-    | "isValidExternalId"
-    | "documents"
-    | "settings"
-    | "inventory"
-    | "accounts"
-    | "push"
-  > & {
-    models?: ApiOptions["models"];
-    documents?: ApiOptions["documents"];
-    settings?: ApiOptions["settings"];
-    inventory?: ApiOptions["inventory"];
-    accounts?: ApiOptions["accounts"];
-    push?: ApiOptions["push"];
-    isValidExternalId?: ApiOptions["isValidExternalId"];
-    listHarnesses?: ApiOptions["listHarnesses"];
-  },
-) {
-  const api = createApi({
-    models: createModels(),
-    settings: unavailableSettings,
-    inventory: unavailableInventory,
-    accounts: unavailableAccounts,
-    push: unavailablePush,
-    documents: { definitions: async () => [], resolve: async () => undefined },
-    isValidExternalId: (id) => id.length > 0,
-    listHarnesses: async () => ["test"],
-    ...options,
-  });
-  const server = createServer(api.handle);
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  assert(address && typeof address !== "string");
-  t.after(async () => {
-    await api.close();
-    server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
-  });
-  return { api, server, url: `http://127.0.0.1:${address.port}/api/s/test` };
-}
 
 export async function openHarness(
   t: TestContext,
@@ -158,28 +105,8 @@ export async function openHarness(
   return { harness, root, faux, registry, storage };
 }
 
-export async function* events(
-  response: Response,
-): AsyncGenerator<
-  { type: "snapshot"; value: ConversationView } | { type: "end"; value: WatchEnd }
-> {
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("content-type"), "text/event-stream");
-  assert(response.body);
-  let buffer = "";
-  for await (const text of response.body.pipeThrough(new TextDecoderStream())) {
-    buffer += text;
-    let end: number;
-    while ((end = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, end);
-      buffer = buffer.slice(end + 2);
-      if (frame.startsWith("data: ")) yield JSON.parse(frame.slice(6));
-    }
-  }
-}
-
 // In-memory service double. File persistence and XDG resolution belong to deployment.
-export function settingsFixture(): ApiOptions["settings"] {
+export function settingsFixture(): ResolverContext["settings"] {
   function configuration<T>(initial: T) {
     let current = { revision: "absent", settings: initial };
     return {
@@ -219,7 +146,7 @@ export function settingsFixture(): ApiOptions["settings"] {
   };
 }
 
-export function inventoryFixture(namespace = "host/user"): ApiOptions["inventory"] {
+export function inventoryFixture(namespace = "host/user"): ResolverContext["inventory"] {
   const rows = ["retained", "running", "starting"].map((id) => ({
     id,
     unit: `drv.run@${id}.service`,
@@ -277,15 +204,15 @@ export function inventoryFixture(namespace = "host/user"): ApiOptions["inventory
 }
 
 type AccountFixtureRecord<K extends "server" | "account" | "authorization"> = NonNullable<
-  Awaited<ReturnType<ApiOptions["accounts"][K]>>
+  Awaited<ReturnType<ResolverContext["accounts"][K]>>
 >;
 export function accountsFixture(namespace = "accounts/user"): {
-  service: ApiOptions["accounts"];
+  service: ResolverContext["accounts"];
   servers: Map<string, AccountFixtureRecord<"server">>;
   accounts: Map<string, AccountFixtureRecord<"account">>;
   authorizations: Map<string, AccountFixtureRecord<"authorization">>;
 } {
-  type Service = ApiOptions["accounts"];
+  type Service = ResolverContext["accounts"];
   type Server = NonNullable<Awaited<ReturnType<Service["server"]>>>;
   type Account = NonNullable<Awaited<ReturnType<Service["account"]>>>;
   type Authorization = NonNullable<Awaited<ReturnType<Service["authorization"]>>>;
@@ -430,10 +357,10 @@ export function accountsFixture(namespace = "accounts/user"): {
 }
 
 export function pushFixture(): {
-  service: ApiOptions["push"];
-  subscriptions: Map<string, Parameters<ApiOptions["push"]["register"]>[0]>;
+  service: ResolverContext["push"];
+  subscriptions: Map<string, Parameters<ResolverContext["push"]["register"]>[0]>;
 } {
-  const subscriptions = new Map<string, Parameters<ApiOptions["push"]["register"]>[0]>();
+  const subscriptions = new Map<string, Parameters<ResolverContext["push"]["register"]>[0]>();
   return {
     subscriptions,
     service: {
