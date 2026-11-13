@@ -17,5 +17,10 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "graphql/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "graphql/**/*.ts",
+    "watch/**/*.ts"
+  ]
 }

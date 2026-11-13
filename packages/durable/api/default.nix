@@ -24,6 +24,7 @@ in
         ./graphql/tests
         ./src
         ./tests
+        ./watch
       ];
     };
     npmDeps = importNpmLock {npmRoot = ./.;};

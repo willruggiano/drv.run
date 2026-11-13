@@ -21,10 +21,8 @@ async function main(): Promise<void> {
               headers: { Allow: "GET", "Cache-Control": "no-store" },
             });
           }
-          const { externalId, conversationId } = decodeWatchQuery(
-            new URL(request.url).searchParams,
-          );
-          const watch = await app.api.watch(externalId, conversationId, request.signal);
+          const query = decodeWatchQuery(new URL(request.url).searchParams);
+          const watch = await app.api.watch(query, request.signal);
           server.timeout(request, 0);
           return eventStreamResponse(watch);
         },

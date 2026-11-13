@@ -19,7 +19,12 @@
       "types": "./dist/graphql/src/index.d.ts",
       "default": "./dist/graphql/src/index.js"
     },
-    "./graphql/schema.graphql": "./graphql/schema.graphql"
+    "./graphql/schema.graphql": "./graphql/schema.graphql",
+    "./watch": {
+      "development": "./watch/watch.ts",
+      "types": "./dist/watch/watch.d.ts",
+      "default": "./dist/watch/watch.js"
+    }
   },
   "files": [
     "dist",
@@ -60,7 +65,8 @@
     "include": [
       "src/**/*.ts",
       "graphql/src/index.ts",
-      "graphql/src/graphql.ts"
+      "graphql/src/graphql.ts",
+      "watch/watch.ts"
     ],
     "extension": [
       ".ts"
@@ -86,7 +92,8 @@
     "project": [
       "src/**/*.ts!",
       "tests/**/*.ts",
-      "graphql/**/*.ts"
+      "graphql/**/*.ts",
+      "watch/**/*.ts"
     ],
     "typescript": {
       "config": [
