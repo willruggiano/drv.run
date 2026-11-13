@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
+import { on } from "node:events";
+import { Worker } from "node:worker_threads";
+import { serve } from "durable-api/serve";
+import { watchRequest } from "../src/index.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test, type TestContext } from "node:test";
 import { setImmediate as turn } from "node:timers/promises";
 import { BACKGROUND_CONTEXT as context, type Context } from "@earendil-works/chord/context";
-import { appendText, applyImmutable, type Op } from "@earendil-works/chord/delta";
+import { appendText, applyImmutable, decoder, type Op } from "@earendil-works/chord/delta";
 import type { WatchEnd } from "@earendil-works/chord/watch";
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -728,5 +732,238 @@ void describe("watch", { timeout: 30_000 }, () => {
     assert.equal(writes.mock.callCount(), 0);
     assert.deepEqual(state.head, head);
     assert.deepEqual(state.view.entries, tail.slice(-3));
+  });
+});
+
+async function http(t: TestContext, f: Awaited<ReturnType<typeof setup>>) {
+  const errors: unknown[] = [];
+  const acquire = t.mock.fn((query: Parameters<typeof watch>[0], signal: AbortSignal) =>
+    watch(query, signal, f.options),
+  );
+  const server = await serve({
+    host: "127.0.0.1",
+    port: 0,
+    routes: { "/api/watch": (request, server) => watchRequest(request, server, acquire) },
+    fetch: () => new Response(null, { status: 404 }),
+    error(error) {
+      errors.push(error);
+      return new Response(null, { status: 500 });
+    },
+  });
+  t.after(async () => {
+    server.forceClose();
+    await server.close();
+  });
+  const timeout = t.mock.method(server, "timeout");
+  const url = new URL(`/api/watch?externalId=test&conversationId=${f.root.id}`, server.url);
+  return { server, url, errors, acquire, timeout };
+}
+function eventSourceClient(): void {
+  const {
+    parentPort,
+    workerData,
+  }: typeof import("node:worker_threads") = require("node:worker_threads");
+  if (!parentPort || typeof workerData !== "string") throw new TypeError();
+  const source = new EventSource(workerData);
+  source.onopen = () => parentPort.postMessage({ type: "open" });
+  source.onmessage = (event) =>
+    parentPort.postMessage({
+      type: event.type,
+      data: JSON.parse(event.data),
+      lastEventId: event.lastEventId,
+    });
+  source.onerror = () => {
+    source.close();
+    parentPort.postMessage({ type: "error" });
+    parentPort.close();
+  };
+}
+function eventSource(t: TestContext, url: URL) {
+  const worker = new Worker(`(${eventSourceClient.toString()})()`, {
+    eval: true,
+    execArgv: ["--experimental-eventsource"],
+    workerData: url.href,
+  });
+  const messages = on(worker, "message", { signal: t.signal, close: ["exit"] });
+  t.after(async () => {
+    await worker.terminate();
+    await messages.return?.();
+  });
+  return {
+    async next() {
+      const event = await messages.next();
+      assert.equal(event.done, false);
+      return event.value[0] as { type: string; data: unknown[]; lastEventId: string };
+    },
+    async close() {
+      await worker.terminate();
+    },
+  };
+}
+
+void describe("GET /api/watch", { timeout: 30_000 }, () => {
+  void test("method and query validation precede acquisition; missing resources stay HTTP errors", async (t) => {
+    const f = await setup(t);
+    const h = await http(t, f);
+    for (const method of ["POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]) {
+      const response = await fetch(h.url, { method });
+      assert.equal(response.status, 405);
+      assert.equal(response.headers.get("allow"), "GET");
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      await response.arrayBuffer();
+    }
+    for (const params of [
+      "",
+      "externalId=test",
+      "conversationId=1",
+      "externalId=&conversationId=1",
+      "externalId=test&conversationId=",
+      "externalId=test&conversationId=-1",
+      "externalId=test&conversationId=1.5",
+      "externalId=test&conversationId=1e2",
+      "externalId=test&conversationId=9007199254740992",
+      "externalId=test&conversationId=1&externalId=other",
+      "externalId=test&conversationId=1&token=secret",
+    ]) {
+      const url = new URL("/api/watch", h.url);
+      url.search = params;
+      const response = await fetch(url);
+      assert.equal(response.status, 400);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      await response.arrayBuffer();
+    }
+    assert.equal(h.acquire.mock.callCount(), 0);
+    for (const params of [
+      "externalId=missing&conversationId=1",
+      "externalId=test&conversationId=999",
+      "externalId=test&conversationId=0",
+    ]) {
+      const url = new URL("/api/watch", h.url);
+      url.search = params;
+      const response = await fetch(url);
+      assert.equal(response.status, 404);
+      await response.arrayBuffer();
+    }
+    assert.equal(h.timeout.mock.callCount(), 0);
+    assert.deepEqual(h.errors, []);
+    assert.equal(f.tracking.attached, 0);
+  });
+
+  void test("EventSource reconstructs live state and reconnects with a new baseline", async (t) => {
+    const f = await setup(t);
+    await notes(f.root, 10);
+    const h = await http(t, f);
+    const first = eventSource(t, h.url);
+    assert.deepEqual(await first.next(), { type: "open" });
+    const initial = await first.next();
+    assert.equal(initial.type, "message");
+    assert.equal(initial.lastEventId, "");
+    const baseline = decoder().decode(initial.data);
+    assert.equal(baseline.length, 1);
+    assert.equal(baseline[0]![0], "r");
+    let state = applyImmutable<State>(undefined, baseline);
+    assert.equal(state.view.entries.length, 3);
+    const head = await marker(f.root);
+    const change = await first.next();
+    assert.equal(change.type, "message");
+    state = applyImmutable(state, decoder().decode(change.data));
+    assert.deepEqual(state.head, head);
+    assert.deepEqual(state.view.entries.at(-1), head);
+    assert.equal(h.timeout.mock.callCount(), 1);
+    assert.equal(h.timeout.mock.calls[0]!.arguments[1], 0);
+    assert.equal(
+      h.acquire.mock.calls[0]!.arguments[1],
+      h.timeout.mock.calls[0]!.arguments[0].signal,
+    );
+    await first.close();
+    await f.tracking.detached;
+    const reset = await marker(f.root);
+    await notes(f.root, 20);
+    f.storage.scans = [];
+    const second = eventSource(t, h.url);
+    assert.deepEqual(await second.next(), { type: "open" });
+    const restarted = await second.next();
+    const ops = decoder().decode(restarted.data);
+    assert.equal(ops.length, 1);
+    assert.equal(ops[0]![0], "r");
+    state = applyImmutable(state, ops);
+    assert.deepEqual(state.head, reset);
+    assert.deepEqual(f.storage.scans, [4]);
+    await f.harness.close(context);
+    assert.deepEqual(await second.next(), { type: "error" });
+    assert.equal(f.tracking.attached, 0);
+    assert.deepEqual(h.errors, []);
+  });
+
+  void test("a source failure after headers ends EventSource without an application error frame", async (t) => {
+    const f = await setup(t);
+    const h = await http(t, f);
+    const client = eventSource(t, h.url);
+    assert.deepEqual(await client.next(), { type: "open" });
+    const baseline = await client.next();
+    assert.equal(baseline.type, "message");
+    const state = applyImmutable<State>(undefined, decoder().decode(baseline.data));
+    assert.deepEqual(state.view.entries, []);
+    const error = new Error("private storage failure");
+    t.mock.method(f.storage, "commit", async () => {
+      throw error;
+    });
+    await assert.rejects(notes(f.root, 1), (value) => value === error);
+    assert.deepEqual(await client.next(), { type: "error" });
+    assert.deepEqual(f.ends, [{ kind: "failed", error }]);
+    assert.deepEqual(h.errors, []);
+    assert.equal(f.tracking.attached, 0);
+  });
+
+  void test("disconnect cancels acquisition but does not close shared resources", async (t) => {
+    const f = await setup(t, true);
+    const hold = gate();
+    t.after(() => hold.release.resolve());
+    const find = f.storage.findLatestHeadMarker.bind(f.storage);
+    t.mock.method(f.storage, "findLatestHeadMarker", async (...args: Parameters<typeof find>) => {
+      hold.entered.resolve();
+      await hold.release.promise;
+      return find(...args);
+    });
+    const h = await http(t, f);
+    const controller = new AbortController();
+    const request = fetch(h.url, { signal: controller.signal });
+    const rejected = assert.rejects(request);
+    await hold.entered.promise;
+    assert.equal(f.tracking.attached, 1);
+    controller.abort();
+    await rejected;
+    await f.tracking.detached;
+    assert.equal(f.tracking.attached, 0);
+    hold.release.resolve();
+    assert.equal((await f.harness.inspect(context)).scheduling, "paused");
+  });
+
+  void test("unexpected acquisition errors reach the server; response setup failures cancel the acquired stream", async (t) => {
+    const f = await setup(t);
+    const h = await http(t, f);
+    const reason = new Error("private lookup failure");
+    const get = t.mock.method(f.sessions, "get", async () => {
+      throw reason;
+    });
+    const response = await fetch(h.url);
+    assert.equal(response.status, 500);
+    assert.equal((await response.arrayBuffer()).byteLength, 0);
+    assert.deepEqual(h.errors, [reason]);
+    get.mock.restore();
+    const request = new Request(h.url);
+    await assert.rejects(
+      watchRequest(
+        request,
+        {
+          timeout() {
+            throw reason;
+          },
+        },
+        (query, signal) => watch(query, signal, f.options),
+      ),
+      (error) => error === reason,
+    );
+    assert.equal(f.tracking.attached, 0);
   });
 });

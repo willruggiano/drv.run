@@ -1,4 +1,49 @@
 import { serve } from "durable-api/serve";
+import { sse } from "durable-api/sse";
+import type { watch } from "durable-api/watch";
+import { Problem } from "./problem.ts";
+
+type WatchQuery = Parameters<typeof watch>[0];
+type AcquireWatch = (query: WatchQuery, signal: AbortSignal) => ReturnType<typeof watch>;
+
+export async function watchRequest(
+  request: Request,
+  server: Pick<Awaited<ReturnType<typeof serve>>, "timeout">,
+  acquire: AcquireWatch,
+): Promise<Response> {
+  if (request.method !== "GET") {
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: "GET", "Cache-Control": "no-store" },
+    });
+  }
+  try {
+    const params = new URL(request.url).searchParams;
+    const externalId = params.get("externalId");
+    const id = params.get("conversationId");
+    if (params.size !== 2 || !externalId || id === null || !/^[0-9]+$/.test(id))
+      throw new Problem(400);
+    const conversationId = Number(id);
+    if (!Number.isSafeInteger(conversationId)) throw new Problem(400);
+    const events = await acquire(
+      {
+        externalId,
+        conversationId: conversationId as WatchQuery["conversationId"],
+      },
+      request.signal,
+    );
+    try {
+      server.timeout(request, 0);
+      return sse(events);
+    } catch (error) {
+      await events.cancel();
+      throw error;
+    }
+  } catch (error) {
+    if (!(error instanceof Problem)) throw error;
+    return new Response(null, { status: error.status, headers: { "Cache-Control": "no-store" } });
+  }
+}
 
 async function main(): Promise<void> {
   const config = readDeploymentConfiguration();
@@ -14,18 +59,8 @@ async function main(): Promise<void> {
           return encodeGraphQLResponse(result, responseType);
         },
 
-        "/api/watch": async (request, server) => {
-          if (request.method !== "GET") {
-            return new Response(null, {
-              status: 405,
-              headers: { Allow: "GET", "Cache-Control": "no-store" },
-            });
-          }
-          const query = decodeWatchQuery(new URL(request.url).searchParams);
-          const watch = await app.api.watch(query, request.signal);
-          server.timeout(request, 0);
-          return eventStreamResponse(watch);
-        },
+        "/api/watch": (request, server) =>
+          watchRequest(request, server, (query, signal) => app.api.watch(query, signal)),
       },
 
       fetch: () => new Response("Not Found", { status: 404 }),
@@ -44,4 +79,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (import.meta.main) await main();
