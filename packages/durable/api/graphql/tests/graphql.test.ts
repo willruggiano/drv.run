@@ -47,6 +47,8 @@ import {
   settingsFixture,
   unavailableInventory,
   unavailableAccounts,
+  unavailablePush,
+  pushFixture,
   accountsFixture,
   inventoryFixture,
 } from "../../tests/fixtures.ts";
@@ -80,6 +82,7 @@ function catalogContext(models: ResolverContext["models"], context = execution):
     settings: unavailableSettings,
     inventory: unavailableInventory,
     accounts: unavailableAccounts,
+    push: unavailablePush,
     isValidExternalId() {
       assert.fail("catalog reads must not validate external IDs");
     },
@@ -117,6 +120,7 @@ async function fixture(t: TestContext, externalId = "test") {
       settings: unavailableSettings,
       inventory: unavailableInventory,
       accounts: unavailableAccounts,
+      push: unavailablePush,
       isValidExternalId: (id) => id.length > 0,
       session: async (id) => (id === externalId ? instance : undefined),
       sessions: async () => [externalId],
@@ -4901,4 +4905,251 @@ void test("malformed authorization responses fail safely rather than projecting 
       "INTERNAL_SERVER_ERROR",
     );
   }
+});
+
+const pushInput = {
+  endpoint: "https://push.test/subscription",
+  keys: { p256dh: "browser-public-key", auth: "browser-secret" },
+};
+const registerPushMutation = `mutation($input:RegisterPushSubscriptionInput!){registerPushSubscription(input:$input)}`;
+function pushContext(push = pushFixture().service): ResolverContext {
+  return { ...catalogContext(() => assert.fail("push must not acquire models")), push };
+}
+
+void test("push exposes public configuration and scoped registration without leaking keys or acquiring Harnesses", async (t) => {
+  const f = pushFixture();
+  const ctx = pushContext(f.service);
+  const key = t.mock.method(f.service, "applicationServerKey");
+  const read = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `query($endpoint:String!){push{applicationServerKey registered(endpoint:$endpoint)}}`,
+    variableValues: { endpoint: pushInput.endpoint },
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(read.data)), {
+    push: { applicationServerKey: "public-vapid-key", registered: false },
+  });
+  assert.deepEqual(key.mock.calls[0]!.arguments, [execution]);
+  assert.equal(f.subscriptions.size, 0);
+  const saved = await graphql({
+    schema,
+    contextValue: ctx,
+    source: registerPushMutation,
+    variableValues: { input: pushInput },
+  });
+  assert.equal(saved.errors, undefined);
+  assert.equal(saved.data?.registerPushSubscription, true);
+  assert.deepEqual(f.subscriptions.get(pushInput.endpoint), pushInput);
+  const registeredQuery = {
+    schema,
+    source: `query($endpoint:String!){push{registered(endpoint:$endpoint)}}`,
+    variableValues: { endpoint: pushInput.endpoint },
+  };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify((await graphql({ ...registeredQuery, contextValue: ctx })).data)),
+    { push: { registered: true } },
+  );
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify((await graphql({ ...registeredQuery, contextValue: pushContext() })).data),
+    ),
+    { push: { registered: false } },
+  );
+  assert.equal(key.mock.callCount(), 1);
+  const type = schema.getType("PushService");
+  assert(isObjectType(type));
+  assert.deepEqual(Object.keys(type.getFields()).sort(), ["applicationServerKey", "registered"]);
+});
+
+void test("push upserts complete keys, waits for persistence, and removes idempotently with delivery disabled", async (t) => {
+  const f = pushFixture();
+  const ctx = pushContext(f.service);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const register = f.service.register.bind(f.service);
+  const deferred = t.mock.method(
+    f.service,
+    "register",
+    async (...args: Parameters<typeof register>) => {
+      assert.equal(args[1], execution);
+      entered.resolve();
+      await release.promise;
+      return register(...args);
+    },
+  );
+  let settled = false;
+  const pending = graphql({
+    schema,
+    contextValue: ctx,
+    source: registerPushMutation,
+    variableValues: { input: pushInput },
+  }).then((value) => {
+    settled = true;
+    return value;
+  });
+  await entered.promise;
+  const before = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `{push{registered(endpoint:"${pushInput.endpoint}")}}`,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(before.data)), { push: { registered: false } });
+  assert.equal(settled, false);
+  release.resolve();
+  assert.equal((await pending).data?.registerPushSubscription, true);
+  deferred.mock.restore();
+  const replacement = {
+    ...pushInput,
+    keys: { p256dh: "replacement-key", auth: "replacement-secret" },
+  };
+  assert.equal(
+    (
+      await graphql({
+        schema,
+        contextValue: ctx,
+        source: registerPushMutation,
+        variableValues: { input: replacement },
+      })
+    ).data?.registerPushSubscription,
+    true,
+  );
+  assert.equal(f.subscriptions.size, 1);
+  assert.deepEqual(f.subscriptions.get(pushInput.endpoint), replacement);
+  const key = t.mock.method(f.service, "applicationServerKey", async () => undefined);
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        (await graphql({ schema, contextValue: ctx, source: `{push{applicationServerKey}}` })).data,
+      ),
+    ),
+    { push: { applicationServerKey: null } },
+  );
+  for (let i = 0; i < 2; i++)
+    assert.equal(
+      (
+        await graphql({
+          schema,
+          contextValue: ctx,
+          source: `mutation{removePushSubscription(input:{endpoint:"${pushInput.endpoint}"})}`,
+        })
+      ).data?.removePushSubscription,
+      true,
+    );
+  assert.equal(f.subscriptions.size, 0);
+  assert.equal(key.mock.callCount(), 1);
+});
+
+void test("push rejects incomplete, null, unknown and empty input before persistence", async (t) => {
+  const f = pushFixture();
+  const ctx = pushContext(f.service);
+  const register = t.mock.method(f.service, "register");
+  for (const input of [
+    {},
+    { ...pushInput, keys: null },
+    { ...pushInput, keys: { auth: "only-secret" } },
+    { ...pushInput, keys: { ...pushInput.keys, privateKey: "unknown" } },
+    { ...pushInput, endpoint: null },
+  ]) {
+    const response = await graphql({
+      schema,
+      contextValue: ctx,
+      source: registerPushMutation,
+      variableValues: { input },
+    });
+    assert(response.errors?.length);
+    assert.equal(response.data, undefined);
+  }
+  for (const input of [
+    { ...pushInput, endpoint: "" },
+    { ...pushInput, keys: { ...pushInput.keys, p256dh: "" } },
+    { ...pushInput, keys: { ...pushInput.keys, auth: "" } },
+  ]) {
+    const response = await graphql({
+      schema,
+      contextValue: ctx,
+      source: registerPushMutation,
+      variableValues: { input },
+    });
+    assert.equal(response.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  }
+  for (const source of [
+    `{push{registered(endpoint:"")}}`,
+    `mutation{removePushSubscription(input:{endpoint:""})}`,
+  ])
+    assert.equal(
+      (await graphql({ schema, contextValue: ctx, source })).errors?.[0]?.extensions.code,
+      "BAD_REQUEST",
+    );
+  assert.equal(register.mock.callCount(), 0);
+});
+
+void test("push delegates destination policy rejection and masks persistence or configuration failures", async (t) => {
+  const f = pushFixture();
+  const ctx = pushContext(f.service);
+  const key = t.mock.method(f.service, "applicationServerKey", async () => {
+    throw new StorageRequestError("private VAPID path");
+  });
+  const partial = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `{push{applicationServerKey registered(endpoint:"${pushInput.endpoint}")}}`,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(partial.data)), {
+    push: { applicationServerKey: null, registered: false },
+  });
+  assert.deepEqual(partial.errors?.[0]?.path, ["push", "applicationServerKey"]);
+  assert.equal(partial.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  key.mock.restore();
+  const cases = [
+    ["registered", `{push{registered(endpoint:"${pushInput.endpoint}")}}`],
+    ["register", registerPushMutation],
+    ["remove", `mutation{removePushSubscription(input:{endpoint:"${pushInput.endpoint}"})}`],
+  ] as const;
+  for (const [method, source] of cases) {
+    const rejected = t.mock.method(f.service, method, async () => ({ error: "BAD_REQUEST" }));
+    assert.equal(
+      (await graphql({ schema, contextValue: ctx, source, variableValues: { input: pushInput } }))
+        .errors?.[0]?.extensions.code,
+      "BAD_REQUEST",
+    );
+    rejected.mock.restore();
+    t.mock.method(f.service, method, async () => {
+      throw new Error("private persistence path");
+    });
+    const failed = await graphql({
+      schema,
+      contextValue: ctx,
+      source,
+      variableValues: { input: pushInput },
+    });
+    assert.equal(failed.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    assert.equal(failed.errors?.[0]?.message, "INTERNAL_SERVER_ERROR");
+  }
+  assert.equal(f.subscriptions.size, 0);
+});
+
+void test("malformed push service results are internal errors, not configuration defaults or false acknowledgments", async (t) => {
+  const f = pushFixture();
+  const ctx = pushContext(f.service);
+  t.mock.method(f.service, "applicationServerKey", async () => "");
+  t.mock.method(f.service, "registered", async () => ({ value: undefined }));
+  const read = await graphql({
+    schema,
+    contextValue: ctx,
+    source: `{push{applicationServerKey registered(endpoint:"${pushInput.endpoint}")}}`,
+  });
+  assert.equal(read.errors?.length, 2);
+  for (const error of read.errors!) assert.equal(error.extensions.code, "INTERNAL_SERVER_ERROR");
+  t.mock.method(f.service, "register", async () => ({ value: false }));
+  t.mock.method(f.service, "remove", async () => ({ value: false }));
+  for (const source of [
+    registerPushMutation,
+    `mutation{removePushSubscription(input:{endpoint:"${pushInput.endpoint}"})}`,
+  ])
+    assert.equal(
+      (await graphql({ schema, contextValue: ctx, source, variableValues: { input: pushInput } }))
+        .errors?.[0]?.extensions.code,
+      "INTERNAL_SERVER_ERROR",
+    );
 });

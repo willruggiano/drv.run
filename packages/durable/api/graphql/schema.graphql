@@ -526,6 +526,20 @@ input OpenInput {
   externalId: String!
 }
 
+input PushSubscriptionKeysInput {
+  auth: String!
+  p256dh: String!
+}
+
+input RegisterPushSubscriptionInput {
+  endpoint: String!
+  keys: PushSubscriptionKeysInput!
+}
+
+input RemovePushSubscriptionInput {
+  endpoint: String!
+}
+
 input ReplaceDocumentInput {
   address: DocumentAddressInput!
   content: JsonObject!
@@ -1163,6 +1177,14 @@ type Mutation {
   """
   open(input: OpenInput!): OpenPayload
   """
+  Persist the full browser subscription. No delivery is triggered by the adapter.
+  """
+  registerPushSubscription(input: RegisterPushSubscriptionInput!): Boolean
+  """
+  Remove the authorized user's endpoint registration, including with delivery disabled.
+  """
+  removePushSubscription(input: RemovePushSubscriptionInput!): Boolean
+  """
   Replace one exposed application document in one commit. No merge, compare-and-swap, or automatic replay.
   """
   replaceDocument(input: ReplaceDocumentInput!): JsonObject
@@ -1222,6 +1244,15 @@ type PageInfo {
   next: Cursor
 }
 
+type PushService {
+  """A null public key means delivery is disabled."""
+  applicationServerKey: String
+  """
+  Registration does not prove matching browser keys, permission, or successful delivery.
+  """
+  registered(endpoint: String!): Boolean
+}
+
 type Query {
   accounts(cursor: Cursor, limit: Int!): AccountConnection
   authorizationServers(cursor: Cursor, limit: Int!): AuthorizationServerConnection
@@ -1251,6 +1282,10 @@ type Query {
   Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
   """
   node(id: ID!): Node
+  """
+  Public push configuration and the authorized user's registrations, not browser permission.
+  """
+  push: PushService
   """
   Read resolved application configuration without acquiring a Harness or creating files.
   """

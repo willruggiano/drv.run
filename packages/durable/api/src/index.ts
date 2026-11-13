@@ -29,6 +29,8 @@ export interface ApiOptions {
   inventory: ResolverContext["inventory"];
   /** Authorized linked-account and OAuth authorization resources. */
   accounts: ResolverContext["accounts"];
+  /** Authorized push subscription persistence and public configuration. */
+  push: ResolverContext["push"];
   /** Borrow the factory's Pi AI catalog; resolve a dynamic source per request. */
   models: Models | (() => Models);
   /** Validate external-ID syntax for provisioning; authorization remains in the factory. */
@@ -57,6 +59,7 @@ export function createApi(options: ApiOptions) {
     settings: options.settings,
     inventory: options.inventory,
     accounts: options.accounts,
+    push: options.push,
     getHarness: (id, create) => sessions.get(id, create),
     isValidExternalId: (id) => options.isValidExternalId(id),
     listHarnesses: (context) => options.listHarnesses(context),

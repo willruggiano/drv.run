@@ -80,6 +80,7 @@ export interface ResolverContext {
   readonly settings: SettingsService;
   readonly inventory: InventoryService;
   readonly accounts: AccountsService;
+  readonly push: PushBinding;
 }
 
 type DocumentToken =
@@ -380,6 +381,7 @@ export function createGraphQLHandler(options: {
   settings: SettingsService;
   inventory: InventoryService;
   accounts: AccountsService;
+  push: PushBinding;
   getHarness: ResolverContext["session"];
   isValidExternalId: ResolverContext["isValidExternalId"];
   listHarnesses: (context: Chord.Context) => Promise<readonly string[]>;
@@ -477,6 +479,7 @@ export function createGraphQLHandler(options: {
         settings: options.settings,
         inventory: options.inventory,
         accounts: options.accounts,
+        push: options.push,
         session: (externalId, create) => lookup(() => options.getHarness(externalId, create)),
         isValidExternalId: options.isValidExternalId,
         sessions: () => lookup(() => options.listHarnesses(context)),
@@ -4079,5 +4082,89 @@ export async function revoke(input: RevokeInput, ctx: ResolverContext): Promise<
     return { value: undefined };
   });
   if (value !== undefined) throw new ResolverError(value);
+  return true;
+}
+
+/** @gqlInput */
+interface PushSubscriptionKeysInput {
+  readonly p256dh: string;
+  readonly auth: string;
+}
+/** @gqlInput */
+interface RegisterPushSubscriptionInput {
+  readonly endpoint: string;
+  readonly keys: PushSubscriptionKeysInput;
+}
+/** @gqlInput */
+interface RemovePushSubscriptionInput {
+  readonly endpoint: string;
+}
+
+// Authorized user binding. Validate ownership, endpoint policy and cryptographic
+// key material before persistence or delivery. No credentials are returned here.
+// Delivery and service lifetime are independent of this API and its Harnesses.
+interface PushBinding {
+  /** Public VAPID key; undefined means delivery is disabled, not a read failure. */
+  applicationServerKey(context: Chord.Context): Promise<string | undefined>;
+  registered(endpoint: string, context: Chord.Context): Promise<ApplicationResult<boolean>>;
+  /** Full subscription upsert. Admitted persistence survives a disconnected waiter. */
+  register(
+    subscription: RegisterPushSubscriptionInput,
+    context: Chord.Context,
+  ): Promise<ApplicationResult<void>>;
+  /** Idempotent removal remains available when delivery is disabled. */
+  remove(endpoint: string, context: Chord.Context): Promise<ApplicationResult<void>>;
+}
+/** @gqlType */
+interface PushService {
+  readonly binding: PushBinding;
+}
+/** Public push configuration and the authorized user's registrations, not browser permission. @gqlQueryField */
+export function push(ctx: ResolverContext): PushService | null {
+  return { binding: ctx.push };
+}
+/** A null public key means delivery is disabled. @gqlField */
+export async function applicationServerKey(
+  source: PushService,
+  ctx: ResolverContext,
+): Promise<string | null> {
+  return serviceCall(ctx, async () => {
+    const value = await source.binding.applicationServerKey(ctx.context);
+    return value === undefined ? null : checked(ServiceKey, value);
+  });
+}
+/** Registration does not prove matching browser keys, permission, or successful delivery. @gqlField */
+export async function registered(
+  source: PushService,
+  endpoint: string,
+  ctx: ResolverContext,
+): Promise<boolean | null> {
+  checked(ServiceKey, endpoint);
+  const value = await applicationResult(ctx, () =>
+    source.binding.registered(endpoint, ctx.context),
+  );
+  if (typeof value !== "boolean") throw new ResolverError("INTERNAL_SERVER_ERROR");
+  return value;
+}
+/** Persist the full browser subscription. No delivery is triggered by the adapter. @gqlMutationField */
+export async function registerPushSubscription(
+  input: RegisterPushSubscriptionInput,
+  ctx: ResolverContext,
+): Promise<boolean | null> {
+  checked(ServiceKey, input.endpoint);
+  checked(ServiceKey, input.keys.p256dh);
+  checked(ServiceKey, input.keys.auth);
+  const value = await applicationResult(ctx, () => ctx.push.register(input, ctx.context));
+  if (value !== undefined) throw new ResolverError("INTERNAL_SERVER_ERROR");
+  return true;
+}
+/** Remove the authorized user's endpoint registration, including with delivery disabled. @gqlMutationField */
+export async function removePushSubscription(
+  input: RemovePushSubscriptionInput,
+  ctx: ResolverContext,
+): Promise<boolean | null> {
+  checked(ServiceKey, input.endpoint);
+  const value = await applicationResult(ctx, () => ctx.push.remove(input.endpoint, ctx.context));
+  if (value !== undefined) throw new ResolverError("INTERNAL_SERVER_ERROR");
   return true;
 }

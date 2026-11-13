@@ -23,6 +23,7 @@ import {
   settingsFixture,
   inventoryFixture,
   accountsFixture,
+  pushFixture,
 } from "../../tests/fixtures.ts";
 
 const modern = "application/graphql-response+json";
@@ -1216,4 +1217,117 @@ void test("HTTP disconnection does not replay or undo admitted account authoriza
   assert.deepEqual(read.data, { node: { authorizations: { nodes: [{ status: "pending" }] } } });
   assert.equal(start.mock.callCount(), 1);
   assert.equal(f.authorizations.size, 1);
+});
+
+void test("HTTP push upserts and removes registrations independently of settings, accounts and Harnesses", async (t) => {
+  const f = pushFixture();
+  const { url } = await serve(t, {
+    push: f.service,
+    settings: settingsFixture(),
+    accounts: accountsFixture().service,
+    openHarness: async () => assert.fail("push must not acquire a Harness"),
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const input = {
+    endpoint: "https://push.test/endpoint",
+    keys: { p256dh: "public-browser-key", auth: "private-browser-key" },
+  };
+  const initial = await result(
+    await fetch(
+      endpoint,
+      json(
+        `{push{applicationServerKey registered(endpoint:"${input.endpoint}")} settings(app:web){__typename} accounts(limit:1){nodes{status}}}`,
+      ),
+    ),
+  );
+  assert.deepEqual(initial.data?.push, {
+    applicationServerKey: "public-vapid-key",
+    registered: false,
+  });
+  assert.deepEqual(initial.data?.settings, { __typename: "WebSettings" });
+  const saved = await result(
+    await fetch(
+      endpoint,
+      json(
+        `mutation($input:RegisterPushSubscriptionInput!){registerPushSubscription(input:$input)}`,
+        { input },
+      ),
+    ),
+  );
+  assert.deepEqual(saved.data, { registerPushSubscription: true });
+  assert.deepEqual(f.subscriptions.get(input.endpoint), input);
+  t.mock.method(f.service, "applicationServerKey", async () => undefined);
+  const removed = await result(
+    await fetch(
+      endpoint,
+      json(`mutation($input:RemovePushSubscriptionInput!){removePushSubscription(input:$input)}`, {
+        input: { endpoint: input.endpoint },
+      }),
+    ),
+  );
+  assert.deepEqual(removed.data, { removePushSubscription: true });
+  assert.equal(f.subscriptions.size, 0);
+  t.mock.method(f.service, "register", async () => ({ error: "BAD_REQUEST" }));
+  const rejected = await result(
+    await fetch(
+      endpoint,
+      json(
+        `mutation($input:RegisterPushSubscriptionInput!){registerPushSubscription(input:$input)}`,
+        { input },
+      ),
+    ),
+  );
+  assert.equal(rejected.errors?.[0]?.extensions?.code, "BAD_REQUEST");
+  assert.equal(rejected.data?.registerPushSubscription, null);
+});
+
+void test("HTTP push persistence survives disconnect without replay or Harness acquisition", async (t) => {
+  const f = pushFixture();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const committed = Promise.withResolvers<void>();
+  const cancelled = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const register = f.service.register.bind(f.service);
+  const save = t.mock.method(
+    f.service,
+    "register",
+    async (...args: Parameters<typeof register>) => {
+      assert(args[1].abortSignal);
+      args[1].abortSignal.addEventListener("abort", () => cancelled.resolve(), { once: true });
+      entered.resolve();
+      await release.promise;
+      const value = await register(...args);
+      committed.resolve();
+      return value;
+    },
+  );
+  const { url } = await serve(t, {
+    push: f.service,
+    openHarness: async () => assert.fail("push must not acquire a Harness"),
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const controller = new AbortController();
+  const input = {
+    endpoint: "https://push.test/endpoint",
+    keys: { p256dh: "public-browser-key", auth: "private-browser-key" },
+  };
+  const response = fetch(endpoint, {
+    ...json(
+      `mutation($input:RegisterPushSubscriptionInput!){registerPushSubscription(input:$input)}`,
+      { input },
+    ),
+    signal: controller.signal,
+  });
+  await entered.promise;
+  controller.abort();
+  await assert.rejects(response, { name: "AbortError" });
+  await cancelled.promise;
+  release.resolve();
+  await committed.promise;
+  const read = await result(
+    await fetch(endpoint, json(`{push{registered(endpoint:"${input.endpoint}")}}`)),
+  );
+  assert.deepEqual(read.data, { push: { registered: true } });
+  assert.equal(save.mock.callCount(), 1);
 });

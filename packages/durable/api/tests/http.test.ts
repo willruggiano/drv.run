@@ -19,6 +19,7 @@ import {
   unavailableSettings,
   unavailableInventory,
   unavailableAccounts,
+  unavailablePush,
 } from "./fixtures.ts";
 
 async function problem(response: Response, status: number, ids: object = { sessionId: "test" }) {
@@ -277,6 +278,7 @@ void test("body limits reject invalid deployment configuration", () => {
           settings: unavailableSettings,
           inventory: unavailableInventory,
           accounts: unavailableAccounts,
+          push: unavailablePush,
           isValidExternalId: (id) => id.length > 0,
           listHarnesses: async () => [],
           openHarness: async () => undefined,

@@ -67,6 +67,16 @@ export const unavailableAccounts: ApiOptions["accounts"] = {
   revoke: unboundAccounts,
 };
 
+async function unboundPush(): Promise<never> {
+  assert.fail("push service is not bound in this test");
+}
+export const unavailablePush: ApiOptions["push"] = {
+  applicationServerKey: unboundPush,
+  registered: unboundPush,
+  register: unboundPush,
+  remove: unboundPush,
+};
+
 export async function serve(
   t: TestContext,
   options: Omit<
@@ -78,12 +88,14 @@ export async function serve(
     | "settings"
     | "inventory"
     | "accounts"
+    | "push"
   > & {
     models?: ApiOptions["models"];
     documents?: ApiOptions["documents"];
     settings?: ApiOptions["settings"];
     inventory?: ApiOptions["inventory"];
     accounts?: ApiOptions["accounts"];
+    push?: ApiOptions["push"];
     isValidExternalId?: ApiOptions["isValidExternalId"];
     listHarnesses?: ApiOptions["listHarnesses"];
   },
@@ -93,6 +105,7 @@ export async function serve(
     settings: unavailableSettings,
     inventory: unavailableInventory,
     accounts: unavailableAccounts,
+    push: unavailablePush,
     documents: { definitions: async () => [], resolve: async () => undefined },
     isValidExternalId: (id) => id.length > 0,
     listHarnesses: async () => ["test"],
@@ -414,4 +427,30 @@ export function accountsFixture(namespace = "accounts/user"): {
     },
   };
   return { service, servers, accounts, authorizations };
+}
+
+export function pushFixture(): {
+  service: ApiOptions["push"];
+  subscriptions: Map<string, Parameters<ApiOptions["push"]["register"]>[0]>;
+} {
+  const subscriptions = new Map<string, Parameters<ApiOptions["push"]["register"]>[0]>();
+  return {
+    subscriptions,
+    service: {
+      async applicationServerKey() {
+        return "public-vapid-key";
+      },
+      async registered(endpoint) {
+        return { value: subscriptions.has(endpoint) };
+      },
+      async register(input) {
+        subscriptions.set(input.endpoint, structuredClone(input));
+        return { value: undefined };
+      },
+      async remove(endpoint) {
+        subscriptions.delete(endpoint);
+        return { value: undefined };
+      },
+    },
+  };
 }
