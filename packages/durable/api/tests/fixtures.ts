@@ -49,16 +49,41 @@ export const unavailableInventory: ApiOptions["inventory"] = {
   },
 };
 
+async function unboundAccounts(): Promise<never> {
+  assert.fail("accounts service is not bound in this test");
+}
+export const unavailableAccounts: ApiOptions["accounts"] = {
+  namespace: "unbound",
+  servers: unboundAccounts,
+  accounts: unboundAccounts,
+  authorizations: unboundAccounts,
+  server: unboundAccounts,
+  account: unboundAccounts,
+  authorization: unboundAccounts,
+  authorize: unboundAccounts,
+  deviceAuthorization: unboundAccounts,
+  cancelAuthorization: unboundAccounts,
+  disconnect: unboundAccounts,
+  revoke: unboundAccounts,
+};
+
 export async function serve(
   t: TestContext,
   options: Omit<
     ApiOptions,
-    "models" | "listHarnesses" | "isValidExternalId" | "documents" | "settings" | "inventory"
+    | "models"
+    | "listHarnesses"
+    | "isValidExternalId"
+    | "documents"
+    | "settings"
+    | "inventory"
+    | "accounts"
   > & {
     models?: ApiOptions["models"];
     documents?: ApiOptions["documents"];
     settings?: ApiOptions["settings"];
     inventory?: ApiOptions["inventory"];
+    accounts?: ApiOptions["accounts"];
     isValidExternalId?: ApiOptions["isValidExternalId"];
     listHarnesses?: ApiOptions["listHarnesses"];
   },
@@ -67,6 +92,7 @@ export async function serve(
     models: createModels(),
     settings: unavailableSettings,
     inventory: unavailableInventory,
+    accounts: unavailableAccounts,
     documents: { definitions: async () => [], resolve: async () => undefined },
     isValidExternalId: (id) => id.length > 0,
     listHarnesses: async () => ["test"],
@@ -235,4 +261,157 @@ export function inventoryFixture(namespace = "host/user"): ApiOptions["inventory
       };
     },
   };
+}
+
+type AccountFixtureRecord<K extends "server" | "account" | "authorization"> = NonNullable<
+  Awaited<ReturnType<ApiOptions["accounts"][K]>>
+>;
+export function accountsFixture(namespace = "accounts/user"): {
+  service: ApiOptions["accounts"];
+  servers: Map<string, AccountFixtureRecord<"server">>;
+  accounts: Map<string, AccountFixtureRecord<"account">>;
+  authorizations: Map<string, AccountFixtureRecord<"authorization">>;
+} {
+  type Service = ApiOptions["accounts"];
+  type Server = NonNullable<Awaited<ReturnType<Service["server"]>>>;
+  type Account = NonNullable<Awaited<ReturnType<Service["account"]>>>;
+  type Authorization = NonNullable<Awaited<ReturnType<Service["authorization"]>>>;
+  const servers = new Map<string, Server>([
+    [
+      "issuer-a",
+      {
+        id: "issuer-a",
+        label: "Issuer A",
+        authorization_endpoint: "https://issuer.test/authorize",
+        token_endpoint: "https://issuer.test/token",
+        device_authorization_endpoint: "https://issuer.test/device",
+        revocation_endpoint: "https://issuer.test/revoke",
+        grant_types_supported: [
+          "authorization_code",
+          "urn:ietf:params:oauth:grant-type:device_code",
+        ],
+      },
+    ],
+    ["issuer-b", { id: "issuer-b", label: "Issuer B" }],
+  ]);
+  const accounts = new Map<string, Account>([
+    [
+      "first",
+      {
+        id: "first",
+        serverId: "issuer-a",
+        identifier: "provider-first",
+        displayName: "First",
+        status: "usable",
+        scope: "read write",
+      },
+    ],
+    ["second", { id: "second", serverId: "issuer-a", status: "reauthorizationRequired" }],
+    ["third", { id: "third", serverId: "issuer-b", status: "temporarilyUnavailable" }],
+  ]);
+  const authorizations = new Map<string, Authorization>();
+  function page<T extends { readonly id: string }>(
+    scope: string,
+    rows: T[],
+    limit: number,
+    cursor: Parameters<Service["servers"]>[1],
+  ) {
+    let offset = 0;
+    if (cursor !== undefined) {
+      const index = rows.findIndex((row) => row.id === cursor.after);
+      if (cursor.namespace !== namespace || cursor.scope !== scope || index < 0)
+        return { invalidCursor: true as const };
+      offset = index + 1;
+    }
+    const items = rows.slice(offset, offset + limit);
+    return {
+      items,
+      ...(offset + items.length < rows.length
+        ? { next: { namespace, scope, after: items.at(-1)!.id } }
+        : {}),
+    };
+  }
+  function start(serverId: string, accountId: string | undefined, device: boolean) {
+    const id = `flow-${authorizations.size + 1}`;
+    const value: Authorization = {
+      id,
+      serverId,
+      accountId: accountId ?? null,
+      status: "pending",
+      createdAt: 1700000000000,
+      ...(device
+        ? {
+            deviceAuthorizationResponse: {
+              user_code: "USER-CODE",
+              verification_uri: "https://issuer.test/verify",
+              expires_in: 600,
+            },
+          }
+        : {
+            request: {
+              url: "https://issuer.test/authorize?state=correlation",
+              response_type: "code",
+              client_id: "public-client",
+              redirect_uri: "https://app.test/callback",
+              state: "correlation",
+              code_challenge: "challenge",
+              code_challenge_method: "S256",
+            },
+          }),
+    };
+    authorizations.set(id, value);
+    return { value };
+  }
+  const service: Service = {
+    namespace,
+    async servers(limit, cursor) {
+      return page("servers", [...servers.values()], limit, cursor);
+    },
+    async accounts(serverId, limit, cursor) {
+      return page(
+        `accounts:${serverId ?? "all"}`,
+        [...accounts.values()].filter((row) => serverId === undefined || row.serverId === serverId),
+        limit,
+        cursor,
+      );
+    },
+    async authorizations(serverId, limit, cursor) {
+      return page(
+        `authorizations:${serverId}`,
+        [...authorizations.values()]
+          .filter((row) => row.serverId === serverId)
+          .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
+        limit,
+        cursor,
+      );
+    },
+    async server(id) {
+      return servers.get(id);
+    },
+    async account(id) {
+      return accounts.get(id);
+    },
+    async authorization(id) {
+      return authorizations.get(id);
+    },
+    async authorize(serverId, accountId) {
+      return start(serverId, accountId, false);
+    },
+    async deviceAuthorization(serverId, accountId) {
+      return start(serverId, accountId, true);
+    },
+    async cancelAuthorization(id) {
+      const value = authorizations.get(id)!;
+      authorizations.set(id, { ...value, status: "cancelled" });
+      return { value: undefined };
+    },
+    async disconnect(id) {
+      accounts.delete(id);
+      return { value: undefined };
+    },
+    async revoke() {
+      return { value: undefined };
+    },
+  };
+  return { service, servers, accounts, authorizations };
 }

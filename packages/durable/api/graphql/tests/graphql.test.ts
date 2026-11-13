@@ -46,6 +46,8 @@ import {
   unavailableSettings,
   settingsFixture,
   unavailableInventory,
+  unavailableAccounts,
+  accountsFixture,
   inventoryFixture,
 } from "../../tests/fixtures.ts";
 
@@ -77,6 +79,7 @@ function catalogContext(models: ResolverContext["models"], context = execution):
     documents: { definitions: async () => [], resolve: async () => undefined },
     settings: unavailableSettings,
     inventory: unavailableInventory,
+    accounts: unavailableAccounts,
     isValidExternalId() {
       assert.fail("catalog reads must not validate external IDs");
     },
@@ -113,6 +116,7 @@ async function fixture(t: TestContext, externalId = "test") {
       documents: { definitions: async () => [], resolve: async () => undefined },
       settings: unavailableSettings,
       inventory: unavailableInventory,
+      accounts: unavailableAccounts,
       isValidExternalId: (id) => id.length > 0,
       session: async (id) => (id === externalId ? instance : undefined),
       sessions: async () => [externalId],
@@ -4317,4 +4321,584 @@ void test("cancellation before queued inventory admission prevents the service c
   });
   assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   assert.equal(list.mock.callCount(), 0);
+});
+
+const authorizationFields = `id status createdAt server { id label } account { id identifier status }
+  request { url response_type client_id redirect_uri scope state code_challenge code_challenge_method }
+  deviceAuthorizationResponse { user_code verification_uri verification_uri_complete expires_in interval }
+  error { error error_description error_uri }`;
+async function accountFixture() {
+  const f = accountsFixture();
+  const ctx = {
+    ...catalogContext(() => assert.fail("accounts must not acquire models")),
+    accounts: f.service,
+  };
+  const run = (source: string, variableValues: Record<string, unknown> = {}, contextValue = ctx) =>
+    graphql({ schema, source, variableValues, contextValue });
+  const result = await run(
+    `{ authorizationServers(limit:10) { nodes { id label } } accounts(limit:10) { nodes { id identifier status } } }`,
+  );
+  assert.equal(result.errors, undefined);
+  const data = result.data as {
+    authorizationServers: { nodes: { id: string }[] };
+    accounts: { nodes: { id: string }[] };
+  };
+  return {
+    ...f,
+    ctx,
+    run,
+    serverId: data.authorizationServers.nodes[0]!.id,
+    otherServerId: data.authorizationServers.nodes[1]!.id,
+    accountId: data.accounts.nodes[0]!.id,
+    otherAccountId: data.accounts.nodes[2]!.id,
+  };
+}
+
+void test("account catalogs, scoped connections, identities and relationships use their service without authorization side effects", async (t) => {
+  const f = await accountFixture();
+  const starts = [
+    t.mock.method(f.service, "authorize"),
+    t.mock.method(f.service, "deviceAuthorization"),
+  ];
+  const first = await f.run(
+    `{ authorizationServers(limit:1) { nodes { id label authorization_endpoint token_endpoint device_authorization_endpoint revocation_endpoint grant_types_supported accounts(limit:1) { nodes { id identifier displayName status scope server { id } } pageInfo { next } } authorizations(limit:1) { nodes { id } pageInfo { next } } } pageInfo { next } } }`,
+  );
+  assert.equal(first.errors, undefined);
+  const page = first.data?.authorizationServers as {
+    nodes: {
+      id: string;
+      accounts: { nodes: { id: string }[]; pageInfo: { next: Cursor } };
+      authorizations: { nodes: unknown[] };
+    }[];
+    pageInfo: { next: Cursor };
+  };
+  assert.equal(page.nodes[0]?.id, f.serverId);
+  assert.equal(page.nodes[0]?.accounts.nodes[0]?.id, f.accountId);
+  assert.deepEqual(page.nodes[0]?.authorizations.nodes, []);
+  const next = await f.run(
+    `query($cursor:Cursor) { authorizationServers(limit:1,cursor:$cursor) { nodes { id authorization_endpoint token_endpoint device_authorization_endpoint revocation_endpoint grant_types_supported } pageInfo { next } } }`,
+    { cursor: page.pageInfo.next },
+  );
+  assert.equal(next.errors, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(next.data)), {
+    authorizationServers: {
+      nodes: [
+        {
+          id: f.otherServerId,
+          authorization_endpoint: null,
+          token_endpoint: null,
+          device_authorization_endpoint: null,
+          revocation_endpoint: null,
+          grant_types_supported: null,
+        },
+      ],
+      pageInfo: { next: null },
+    },
+  });
+  const accountNext = await f.run(
+    `query($id:ID!,$cursor:Cursor) { node(id:$id) { ... on AuthorizationServer { accounts(limit:1,cursor:$cursor) { nodes { identifier displayName status scope } } } } }`,
+    { id: f.serverId, cursor: page.nodes[0]!.accounts.pageInfo.next },
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(accountNext.data)), {
+    node: {
+      accounts: {
+        nodes: [
+          { identifier: null, displayName: null, status: "reauthorizationRequired", scope: null },
+        ],
+      },
+    },
+  });
+  for (const id of [f.serverId, f.accountId]) {
+    const refetch = await f.run(`query($id:ID!) { node(id:$id) { id } }`, { id });
+    assert.equal(refetch.errors, undefined);
+    assert.equal((refetch.data?.node as { id: string }).id, id);
+    const foreign = await f.run(
+      `query($id:ID!) { node(id:$id) { id } }`,
+      { id },
+      { ...f.ctx, accounts: accountsFixture("other").service },
+    );
+    assert.equal(foreign.data?.node, null);
+  }
+  for (const start of starts) assert.equal(start.mock.callCount(), 0);
+});
+
+void test("authorization code and device initiation return refetchable safe challenges, reauthorization targets and persisted completion", async (t) => {
+  const f = await accountFixture();
+  const code = await f.run(
+    `mutation($input:AuthorizeInput!) { authorize(input:$input) { ${authorizationFields} } }`,
+    { input: { serverId: f.serverId } },
+  );
+  assert.equal(code.errors, undefined);
+  const auth = code.data?.authorize as {
+    id: string;
+    createdAt: number;
+    account: unknown;
+    request: object;
+    deviceAuthorizationResponse: unknown;
+  };
+  assert.equal(auth.createdAt, 1700000000000);
+  assert.equal(auth.account, null);
+  assert.equal(auth.deviceAuthorizationResponse, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(auth.request)), {
+    url: "https://issuer.test/authorize?state=correlation",
+    response_type: "code",
+    client_id: "public-client",
+    redirect_uri: "https://app.test/callback",
+    scope: null,
+    state: "correlation",
+    code_challenge: "challenge",
+    code_challenge_method: "S256",
+  });
+  const device = await f.run(
+    `mutation($input:DeviceAuthorizationInput!) { deviceAuthorization(input:$input) { ${authorizationFields} } }`,
+    { input: { serverId: f.serverId, accountId: f.accountId } },
+  );
+  assert.equal(device.errors, undefined);
+  const value = device.data?.deviceAuthorization as {
+    id: string;
+    request: unknown;
+    account: { id: string };
+    deviceAuthorizationResponse: object;
+  };
+  assert.equal(value.request, null);
+  assert.equal(value.account.id, f.accountId);
+  assert.deepEqual(JSON.parse(JSON.stringify(value.deviceAuthorizationResponse)), {
+    user_code: "USER-CODE",
+    verification_uri: "https://issuer.test/verify",
+    verification_uri_complete: null,
+    expires_in: 600,
+    interval: null,
+  });
+  const pending = f.authorizations.get("flow-1")!;
+  f.authorizations.set("flow-1", { ...pending, status: "completed", accountId: "first" });
+  const lookup = t.mock.method(f.service, "authorization");
+  const completed = await f.run(
+    `query($id:ID!) { node(id:$id) { ... on Authorization { ${authorizationFields} } } }`,
+    { id: auth.id },
+  );
+  assert.equal(completed.errors, undefined);
+  assert.equal((completed.data?.node as { status: string }).status, "completed");
+  assert.deepEqual(lookup.mock.calls[0]!.arguments, ["flow-1", execution]);
+  const listing = await f.run(
+    `query($id:ID!) { node(id:$id) { ... on AuthorizationServer { authorizations(limit:1) { nodes { id } pageInfo { next } } } } }`,
+    { id: f.serverId },
+  );
+  const page = (
+    listing.data?.node as {
+      authorizations: { nodes: { id: string }[]; pageInfo: { next: Cursor } };
+    }
+  ).authorizations;
+  assert.equal(page.nodes[0]!.id, auth.id);
+  const next = await f.run(
+    `query($id:ID!,$cursor:Cursor) { node(id:$id) { ... on AuthorizationServer { authorizations(limit:1,cursor:$cursor) { nodes { id deviceAuthorizationResponse { expires_in interval } } } } } }`,
+    { id: f.serverId, cursor: page.pageInfo.next },
+  );
+  assert.equal(next.errors, undefined);
+  assert.equal(f.authorizations.size, 2);
+});
+
+void test("OAuth protocol failures remain authorization data and credential fields are never projected", async (t) => {
+  const f = await accountFixture();
+  const original = f.service.deviceAuthorization.bind(f.service);
+  t.mock.method(f.service, "deviceAuthorization", async (...args: Parameters<typeof original>) => {
+    const result = await original(...args);
+    assert("value" in result);
+    const data = {
+      ...result.value,
+      status: "failed" as const,
+      error: {
+        error: "provider_extension",
+        error_description: "Safe public description",
+        error_uri: "https://issuer.test/errors",
+      },
+      deviceAuthorizationResponse: {
+        user_code: "CODE",
+        verification_uri: "https://issuer.test/verify",
+        verification_uri_complete: "https://issuer.test/verify?user_code=CODE",
+        expires_in: 60,
+        interval: 7,
+        get device_code(): string {
+          return assert.fail("must not read device_code");
+        },
+      },
+    };
+    Object.defineProperty(data, "access_token", {
+      get() {
+        assert.fail("must not read access_token");
+      },
+    });
+    return { value: data };
+  });
+  const result = await f.run(
+    `mutation($id:ID!) { deviceAuthorization(input:{serverId:$id}) { ${authorizationFields} } }`,
+    { id: f.serverId },
+  );
+  assert.equal(result.errors, undefined);
+  const auth = result.data?.deviceAuthorization as {
+    status: string;
+    error: object;
+    deviceAuthorizationResponse: { interval: number };
+  };
+  assert.equal(auth.status, "failed");
+  assert.equal(auth.deviceAuthorizationResponse.interval, 7);
+  assert.deepEqual(JSON.parse(JSON.stringify(auth.error)), {
+    error: "provider_extension",
+    error_description: "Safe public description",
+    error_uri: "https://issuer.test/errors",
+  });
+  for (const [name, forbidden] of [
+    ["AuthorizationRequest", ["client_secret", "code_verifier"]],
+    ["DeviceAuthorizationResponse", ["device_code", "access_token", "refresh_token"]],
+    ["Account", ["credentials", "access_token"]],
+  ] as const) {
+    const type = schema.getType(name);
+    assert(isObjectType(type));
+    for (const field of forbidden) assert.equal(type.getFields()[field], undefined);
+  }
+});
+
+void test("account commands reject wrong kinds, scopes, unavailable targets, nulls, and cross-server reauthorization before admission", async (t) => {
+  const f = await accountFixture();
+  const starts = [
+    t.mock.method(f.service, "authorize"),
+    t.mock.method(f.service, "deviceAuthorization"),
+  ];
+  for (const [input, code] of [
+    [{ serverId: f.accountId }, "BAD_REQUEST"],
+    [{ serverId: f.serverId, accountId: null }, "BAD_REQUEST"],
+    [{ serverId: f.serverId, accountId: f.serverId }, "BAD_REQUEST"],
+    [{ serverId: f.serverId, accountId: f.otherAccountId }, "BAD_REQUEST"],
+    [
+      {
+        serverId: Buffer.from(
+          JSON.stringify([1, "AuthorizationServer", "foreign", "issuer-a"]),
+        ).toString("base64url"),
+      },
+      "NOT_FOUND",
+    ],
+  ] as const) {
+    for (const [name, type] of [
+      ["authorize", "AuthorizeInput"],
+      ["deviceAuthorization", "DeviceAuthorizationInput"],
+    ]) {
+      const result = await f.run(`mutation($input:${type}!) { ${name}(input:$input) { id } }`, {
+        input,
+      });
+      assert.equal(result.errors?.[0]?.extensions.code, code);
+    }
+  }
+  const getAccount = t.mock.method(f.service, "account", async () => undefined);
+  assert.equal(
+    (
+      await f.run(
+        `mutation($id:ID!,$account:ID!) { authorize(input:{serverId:$id,accountId:$account}) { id } }`,
+        { id: f.serverId, account: f.accountId },
+      )
+    ).errors?.[0]?.extensions.code,
+    "NOT_FOUND",
+  );
+  getAccount.mock.restore();
+  let reads = 0;
+  const read = f.service.account.bind(f.service);
+  t.mock.method(f.service, "account", async (...args: Parameters<typeof read>) =>
+    ++reads === 1 ? read(...args) : undefined,
+  );
+  assert.equal(
+    (
+      await f.run(
+        `mutation($id:ID!,$account:ID!) { authorize(input:{serverId:$id,accountId:$account}) { id } }`,
+        { id: f.serverId, account: f.accountId },
+      )
+    ).errors?.[0]?.extensions.code,
+    "NOT_FOUND",
+  );
+  t.mock.method(f.service, "server", async () => undefined);
+  assert.equal(
+    (
+      await f.run(`mutation($id:ID!) { authorize(input:{serverId:$id}) { id } }`, {
+        id: f.serverId,
+      })
+    ).errors?.[0]?.extensions.code,
+    "NOT_FOUND",
+  );
+  for (const start of starts) assert.equal(start.mock.callCount(), 0);
+});
+
+void test("cancellation, local disconnect and revocation acknowledge success independently", async (t) => {
+  const f = await accountFixture();
+  const started = await f.run(`mutation($id:ID!){authorize(input:{serverId:$id}){id}}`, {
+    id: f.serverId,
+  });
+  const id = (started.data?.authorize as { id: string }).id;
+  const cancelled = await f.run(
+    `mutation($id:ID!){cancelAuthorization(input:{authorizationId:$id})}`,
+    { id },
+  );
+  assert.equal(cancelled.data?.cancelAuthorization, true);
+  assert.equal(f.authorizations.get("flow-1")!.status, "cancelled");
+  assert.equal(f.accounts.size, 3);
+  const revoke = t.mock.method(f.service, "revoke");
+  for (const hint of [undefined, "access_token", "refresh_token"]) {
+    const result = await f.run(`mutation($input:RevokeInput!){revoke(input:$input)}`, {
+      input: { accountId: f.accountId, ...(hint === undefined ? {} : { token_type_hint: hint }) },
+    });
+    assert.equal(result.data?.revoke, true);
+  }
+  assert.equal(revoke.mock.callCount(), 3);
+  assert.deepEqual(
+    revoke.mock.calls.map((call) => call.arguments[1]),
+    [undefined, "access_token", "refresh_token"],
+  );
+  assert.equal(f.accounts.size, 3);
+  for (const hint of [null, "unknown"]) {
+    assert.equal(
+      (
+        await f.run(`mutation($input:RevokeInput!){revoke(input:$input)}`, {
+          input: { accountId: f.accountId, token_type_hint: hint },
+        })
+      ).errors?.[0]?.extensions.code,
+      "BAD_REQUEST",
+    );
+  }
+  const disconnected = await f.run(`mutation($id:ID!){disconnect(input:{accountId:$id})}`, {
+    id: f.accountId,
+  });
+  assert.equal(disconnected.data?.disconnect, true);
+  assert.equal(f.accounts.has("first"), false);
+  assert.equal(revoke.mock.callCount(), 3);
+});
+
+void test("account command errors are explicit, safe, and never false acknowledgments", async (t) => {
+  const f = await accountFixture();
+  const initial = await f.run(`mutation($id:ID!){authorize(input:{serverId:$id}){id}}`, {
+    id: f.serverId,
+  });
+  const authorizationId = (initial.data?.authorize as { id: string }).id;
+  for (const error of ["BAD_REQUEST", "NOT_FOUND"] as const) {
+    for (const method of [
+      "authorize",
+      "deviceAuthorization",
+      "cancelAuthorization",
+      "disconnect",
+      "revoke",
+    ] as const)
+      t.mock.method(f.service, method, async () => ({ error }));
+    for (const [name, input] of [
+      ["authorize", { serverId: f.serverId }],
+      ["deviceAuthorization", { serverId: f.serverId }],
+      ["cancelAuthorization", { authorizationId }],
+      ["disconnect", { accountId: f.accountId }],
+      ["revoke", { accountId: f.accountId }],
+    ] as const) {
+      const type = name[0]!.toUpperCase() + name.slice(1) + "Input";
+      const selection = name === "authorize" || name === "deviceAuthorization" ? "{id}" : "";
+      const result = await f.run(`mutation($input:${type}!){${name}(input:$input)${selection}}`, {
+        input,
+      });
+      assert.equal(result.errors?.[0]?.extensions.code, error);
+      assert.equal(result.data?.[name], null);
+    }
+  }
+  t.mock.method(f.service, "revoke", async () => ({ protocolError: "unsupported_token_type" }));
+  let response = await f.run(`mutation($id:ID!){revoke(input:{accountId:$id})}`, {
+    id: f.accountId,
+  });
+  assert.equal(response.errors?.[0]?.extensions.code, "unsupported_token_type");
+  assert.equal(response.errors?.[0]?.message, "unsupported_token_type");
+  t.mock.method(f.service, "revoke", async () => ({ protocolError: "private\npath /token" }));
+  response = await f.run(`mutation($id:ID!){revoke(input:{accountId:$id})}`, { id: f.accountId });
+  assert.equal(response.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  for (const method of ["cancelAuthorization", "disconnect"] as const)
+    t.mock.method(f.service, method, async () => ({ value: false }));
+  assert.equal(
+    (
+      await f.run(`mutation($id:ID!){cancelAuthorization(input:{authorizationId:$id})}`, {
+        id: authorizationId,
+      })
+    ).errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+  assert.equal(
+    (await f.run(`mutation($id:ID!){disconnect(input:{accountId:$id})}`, { id: f.accountId }))
+      .errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+});
+
+void test("account pages reject invalid cursors, limits and inconsistent service membership", async (t) => {
+  const f = await accountFixture();
+  for (const limit of [0, -1])
+    assert.equal(
+      (await f.run(`query($limit:Int!){accounts(limit:$limit){nodes{id}}}`, { limit })).errors?.[0]
+        ?.extensions.code,
+      "BAD_REQUEST",
+    );
+  assert.equal(
+    (
+      await f.run(`query($cursor:Cursor){accounts(limit:1,cursor:$cursor){nodes{id}}}`, {
+        cursor: { namespace: "wrong", scope: "accounts:all", after: "first" },
+      })
+    ).errors?.[0]?.extensions.code,
+    "BAD_REQUEST",
+  );
+  const row = f.accounts.get("first")!;
+  for (const value of [
+    { items: [row, row] },
+    { items: [row, { ...row, id: "duplicate-overflow" }] },
+    { items: [], next: [] },
+    { items: null },
+    { invalidCursor: false },
+  ]) {
+    t.mock.method(
+      f.service,
+      "accounts",
+      async () => value as Awaited<ReturnType<typeof f.service.accounts>>,
+    );
+    assert.equal(
+      (await f.run(`{accounts(limit:1){nodes{id}}}`)).errors?.[0]?.extensions.code,
+      "INTERNAL_SERVER_ERROR",
+    );
+  }
+  t.mock.method(f.service, "accounts", async () => ({ items: [row, row] }));
+  assert.equal(
+    (await f.run(`{accounts(limit:2){nodes{id}}}`)).errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+  t.mock.method(f.service, "accounts", async () => ({ items: [{ ...row, serverId: "issuer-b" }] }));
+  assert.equal(
+    (
+      await f.run(
+        `query($id:ID!){node(id:$id){... on AuthorizationServer{accounts(limit:1){nodes{id}}}}}`,
+        { id: f.serverId },
+      )
+    ).errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+  t.mock.method(f.service, "authorizations", async () => ({
+    items: [{ id: "bad", serverId: "issuer-b", status: "pending", createdAt: 1 }],
+  }));
+  assert.equal(
+    (
+      await f.run(
+        `query($id:ID!){node(id:$id){... on AuthorizationServer{authorizations(limit:1){nodes{id}}}}}`,
+        { id: f.serverId },
+      )
+    ).errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+});
+
+void test("account lookups distinguish absent resources, failed reads, and broken relationships", async (t) => {
+  const f = await accountFixture();
+  const started = await f.run(
+    `mutation($id:ID!){authorize(input:{serverId:$id,accountId:"${f.accountId}"}){id}}`,
+    { id: f.serverId },
+  );
+  const id = (started.data?.authorize as { id: string }).id;
+  for (const [method, target] of [
+    ["server", f.serverId],
+    ["account", f.accountId],
+    ["authorization", id],
+  ] as const) {
+    const absent = t.mock.method(f.service, method, async () => undefined);
+    assert.equal(
+      (await f.run(`query($id:ID!){node(id:$id){id}}`, { id: target })).data?.node,
+      null,
+    );
+    absent.mock.restore();
+    const fault = t.mock.method(f.service, method, async () => {
+      throw new StorageRequestError("private credential store");
+    });
+    assert.equal(
+      (await f.run(`query($id:ID!){node(id:$id){id}}`, { id: target })).errors?.[0]?.extensions
+        .code,
+      "INTERNAL_SERVER_ERROR",
+    );
+    fault.mock.restore();
+  }
+  const absent = t.mock.method(f.service, "server", async () => undefined);
+  assert.equal(
+    (await f.run(`query($id:ID!){node(id:$id){... on Account{server{id}}}}`, { id: f.accountId }))
+      .errors?.[0]?.extensions.code,
+    "NOT_FOUND",
+  );
+  absent.mock.restore();
+  const accountAbsent = t.mock.method(f.service, "account", async () => undefined);
+  assert.equal(
+    (await f.run(`query($id:ID!){node(id:$id){... on Authorization{account{id}}}}`, { id })).errors,
+    undefined,
+  );
+  accountAbsent.mock.restore();
+  const wrong = t.mock.method(f.service, "account", async () => ({
+    ...f.accounts.get("first")!,
+    serverId: "issuer-b",
+  }));
+  assert.equal(
+    (await f.run(`query($id:ID!){node(id:$id){... on Authorization{account{id}}}}`, { id }))
+      .errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+  wrong.mock.restore();
+  t.mock.method(f.service, "account", async () => ({ ...f.accounts.get("first")!, id: "other" }));
+  assert.equal(
+    (await f.run(`query($id:ID!){node(id:$id){id}}`, { id: f.accountId })).errors?.[0]?.extensions
+      .code,
+    "INTERNAL_SERVER_ERROR",
+  );
+});
+
+void test("malformed authorization responses fail safely rather than projecting credentials or inventing completion", async (t) => {
+  const f = await accountFixture();
+  const value = { id: "flow", serverId: "issuer-a", status: "pending" as const, createdAt: 1 };
+  for (const record of [
+    { ...value, status: "completed" as const },
+    { ...value, serverId: "issuer-b" },
+    { ...value, createdAt: NaN },
+    {
+      ...value,
+      request: {
+        url: "u",
+        response_type: "code",
+        client_id: "c",
+        redirect_uri: "r",
+        state: "s",
+        code_challenge: "c",
+        code_challenge_method: "S256",
+      },
+      deviceAuthorizationResponse: { user_code: "u", verification_uri: "v", expires_in: 1 },
+    },
+    {
+      ...value,
+      deviceAuthorizationResponse: { user_code: "u", verification_uri: "v", expires_in: 1 },
+    },
+  ]) {
+    t.mock.method(f.service, "authorize", async () => ({ value: record }));
+    assert.equal(
+      (await f.run(`mutation($id:ID!){authorize(input:{serverId:$id}){id}}`, { id: f.serverId }))
+        .errors?.[0]?.extensions.code,
+      "INTERNAL_SERVER_ERROR",
+    );
+  }
+  t.mock.method(f.service, "authorize", async () => ({ value: { ...value, accountId: "second" } }));
+  assert.equal(
+    (
+      await f.run(
+        `mutation($id:ID!,$account:ID!){authorize(input:{serverId:$id,accountId:$account}){id}}`,
+        { id: f.serverId, account: f.accountId },
+      )
+    ).errors?.[0]?.extensions.code,
+    "INTERNAL_SERVER_ERROR",
+  );
+  for (const result of [{ error: "private" }, {}]) {
+    t.mock.method(
+      f.service,
+      "authorize",
+      async () => result as Awaited<ReturnType<typeof f.service.authorize>>,
+    );
+    assert.equal(
+      (await f.run(`mutation($id:ID!){authorize(input:{serverId:$id}){id}}`, { id: f.serverId }))
+        .errors?.[0]?.extensions.code,
+      "INTERNAL_SERVER_ERROR",
+    );
+  }
 });

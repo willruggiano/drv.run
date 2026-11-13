@@ -79,6 +79,7 @@ export interface ResolverContext {
   readonly documents: DocumentService;
   readonly settings: SettingsService;
   readonly inventory: InventoryService;
+  readonly accounts: AccountsService;
 }
 
 type DocumentToken =
@@ -126,8 +127,9 @@ type ErrorCode =
   | "INTERNAL_SERVER_ERROR";
 
 class ResolverError extends GraphQLError {
-  constructor(code: ErrorCode) {
-    super(code, { extensions: { code } });
+  constructor(code: ErrorCode | { readonly protocol: string }) {
+    const value = typeof code === "string" ? code : code.protocol;
+    super(value, { extensions: { code: value } });
   }
 }
 
@@ -377,6 +379,7 @@ export function createGraphQLHandler(options: {
   documents: DocumentService;
   settings: SettingsService;
   inventory: InventoryService;
+  accounts: AccountsService;
   getHarness: ResolverContext["session"];
   isValidExternalId: ResolverContext["isValidExternalId"];
   listHarnesses: (context: Chord.Context) => Promise<readonly string[]>;
@@ -473,6 +476,7 @@ export function createGraphQLHandler(options: {
         documents: options.documents,
         settings: options.settings,
         inventory: options.inventory,
+        accounts: options.accounts,
         session: (externalId, create) => lookup(() => options.getHarness(externalId, create)),
         isValidExternalId: options.isValidExternalId,
         sessions: () => lookup(() => options.listHarnesses(context)),
@@ -542,12 +546,30 @@ type NodeKind = Type.Static<typeof NodeKind>;
 const ServiceKey = Type.String({ minLength: 1 });
 const Identity = Type.Union([
   Type.Tuple([Type.Literal(1), NodeKind, Type.String(), Type.Union([SafeInteger, Type.Null()])]),
-  Type.Tuple([Type.Literal(1), Type.Literal("Instance"), ServiceKey, ServiceKey]),
+  Type.Tuple([
+    Type.Literal(1),
+    Type.Enum(["Instance", "AuthorizationServer", "Account", "Authorization"]),
+    ServiceKey,
+    ServiceKey,
+  ]),
 ]);
-function identity(id: ID) {
+type ApplicationNodeKind = "Instance" | "AuthorizationServer" | "Account" | "Authorization";
+type NodeIdentity =
+  | { [K in NodeKind]: { kind: K; externalId: string; durableId: number | null } }[NodeKind]
+  | {
+      [K in ApplicationNodeKind]: { kind: K; namespace: string; serviceId: string };
+    }[ApplicationNodeKind];
+function identity(id: ID): NodeIdentity {
   const [_, kind, scope, key] = checked(Identity, decodeId(id));
   if (encodeId([1, kind, scope, key]) !== id) throw new ResolverError("BAD_REQUEST");
-  if (kind === "Instance") return { kind, namespace: scope, serviceId: key };
+  if (
+    kind === "Instance" ||
+    kind === "AuthorizationServer" ||
+    kind === "Account" ||
+    kind === "Authorization"
+  )
+    return { kind, namespace: scope, serviceId: key };
+  assert(typeof key !== "string");
   if ((kind === "Harness") !== (key === null)) throw new ResolverError("BAD_REQUEST");
   return { kind, externalId: scope, durableId: key };
 }
@@ -1143,16 +1165,25 @@ interface Node {
 export async function node(id: ID, ctx: ResolverContext): Promise<Node | null> {
   try {
     const target = identity(id);
-    if (target.kind === "Instance") {
-      return await serviceCall(ctx, async () => {
-        const namespace = checked(ServiceKey, ctx.inventory.namespace);
-        if (target.namespace !== namespace) return null;
-        const record = await ctx.inventory.lookup(target.serviceId, ctx.context);
-        if (record === undefined) return null;
-        const result = instanceNode(namespace, record);
-        assert.equal(result.serviceId, target.serviceId);
-        return result;
-      });
+    if (
+      target.kind === "Instance" ||
+      target.kind === "AuthorizationServer" ||
+      target.kind === "Account" ||
+      target.kind === "Authorization"
+    ) {
+      if (target.kind === "Instance")
+        return await serviceCall(ctx, async () => {
+          const namespace = checked(ServiceKey, ctx.inventory.namespace);
+          if (target.namespace !== namespace) return null;
+          const record = await ctx.inventory.lookup(target.serviceId, ctx.context);
+          if (record === undefined) return null;
+          const result = instanceNode(namespace, record);
+          assert.equal(result.serviceId, target.serviceId);
+          return result;
+        });
+      const namespace = await serviceCall(ctx, () => checked(ServiceKey, ctx.accounts.namespace));
+      if (target.namespace !== namespace) return null;
+      return accountNode(ctx, target.kind, target.serviceId);
     }
     const instance = await ctx.session(target.externalId);
     if (!instance) return null;
@@ -3472,4 +3503,581 @@ export async function instanceTimings(
     assert(Value.Check(InstanceTimings, result));
     return result;
   });
+}
+
+/** @gqlEnum */
+type AccountStatus = "usable" | "temporarilyUnavailable" | "reauthorizationRequired";
+/** @gqlEnum */
+type AuthorizationStatus = "pending" | "completed" | "cancelled" | "failed";
+/** @gqlType */
+interface AuthorizationServer extends Node {
+  readonly __typename: "AuthorizationServer";
+  readonly serviceId: string;
+  /** @gqlField */
+  readonly id: ID;
+  /** @gqlField */
+  readonly label: string;
+  /** @gqlField */
+  readonly authorization_endpoint?: string | null;
+  /** @gqlField */
+  readonly token_endpoint?: string | null;
+  /** @gqlField */
+  readonly device_authorization_endpoint?: string | null;
+  /** @gqlField */
+  readonly revocation_endpoint?: string | null;
+  /** @gqlField */
+  readonly grant_types_supported?: readonly string[] | null;
+}
+/** @gqlType */
+interface Account extends Node {
+  readonly __typename: "Account";
+  readonly serviceId: string;
+  /** @gqlField */
+  readonly id: ID;
+  readonly serverId: string;
+  /** @gqlField */
+  readonly identifier?: string | null;
+  /** @gqlField */
+  readonly displayName?: string | null;
+  /** @gqlField */
+  readonly status: AccountStatus;
+  /** @gqlField */
+  readonly scope?: string | null;
+}
+/** @gqlType */
+interface Authorization extends Node {
+  readonly __typename: "Authorization";
+  readonly serviceId: string;
+  /** @gqlField */
+  readonly id: ID;
+  readonly serverId: string;
+  readonly accountId?: string | null;
+  /** @gqlField */
+  readonly status: AuthorizationStatus;
+  /** @gqlField */
+  readonly createdAt: Float;
+  /** @gqlField */
+  readonly request?: AuthorizationRequest | null;
+  /** @gqlField */
+  readonly deviceAuthorizationResponse?: DeviceAuthorizationResponse | null;
+  /** @gqlField */
+  readonly error?: AuthorizationErrorResponse | null;
+}
+/** @gqlType */
+interface AuthorizationRequest {
+  /** @gqlField */
+  readonly url: string;
+  /** @gqlField */
+  readonly response_type: string;
+  /** @gqlField */
+  readonly client_id: string;
+  /** @gqlField */
+  readonly redirect_uri: string;
+  /** @gqlField */
+  readonly scope?: string | null;
+  /** @gqlField */
+  readonly state: string;
+  /** @gqlField */
+  readonly code_challenge: string;
+  /** @gqlField */
+  readonly code_challenge_method: string;
+}
+/** @gqlType */
+interface DeviceAuthorizationResponse {
+  /** @gqlField */
+  readonly user_code: string;
+  /** @gqlField */
+  readonly verification_uri: string;
+  /** @gqlField */
+  readonly verification_uri_complete?: string | null;
+  /** @gqlField */
+  readonly expires_in: Int;
+  /** @gqlField */
+  readonly interval?: Int | null;
+}
+/** @gqlType */
+interface AuthorizationErrorResponse {
+  /** @gqlField */
+  readonly error: string;
+  /** @gqlField */
+  readonly error_description?: string | null;
+  /** @gqlField */
+  readonly error_uri?: string | null;
+}
+/** @gqlInput */
+interface AuthorizeInput {
+  readonly serverId: ID;
+  readonly accountId?: ID | null;
+}
+/** @gqlInput */
+interface DeviceAuthorizationInput {
+  readonly serverId: ID;
+  readonly accountId?: ID | null;
+}
+/** @gqlInput */
+interface CancelAuthorizationInput {
+  readonly authorizationId: ID;
+}
+/** @gqlInput */
+interface DisconnectInput {
+  readonly accountId: ID;
+}
+/** @gqlInput */
+interface RevokeInput {
+  readonly accountId: ID;
+  readonly token_type_hint?: string | null;
+}
+
+type AuthorizationServerRecord = Omit<AuthorizationServer, "__typename" | "serviceId">;
+type AccountRecord = Omit<Account, "__typename" | "serviceId">;
+type AuthorizationRecord = Omit<Authorization, "__typename" | "serviceId">;
+interface ApplicationPage<T> {
+  readonly items: readonly T[];
+  readonly next?: Cursor | null;
+}
+type ApplicationPageResult<T> = ApplicationPage<T> | { readonly invalidCursor: true };
+type ApplicationResult<T> = { readonly value: T } | { readonly error: "BAD_REQUEST" | "NOT_FOUND" };
+
+// Authorized application binding, not an OAuth client. Integration must select
+// a pinned client library and validate its public mappings against SPEC.md.
+// The service owns registration, PKCE/correlation, provider exchanges/polling,
+// identity validation, persistence, and lifetime after a disconnected waiter.
+// Records contain only safe public protocol values. Never return credentials in
+// URLs, descriptions, or error codes. Lookups/reads do not start authorization.
+interface AccountsService {
+  readonly namespace: string;
+  servers(
+    limit: number,
+    cursor: Cursor | undefined,
+    context: Chord.Context,
+  ): Promise<ApplicationPageResult<AuthorizationServerRecord>>;
+  accounts(
+    serverId: string | undefined,
+    limit: number,
+    cursor: Cursor | undefined,
+    context: Chord.Context,
+  ): Promise<ApplicationPageResult<AccountRecord>>;
+  authorizations(
+    serverId: string,
+    limit: number,
+    cursor: Cursor | undefined,
+    context: Chord.Context,
+  ): Promise<ApplicationPageResult<AuthorizationRecord>>;
+  server(id: string, context: Chord.Context): Promise<AuthorizationServerRecord | undefined>;
+  account(id: string, context: Chord.Context): Promise<AccountRecord | undefined>;
+  authorization(id: string, context: Chord.Context): Promise<AuthorizationRecord | undefined>;
+  /** Recheck ownership and registration at admission. Never replay uncertain initiation. */
+  authorize(
+    serverId: string,
+    accountId: string | undefined,
+    context: Chord.Context,
+  ): Promise<ApplicationResult<AuthorizationRecord>>;
+  deviceAuthorization(
+    serverId: string,
+    accountId: string | undefined,
+    context: Chord.Context,
+  ): Promise<ApplicationResult<AuthorizationRecord>>;
+  cancelAuthorization(id: string, context: Chord.Context): Promise<ApplicationResult<void>>;
+  disconnect(id: string, context: Chord.Context): Promise<ApplicationResult<void>>;
+  /** Revocation is independent of local removal. Protocol errors must be safe public codes. */
+  revoke(
+    id: string,
+    hint: "access_token" | "refresh_token" | undefined,
+    context: Chord.Context,
+  ): Promise<ApplicationResult<void> | { readonly protocolError: string }>;
+}
+
+const NullableText = Type.Union([Type.String(), Type.Null()]);
+const ServerRecordShape = Type.Object({
+  id: ServiceKey,
+  label: Type.String(),
+  authorization_endpoint: NullableText,
+  token_endpoint: NullableText,
+  device_authorization_endpoint: NullableText,
+  revocation_endpoint: NullableText,
+  grant_types_supported: Type.Union([Type.Array(Type.String()), Type.Null()]),
+});
+const AccountRecordShape = Type.Object({
+  id: ServiceKey,
+  serverId: ServiceKey,
+  identifier: NullableText,
+  displayName: NullableText,
+  status: Type.Enum(["usable", "temporarilyUnavailable", "reauthorizationRequired"]),
+  scope: NullableText,
+});
+const AuthorizationRequestShape = Type.Object({
+  url: ServiceKey,
+  response_type: ServiceKey,
+  client_id: ServiceKey,
+  redirect_uri: ServiceKey,
+  scope: NullableText,
+  state: ServiceKey,
+  code_challenge: ServiceKey,
+  code_challenge_method: ServiceKey,
+});
+const DeviceResponseShape = Type.Object({
+  user_code: ServiceKey,
+  verification_uri: ServiceKey,
+  verification_uri_complete: NullableText,
+  expires_in: Type.Integer({ minimum: 1, maximum: 2147483647 }),
+  interval: Type.Union([Type.Integer({ minimum: 1, maximum: 2147483647 }), Type.Null()]),
+});
+// RFC 6749 §5.2 error syntax; the binding supplies only safe public codes.
+const ProtocolErrorCode = Type.String({
+  minLength: 1,
+  pattern: "^[\\x20-\\x21\\x23-\\x5B\\x5D-\\x7E]+$",
+});
+const AuthorizationErrorShape = Type.Object({
+  error: ProtocolErrorCode,
+  error_description: NullableText,
+  error_uri: NullableText,
+});
+const AuthorizationRecordShape = Type.Object({
+  id: ServiceKey,
+  serverId: ServiceKey,
+  accountId: Type.Union([ServiceKey, Type.Null()]),
+  status: Type.Enum(["pending", "completed", "cancelled", "failed"]),
+  createdAt: Type.Number({ minimum: 0 }),
+});
+
+// Copy only declared public properties. Do not traverse unrelated credentials or
+// invoke their getters. Validate before GraphQL scalar completion can expose data.
+function publicProjection<S extends Type.TObject>(schema: S, value: unknown): Type.Static<S> {
+  assert(value !== null && typeof value === "object");
+  const projected = Object.fromEntries(
+    Object.keys(schema.properties).map((key): [string, unknown] => [
+      key,
+      Reflect.get(value, key) ?? null,
+    ]),
+  );
+  assert(Value.Check(schema, projected));
+  return structuredClone(projected);
+}
+function serverRecord(namespace: string, value: AuthorizationServerRecord): AuthorizationServer {
+  const record = publicProjection(ServerRecordShape, value);
+  return {
+    ...record,
+    __typename: "AuthorizationServer",
+    serviceId: record.id,
+    id: encodeId([1, "AuthorizationServer", namespace, record.id]),
+  };
+}
+function accountRecord(namespace: string, value: AccountRecord): Account {
+  const record = publicProjection(AccountRecordShape, value);
+  return {
+    ...record,
+    __typename: "Account",
+    serviceId: record.id,
+    id: encodeId([1, "Account", namespace, record.id]),
+  };
+}
+function authorizationRecord(namespace: string, value: AuthorizationRecord): Authorization {
+  const record = publicProjection(AuthorizationRecordShape, value);
+  const request =
+    value.request == null ? null : publicProjection(AuthorizationRequestShape, value.request);
+  const device =
+    value.deviceAuthorizationResponse == null
+      ? null
+      : publicProjection(DeviceResponseShape, value.deviceAuthorizationResponse);
+  const error = value.error == null ? null : publicProjection(AuthorizationErrorShape, value.error);
+  assert(request === null || device === null);
+  assert(record.status !== "completed" || record.accountId !== null);
+  return {
+    ...record,
+    __typename: "Authorization",
+    serviceId: record.id,
+    id: encodeId([1, "Authorization", namespace, record.id]),
+    request,
+    deviceAuthorizationResponse: device,
+    error,
+  };
+}
+
+async function accountNode(
+  ctx: ResolverContext,
+  kind: "AuthorizationServer",
+  id: string,
+): Promise<AuthorizationServer | null>;
+async function accountNode(
+  ctx: ResolverContext,
+  kind: "Account",
+  id: string,
+): Promise<Account | null>;
+async function accountNode(
+  ctx: ResolverContext,
+  kind: "Authorization",
+  id: string,
+): Promise<Authorization | null>;
+async function accountNode(
+  ctx: ResolverContext,
+  kind: "AuthorizationServer" | "Account" | "Authorization",
+  id: string,
+): Promise<AuthorizationServer | Account | Authorization | null>;
+async function accountNode(
+  ctx: ResolverContext,
+  kind: "AuthorizationServer" | "Account" | "Authorization",
+  id: string,
+): Promise<AuthorizationServer | Account | Authorization | null> {
+  return serviceCall(ctx, async () => {
+    const namespace = checked(ServiceKey, ctx.accounts.namespace);
+    let result: AuthorizationServer | Account | Authorization;
+    if (kind === "AuthorizationServer") {
+      const value = await ctx.accounts.server(id, ctx.context);
+      if (value === undefined) return null;
+      result = serverRecord(namespace, value);
+    } else if (kind === "Account") {
+      const value = await ctx.accounts.account(id, ctx.context);
+      if (value === undefined) return null;
+      result = accountRecord(namespace, value);
+    } else {
+      const value = await ctx.accounts.authorization(id, ctx.context);
+      if (value === undefined) return null;
+      result = authorizationRecord(namespace, value);
+    }
+    assert.equal(result.serviceId, id);
+    return result;
+  });
+}
+
+async function accountPage<T, N extends Node & { readonly serviceId: string }>(
+  ctx: ResolverContext,
+  limit: Int,
+  cursor: Cursor | null | undefined,
+  read: (
+    limit: number,
+    cursor: Cursor | undefined,
+    context: Chord.Context,
+  ) => Promise<ApplicationPageResult<T>>,
+  project: (namespace: string, record: T) => N,
+): Promise<Connection<N>> {
+  checked(PageLimit, limit);
+  const result = await serviceCall(ctx, async () => {
+    const namespace = checked(ServiceKey, ctx.accounts.namespace);
+    const page = await read(limit, cursor ?? undefined, ctx.context);
+    if ("invalidCursor" in page) {
+      assert.equal(page.invalidCursor, true);
+      return undefined;
+    }
+    assert(Array.isArray(page.items) && page.items.length <= limit);
+    const nodes = page.items.map((record) => project(namespace, record));
+    assert.equal(new Set(nodes.map((record) => record.serviceId)).size, nodes.length);
+    const next = structuredClone(page.next ?? null);
+    assert(next === null || Value.Check(Cursor, next));
+    return { nodes, pageInfo: { next } };
+  });
+  if (result === undefined) throw new ResolverError("BAD_REQUEST");
+  return result;
+}
+
+/** @gqlQueryField */
+export async function authorizationServers(
+  limit: Int,
+  ctx: ResolverContext,
+  cursor?: Cursor | null,
+): Promise<Connection<AuthorizationServer> | null> {
+  return accountPage(
+    ctx,
+    limit,
+    cursor,
+    (limit, cursor, context) => ctx.accounts.servers(limit, cursor, context),
+    serverRecord,
+  );
+}
+/** @gqlQueryField */
+export async function accounts(
+  limit: Int,
+  ctx: ResolverContext,
+  cursor?: Cursor | null,
+): Promise<Connection<Account> | null> {
+  return accountPage(
+    ctx,
+    limit,
+    cursor,
+    (limit, cursor, context) => ctx.accounts.accounts(undefined, limit, cursor, context),
+    accountRecord,
+  );
+}
+/** @gqlField accounts */
+export async function serverAccounts(
+  source: AuthorizationServer,
+  limit: Int,
+  ctx: ResolverContext,
+  cursor?: Cursor | null,
+): Promise<Connection<Account> | null> {
+  return accountPage(
+    ctx,
+    limit,
+    cursor,
+    (limit, cursor, context) => ctx.accounts.accounts(source.serviceId, limit, cursor, context),
+    (namespace, value) => {
+      const result = accountRecord(namespace, value);
+      assert.equal(result.serverId, source.serviceId);
+      return result;
+    },
+  );
+}
+/** @gqlField */
+export async function authorizations(
+  source: AuthorizationServer,
+  limit: Int,
+  ctx: ResolverContext,
+  cursor?: Cursor | null,
+): Promise<Connection<Authorization> | null> {
+  return accountPage(
+    ctx,
+    limit,
+    cursor,
+    (limit, cursor, context) =>
+      ctx.accounts.authorizations(source.serviceId, limit, cursor, context),
+    (namespace, value) => {
+      const result = authorizationRecord(namespace, value);
+      assert.equal(result.serverId, source.serviceId);
+      return result;
+    },
+  );
+}
+async function relatedServer(ctx: ResolverContext, id: string): Promise<AuthorizationServer> {
+  const result = await accountNode(ctx, "AuthorizationServer", id);
+  if (result === null) throw new ResolverError("NOT_FOUND");
+  return result;
+}
+/** @gqlField server */
+export async function accountServer(
+  source: Account,
+  ctx: ResolverContext,
+): Promise<AuthorizationServer> {
+  return relatedServer(ctx, source.serverId);
+}
+/** @gqlField server */
+export async function authorizationServer(
+  source: Authorization,
+  ctx: ResolverContext,
+): Promise<AuthorizationServer> {
+  return relatedServer(ctx, source.serverId);
+}
+/** @gqlField account */
+export async function authorizationAccount(
+  source: Authorization,
+  ctx: ResolverContext,
+): Promise<Account | null> {
+  if (source.accountId == null) return null;
+  const result = await accountNode(ctx, "Account", source.accountId);
+  if (result !== null && result.serverId !== source.serverId)
+    throw new ResolverError("INTERNAL_SERVER_ERROR");
+  return result;
+}
+
+async function accountTarget(
+  id: ID,
+  kind: "AuthorizationServer" | "Account" | "Authorization",
+  ctx: ResolverContext,
+): Promise<string> {
+  const target = identity(id);
+  if (target.kind !== kind) throw new ResolverError("BAD_REQUEST");
+  const namespace = await serviceCall(ctx, () => checked(ServiceKey, ctx.accounts.namespace));
+  if (target.namespace !== namespace) throw new ResolverError("NOT_FOUND");
+  if ((await accountNode(ctx, kind, target.serviceId)) === null)
+    throw new ResolverError("NOT_FOUND");
+  return target.serviceId;
+}
+async function applicationResult<T>(
+  ctx: ResolverContext,
+  call: () => Promise<ApplicationResult<T>>,
+): Promise<T> {
+  const result = await serviceCall(ctx, async () => {
+    const value = await call();
+    if ("error" in value) {
+      const error = value.error;
+      assert(error === "BAD_REQUEST" || error === "NOT_FOUND");
+      return { error };
+    }
+    assert("value" in value);
+    return { value: value.value };
+  });
+  if ("error" in result) throw new ResolverError(result.error);
+  return result.value;
+}
+async function startAuthorization(
+  input: AuthorizeInput,
+  ctx: ResolverContext,
+  method: "authorize" | "deviceAuthorization",
+): Promise<Authorization> {
+  if (input.accountId === null) throw new ResolverError("BAD_REQUEST");
+  const serverId = await accountTarget(input.serverId, "AuthorizationServer", ctx);
+  const accountId =
+    input.accountId === undefined
+      ? undefined
+      : await accountTarget(input.accountId, "Account", ctx);
+  if (accountId !== undefined) {
+    const account = await accountNode(ctx, "Account", accountId);
+    if (account === null) throw new ResolverError("NOT_FOUND");
+    if (account.serverId !== serverId) throw new ResolverError("BAD_REQUEST");
+  }
+  const result = await applicationResult(ctx, () =>
+    ctx.accounts[method](serverId, accountId, ctx.context),
+  );
+  return serviceCall(ctx, () => {
+    const value = authorizationRecord(checked(ServiceKey, ctx.accounts.namespace), result);
+    assert.equal(value.serverId, serverId);
+    if (accountId !== undefined) assert.equal(value.accountId, accountId);
+    if (method === "authorize") assert.equal(value.deviceAuthorizationResponse, null);
+    else assert.equal(value.request, null);
+    return value;
+  });
+}
+/** Create a service-owned authorization-code flow. Never replay initiation. @gqlMutationField */
+export async function authorize(
+  input: AuthorizeInput,
+  ctx: ResolverContext,
+): Promise<Authorization | null> {
+  return startAuthorization(input, ctx, "authorize");
+}
+/** Create a device flow; the service, not browser reads, owns token polling. @gqlMutationField */
+export async function deviceAuthorization(
+  input: DeviceAuthorizationInput,
+  ctx: ResolverContext,
+): Promise<Authorization | null> {
+  return startAuthorization(input, ctx, "deviceAuthorization");
+}
+/** Cancel local processing, not provider credentials. @gqlMutationField */
+export async function cancelAuthorization(
+  input: CancelAuthorizationInput,
+  ctx: ResolverContext,
+): Promise<boolean | null> {
+  const id = await accountTarget(input.authorizationId, "Authorization", ctx);
+  const value = await applicationResult(ctx, () =>
+    ctx.accounts.cancelAuthorization(id, ctx.context),
+  );
+  if (value !== undefined) throw new ResolverError("INTERNAL_SERVER_ERROR");
+  return true;
+}
+/** Remove local credential use/storage independently of provider revocation. @gqlMutationField */
+export async function disconnect(
+  input: DisconnectInput,
+  ctx: ResolverContext,
+): Promise<boolean | null> {
+  const id = await accountTarget(input.accountId, "Account", ctx);
+  const value = await applicationResult(ctx, () => ctx.accounts.disconnect(id, ctx.context));
+  if (value !== undefined) throw new ResolverError("INTERNAL_SERVER_ERROR");
+  return true;
+}
+/** Revoke stored credentials; an acknowledgment does not mean local removal. @gqlMutationField */
+export async function revoke(input: RevokeInput, ctx: ResolverContext): Promise<boolean | null> {
+  const hint = input.token_type_hint;
+  if (hint !== undefined && hint !== "access_token" && hint !== "refresh_token")
+    throw new ResolverError("BAD_REQUEST");
+  const id = await accountTarget(input.accountId, "Account", ctx);
+  const value = await applicationResult<{ protocol: string } | undefined>(ctx, async () => {
+    const result = await ctx.accounts.revoke(id, hint, ctx.context);
+    if ("protocolError" in result) {
+      // OAuth error codes are public protocol tokens, never provider descriptions.
+      assert(Value.Check(ProtocolErrorCode, result.protocolError));
+      return { value: { protocol: result.protocolError } };
+    }
+    if ("error" in result) return result;
+    assert.equal(result.value, undefined);
+    return { value: undefined };
+  });
+  if (value !== undefined) throw new ResolverError(value);
+  return true;
 }

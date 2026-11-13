@@ -22,6 +22,7 @@ import {
   events,
   settingsFixture,
   inventoryFixture,
+  accountsFixture,
 } from "../../tests/fixtures.ts";
 
 const modern = "application/graphql-response+json";
@@ -1097,4 +1098,122 @@ void test("HTTP inventory cancellation reaches its read context and does not ret
   await api.close();
   assert.equal(list.mock.callCount(), 1);
   release.resolve({ items: [] });
+});
+
+void test("HTTP accounts expose enrollment identities and preserve safe revocation protocol errors", async (t) => {
+  const f = accountsFixture();
+  const { url } = await serve(t, {
+    accounts: f.service,
+    openHarness: async () => assert.fail("accounts must not open a Harness"),
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const catalog = await result(
+    await fetch(
+      endpoint,
+      json(`{authorizationServers(limit:1){nodes{id}} accounts(limit:1){nodes{id}}}`),
+    ),
+  );
+  const serverId = (catalog.data?.authorizationServers as { nodes: { id: string }[] }).nodes[0]!.id;
+  const accountId = (catalog.data?.accounts as { nodes: { id: string }[] }).nodes[0]!.id;
+  const started = await result(
+    await fetch(
+      endpoint,
+      json(
+        `mutation($id:ID!){deviceAuthorization(input:{serverId:$id}){id status deviceAuthorizationResponse{user_code expires_in interval}}}`,
+        { id: serverId },
+      ),
+    ),
+  );
+  assert.equal(started.errors, undefined);
+  const auth = started.data?.deviceAuthorization as { id: string; status: string };
+  assert.equal(auth.status, "pending");
+  const read = await result(
+    await fetch(
+      endpoint,
+      json(`query($id:ID!){node(id:$id){... on Authorization{id status server{id}}}}`, {
+        id: auth.id,
+      }),
+    ),
+  );
+  assert.deepEqual(read.data, {
+    node: { id: auth.id, status: "pending", server: { id: serverId } },
+  });
+  t.mock.method(f.service, "revoke", async () => ({ protocolError: "unsupported_token_type" }));
+  const revoked = await result(
+    await fetch(
+      endpoint,
+      json(`mutation($id:ID!){revoke(input:{accountId:$id})}`, { id: accountId }),
+    ),
+  );
+  assert.equal(revoked.errors?.[0]?.extensions?.code, "unsupported_token_type");
+  assert.equal(revoked.errors?.[0]?.message, "unsupported_token_type");
+  assert.equal(revoked.data?.revoke, null);
+  assert.equal(f.accounts.size, 3);
+  t.mock.method(f.service, "servers", async () => {
+    throw new StorageRequestError("private credential storage path");
+  });
+  const failed = await result(
+    await fetch(endpoint, json(`{authorizationServers(limit:1){nodes{id}} harnesses{externalId}}`)),
+  );
+  assert.equal(failed.errors?.[0]?.extensions?.code, "INTERNAL_SERVER_ERROR");
+  assert.deepEqual(failed.data, {
+    authorizationServers: null,
+    harnesses: [{ externalId: "test" }],
+  });
+});
+
+void test("HTTP disconnection does not replay or undo admitted account authorization", async (t) => {
+  const f = accountsFixture();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const completed = Promise.withResolvers<void>();
+  const cancelled = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const original = f.service.authorize.bind(f.service);
+  const start = t.mock.method(
+    f.service,
+    "authorize",
+    async (...args: Parameters<typeof original>) => {
+      const signal = args[2].abortSignal;
+      assert(signal);
+      signal.addEventListener("abort", () => cancelled.resolve(), { once: true });
+      entered.resolve();
+      await release.promise;
+      const value = await original(...args);
+      completed.resolve();
+      return value;
+    },
+  );
+  const { url } = await serve(t, {
+    accounts: f.service,
+    openHarness: async () => assert.fail("accounts must not open a Harness"),
+  });
+  const endpoint = new URL("/api/graphql", url);
+  const listing = await result(
+    await fetch(endpoint, json(`{authorizationServers(limit:1){nodes{id}}}`)),
+  );
+  const serverId = (listing.data?.authorizationServers as { nodes: { id: string }[] }).nodes[0]!.id;
+  const controller = new AbortController();
+  const request = fetch(endpoint, {
+    ...json(`mutation($id:ID!){authorize(input:{serverId:$id}){id}}`, { id: serverId }),
+    signal: controller.signal,
+  });
+  await entered.promise;
+  controller.abort();
+  await assert.rejects(request, { name: "AbortError" });
+  await cancelled.promise;
+  release.resolve();
+  await completed.promise;
+  const read = await result(
+    await fetch(
+      endpoint,
+      json(
+        `query($id:ID!){node(id:$id){... on AuthorizationServer{authorizations(limit:5){nodes{status}}}}}`,
+        { id: serverId },
+      ),
+    ),
+  );
+  assert.deepEqual(read.data, { node: { authorizations: { nodes: [{ status: "pending" }] } } });
+  assert.equal(start.mock.callCount(), 1);
+  assert.equal(f.authorizations.size, 1);
 });

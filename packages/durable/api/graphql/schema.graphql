@@ -48,9 +48,22 @@ Upstream TelemetryCarrier: a JSON object with string keys and string values.
 """
 scalar TelemetryCarrier
 
+enum AccountStatus {
+  reauthorizationRequired
+  temporarilyUnavailable
+  usable
+}
+
 enum App {
   harness
   web
+}
+
+enum AuthorizationStatus {
+  cancelled
+  completed
+  failed
+  pending
 }
 
 enum BlockedReason {
@@ -319,6 +332,15 @@ input AssistantMessageInput {
   usage: UsageInput!
 }
 
+input AuthorizeInput {
+  accountId: ID
+  serverId: ID!
+}
+
+input CancelAuthorizationInput {
+  authorizationId: ID!
+}
+
 input CompactInput {
   conversationId: ID!
   instructions: String
@@ -371,12 +393,21 @@ input DeferredHandleInput {
   provider: String!
 }
 
+input DeviceAuthorizationInput {
+  accountId: ID
+  serverId: ID!
+}
+
 input DiagnosticErrorInput {
   """Upstream string or number code; omit when absent."""
   code: JsonValue
   message: String!
   name: String
   stack: String
+}
+
+input DisconnectInput {
+  accountId: ID!
 }
 
 input DocumentAddressInput {
@@ -512,6 +543,11 @@ input ResetInput {
 input ResumeInput {
   """Global Harness ID, not its externalId key."""
   harnessId: ID!
+}
+
+input RevokeInput {
+  accountId: ID!
+  token_type_hint: String
 }
 
 input RootInput {
@@ -673,6 +709,23 @@ type AbortSubmissionPayload {
   result: HarnessAbortSubmissionResult!
 }
 
+type Account implements Node {
+  displayName: String
+  id: ID!
+  identifier: String
+  scope: String
+  server: AuthorizationServer!
+  status: AccountStatus!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type AccountConnection {
+  nodes: [Account!]!
+  pageInfo: PageInfo!
+}
+
 """
 Readable settings from upstream Agent. Runtime extensions, tools, and prompt
 section callbacks remain server-side.
@@ -705,6 +758,62 @@ type AssistantMessage {
   thinkingLevel: ModelThinkingLevel
   timestamp: Float!
   usage: Usage!
+}
+
+type Authorization implements Node {
+  account: Account
+  createdAt: Float!
+  deviceAuthorizationResponse: DeviceAuthorizationResponse
+  error: AuthorizationErrorResponse
+  id: ID!
+  request: AuthorizationRequest
+  server: AuthorizationServer!
+  status: AuthorizationStatus!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type AuthorizationConnection {
+  nodes: [Authorization!]!
+  pageInfo: PageInfo!
+}
+
+type AuthorizationErrorResponse {
+  error: String!
+  error_description: String
+  error_uri: String
+}
+
+type AuthorizationRequest {
+  client_id: String!
+  code_challenge: String!
+  code_challenge_method: String!
+  redirect_uri: String!
+  response_type: String!
+  scope: String
+  state: String!
+  url: String!
+}
+
+type AuthorizationServer implements Node {
+  accounts(cursor: Cursor, limit: Int!): AccountConnection
+  authorization_endpoint: String
+  authorizations(cursor: Cursor, limit: Int!): AuthorizationConnection
+  device_authorization_endpoint: String
+  grant_types_supported: [String!]
+  id: ID!
+  label: String!
+  revocation_endpoint: String
+  token_endpoint: String
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type AuthorizationServerConnection {
+  nodes: [AuthorizationServer!]!
+  pageInfo: PageInfo!
 }
 
 type CompactPayload {
@@ -800,6 +909,14 @@ type DeferredHandle {
   modelId: String!
   pollAfterMs: Float
   provider: String!
+}
+
+type DeviceAuthorizationResponse {
+  expires_in: Int!
+  interval: Int
+  user_code: String!
+  verification_uri: String!
+  verification_uri_complete: String
 }
 
 type DiagnosticError {
@@ -1013,6 +1130,12 @@ type Mutation {
   """
   abortSubmission(input: AbortSubmissionInput!): AbortSubmissionPayload
   """
+  Create a service-owned authorization-code flow. Never replay initiation.
+  """
+  authorize(input: AuthorizeInput!): Authorization
+  """Cancel local processing, not provider credentials."""
+  cancelAuthorization(input: CancelAuthorizationInput!): Boolean
+  """
   Admit compaction; task completion and summary placement remain separate.
   """
   compact(input: CompactInput!): CompactPayload
@@ -1026,6 +1149,14 @@ type Mutation {
   Each call creates a new conversation; no submission, scheduling, or automatic replay.
   """
   createConversation(input: CreateConversationInput!): CreateConversationPayload
+  """
+  Create a device flow; the service, not browser reads, owns token polling.
+  """
+  deviceAuthorization(input: DeviceAuthorizationInput!): Authorization
+  """
+  Remove local credential use/storage independently of provider revocation.
+  """
+  disconnect(input: DisconnectInput!): Boolean
   """
   Find or create authorized persisted storage through the shared Harness owner.
   Does not create a root, change an existing Harness, or enable scheduling.
@@ -1043,6 +1174,10 @@ type Mutation {
   Return true after enabling Harness scheduling, not after work completes.
   """
   resume(input: ResumeInput!): Boolean
+  """
+  Revoke stored credentials; an acknowledgment does not mean local removal.
+  """
+  revoke(input: RevokeInput!): Boolean
   """
   Get or create the reserved root. Initial agent changes apply only at creation.
   Does not submit input or enable scheduling.
@@ -1088,6 +1223,8 @@ type PageInfo {
 }
 
 type Query {
+  accounts(cursor: Cursor, limit: Int!): AccountConnection
+  authorizationServers(cursor: Cursor, limit: Int!): AuthorizationServerConnection
   """
   Resolve a persisted Harness by its external session key; does not create one.
   """
