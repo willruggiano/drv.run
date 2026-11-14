@@ -100,6 +100,8 @@ await test("SSH environments project targets, isolate connections, and keep file
   target.host = "changed";
   assert.deepEqual(targets[0], sshTarget);
   const close = t.mock.method(a.connection, "close");
+  await RemoteExecutionEnv.prototype.cleanup.call(a, context);
+  assert.equal(close.mock.callCount(), 0);
   await a.cleanup(context);
   assert.equal(close.mock.callCount(), 1);
   const result = await b.exec(["true"], {}, context);

@@ -48,6 +48,7 @@ export class SshExecutionEnv extends RemoteExecutionEnv {
     try {
       await super.cleanup(context);
     } finally {
+      // RemoteExecutionEnv.cleanup only kills commands; this owner also closes SSH.
       this.connection.close();
     }
   }
