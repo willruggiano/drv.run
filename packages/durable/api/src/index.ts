@@ -21,7 +21,10 @@ export async function main(): Promise<void> {
           if (request.method !== "GET")
             return new Response(null, { status: 405, headers: { Allow: "GET" } });
           try {
-            await app.api.oauthCallback(new URL(request.url));
+            if (!config.origin) throw new Problem(400);
+            const callback = new URL("/api/oauth/callback", config.origin);
+            callback.search = new URL(request.url).search;
+            await app.api.oauthCallback(callback);
             return new Response("Authorization processed. You may close this page.", {
               headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
             });
@@ -56,6 +59,9 @@ export async function main(): Promise<void> {
               if (operation?.operation === "mutation") throw new Problem(405, "POST");
             }
             const result = await app.api.graphql(args, request.signal);
+            for (const error of result.errors ?? [])
+              if (error.extensions.code === "INTERNAL_SERVER_ERROR")
+                console.error("GraphQL execution failed", error.originalError);
             return Response.json(result, {
               headers: { "Cache-Control": "no-store" },
             });
@@ -111,7 +117,8 @@ export async function main(): Promise<void> {
 
       fetch: () => new Response("Not Found", { status: 404 }),
 
-      error() {
+      error(error) {
+        console.error("HTTP request failed", error);
         return new Response("Internal Server Error", {
           status: 500,
           headers: { "Cache-Control": "no-store" },

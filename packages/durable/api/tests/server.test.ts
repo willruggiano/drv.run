@@ -1,4 +1,6 @@
 import { once } from "node:events";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startServer, runMain } from "./fixtures.ts";
@@ -37,6 +39,7 @@ await test("Node entrypoint serves GraphQL and releases its listener on shutdown
     new URL("/api/watch?externalId=absent&conversationId=1", running.server.url),
   );
   assert.equal(observation.status, 404);
+  assert.equal((await fetch(new URL("/api/oauth/callback", running.server.url))).status, 400);
   const missingRoute = await fetch(new URL("/not-found", running.server.url));
   assert.equal(missingRoute.status, 404);
   process.emit("SIGTERM");
@@ -50,7 +53,7 @@ await test("Node entrypoint serves GraphQL and releases its listener on shutdown
 });
 
 await test("OAuth callbacks use the production router and do not expose failures", async (t) => {
-  const running = await startServer(t);
+  const running = await startServer(t, { ORIGIN: "https://app.example" });
   const { Problem } = await import("../src/problem.ts");
   let failure: Error | undefined;
   const callback = t.mock.method(running.app.api, "oauthCallback", async () => {
@@ -81,4 +84,102 @@ await test("CLI invocation rejects invalid deployment configuration", async () =
   const [code, signal] = await once(child, "exit");
   assert.equal(code, 1);
   assert.equal(signal, null);
+});
+
+await test("authorization callbacks cross the HTTP listener with the configured HTTPS redirect", async (t) => {
+  const origin = "https://app.example";
+  const running = await startServer(t, {
+    ORIGIN: origin,
+    OAUTH_SERVERS: JSON.stringify([
+      {
+        id: "example",
+        label: "Example",
+        provider: "openai",
+        client_id: "client",
+        metadata: {
+          issuer: "https://issuer.example",
+          authorization_endpoint: "https://issuer.example/authorize",
+          token_endpoint: "https://issuer.example/token",
+          grant_types_supported: ["authorization_code"],
+        },
+      },
+    ]),
+  });
+  const signal = new AbortController().signal;
+  const catalog = await running.app.api.graphql(
+    { source: "{ authorizationServers(limit:1) { nodes { id } } }" },
+    signal,
+  );
+  assert.equal(catalog.errors, undefined);
+  const { authorizationServers } = catalog.data as {
+    authorizationServers: { nodes: { id: string }[] };
+  };
+  const started = await running.app.api.graphql(
+    {
+      source:
+        "mutation($server:ID!) { authorize(input:{serverId:$server}) { id request { redirect_uri state } } }",
+      variableValues: { server: authorizationServers.nodes[0]!.id },
+    },
+    signal,
+  );
+  assert.equal(started.errors, undefined);
+  const { authorize } = started.data as {
+    authorize: { id: string; request: { redirect_uri: string; state: string } };
+  };
+  const transport = globalThis.fetch;
+  let exchanges = 0;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== "https://issuer.example") return transport(input, init);
+    assert(init?.body instanceof URLSearchParams);
+    assert.equal(init.body.get("redirect_uri"), authorize.request.redirect_uri);
+    exchanges++;
+    return Response.json({ token_type: "bearer", access_token: "private" });
+  });
+  const callback = new URL("/api/oauth/callback", running.server.url);
+  callback.search = new URLSearchParams({
+    state: authorize.request.state,
+    code: "private-code",
+  }).toString();
+  const response = await fetch(callback, {
+    headers: { "X-Forwarded-Host": "untrusted.example", "X-Forwarded-Proto": "http" },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(exchanges, 1);
+  const completed = await running.app.api.graphql(
+    {
+      source: "query($id:ID!) { node(id:$id) { ... on Authorization { status } } }",
+      variableValues: { id: authorize.id },
+    },
+    signal,
+  );
+  assert.equal(completed.errors, undefined);
+  assert(completed.data);
+  assert.equal((completed.data.node as { status: string }).status, "completed");
+});
+
+await test("service diagnostics remain server-side through the HTTP GraphQL boundary", async (t) => {
+  const running = await startServer(t);
+  const { readDeploymentConfiguration } = await import("../src/configuration.ts");
+  const directory = join(readDeploymentConfiguration().configDirectory, "web");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "settings.json"), "invalid JSON");
+  const response = await fetch(new URL("/api/graphql", running.server.url), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ query: "{ settings(app:web) { __typename } }" }),
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.deepEqual(result, {
+    data: { settings: null },
+    errors: [
+      {
+        message: "INTERNAL_SERVER_ERROR",
+        locations: [{ line: 1, column: 3 }],
+        path: ["settings"],
+        extensions: { code: "INTERNAL_SERVER_ERROR" },
+      },
+    ],
+  });
 });

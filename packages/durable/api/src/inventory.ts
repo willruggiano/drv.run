@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord/context";
 import type { InventoryRecord, InventoryPhase, InventoryService } from "../graphql/src/graphql.ts";
@@ -106,8 +106,7 @@ export function createInventoryService(config: DeploymentConfiguration): Invento
       ),
     ]);
     const ids = new Set<string>();
-    for (const entry of directories)
-      if (entry.isDirectory() && entry.name !== "harness") ids.add(entry.name);
+    for (const entry of directories) if (entry.isDirectory()) ids.add(entry.name);
     for (const output of [loaded.stdout, installed.stdout]) {
       for (const line of output.split("\n")) {
         const found = /^drv\.run@(.+)\.service(?:\s|$)/.exec(line.trim());
@@ -116,24 +115,13 @@ export function createInventoryService(config: DeploymentConfiguration): Invento
     }
     context.abortSignal?.throwIfAborted();
     return [...ids]
+      .filter((id) => !["harness", ".", ".."].includes(id) && basename(id) === id)
       .sort((left, right) => left.localeCompare(right))
       .map((id) => ({ id, unit: unit(id) }));
   }
 
   async function known(id: string, context: Context): Promise<boolean> {
-    if (id === "harness") return false;
-    context.abortSignal?.throwIfAborted();
-    try {
-      // Resolve membership from directory entries, not an untrusted path component.
-      const found = (await readdir(root, { withFileTypes: true })).some(
-        (entry) => entry.name === id && entry.isDirectory(),
-      );
-      context.abortSignal?.throwIfAborted();
-      return found;
-    } catch (error) {
-      if (missing(error)) return false;
-      throw error;
-    }
+    return (await inventory(context)).some((record) => record.id === id);
   }
 
   return {
@@ -192,6 +180,7 @@ export function createInventoryService(config: DeploymentConfiguration): Invento
       context.abortSignal?.throwIfAborted();
       return {
         host: `drv.run.${id}`,
+        user: "root",
         identityFile,
         knownHostsFile,
         hostKeyAlias: `drv.run.${id}`,

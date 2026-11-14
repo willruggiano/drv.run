@@ -432,7 +432,10 @@ export async function runMain(): Promise<void> {
   }
 }
 
-export async function startServer(t: TestContext): Promise<{
+export async function startServer(
+  t: TestContext,
+  environment: NodeJS.ProcessEnv = {},
+): Promise<{
   server: Awaited<ReturnType<typeof serve>>;
   app: Awaited<ReturnType<typeof application>>;
   shutdown(): Promise<void>;
@@ -447,6 +450,7 @@ export async function startServer(t: TestContext): Promise<{
     XDG_CONFIG_HOME: join(directory, "config"),
     XDG_STATE_HOME: join(directory, "state"),
     XDG_RUNTIME_DIR: join(directory, "runtime"),
+    ...environment,
   };
   listening = Promise.withResolvers();
   const done = runMain();

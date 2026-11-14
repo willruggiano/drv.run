@@ -65,6 +65,15 @@ await test("inventory unifies retained state and installed/loaded units with sta
     ["retained"],
   );
   assert.equal(second.next, null);
+  for (const record of [...first.items, ...second.items]) {
+    assert.deepEqual(await service.lookup(record.id, BACKGROUND_CONTEXT), record);
+    assert.deepEqual(await service.state(record.id, BACKGROUND_CONTEXT), {
+      activeState: "active",
+      subState: "running",
+      result: "success",
+    });
+  }
+  assert.equal(await service.flakeReference("loaded", BACKGROUND_CONTEXT), undefined);
   assert.deepEqual(await service.lookup("retained", BACKGROUND_CONTEXT), {
     id: "retained",
     unit: "drv.run@retained.service",
@@ -123,6 +132,7 @@ await test("inventory connect and observations use owner runtime artifacts", asy
   });
   assert.deepEqual(await service.connect("loaded", BACKGROUND_CONTEXT), {
     host: "drv.run.loaded",
+    user: "root",
     identityFile: join(directory, "client-key"),
     knownHostsFile: join(directory, "known_hosts"),
     hostKeyAlias: "drv.run.loaded",
