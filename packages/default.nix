@@ -1,10 +1,8 @@
-{pkgs, ...}: let
-  durable-harness = pkgs.callPackage ./durable/harness {};
-in {
+{pkgs, ...}: {
   app = pkgs.callPackage ./app {};
   bench = pkgs.callPackage ./bench {};
-  durable-api = pkgs.callPackage ./durable/api {inherit durable-harness;};
-  inherit durable-harness;
+  durable-api = pkgs.callPackage ./durable/api {inherit (pkgs) durable-harness;};
+  durable-harness = pkgs.callPackage ./durable/harness {};
   # cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {}; # remove after: https://github.com/NixOS/nixpkgs/pull/574147
   mitm-proxy = pkgs.callPackage ./mitm-proxy {};
   sshx = pkgs.callPackage ./sshx {};

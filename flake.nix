@@ -55,6 +55,7 @@
           (self.packages.${prev.stdenv.hostPlatform.system})
           app
           bench
+          durable-harness
           mitm-proxy
           subtrace
           systemd-with-vmlinux-btf
