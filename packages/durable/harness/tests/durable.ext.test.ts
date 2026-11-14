@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { copyJson } from "@earendil-works/chord";
-import {
-  Type,
-  type AssistantMessage,
-  type Message,
-  type Static,
-  type UserMessage,
-} from "@earendil-works/pi-ai";
+import { copyJson } from "@earendil-works/chord/json";
+import { type AssistantMessage, type Message, type UserMessage } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import type {
   ContextEdit,
@@ -19,6 +13,7 @@ import type {
   Page,
   UserInput,
 } from "@earendil-works/pi-durable";
+import { Type, type Static } from "typebox";
 import { Compile } from "typebox/compile";
 import {
   AssistantMessageSchema,

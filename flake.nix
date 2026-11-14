@@ -81,6 +81,7 @@
     in {
       app-tests = pkgs.app;
       bench-tests = pkgs.bench;
+      durable-api-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.durable-api;
       durable-harness-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.durable-harness;
       environment-image-tests = environmentImage.artifact;
       environment-image-nixos = environmentImage.integration;

@@ -1,4 +1,4 @@
-# Durable GraphQL architecture
+# GraphQL architecture
 
 This document gives the target architecture. It assumes the contracts in
 [[packages/durable/api/graphql/SPEC.md]].
@@ -10,14 +10,14 @@ GraphQL is part of `durable-api`. The package uses this layout:
 ```text
 packages/durable/api/
   graphql/
-    graphql.ts             Durable types, resolvers, scalars, schema factory
-    http.ts                HTTP adapter
+    graphql.ts             all handwritten GraphQL code, including HTTP handling
     schema.graphql         generated SDL, tracked in version control
     generated/graphql.ts   generated executable schema, not tracked
     tsconfig.grats.json    Grats configuration
     graphql.test.ts        executable-schema tests
-    tests/*.test.ts        HTTP and composition tests
+    tests/*.test.ts        HTTP and shared-owner tests
   src/
+    index.ts               API owner and router for GraphQL and REST/SSE
     sessions.ts            shared Harness manager
     stream.ts              SSE adapter
     telemetry.ts           telemetry adapter
@@ -25,15 +25,14 @@ packages/durable/api/
   dist/                    compiled JavaScript and declarations
 ```
 
-[graphql.ts](graphql.ts) contains the handwritten Durable schema code. Resolvers
-are exported functions next to their interfaces, not interface methods. The
-schema factory and context types are available without the HTTP adapter. The
-HTTP adapter does not own the listener.
+[graphql.ts](graphql.ts) contains all handwritten GraphQL declarations,
+resolvers, scalars, context, schema construction, and HTTP handling. Durable,
+settings, inventory, accounts, and push are peers in one application schema.
+There are no domain-specific schema modules or schema-extension frameworks.
 
-Application packages contain their schema extensions and service bindings. The
-Durable package does not import application implementations. Separate modules
-correspond to separate owners or code with multiple callers. There is no module
-for each GraphQL type.
+Resolvers are exported functions next to their interfaces, not interface
+methods. Schema construction does not start a listener. Service implementations
+remain separate from GraphQL code and supply typed dependencies.
 
 The [manifest](../package.json) lists package exports. The
 [Nix derivation](../default.nix) installs the compiled modules and generated
@@ -45,8 +44,10 @@ source.
 The package uses strict TypeScript, Node.js ES modules, Grats, and GraphQL.js.
 The [manifest](../package.json) and [lockfile](../package-lock.json) pin
 dependencies. Nix supplies the TypeScript compiler. Grats and TypeScript are
-build dependencies. GraphQL.js and any HTTP integration library are runtime
-dependencies.
+build dependencies. GraphQL.js is a runtime peer dependency and a development
+dependency for generation and tests. The deploying application supplies one
+shared GraphQL.js instance. Any HTTP integration library is a runtime
+dependency.
 
 Grats generates SDL and executable bindings from TypeScript declarations and
 annotations. Each API instance constructs one executable schema with explicit
@@ -65,37 +66,38 @@ and
 
 ```text
 application
-  |-- schema: Durable + application extensions
   |-- authorized service bindings
-  |-- shared Harness manager + factory
-  `-- listener/router
-        |-- GraphQL HTTP adapter -> GraphQL.js -> resolvers
-        `-- SSE adapter
+  |     |-- Durable: shared Harness manager + factory
+  |     |-- settings
+  |     |-- instance inventory
+  |     |-- accounts
+  |     `-- push
+  `-- API owner/router
+        |-- GraphQL HTTP handling -> GraphQL.js -> one application schema
+        `-- REST/SSE handlers
 
-Durable resolvers -----> upstream Harness interfaces
-application resolvers -> application service interfaces
-GraphQL and SSE -------> shared Harness manager
+GraphQL resolvers -----> typed service interfaces
+GraphQL and REST/SSE --> shared Harness manager
 ```
 
-The application constructs the schema, contexts, services, and routes.
-Application resolvers receive their service interfaces through separate context
-fields. They reuse scalar and identity definitions from the Durable schema. They
-do not add application services to the Durable context.
+The application constructs the services and supplies authorized bindings to one
+API owner. The API constructs one schema and request contexts with typed service
+bindings. Scalars and identity conventions are shared across the schema.
+`Query.node` dispatches both Durable and other service identities.
 
 Resolvers receive dependencies through typed arguments and contexts, not mutable
-global variables. They call upstream interfaces directly, without the
-[REST dispatcher](../src/operations.ts). The application supplies the
+global variables. Durable resolvers call upstream interfaces directly, without
+the [REST dispatcher](../src/operations.ts). The application supplies the
 [Harness factory](../../harness/src/index.ts). Resolvers do not import that
 factory.
 
 The Harness manager owns acquisition, failure recovery, and shutdown. Request
-contexts borrow its interfaces and carry cancellation signals. Neither transport
-keeps a separate Harness cache.
+contexts borrow its interfaces and carry cancellation signals. GraphQL and
+REST/SSE do not keep separate Harness caches.
 
-GraphQL and SSE can share a listener and router. They keep separate protocol
-handlers. No specific HTTP or GraphQL server framework is necessary. The HTTP
-adapter can change without changes to resolvers or resource ownership. A
-framework compatibility layer is not necessary.
+GraphQL and REST/SSE share a listener and router, with separate protocol
+handlers. Deployment owns the listener. No specific HTTP or GraphQL server
+framework is necessary. A framework compatibility layer is not necessary.
 
 Application services own provider protocols, file persistence, host control, and
 notification delivery. Their internal architecture is outside this package.
@@ -108,18 +110,19 @@ Sources: [sessions](../../../app/serve/sessions.ts),
 
 Tests use these interfaces:
 
-| Interface            | Test method                                                                                         |
-| -------------------- | --------------------------------------------------------------------------------------------------- |
-| Executable schema    | GraphQL.js execution and schema introspection                                                       |
-| Durable              | Real Harness, MemoryStorage, and deterministic faux models. Persistent storage for reopen tests     |
-| HTTP adapter         | Local Node server and HTTP requests                                                                 |
-| Harness manager      | GraphQL and SSE with one manager. Observable acquisition, failure, cancellation, and shutdown state |
-| Application services | Service tests and schema-composition tests with injected interfaces                                 |
-| Installed package    | Import and execution tests after removal of development dependencies                                |
+| Interface            | Test method                                                                                              |
+| -------------------- | -------------------------------------------------------------------------------------------------------- |
+| Executable schema    | GraphQL.js execution and schema introspection                                                            |
+| Durable              | Real Harness, MemoryStorage, and deterministic faux models. Persistent storage for reopen tests          |
+| HTTP adapter         | Local Node server and HTTP requests                                                                      |
+| Harness manager      | GraphQL and REST/SSE with one manager. Observable acquisition, failure, cancellation, and shutdown state |
+| Application services | Service tests and executable-schema tests with injected interfaces                                       |
+| Installed package    | Consumer import and execution tests with the runtime peer and without development dependencies           |
 
-The schema tests use generated bindings, not only direct resolver calls.
-Application services supply their own provider fixtures and persistence tests.
-The Durable tests run without those services.
+The schema tests use generated bindings, not only direct resolver calls. Service
+tests supply their own provider fixtures and persistence tests. Schema tests
+exercise fields from multiple services in one operation. Durable tests do not
+require other service implementations.
 
 Tests inject failures through typed service and storage interfaces. Explicit
 state transitions control concurrent operations, not elapsed-time delays.

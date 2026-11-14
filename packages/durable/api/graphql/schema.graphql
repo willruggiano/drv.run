@@ -1,4 +1,4 @@
-# Generated from graphql.ts by Grats. Do not edit.
+# Generated from src/graphql.ts by Grats. Do not edit.
 # Regenerate with: npm --prefix packages/durable/api run build:graphql
 
 """
@@ -9,7 +9,7 @@ scalar ConversationId
 
 """
 Backend-owned JSON continuation state. Round-trip it unchanged to the same
-upstream scan; storage validates it. Null means no continuation.
+list or scan; its owning service validates scope. Null means no continuation.
 """
 scalar Cursor
 
@@ -48,10 +48,27 @@ Upstream TelemetryCarrier: a JSON object with string keys and string values.
 """
 scalar TelemetryCarrier
 
+enum AccountStatus {
+  reauthorizationRequired
+  temporarilyUnavailable
+  usable
+}
+
+enum App {
+  harness
+  web
+}
+
+enum AuthorizationStatus {
+  cancelled
+  completed
+  failed
+  pending
+}
+
 enum BlockedReason {
   migration_failed
   missing_task
-  restart_limit
   task_too_old
 }
 
@@ -66,6 +83,32 @@ enum ContentType {
 enum ContextEditAction {
   omit
   replace
+}
+
+enum ConversationOwnershipKind {
+  ownerless
+  task
+}
+
+enum DocumentFork {
+  asOf
+  current
+  initial
+}
+
+enum DocumentHistory {
+  latest
+  rewindable
+}
+
+enum DocumentScopeKind {
+  conversation
+  session
+  task
+}
+
+enum ExecutionEnvType {
+  ssh
 }
 
 """GraphQL name for Awaited<ReturnType<Harness["abortSubmission"]>>."""
@@ -84,6 +127,18 @@ enum HarnessInspectionScheduling {
   closing
   paused
   running
+}
+
+enum HarnessQueueMode {
+  all
+  oneAtATime
+}
+
+enum HarnessTransport {
+  auto
+  sse
+  websocket
+  websocketCached
 }
 
 """GraphQL name for NonNullable<InputSubmissionDraft["whenBusy"]>."""
@@ -152,6 +207,7 @@ enum SubmissionRecordStatus {
 
 """GraphQL name for SubmissionRecord["type"]."""
 enum SubmissionRecordType {
+  continue
   input
   write
 }
@@ -160,7 +216,7 @@ enum SubmissionRecordType {
 enum TaskInspectionStateKind {
   blocked
   completing
-  ready
+  pending
   running
   sleeping
   waiting
@@ -190,6 +246,11 @@ enum TaskStateStatus {
   waiting
 }
 
+enum WwwDeliveryMode {
+  followUp
+  steer
+}
+
 union AssistantContent = TextContent | ThinkingContent | ToolCall
 
 """
@@ -198,6 +259,8 @@ typed wrappers; JSON maps and application payloads remain JSON.
 """
 union Message = AssistantMessage | SystemMessage | ToolResultMessage | UserMessage
 
+union Settings = HarnessSettings | WebSettings
+
 union SystemMessageContent = StringContent | TextContentList
 
 union UserContent = ImageContent | TextContent
@@ -205,10 +268,10 @@ union UserContent = ImageContent | TextContent
 union UserMessageContent = StringContent | UserContentList
 
 """
-Globally refetchable identity. IDs encode object type, persisted session identity,
-and the durable ID where applicable. They survive Harness reopen and are never
-reused for replacement storage. An inherited entry has the same ID in every
-conversation. Clients must not decode IDs.
+Globally refetchable identity. IDs encode object type and an authorized service
+namespace/resource key, or persisted session identity and a durable ID. Durable IDs
+survive Harness reopen and are never reused for replacement storage. An inherited
+entry has the same ID in every conversation. Clients must not decode IDs.
 
 Each resolver reads independently. Repeated IDs do not imply a shared snapshot
 across node(), connections, or inspection while the Harness is mutating.
@@ -218,12 +281,10 @@ interface Node {
 }
 
 input AbortInput {
-  clientMutationId: String
   conversationId: ID!
 }
 
 input AbortSubmissionInput {
-  clientMutationId: String
   """
   Global ConversationRecord ID; upstream abort is constrained to this conversation.
   """
@@ -275,16 +336,24 @@ input AssistantMessageInput {
   usage: UsageInput!
 }
 
+input AuthorizeInput {
+  accountId: ID
+  serverId: ID!
+}
+
+input CancelAuthorizationInput {
+  authorizationId: ID!
+}
+
 input CompactInput {
-  clientMutationId: String
   conversationId: ID!
   instructions: String
 }
 
 input ConfigureInput {
   change: AgentChange!
-  clientMutationId: String
   conversationId: ID!
+  env: SshTargetInput
 }
 
 input ContextEditInput @oneOf {
@@ -297,10 +366,26 @@ input ContextReplacementInput {
   target: EntryId!
 }
 
+input ConversationCreateOptionsInput {
+  agent: AgentChange
+  env: SshTargetInput
+  ownership: ConversationOwnershipInput!
+}
+
+input ConversationOwnershipInput {
+  kind: ConversationOwnershipKind!
+  taskId: TaskId
+}
+
 input ConversationQuery {
   order: ScanOrder
   ownerConversationId: ConversationId
   ownerTaskId: TaskId
+}
+
+input CreateConversationInput {
+  harnessId: ID!
+  options: ConversationCreateOptionsInput!
 }
 
 input DeferredHandleInput {
@@ -314,12 +399,33 @@ input DeferredHandleInput {
   provider: String!
 }
 
+input DeviceAuthorizationInput {
+  accountId: ID
+  serverId: ID!
+}
+
 input DiagnosticErrorInput {
   """Upstream string or number code; omit when absent."""
   code: JsonValue
   message: String!
   name: String
   stack: String
+}
+
+input DisconnectInput {
+  accountId: ID!
+}
+
+input DocumentAddressInput {
+  key: String
+  kind: String!
+  scope: DocumentScopeInput!
+}
+
+input DocumentScopeInput {
+  conversationId: ConversationId
+  kind: DocumentScopeKind!
+  taskId: TaskId
 }
 
 input EntryDraft {
@@ -344,6 +450,28 @@ input EntryQuery {
   """Inclusive lower ID bound; includes inherited history."""
   minEntryId: EntryId
   order: ScanOrder
+}
+
+input HarnessCompactionSettingsInput {
+  backgroundTokens: Int!
+  enabled: Boolean!
+  keepRecentTokens: Int!
+  reserveTokens: Int!
+}
+
+input HarnessRetrySettingsInput {
+  baseDelayMs: Int!
+  enabled: Boolean!
+  maxAgentDelayMs: Int!
+  maxRetries: Int!
+}
+
+input HarnessSettingsInput {
+  compaction: HarnessCompactionSettingsInput!
+  followUpMode: HarnessQueueMode!
+  retry: HarnessRetrySettingsInput!
+  steeringMode: HarnessQueueMode!
+  transport: HarnessTransport!
 }
 
 input ImageContentInput {
@@ -400,8 +528,31 @@ input NestedToolCallsInput {
   complete: Boolean!
 }
 
+input OpenInput {
+  externalId: String!
+}
+
+input PushSubscriptionKeysInput {
+  auth: String!
+  p256dh: String!
+}
+
+input RegisterPushSubscriptionInput {
+  endpoint: String!
+  keys: PushSubscriptionKeysInput!
+}
+
+input RemovePushSubscriptionInput {
+  endpoint: String!
+}
+
+input ReplaceDocumentInput {
+  address: DocumentAddressInput!
+  content: JsonObject!
+  harnessId: ID!
+}
+
 input ResetInput {
-  clientMutationId: String
   conversationId: ID!
   """
   Omit for no handoff; preserve a supplied string, including the empty string.
@@ -410,9 +561,50 @@ input ResetInput {
 }
 
 input ResumeInput {
-  clientMutationId: String
-  """Global Harness ID, not its external sessionId key."""
-  sessionId: ID!
+  """Global Harness ID, not its externalId key."""
+  harnessId: ID!
+}
+
+input RevokeInput {
+  accountId: ID!
+  token_type_hint: String
+}
+
+input RootInput {
+  harnessId: ID!
+  options: RootOptionsInput
+}
+
+input RootOptionsInput {
+  agent: AgentChange
+  env: SshTargetInput
+}
+
+input SaveHarnessSettingsInput {
+  expectedRevision: String!
+  settings: HarnessSettingsInput!
+}
+
+input SaveSettingsInput @oneOf {
+  harness: SaveHarnessSettingsInput
+  web: SaveWwwSettingsInput
+}
+
+input SaveWwwSettingsInput {
+  expectedRevision: String!
+  settings: WwwSettingsInput!
+}
+
+"""Optional target fields accept null as omission."""
+input SshTargetInput {
+  configFile: String
+  host: String!
+  hostKeyAlias: String!
+  identityFile: String
+  knownHostsFile: String!
+  port: Int
+  type: ExecutionEnvType!
+  user: String
 }
 
 """
@@ -424,7 +616,6 @@ input SubmissionDraft @oneOf {
 }
 
 input SubmitInput {
-  clientMutationId: String
   """Global ConversationRecord ID, not its numeric durableId."""
   conversationId: ID!
   submission: SubmissionDraft!
@@ -539,16 +730,33 @@ input WriteSubmissionDraft {
   requestId: String
 }
 
-"""
-Successful void result; only the optional correlation value is returned.
-"""
-type AbortPayload {
-  clientMutationId: String
+input WwwSettingsInput {
+  bottomAlign: Boolean!
+  defaultDeliveryMode: WwwDeliveryMode!
+  hideThinkingBlock: Boolean!
+  showImages: Boolean!
+  wrapCode: Boolean!
 }
 
 type AbortSubmissionPayload {
-  clientMutationId: String
   result: HarnessAbortSubmissionResult!
+}
+
+type Account implements Node {
+  displayName: String
+  id: ID!
+  identifier: String
+  scope: String
+  server: AuthorizationServer!
+  status: AccountStatus!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type AccountConnection {
+  nodes: [Account!]!
+  pageInfo: PageInfo!
 }
 
 """
@@ -585,16 +793,67 @@ type AssistantMessage {
   usage: Usage!
 }
 
+type Authorization implements Node {
+  account: Account
+  createdAt: Float!
+  deviceAuthorizationResponse: DeviceAuthorizationResponse
+  error: AuthorizationErrorResponse
+  id: ID!
+  request: AuthorizationRequest
+  server: AuthorizationServer!
+  status: AuthorizationStatus!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type AuthorizationConnection {
+  nodes: [Authorization!]!
+  pageInfo: PageInfo!
+}
+
+type AuthorizationErrorResponse {
+  error: String!
+  error_description: String
+  error_uri: String
+}
+
+type AuthorizationRequest {
+  client_id: String!
+  code_challenge: String!
+  code_challenge_method: String!
+  redirect_uri: String!
+  response_type: String!
+  scope: String
+  state: String!
+  url: String!
+}
+
+type AuthorizationServer implements Node {
+  accounts(cursor: Cursor, limit: Int!): AccountConnection
+  authorization_endpoint: String
+  authorizations(cursor: Cursor, limit: Int!): AuthorizationConnection
+  device_authorization_endpoint: String
+  grant_types_supported: [String!]
+  id: ID!
+  label: String!
+  revocation_endpoint: String
+  token_endpoint: String
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type AuthorizationServerConnection {
+  nodes: [AuthorizationServer!]!
+  pageInfo: PageInfo!
+}
+
 type CompactPayload {
-  clientMutationId: String
   """
   Global TaskRecord ID corresponding to compact()'s admitted upstream TaskId.
   """
   taskId: ID!
-}
-
-type ConfigurePayload {
-  clientMutationId: String
 }
 
 type ContextEdit {
@@ -635,6 +894,10 @@ type ConversationRecord implements Node {
   Fork-aware history, including inherited entries. Default order is descending.
   """
   entries(cursor: Cursor, limit: Int!, query: EntryQuery! = {}): EntryRecordConnection!
+  """
+  Persisted selection only. Reading it does not acquire an execution environment.
+  """
+  env: SshTarget
   harness: Harness!
   id: ID!
   owner: ConversationRecordOwner
@@ -671,6 +934,10 @@ type ConversationRecordParent {
   conversationId: ConversationId!
 }
 
+type CreateConversationPayload {
+  conversation: ConversationRecord!
+}
+
 type DeferredHandle {
   api: String!
   data: JsonValue
@@ -681,12 +948,29 @@ type DeferredHandle {
   provider: String!
 }
 
+type DeviceAuthorizationResponse {
+  expires_in: Int!
+  interval: Int
+  user_code: String!
+  verification_uri: String!
+  verification_uri_complete: String
+}
+
 type DiagnosticError {
   """Upstream string or number code."""
   code: JsonValue
   message: String!
   name: String
   stack: String
+}
+
+type DocumentDefinition {
+  family: Boolean
+  fork: DocumentFork
+  history: DocumentHistory
+  kind: String!
+  scope: DocumentScopeKind!
+  version: Int!
 }
 
 type EntryRecord implements Node {
@@ -716,18 +1000,34 @@ type Harness implements Node {
   Resolve Harness.conversation(id); expose its record instead of a live handle.
   """
   conversation(id: ConversationId!): ConversationRecord
+  """
+  Authorized definition metadata for one owner, sorted by kind. Does not enumerate members or initialize documents.
+  """
+  documentDefinitions(scope: DocumentScopeInput!): [DocumentDefinition!]
+  externalId: String!
   id: ID!
   """
   Harness.inspect(): live work and scheduling state, without enabling scheduling.
   """
   inspect: HarnessInspection!
   """
+  Read the reserved root without creating a conversation or enabling scheduling.
+  """
+  root: ConversationRecord
+  """
   Tx.scanConversations(); default order is ascending, or the cursor's order.
   """
   scanConversations(cursor: Cursor, limit: Int!, query: ConversationQuery! = {}): ConversationRecordConnection!
   """Tx.scanTasks(); default order is ascending, or the cursor's order."""
   scanTasks(cursor: Cursor, limit: Int!, query: TaskQuery! = {}): TaskRecordConnection!
-  sessionId: String!
+  snapshot(address: DocumentAddressInput!): JsonObject
+}
+
+type HarnessCompactionSettings {
+  backgroundTokens: Int!
+  enabled: Boolean!
+  keepRecentTokens: Int!
+  reserveTokens: Int!
 }
 
 type HarnessInspection {
@@ -737,10 +1037,76 @@ type HarnessInspection {
   tasks: [TaskInspection!]!
 }
 
+type HarnessRetrySettings {
+  baseDelayMs: Int!
+  enabled: Boolean!
+  maxAgentDelayMs: Int!
+  maxRetries: Int!
+}
+
+type HarnessSettings {
+  compaction: HarnessCompactionSettings!
+  followUpMode: HarnessQueueMode!
+  retry: HarnessRetrySettings!
+  revision: String!
+  steeringMode: HarnessQueueMode!
+  transport: HarnessTransport!
+}
+
 type ImageContent {
   data: String!
   mimeType: String!
   type: ContentType!
+}
+
+type Instance implements Node {
+  """SSH connection data only; does not connect or start the instance."""
+  connect: SshTarget
+  """
+  Unavailable metadata is null; observation errors do not erase membership.
+  """
+  flakeReference: String
+  id: ID!
+  """Observed systemd strings, without conversion to a closed enum."""
+  state: InstanceState
+  """
+  Durations are microseconds; phase samples retain their clock and seconds.
+  The service validates invocation coherence and activation success. No clocks are combined here.
+  """
+  timings: InstanceTimings
+  unit: String!
+}
+
+"""
+One upstream page. limit must be positive; cursor belongs to the upstream scan.
+"""
+type InstanceConnection {
+  nodes: [Instance!]!
+  pageInfo: PageInfo!
+}
+
+type InstanceState {
+  activeState: String!
+  result: String
+  subState: String!
+}
+
+type InstanceTimingPhase {
+  clock: String!
+  monotonicSeconds: Float!
+  phase: String!
+  resolutionSeconds: Float!
+}
+
+type InstanceTimings {
+  activationUs: Float
+  bootWaitUs: Float
+  guestPhases: [InstanceTimingPhase!]
+  hostPhases: [InstanceTimingPhase!]
+  invocationId: String!
+  managerGapsUs: Float
+  provisionUs: Float
+  workerUs: Float
 }
 
 type MessageDiagnostic {
@@ -797,25 +1163,78 @@ type Mutation {
   Withdraw queued inputs and abort ordinary owned work; preserve background work
   and queued writes. Resolves after upstream abort completes. No background flag.
   """
-  abort(input: AbortInput!): AbortPayload
+  abort(input: AbortInput!): Boolean
   """
   Withdraw a queued submission; already_placed never becomes an execution abort.
   """
   abortSubmission(input: AbortSubmissionInput!): AbortSubmissionPayload
   """
+  Create a service-owned authorization-code flow. Never replay initiation.
+  """
+  authorize(input: AuthorizeInput!): Authorization
+  """Cancel local processing, not provider credentials."""
+  cancelAuthorization(input: CancelAuthorizationInput!): Boolean
+  """
   Admit compaction; task completion and summary placement remain separate.
   """
   compact(input: CompactInput!): CompactPayload
   """
-  Change model, thinking level, or cwd overrides; read resolved settings through agent.
+  Change agent overrides and env selection atomically, including during active work.
+  Read resolved agent settings through agent and persisted selection through env.
   """
-  configure(input: ConfigureInput!): ConfigurePayload
-  """Admit a reset, not necessarily its placement. No idempotency key."""
-  reset(input: ResetInput!): ResetPayload
+  configure(input: ConfigureInput!): Boolean
   """
-  Enable Harness scheduling; successful return does not mean work has completed.
+  Create another conversation with explicit ownership and initial agent settings.
+  Each call creates a new conversation; no submission, scheduling, or automatic replay.
   """
-  resume(input: ResumeInput!): ResumePayload
+  createConversation(input: CreateConversationInput!): CreateConversationPayload
+  """
+  Create a device flow; the service, not browser reads, owns token polling.
+  """
+  deviceAuthorization(input: DeviceAuthorizationInput!): Authorization
+  """
+  Remove local credential use/storage independently of provider revocation.
+  """
+  disconnect(input: DisconnectInput!): Boolean
+  """
+  Find or create authorized persisted storage through the shared Harness owner.
+  Does not create a root, change an existing Harness, or enable scheduling.
+  """
+  open(input: OpenInput!): OpenPayload
+  """
+  Persist the full browser subscription. No delivery is triggered by the adapter.
+  """
+  registerPushSubscription(input: RegisterPushSubscriptionInput!): Boolean
+  """
+  Remove the authorized user's endpoint registration, including with delivery disabled.
+  """
+  removePushSubscription(input: RemovePushSubscriptionInput!): Boolean
+  """
+  Replace one exposed application document in one commit. No merge, compare-and-swap, or automatic replay.
+  """
+  replaceDocument(input: ReplaceDocumentInput!): JsonObject
+  """
+  Return true after reset admission, not necessarily placement. No idempotency key.
+  """
+  reset(input: ResetInput!): Boolean
+  """
+  Return true after enabling Harness scheduling, not after work completes.
+  """
+  resume(input: ResumeInput!): Boolean
+  """
+  Revoke stored credentials; an acknowledgment does not mean local removal.
+  """
+  revoke(input: RevokeInput!): Boolean
+  """
+  Get or create the reserved root. Initial agent and env changes apply only at creation.
+  Does not submit input or enable scheduling.
+  """
+  root(input: RootInput!): RootPayload
+  """
+  Full replacement with an opaque expected revision. A conflict writes nothing.
+  Saves affect later Harness opens, not current execution. Never replay after a lost response.
+  """
+  saveSettings(input: SaveSettingsInput!): Settings
   """
   Admit input or a passive entry write, not necessarily placement or completion.
   Same requestId and type recover the prior submission without comparing content.
@@ -839,6 +1258,10 @@ type NestedToolCalls {
   complete: Boolean!
 }
 
+type OpenPayload {
+  harness: Harness!
+}
+
 """
 Upstream page continuation. Null means the backend returned no next cursor.
 """
@@ -846,17 +1269,33 @@ type PageInfo {
   next: Cursor
 }
 
+type PushService {
+  """A null public key means delivery is disabled."""
+  applicationServerKey: String
+  """
+  Registration does not prove matching browser keys, permission, or successful delivery.
+  """
+  registered(endpoint: String!): Boolean
+}
+
 type Query {
+  accounts(cursor: Cursor, limit: Int!): AccountConnection
+  authorizationServers(cursor: Cursor, limit: Int!): AuthorizationServerConnection
   """
   Resolve a persisted Harness by its external session key; does not create one.
   """
-  harness(sessionId: String!): Harness
+  harness(externalId: String!): Harness
   """
   List accessible persisted sessions from the deployment's catalog, not the cache
   of open Harness instances. Durable does not provide a cross-session catalog.
-  Order by ascending sessionId; listing does not create sessions or enable scheduling.
+  Order by ascending externalId; listing does not create sessions or enable scheduling.
   """
   harnesses: [Harness!]!
+  """
+  Read one inventory page without acquiring a Harness or connecting to guests.
+  Membership and ordering belong to the inventory service, not the Harness catalog.
+  """
+  instances(cursor: Cursor, limit: Int!): InstanceConnection
   """
   Service-scoped available chat models in upstream order, without pagination.
   Reads the deployment's current model source per call; never acquires a Harness,
@@ -868,14 +1307,32 @@ type Query {
   Refetch any Node by global ID; null if it no longer exists or cannot be fetched.
   """
   node(id: ID!): Node
+  """
+  Public push configuration and the authorized user's registrations, not browser permission.
+  """
+  push: PushService
+  """
+  Read resolved application configuration without acquiring a Harness or creating files.
+  """
+  settings(app: App!): Settings
 }
 
-type ResetPayload {
-  clientMutationId: String
+type RootPayload {
+  conversation: ConversationRecord!
 }
 
-type ResumePayload {
-  clientMutationId: String
+"""
+Connection data, not an executable environment or SSH binary configuration.
+"""
+type SshTarget {
+  configFile: String
+  host: String!
+  hostKeyAlias: String!
+  identityFile: String
+  knownHostsFile: String!
+  port: Int
+  type: ExecutionEnvType!
+  user: String
 }
 
 type StringContent {
@@ -884,8 +1341,9 @@ type StringContent {
 
 """
 Complete SubmissionRecord. Status-dependent fields follow upstream invariants:
-input done has entry and answer; write done has entry only; placed is input-only;
-unanswered has reason and optional detail, with optional entry only for input.
+input done has entry and answer; write done has entry only; continue done has
+answer only. Placed applies to input and continue. Unanswered has reason and
+optional detail, with optional entry only for input.
 Queued records have none of entry, answer, reason, or detail.
 """
 type SubmissionRecord implements Node {
@@ -904,7 +1362,6 @@ type SubmissionRecord implements Node {
 }
 
 type SubmitPayload {
-  clientMutationId: String
   """
   Transport reference to Submission.id as a global SubmissionRecord ID.
   node(id) reads its receipt; this payload is not itself the submission Node.
@@ -930,7 +1387,7 @@ type TaskInspection {
 
 """
 GraphQL name for TaskInspection["state"].
-Every upstream inspection discriminant is retained. ready carries migrates;
+Every upstream inspection discriminant is retained. pending carries migrates;
 waiting carries on; sleeping carries until; blocked carries reason and optional
 error. running/completing carry only kind. Other fields return null.
 """
@@ -1096,4 +1553,13 @@ type UserMessage {
   content: UserMessageContent!
   role: MessageRole!
   timestamp: Float!
+}
+
+type WebSettings {
+  bottomAlign: Boolean!
+  defaultDeliveryMode: WwwDeliveryMode!
+  hideThinkingBlock: Boolean!
+  revision: String!
+  showImages: Boolean!
+  wrapCode: Boolean!
 }

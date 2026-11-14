@@ -1,49 +1,65 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { Problem } from "./problem.ts";
 
 export class Sessions {
-  private readonly instances = new Map<string, Promise<Harness | undefined>>();
+  private readonly instances = new Map<
+    string,
+    {
+      readonly create: boolean;
+      readonly promise: Promise<Harness | undefined>;
+    }
+  >();
   private closing: Promise<void> | undefined;
 
-  private readonly open: (id: string, context: Context) => Promise<Harness | undefined>;
+  private readonly open: (
+    id: string,
+    context: Context,
+    create: boolean,
+  ) => Promise<Harness | undefined>;
 
-  constructor(open: (id: string, context: Context) => Promise<Harness | undefined>) {
+  constructor(
+    open: (id: string, context: Context, create: boolean) => Promise<Harness | undefined>,
+  ) {
     this.open = open;
   }
 
-  async get(id: string): Promise<Harness> {
+  async get(id: string, create = false): Promise<Harness | undefined> {
     if (this.closing) throw new Problem(503);
     let instance = this.instances.get(id);
     if (!instance) {
       // Opening belongs to the service, not the first request's cancellation.
-      instance = Promise.resolve().then(() => this.open(id, BACKGROUND_CONTEXT));
+      const promise = Promise.resolve().then(() => this.open(id, BACKGROUND_CONTEXT, create));
+      instance = { create, promise };
       this.instances.set(id, instance);
-      void instance.then(
+      void promise.then(
         (harness) => {
           if (!harness) this.instances.delete(id);
+          else void harness.closed.then(() => this.instances.delete(id));
         },
         () => {
           this.instances.delete(id);
         },
       );
     }
-    const harness = await instance;
+    const harness = await instance.promise;
     if (this.closing) throw new Problem(503);
-    if (!harness) throw new Problem(404);
+    // A non-creating lookup may have occupied the slot before provisioning arrived.
+    if (!harness && create && !instance.create) return this.get(id, true);
     return harness;
   }
 
-  close(): Promise<void> {
-    this.closing ??= this.closeAll();
+  close(drained: Promise<void>): Promise<void> {
+    this.closing ??= this.closeAll(drained);
     return this.closing;
   }
 
-  private async closeAll(): Promise<void> {
+  private async closeAll(drained: Promise<void>): Promise<void> {
+    await drained;
     const results = await Promise.allSettled(
       [...this.instances.values()].map(async (instance) => {
-        const harness = await instance.catch(() => undefined);
+        const harness = await instance.promise.catch(() => undefined);
         await harness?.close(BACKGROUND_CONTEXT);
       }),
     );

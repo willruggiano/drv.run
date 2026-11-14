@@ -17,9 +17,10 @@ import { createConversationExtension } from "./conversations.ts";
 import { createContextExtension } from "./context.ts";
 import { createWebExtension } from "./web.ts";
 import { createReviewExtension } from "./review.ts";
+import { Env } from "./env.ts";
 
 export { Review } from "./review.ts";
-export { DrvRunEnv } from "./drv-run.ts";
+export { Env, SshExecutionEnv } from "./env.ts";
 
 type Options = Omit<HarnessOptions, "registry" | "settings"> & {
   readonly settings?: Omit<HarnessSettings, "extensions">;
@@ -57,6 +58,16 @@ export async function openHarness(
     {
       ...options,
       registry,
+      async conversationCreated(tx, conversation) {
+        if (!conversation.parent) {
+          const draft = await tx.doc(Env, conversation.id);
+          if (conversation.owner) {
+            const owner = await tx.doc(Env, conversation.owner.conversationId);
+            if (owner.env) draft.env = { ...owner.env };
+          }
+        }
+        await options.conversationCreated?.(tx, conversation);
+      },
       get settings() {
         const settings = options.settings;
         if (!options.codemode) return { ...settings, extensions };

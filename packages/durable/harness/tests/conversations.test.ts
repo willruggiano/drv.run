@@ -8,7 +8,8 @@ import {
   awaitWithContext,
   withAbortSignal,
 } from "@earendil-works/chord/context";
-import { Type, type TranscriptContext } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import type { TranscriptContext } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
