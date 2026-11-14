@@ -882,11 +882,11 @@ Sources: [host inventory](../../../../nixosModules/host/command.sh),
 
 Configuration has independent owners:
 
-| Configuration                                  | Authoritative storage                    |
-| ---------------------------------------------- | ---------------------------------------- |
-| Durable conversation settings, with `pi.agent` | Durable documents only                   |
-| Harness runtime settings                       | `$XDG_CONFIG_HOME/harness/settings.json` |
-| `www` presentation and delivery settings       | `$XDG_CONFIG_HOME/www/settings.json`     |
+| Configuration                                  | Authoritative storage                            |
+| ---------------------------------------------- | ------------------------------------------------ |
+| Durable conversation settings, with `pi.agent` | Durable documents only                           |
+| Harness runtime settings                       | `$XDG_CONFIG_HOME/drv.run/harness/settings.json` |
+| `www` presentation and delivery settings       | `$XDG_CONFIG_HOME/drv.run/web/settings.json`     |
 
 Configuration uses `$XDG_CONFIG_HOME` for the authorized application user. An
 unset, empty, or relative value selects `$HOME/.config`. Each application has
@@ -896,8 +896,8 @@ specific settings library is necessary.
 
 #### Settings schema
 
-These target fields use the configuration service, not Durable. The generated
-schema does not yet implement them.
+These fields use the configuration service, not Durable. See the
+[generated schema](schema.graphql) for the complete contract.
 
 ```graphql
 extend type Query {
@@ -925,20 +925,10 @@ enum WwwDeliveryMode {
   steer
 }
 
-enum HarnessTransport {
-  auto
-  sse
-  websocket
-  websocketCached
-}
-
-enum HarnessQueueMode {
-  oneAtATime
-  all
-}
+scalar HarnessTransport
+scalar HarnessQueueMode
 
 type WebSettings {
-  revision: String!
   wrapCode: Boolean!
   bottomAlign: Boolean!
   hideThinkingBlock: Boolean!
@@ -955,8 +945,7 @@ input WwwSettingsInput {
 }
 
 type HarnessSettings {
-  revision: String!
-  transport: HarnessTransport!
+  stream: HarnessStreamSettings!
   steeringMode: HarnessQueueMode!
   followUpMode: HarnessQueueMode!
   retry: HarnessRetrySettings!
@@ -964,11 +953,19 @@ type HarnessSettings {
 }
 
 input HarnessSettingsInput {
-  transport: HarnessTransport!
+  stream: HarnessStreamSettingsInput!
   steeringMode: HarnessQueueMode!
   followUpMode: HarnessQueueMode!
   retry: HarnessRetrySettingsInput!
   compaction: HarnessCompactionSettingsInput!
+}
+
+type HarnessStreamSettings {
+  transport: HarnessTransport!
+}
+
+input HarnessStreamSettingsInput {
+  transport: HarnessTransport!
 }
 
 type HarnessRetrySettings {
@@ -1000,12 +997,10 @@ input HarnessCompactionSettingsInput {
 }
 
 input SaveWwwSettingsInput {
-  expectedRevision: String!
   settings: WwwSettingsInput!
 }
 
 input SaveHarnessSettingsInput {
-  expectedRevision: String!
   settings: HarnessSettingsInput!
 }
 ```
@@ -1020,7 +1015,6 @@ query ApplicationSettings {
   web: settings(app: web) {
     __typename
     ... on WebSettings {
-      revision
       wrapCode
       defaultDeliveryMode
     }
@@ -1028,8 +1022,9 @@ query ApplicationSettings {
   harness: settings(app: harness) {
     __typename
     ... on HarnessSettings {
-      revision
-      transport
+      stream {
+        transport
+      }
       retry {
         enabled
         maxRetries
@@ -1047,39 +1042,36 @@ or other conversation document values.
 
 #### Fields and defaults
 
-Each file contains its settings input fields, with GraphQL enum spellings as
-JSON strings. It contains no `revision` or mutation metadata. An absent file or
-omitted property uses the defaults below, also for nested properties. Unknown
-fields, explicit nulls, wrong types, and out-of-range values make the file
-invalid. A read never creates or rewrites a file.
+Each file contains its settings input fields. Harness settings use the native
+Durable shape and string values. An absent file or omitted property uses the
+defaults below, also for nested properties. Unknown fields, explicit nulls,
+wrong types, and out-of-range values make the file invalid. A read never creates
+or rewrites a file.
 
-| Field                                         | Default      | Meaning                                                                                       |
-| --------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------- |
-| `WebSettings.wrapCode`                        | `false`      | Wrap code blocks instead of horizontal scrolling.                                             |
-| `WebSettings.bottomAlign`                     | `true`       | Bottom-align the transcript.                                                                  |
-| `WebSettings.hideThinkingBlock`               | `false`      | Hide thinking content in the transcript.                                                      |
-| `WebSettings.showImages`                      | `true`       | Display supported transcript images.                                                          |
-| `WebSettings.defaultDeliveryMode`             | `followUp`   | Initial composer delivery choice. `steer` selects steering.                                   |
-| `HarnessSettings.transport`                   | `auto`       | Model-provider transport, not browser SSE transport.                                          |
-| `HarnessSettings.steeringMode`                | `oneAtATime` | Number of steering submissions placed at a boundary.                                          |
-| `HarnessSettings.followUpMode`                | `oneAtATime` | Number of follow-up submissions placed at a boundary.                                         |
-| `HarnessSettings.retry.enabled`               | `true`       | Enable Durable generation-attempt retries.                                                    |
-| `HarnessSettings.retry.maxRetries`            | `3`          | Maximum retries after the initial attempt.                                                    |
-| `HarnessSettings.retry.baseDelayMs`           | `2000`       | Base delay between attempts, in milliseconds.                                                 |
-| `HarnessSettings.retry.maxAgentDelayMs`       | `60000`      | Upper bound on agent retry delay, in milliseconds.                                            |
-| `HarnessSettings.compaction.enabled`          | `true`       | Enable automatic threshold/overflow compaction.                                               |
-| `HarnessSettings.compaction.reserveTokens`    | `16384`      | Context capacity reserved for the answer.                                                     |
-| `HarnessSettings.compaction.keepRecentTokens` | `20000`      | Approximate recent-context tokens retained by compaction.                                     |
-| `HarnessSettings.compaction.backgroundTokens` | `32768`      | Background-compaction lead below the blocking threshold. Zero disables background compaction. |
+| Field                                         | Default         | Meaning                                                                                       |
+| --------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------- |
+| `WebSettings.wrapCode`                        | `false`         | Wrap code blocks instead of horizontal scrolling.                                             |
+| `WebSettings.bottomAlign`                     | `true`          | Bottom-align the transcript.                                                                  |
+| `WebSettings.hideThinkingBlock`               | `false`         | Hide thinking content in the transcript.                                                      |
+| `WebSettings.showImages`                      | `true`          | Display supported transcript images.                                                          |
+| `WebSettings.defaultDeliveryMode`             | `followUp`      | Initial composer delivery choice. `steer` selects steering.                                   |
+| `HarnessSettings.stream.transport`            | `auto`          | Model-provider transport, not browser SSE transport.                                          |
+| `HarnessSettings.steeringMode`                | `one-at-a-time` | Number of steering submissions placed at a boundary.                                          |
+| `HarnessSettings.followUpMode`                | `one-at-a-time` | Number of follow-up submissions placed at a boundary.                                         |
+| `HarnessSettings.retry.enabled`               | `true`          | Enable Durable generation-attempt retries.                                                    |
+| `HarnessSettings.retry.maxRetries`            | `3`             | Maximum retries after the initial attempt.                                                    |
+| `HarnessSettings.retry.baseDelayMs`           | `2000`          | Base delay between attempts, in milliseconds.                                                 |
+| `HarnessSettings.retry.maxAgentDelayMs`       | `60000`         | Upper bound on agent retry delay, in milliseconds.                                            |
+| `HarnessSettings.compaction.enabled`          | `true`          | Enable automatic threshold/overflow compaction.                                               |
+| `HarnessSettings.compaction.reserveTokens`    | `16384`         | Context capacity reserved for the answer.                                                     |
+| `HarnessSettings.compaction.keepRecentTokens` | `20000`         | Approximate recent-context tokens retained by compaction.                                     |
+| `HarnessSettings.compaction.backgroundTokens` | `32768`         | Background-compaction lead below the blocking threshold. Zero disables background compaction. |
 
 Numeric settings are integers in `[0, 2147483647]`. A zero retry count disables
-additional attempts. `HarnessQueueMode.oneAtATime` maps to `"one-at-a-time"`.
-`HarnessTransport.websocketCached` maps to `"websocket-cached"`. Other queue and
-transport values remain unchanged.
-
-The transport field supplies `HarnessSettings.stream.transport`, not the
-upstream provider-request retry settings. Retry and compaction objects map to
-their upstream policy fields.
+additional attempts. `HarnessQueueMode` accepts `"one-at-a-time"` and `"all"`.
+`HarnessTransport` accepts `"auto"`, `"sse"`, `"websocket"`, and
+`"websocket-cached"`. These scalars preserve upstream strings without enum
+translation. The resolved settings object is passed directly to `openHarness`.
 
 `settings(app: harness)` returns the configured runtime policy with resolved
 defaults, not a per-Harness execution snapshot. A Harness uses current
@@ -1103,38 +1095,23 @@ or `harness`. Empty inputs, multiple branches, and null branch values are
 invalid for both variables and inline literals. The branch selects the file and
 its typed settings, without a separate `app` argument.
 
-Each branch requires `expectedRevision` and the full `settings` input. All
-settings fields must be present and non-null, also in nested objects. There is
-no implicit patch, null-as-delete, or key-based update. A reset supplies the
-setting's default value without a search of another file.
+Each branch requires the full `settings` input. All settings fields must be
+present and non-null, also in nested objects. There is no implicit patch,
+null-as-delete, or key-based update. A reset supplies the setting's default
+value without a search of another file.
 
-The result is `WebSettings` for `web` or `HarnessSettings` for `harness`,
-including the saved revision. It has no payload wrapper.
+The result is `WebSettings` for `web` or `HarnessSettings` for `harness`. The
+service writes the supplied settings to the selected file without reading or
+comparing its previous contents. There are no revisions, conflict checks, write
+queues, or atomic-replacement requirements. No transaction spans the two files.
+An absent file returns defaults on read, not null.
 
-`revision` is an opaque, nonempty content revision of the file, with a distinct
-value for an absent file. It changes with file contents and remains stable
-across reads and restarts for unchanged contents. It is not a Durable document
-version or submission ID. Clients return it unchanged as `expectedRevision`.
-
-API saves execute serially for each user's application file. Each save reads
-current file contents and compares the revision before a write, not only a
-cached revision. A mismatch returns a GraphQL error with
-`extensions.code = "CONFIGURATION_CONFLICT"` and leaves the file unchanged. The
-client reads the file again and explicitly reconciles its edits. This detects
-stale API saves and external edits already visible to the read. It does not lock
-concurrent writes from unrelated processes.
-
-On a revision match, the service validates the full input and atomically
-replaces the file. It returns the saved settings and new revision. No
-transaction spans the two files. Nullable query fields and mutation results can
-return errors with other successful selections. An absent file returns defaults,
-not null.
-
-Malformed or unreadable files and persistence failures return
-`INTERNAL_SERVER_ERROR`, not defaults. GraphQL rejects unknown fields, missing
-or null required inputs, invalid types, and values outside the signed 32-bit
-`Int` range. Negative policy values return `BAD_REQUEST`. Error messages contain
-no private paths or file contents.
+Malformed or unreadable files fail reads with `INTERNAL_SERVER_ERROR`, not
+defaults. Saves can overwrite malformed files; persistence failures return
+`INTERNAL_SERVER_ERROR`. GraphQL rejects unknown fields, missing or null
+required inputs, invalid types, and values outside the signed 32-bit `Int`
+range. Negative policy values return `BAD_REQUEST`. Error messages contain no
+private paths or file contents.
 
 A lost response leaves the save uncertain. The client reads the file again
 before another explicit save. Equal values do not prove that a particular

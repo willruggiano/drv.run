@@ -23,6 +23,12 @@ Upstream EntryId; the same numeric range and representation as ConversationId.
 """
 scalar EntryId
 
+"""Native Durable queue policy string."""
+scalar HarnessQueueMode
+
+"""Native provider transport string."""
+scalar HarnessTransport
+
 """
 Upstream JsonObject: a JSON object with string keys and JsonValue values.
 """
@@ -127,18 +133,6 @@ enum HarnessInspectionScheduling {
   closing
   paused
   running
-}
-
-enum HarnessQueueMode {
-  all
-  oneAtATime
-}
-
-enum HarnessTransport {
-  auto
-  sse
-  websocket
-  websocketCached
 }
 
 """GraphQL name for NonNullable<InputSubmissionDraft["whenBusy"]>."""
@@ -471,6 +465,10 @@ input HarnessSettingsInput {
   followUpMode: HarnessQueueMode!
   retry: HarnessRetrySettingsInput!
   steeringMode: HarnessQueueMode!
+  stream: HarnessStreamSettingsInput!
+}
+
+input HarnessStreamSettingsInput {
   transport: HarnessTransport!
 }
 
@@ -581,7 +579,6 @@ input RootOptionsInput {
 }
 
 input SaveHarnessSettingsInput {
-  expectedRevision: String!
   settings: HarnessSettingsInput!
 }
 
@@ -591,7 +588,6 @@ input SaveSettingsInput @oneOf {
 }
 
 input SaveWwwSettingsInput {
-  expectedRevision: String!
   settings: WwwSettingsInput!
 }
 
@@ -1048,8 +1044,11 @@ type HarnessSettings {
   compaction: HarnessCompactionSettings!
   followUpMode: HarnessQueueMode!
   retry: HarnessRetrySettings!
-  revision: String!
   steeringMode: HarnessQueueMode!
+  stream: HarnessStreamSettings!
+}
+
+type HarnessStreamSettings {
   transport: HarnessTransport!
 }
 
@@ -1231,7 +1230,7 @@ type Mutation {
   """
   root(input: RootInput!): RootPayload
   """
-  Full replacement with an opaque expected revision. A conflict writes nothing.
+  Replace the application settings file.
   Saves affect later Harness opens, not current execution. Never replay after a lost response.
   """
   saveSettings(input: SaveSettingsInput!): Settings
@@ -1559,7 +1558,6 @@ type WebSettings {
   bottomAlign: Boolean!
   defaultDeliveryMode: WwwDeliveryMode!
   hideThinkingBlock: Boolean!
-  revision: String!
   showImages: Boolean!
   wrapCode: Boolean!
 }

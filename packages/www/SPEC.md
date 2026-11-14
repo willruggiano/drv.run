@@ -341,8 +341,8 @@ defaults, and validation are declared in
 choice controls, and integer fields rather than a generic key/value editor.
 
 Each application owns one configuration file. `www` uses the user's
-`$XDG_CONFIG_HOME/www/settings.json`; Harness uses
-`$XDG_CONFIG_HOME/harness/settings.json`. There is no XDG configuration
+`$XDG_CONFIG_HOME/drv.run/web/settings.json`; Harness uses
+`$XDG_CONFIG_HOME/drv.run/harness/settings.json`. There is no XDG configuration
 inheritance or device/global/server hierarchy. Notification and OAuth2 account
 configuration remain separate. Durable conversation settings live only in
 Durable documents and are not application-file fields.
@@ -354,14 +354,13 @@ documents. `www` saves apply to the current page from the returned settings;
 other pages observe them on refresh. Merely visiting a settings page has no
 write effect.
 
-Each save submits the complete typed settings object and the revision from its
-last read or successful save. A revision conflict preserves edits and offers
-reread/reconciliation; do not retry with a new revision without user review.
-Autosave distinguishes unsaved, saving, saved, rejected, and uncertain outcomes.
-Preserve newer edits when a save completes. Failed saves remain visible and
-editable. Application settings are not a browser-local persistence layer;
-different browsers accessing the same application's configuration see the same
-saved values after refresh. No live settings feed is implied.
+Each save submits the complete typed settings object and overwrites the
+application settings file. Autosave distinguishes unsaved, saving, saved,
+rejected, and uncertain outcomes. Preserve newer edits when a save completes.
+Failed saves remain visible and editable. Application settings are not a
+browser-local persistence layer; different browsers accessing the same
+application's configuration see the same saved values after refresh. No live
+settings feed is implied.
 
 Source: [[packages/durable/api/graphql/SPEC.md#Application configuration]].
 

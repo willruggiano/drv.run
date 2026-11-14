@@ -102,23 +102,12 @@ export async function openApplication(config: DeploymentConfiguration) {
     }
     const storage = await openNodeSqliteStorage(path);
     try {
-      const { settings: policy } = await settings.harness.read(BACKGROUND_CONTEXT);
+      const configuration = await settings.harness.read(BACKGROUND_CONTEXT);
       return await openHarness(
         storage,
         {
           models,
-          settings: {
-            stream: {
-              transport:
-                policy.transport === "websocketCached" ? "websocket-cached" : policy.transport,
-            },
-            steeringMode:
-              policy.steeringMode === "oneAtATime" ? "one-at-a-time" : policy.steeringMode,
-            followUpMode:
-              policy.followUpMode === "oneAtATime" ? "one-at-a-time" : policy.followUpMode,
-            retry: policy.retry,
-            compaction: policy.compaction,
-          },
+          settings: configuration,
           async env(target, context) {
             const selected = await target.read.snapshot(Env, target.conversationId, context);
             const native = selected?.env;
@@ -166,9 +155,7 @@ export async function openApplication(config: DeploymentConfiguration) {
     documents: {
       async definitions(_externalId, scope) {
         const tokens = [AgentDoc, Env].filter((token) => token.definition.scope === scope.kind);
-        return tokens as unknown as Awaited<
-          ReturnType<ResolverContext["documents"]["definitions"]>
-        >;
+        return tokens;
       },
       async resolve(_externalId, address) {
         const token = [AgentDoc, Env].find(
@@ -177,9 +164,7 @@ export async function openApplication(config: DeploymentConfiguration) {
             candidate.definition.scope === address.scope.kind &&
             !("family" in candidate.definition),
         );
-        return token
-          ? ({ token } as unknown as Awaited<ReturnType<ResolverContext["documents"]["resolve"]>>)
-          : undefined;
+        return token ? { token } : undefined;
       },
     },
     settings,

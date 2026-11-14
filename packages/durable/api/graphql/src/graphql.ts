@@ -35,7 +35,7 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
  * BAD_REQUEST for adapter validation and rejected storage reads,
  * NOT_FOUND for missing mutation targets, CONVERSATION_BUSY for typed
  * ConversationBusy, SESSION_FAILED for typed SessionFailed, and INTERNAL_SERVER_ERROR
- * otherwise. Settings revision conflicts use CONFIGURATION_CONFLICT.
+ * otherwise.
  * Mapping is independent of the operation. ReadAfterWrite, untyped
  * exceptions, and invisible historical entries retain the internal-error fallback. Never classify
  * by error-message text or expose stacks, causes, or internal error messages.
@@ -113,7 +113,6 @@ interface DocumentService {
 
 type ErrorCode =
   | "BAD_REQUEST"
-  | "CONFIGURATION_CONFLICT"
   | "NOT_FOUND"
   | "CONVERSATION_BUSY"
   | "SESSION_FAILED"
@@ -311,6 +310,8 @@ export function createSchema(): GraphQLSchema {
       JsonObject: scalar(JsonObject),
       Cursor: scalar(Cursor),
       TelemetryCarrier: scalar(TelemetryCarrier),
+      HarnessTransport: scalar(HarnessTransport),
+      HarnessQueueMode: scalar(HarnessQueueMode),
     },
   });
 }
@@ -2932,10 +2933,20 @@ export async function configure(
 type App = "web" | "harness";
 /** @gqlEnum */
 type WwwDeliveryMode = "followUp" | "steer";
-/** @gqlEnum */
-type HarnessTransport = "auto" | "sse" | "websocket" | "websocketCached";
-/** @gqlEnum */
-type HarnessQueueMode = "oneAtATime" | "all";
+/** Native provider transport string. @gqlScalar */
+export type HarnessTransport = Type.Static<typeof HarnessTransport>;
+/** Native Durable queue policy string. @gqlScalar */
+export type HarnessQueueMode = Type.Static<typeof HarnessQueueMode>;
+
+/** @gqlInput */
+interface HarnessStreamSettingsInput {
+  readonly transport: HarnessTransport;
+}
+/** @gqlType */
+interface HarnessStreamSettings {
+  /** @gqlField */
+  readonly transport: HarnessTransport;
+}
 
 /** @gqlInput */
 export interface WwwSettingsInput {
@@ -2949,8 +2960,6 @@ export interface WwwSettingsInput {
 /** @gqlType */
 interface WebSettings {
   readonly __typename: "WebSettings";
-  /** @gqlField */
-  readonly revision: string;
   /** @gqlField */
   readonly wrapCode: boolean;
   /** @gqlField */
@@ -3005,7 +3014,7 @@ interface HarnessCompactionSettings {
 
 /** @gqlInput */
 export interface HarnessSettingsInput {
-  readonly transport: HarnessTransport;
+  readonly stream: HarnessStreamSettingsInput;
   readonly steeringMode: HarnessQueueMode;
   readonly followUpMode: HarnessQueueMode;
   readonly retry: HarnessRetrySettingsInput;
@@ -3016,9 +3025,7 @@ export interface HarnessSettingsInput {
 interface HarnessSettings {
   readonly __typename: "HarnessSettings";
   /** @gqlField */
-  readonly revision: string;
-  /** @gqlField */
-  readonly transport: HarnessTransport;
+  readonly stream: HarnessStreamSettings;
   /** @gqlField */
   readonly steeringMode: HarnessQueueMode;
   /** @gqlField */
@@ -3036,36 +3043,16 @@ type Settings = WebSettings | HarnessSettings;
 type SaveSettingsInput = { web: SaveWwwSettingsInput } | { harness: SaveHarnessSettingsInput };
 /** @gqlInput */
 interface SaveWwwSettingsInput {
-  readonly expectedRevision: string;
   readonly settings: WwwSettingsInput;
 }
 /** @gqlInput */
 interface SaveHarnessSettingsInput {
-  readonly expectedRevision: string;
   readonly settings: HarnessSettingsInput;
 }
 
-interface ConfigurationSnapshot<T> {
-  readonly revision: string;
-  readonly settings: T;
-}
-
-// Bind each service to the authorized user. The service owns XDG resolution,
-// defaults, strict file validation, content revisions, and atomic replacement.
-// Serialize saves per user/file and reread the revision before writing. Never
-// acquire a Harness, modify Durable documents, or reconfigure an open Harness.
 export interface Configuration<T> {
-  read(context: Context): Promise<ConfigurationSnapshot<T>>;
-  /**
-   * Undefined means revision conflict, with no write. No automatic replay.
-   * Context cancellation may stop admission, not an admitted replacement.
-   * Deployment owns service lifetime and cleanup after a disconnected waiter.
-   */
-  replace(
-    expectedRevision: string,
-    settings: T,
-    context: Context,
-  ): Promise<ConfigurationSnapshot<T> | undefined>;
+  read(context: Context): Promise<T>;
+  replace(settings: T, context: Context): Promise<T>;
 }
 export interface SettingsService {
   readonly web: Configuration<WwwSettingsInput>;
@@ -3073,7 +3060,6 @@ export interface SettingsService {
 }
 
 const PolicyInteger = Type.Integer({ minimum: 0, maximum: 2147483647 });
-const ConfigurationRevision = Type.String({ minLength: 1 });
 export const WwwSettingsInput = Type.Object(
   {
     wrapCode: Type.Boolean(),
@@ -3084,15 +3070,16 @@ export const WwwSettingsInput = Type.Object(
   },
   { additionalProperties: false },
 );
-const HarnessQueueMode = Type.Union([Type.Literal("oneAtATime"), Type.Literal("all")]);
+const HarnessQueueMode = Type.Union([Type.Literal("one-at-a-time"), Type.Literal("all")]);
+const HarnessTransport = Type.Union([
+  Type.Literal("auto"),
+  Type.Literal("sse"),
+  Type.Literal("websocket"),
+  Type.Literal("websocket-cached"),
+]);
 export const HarnessSettingsInput = Type.Object(
   {
-    transport: Type.Union([
-      Type.Literal("auto"),
-      Type.Literal("sse"),
-      Type.Literal("websocket"),
-      Type.Literal("websocketCached"),
-    ]),
+    stream: Type.Object({ transport: HarnessTransport }, { additionalProperties: false }),
     steeringMode: HarnessQueueMode,
     followUpMode: HarnessQueueMode,
     retry: Type.Object(
@@ -3117,16 +3104,15 @@ export const HarnessSettingsInput = Type.Object(
   { additionalProperties: false },
 );
 
-function configurationSnapshot<S extends Type.TSchema>(
+function configurationValue<S extends Type.TSchema>(
   schema: S,
-  value: ConfigurationSnapshot<Type.Static<S>>,
-): ConfigurationSnapshot<Type.Static<S>> {
+  value: Type.Static<S>,
+): Type.Static<S> {
   try {
-    const revision = value.revision;
     // Detach the projection from service state before validation and field execution.
-    const settings = structuredClone(value.settings);
-    assert(Value.Check(ConfigurationRevision, revision) && Value.Check(schema, settings));
-    return { revision, settings };
+    const settings = structuredClone(value);
+    assert(Value.Check(schema, settings));
+    return settings;
   } catch {
     throw new ResolverError("INTERNAL_SERVER_ERROR");
   }
@@ -3139,24 +3125,24 @@ function configurationSnapshot<S extends Type.TSchema>(
 export async function settings(app: App, ctx: ResolverContext): Promise<Settings | null> {
   try {
     if (app === "web") {
-      const value = configurationSnapshot(
+      const value = configurationValue(
         WwwSettingsInput,
         await serviceCall(ctx, () => ctx.settings.web.read(ctx.context)),
       );
-      return { ...value.settings, revision: value.revision, __typename: "WebSettings" };
+      return { ...value, __typename: "WebSettings" };
     }
-    const value = configurationSnapshot(
+    const value = configurationValue(
       HarnessSettingsInput,
       await serviceCall(ctx, () => ctx.settings.harness.read(ctx.context)),
     );
-    return { ...value.settings, revision: value.revision, __typename: "HarnessSettings" };
+    return { ...value, __typename: "HarnessSettings" };
   } catch (error) {
     throw mapError(error);
   }
 }
 
 /**
- * Full replacement with an opaque expected revision. A conflict writes nothing.
+ * Replace the application settings file.
  * Saves affect later Harness opens, not current execution. Never replay after a lost response.
  * @gqlMutationField
  */
@@ -3166,25 +3152,17 @@ export async function saveSettings(
 ): Promise<Settings | null> {
   try {
     if ("web" in input) {
-      const { expectedRevision, settings } = input.web;
-      checked(ConfigurationRevision, expectedRevision);
+      const { settings } = input.web;
       checked(WwwSettingsInput, settings);
-      const saved = await serviceCall(ctx, () =>
-        ctx.settings.web.replace(expectedRevision, settings, ctx.context),
-      );
-      if (saved === undefined) throw new ResolverError("CONFIGURATION_CONFLICT");
-      const value = configurationSnapshot(WwwSettingsInput, saved);
-      return { ...value.settings, revision: value.revision, __typename: "WebSettings" };
+      const saved = await serviceCall(ctx, () => ctx.settings.web.replace(settings, ctx.context));
+      const value = configurationValue(WwwSettingsInput, saved);
+      return { ...value, __typename: "WebSettings" };
     }
-    const { expectedRevision, settings } = input.harness;
-    checked(ConfigurationRevision, expectedRevision);
+    const { settings } = input.harness;
     checked(HarnessSettingsInput, settings);
-    const saved = await serviceCall(ctx, () =>
-      ctx.settings.harness.replace(expectedRevision, settings, ctx.context),
-    );
-    if (saved === undefined) throw new ResolverError("CONFIGURATION_CONFLICT");
-    const value = configurationSnapshot(HarnessSettingsInput, saved);
-    return { ...value.settings, revision: value.revision, __typename: "HarnessSettings" };
+    const saved = await serviceCall(ctx, () => ctx.settings.harness.replace(settings, ctx.context));
+    const value = configurationValue(HarnessSettingsInput, saved);
+    return { ...value, __typename: "HarnessSettings" };
   } catch (error) {
     throw mapError(error);
   }

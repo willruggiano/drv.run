@@ -31,7 +31,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
         push { applicationServerKey }
         web: settings(app: web) {
           __typename
-          ... on WebSettings { revision wrapCode bottomAlign }
+          ... on WebSettings { wrapCode bottomAlign }
         }
         missing: harness(externalId: "absent") { id }
       }`,
@@ -44,7 +44,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
     accounts: { nodes: unknown[] };
     authorizationServers: { nodes: unknown[]; pageInfo: { next: unknown } };
     push: { applicationServerKey: string | null };
-    web: { revision: string; wrapCode: boolean; bottomAlign: boolean };
+    web: { wrapCode: boolean; bottomAlign: boolean };
     missing: unknown;
   };
   assert.deepEqual(queryData.harnesses, []);
@@ -54,17 +54,15 @@ await test("application composes GraphQL with persistent Harness discovery and o
   assert.equal(queryData.push.applicationServerKey, null);
   assert.equal(queryData.web.wrapCode, false);
   assert.equal(queryData.web.bottomAlign, true);
-  assert.equal(queryData.web.revision.length > 0, true);
   assert.equal(queryData.missing, null);
   const saved = await app.api.graphql(
     {
       source: `mutation Save($input: SaveSettingsInput!) {
-        saveSettings(input: $input) { ... on WebSettings { revision wrapCode } }
+        saveSettings(input: $input) { ... on WebSettings { wrapCode } }
       }`,
       variableValues: {
         input: {
           web: {
-            expectedRevision: queryData.web.revision,
             settings: {
               wrapCode: true,
               bottomAlign: true,
@@ -103,15 +101,45 @@ await test("application composes GraphQL with persistent Harness discovery and o
   assert.equal(unavailableRemoval.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   const opened = await app.api.graphql(
     {
-      source: `mutation { open(input: { externalId: "test_session" }) { harness { externalId } } }`,
+      source: `mutation { open(input: { externalId: "test_session" }) { harness { id externalId } } }`,
     },
     signal,
   );
   assert.equal(opened.errors, undefined);
   const openedData = opened.data as {
-    open: { harness: { externalId: string } };
+    open: { harness: { id: string; externalId: string } };
   };
   assert.equal(openedData.open.harness.externalId, "test_session");
+  const root = await app.api.graphql(
+    {
+      source: `mutation($id:ID!) { root(input:{harnessId:$id}) { conversation { durableId } } }`,
+      variableValues: { id: openedData.open.harness.id },
+    },
+    signal,
+  );
+  assert.equal(root.errors, undefined);
+  const rootData = root.data as { root: { conversation: { durableId: number } } };
+  const scope = { kind: "conversation", conversationId: rootData.root.conversation.durableId };
+  const documents = await app.api.graphql(
+    {
+      source: `query($scope:DocumentScopeInput!) { harness(externalId:"test_session") {
+      documentDefinitions(scope:$scope) { kind }
+      snapshot(address:{kind:"pi.agent",scope:$scope})
+    } }`,
+      variableValues: { scope },
+    },
+    signal,
+  );
+  assert.equal(documents.errors, undefined);
+  const documentData = documents.data as {
+    harness: { documentDefinitions: { kind: string }[]; snapshot: unknown };
+  };
+  assert.deepEqual(documentData.harness.documentDefinitions.map(({ kind }) => kind).sort(), [
+    "app.env",
+    "pi.agent",
+  ]);
+  assert.ok(documentData.harness.snapshot);
+
   assert.equal(
     (
       await stat(join(directory, "instance-state/drv.run/harness/sessions/test_session.sqlite"))
@@ -157,7 +185,7 @@ await test("application retries a Harness open after invalid persisted runtime s
   await writeFile(
     harnessSettings,
     JSON.stringify({
-      transport: "websocketCached",
+      stream: { transport: "websocket-cached" },
       steeringMode: "all",
       followUpMode: "all",
     }),

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,17 +114,13 @@ export async function openHarness(
 // In-memory service double. File persistence and XDG resolution belong to deployment.
 export function settingsFixture(): ResolverContext["settings"] {
   function configuration<T>(initial: T) {
-    let current = { revision: "absent", settings: initial };
+    let current = initial;
     return {
       async read() {
         return structuredClone(current);
       },
-      async replace(expectedRevision: string, settings: T) {
-        if (expectedRevision !== current.revision) return undefined;
-        current = {
-          revision: createHash("sha256").update(JSON.stringify(settings)).digest("hex"),
-          settings: structuredClone(settings),
-        };
+      async replace(settings: T) {
+        current = structuredClone(settings);
         return structuredClone(current);
       },
     };
@@ -139,9 +134,9 @@ export function settingsFixture(): ResolverContext["settings"] {
       defaultDeliveryMode: "followUp",
     }),
     harness: configuration({
-      transport: "auto",
-      steeringMode: "oneAtATime",
-      followUpMode: "oneAtATime",
+      stream: { transport: "auto" },
+      steeringMode: "one-at-a-time",
+      followUpMode: "one-at-a-time",
       retry: { enabled: true, maxRetries: 3, baseDelayMs: 2000, maxAgentDelayMs: 60000 },
       compaction: {
         enabled: true,

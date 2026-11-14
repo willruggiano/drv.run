@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { readDeploymentConfiguration } from "../src/configuration.ts";
 import { createSettingsService } from "../src/settings.ts";
 
-await test("settings service applies defaults and performs revision-checked replacement", async (t) => {
+await test("settings service applies defaults and writes replacements without reading existing files", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "durable-api-settings-"));
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const config = readDeploymentConfiguration(
@@ -20,7 +20,7 @@ await test("settings service applies defaults and performs revision-checked repl
   );
   const service = createSettingsService(config);
   const initial = await service.web.read(BACKGROUND_CONTEXT);
-  assert.deepEqual(initial.settings, {
+  assert.deepEqual(initial, {
     wrapCode: false,
     bottomAlign: true,
     hideThinkingBlock: false,
@@ -29,38 +29,18 @@ await test("settings service applies defaults and performs revision-checked repl
   });
   await assert.rejects(access(config.configDirectory));
 
-  const replacement = { ...initial.settings, wrapCode: true };
-  const saved = await service.web.replace(initial.revision, replacement, BACKGROUND_CONTEXT);
-  assert.equal(saved?.settings.wrapCode, true);
+  const replacement = { ...initial, wrapCode: true };
+  const saved = await service.web.replace(replacement, BACKGROUND_CONTEXT);
+  assert.equal(saved.wrapCode, true);
   assert.deepEqual(
     JSON.parse(await readFile(join(directory, "config/drv.run/web/settings.json"), "utf8")),
     replacement,
   );
-  assert.notEqual(saved?.revision, initial.revision);
-  assert.equal(
-    await service.web.replace(initial.revision, replacement, BACKGROUND_CONTEXT),
-    undefined,
-  );
-  assert.equal(
-    (await createSettingsService(config).web.read(BACKGROUND_CONTEXT)).settings.wrapCode,
-    true,
-  );
-  assert.ok(saved);
-  const [first, stale] = await Promise.all([
-    service.web.replace(saved.revision, { ...replacement, showImages: false }, BACKGROUND_CONTEXT),
-    service.web.replace(saved.revision, { ...replacement, bottomAlign: false }, BACKGROUND_CONTEXT),
-  ]);
-  assert.ok(first);
-  assert.equal(stale, undefined);
-  assert.deepEqual((await service.web.read(BACKGROUND_CONTEXT)).settings, first.settings);
-  await writeFile(
-    join(config.configDirectory, "web", "settings.json"),
-    JSON.stringify(replacement),
-  );
-  assert.equal(
-    await service.web.replace(first.revision, first.settings, BACKGROUND_CONTEXT),
-    undefined,
-  );
+  const path = join(config.configDirectory, "web", "settings.json");
+  await writeFile(path, "malformed JSON");
+  const latest = { ...replacement, showImages: false };
+  assert.deepEqual(await service.web.replace(latest, BACKGROUND_CONTEXT), latest);
+  assert.deepEqual(await service.web.read(BACKGROUND_CONTEXT), latest);
 });
 
 await test("harness settings retain validated enum and policy values", async (t) => {
@@ -75,11 +55,9 @@ await test("harness settings retain validated enum and policy values", async (t)
     directory,
   );
   const service = createSettingsService(config);
-  const current = await service.harness.read(BACKGROUND_CONTEXT);
   const saved = await service.harness.replace(
-    current.revision,
     {
-      transport: "websocketCached",
+      stream: { transport: "websocket-cached" },
       steeringMode: "all",
       followUpMode: "all",
       retry: { enabled: false, maxRetries: 0, baseDelayMs: 0, maxAgentDelayMs: 0 },
@@ -95,9 +73,9 @@ await test("harness settings retain validated enum and policy values", async (t)
   assert.ok(saved);
   assert.deepEqual(
     JSON.parse(await readFile(join(directory, "config/drv.run/harness/settings.json"), "utf8")),
-    saved.settings,
+    saved,
   );
-  assert.deepEqual((await service.harness.read(BACKGROUND_CONTEXT)).settings, saved.settings);
+  assert.deepEqual(await service.harness.read(BACKGROUND_CONTEXT), saved);
 });
 
 await test("settings service rejects malformed persisted values", async (t) => {
@@ -139,7 +117,7 @@ await test("settings service rejects malformed persisted values", async (t) => {
     join(config.configDirectory, "harness", "settings.json"),
     JSON.stringify({ retry: { maxRetries: 5 }, compaction: { enabled: false } }),
   );
-  const { settings } = await service.harness.read(BACKGROUND_CONTEXT);
+  const settings = await service.harness.read(BACKGROUND_CONTEXT);
   assert.deepEqual(settings.retry, {
     enabled: true,
     maxRetries: 5,

@@ -3499,8 +3499,8 @@ void test("write operations release their close observer after success and rejec
 });
 
 const settingsFields = `__typename
-  ... on WebSettings { revision wrapCode bottomAlign hideThinkingBlock showImages defaultDeliveryMode }
-  ... on HarnessSettings { revision transport steeringMode followUpMode
+  ... on WebSettings { wrapCode bottomAlign hideThinkingBlock showImages defaultDeliveryMode }
+  ... on HarnessSettings { stream { transport } steeringMode followUpMode
     retry { enabled maxRetries baseDelayMs maxAgentDelayMs }
     compaction { enabled reserveTokens keepRecentTokens backgroundTokens }
   }`;
@@ -3524,8 +3524,8 @@ void test("settings reads select both typed services without acquiring a Harness
   });
   assert.equal(result.errors, undefined);
   assert.deepEqual(JSON.parse(JSON.stringify(result.data)), {
-    web: { ...web.settings, revision: web.revision, __typename: "WebSettings" },
-    harness: { ...harness.settings, revision: harness.revision, __typename: "HarnessSettings" },
+    web: { ...web, __typename: "WebSettings" },
+    harness: { ...harness, __typename: "HarnessSettings" },
   });
   for (const read of reads) {
     assert.equal(read.mock.callCount(), 1);
@@ -3533,70 +3533,44 @@ void test("settings reads select both typed services without acquiring a Harness
   }
 });
 
-void test("settings saves replace each application and preserve opaque revisions and zero values", async () => {
+void test("settings saves replace each application without revisions and preserve native policy values", async () => {
   const ctx = settingsContext();
-  const web = await ctx.settings.web.read(execution);
-  const harness = await ctx.settings.harness.read(execution);
   const replacements = {
     web: {
-      ...web.settings,
+      ...(await ctx.settings.web.read(execution)),
       wrapCode: true,
-      bottomAlign: false,
-      hideThinkingBlock: true,
-      showImages: false,
       defaultDeliveryMode: "steer",
     },
     harness: {
-      transport: "websocketCached",
-      steeringMode: "all",
+      stream: { transport: "websocket-cached" },
+      steeringMode: "one-at-a-time",
       followUpMode: "all",
       retry: { enabled: false, maxRetries: 0, baseDelayMs: 0, maxAgentDelayMs: 2147483647 },
       compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0, backgroundTokens: 0 },
     },
   };
   for (const app of ["web", "harness"] as const) {
-    const result = await graphql({
-      schema,
-      contextValue: ctx,
-      source: saveSettingsMutation,
-      variableValues: {
-        input: { [app]: { expectedRevision: "absent", settings: replacements[app] } },
-      },
-    });
-    assert.equal(result.errors, undefined);
-    const value = await ctx.settings[app].read(execution);
-    assert.deepEqual(value.settings, replacements[app]);
-    assert.notEqual(value.revision, "absent");
-    assert.deepEqual(JSON.parse(JSON.stringify(result.data?.saveSettings)), {
-      ...value.settings,
-      revision: value.revision,
-      __typename: app === "web" ? "WebSettings" : "HarnessSettings",
-    });
-    const conflict = await graphql({
-      schema,
-      contextValue: ctx,
-      source: saveSettingsMutation,
-      variableValues: {
-        input: { [app]: { expectedRevision: "absent", settings: replacements[app] } },
-      },
-    });
-    assert.equal(conflict.errors?.[0]?.extensions.code, "CONFIGURATION_CONFLICT");
-    assert.deepEqual(conflict.errors?.[0]?.path, ["saveSettings"]);
-    assert.equal(conflict.data?.saveSettings, null);
-    assert.deepEqual(await ctx.settings[app].read(execution), value);
+    for (let i = 0; i < 2; i++) {
+      const result = await graphql({
+        schema,
+        contextValue: ctx,
+        source: saveSettingsMutation,
+        variableValues: { input: { [app]: { settings: replacements[app] } } },
+      });
+      assert.equal(result.errors, undefined);
+      assert.deepEqual(await ctx.settings[app].read(execution), replacements[app]);
+      assert.deepEqual(JSON.parse(JSON.stringify(result.data?.saveSettings)), {
+        ...replacements[app],
+        __typename: app === "web" ? "WebSettings" : "HarnessSettings",
+      });
+    }
   }
 });
 
 void test("settings input coercion rejects partial, null, unknown and out-of-range input before service calls", async (t) => {
   const ctx = settingsContext();
-  const web = {
-    expectedRevision: "absent",
-    settings: (await ctx.settings.web.read(execution)).settings,
-  };
-  const harness = {
-    expectedRevision: "absent",
-    settings: (await ctx.settings.harness.read(execution)).settings,
-  };
+  const web = { settings: await ctx.settings.web.read(execution) };
+  const harness = { settings: await ctx.settings.harness.read(execution) };
   const writes = [
     t.mock.method(ctx.settings.web, "replace"),
     t.mock.method(ctx.settings.harness, "replace"),
@@ -3605,17 +3579,17 @@ void test("settings input coercion rejects partial, null, unknown and out-of-ran
     {},
     { web: null },
     { web, harness },
-    { web: { settings: web.settings } },
-    { web: { ...web, settings: { wrapCode: true } } },
-    { web: { ...web, settings: null } },
-    { web: { ...web, settings: { ...web.settings, cwd: "/private" } } },
-    { web: { ...web, settings: { ...web.settings, showImages: null } } },
-    { web: { ...web, settings: { ...web.settings, defaultDeliveryMode: "follow-up" } } },
-    { harness: { ...harness, settings: { ...harness.settings, transport: "websocket-cached" } } },
-    { harness: { ...harness, settings: { ...harness.settings, retry: { enabled: true } } } },
+    { web: {} },
+    { web: { settings: { wrapCode: true } } },
+    { web: { settings: null } },
+    { web: { settings: { ...web.settings, cwd: "/private" } } },
+    { web: { settings: { ...web.settings, showImages: null } } },
+    { web: { settings: { ...web.settings, defaultDeliveryMode: "follow-up" } } },
+    { harness: { settings: { ...harness.settings, stream: { transport: "websocketCached" } } } },
+    { harness: { settings: { ...harness.settings, steeringMode: "oneAtATime" } } },
+    { harness: { settings: { ...harness.settings, retry: { enabled: true } } } },
     ...[null, 0.5, 2147483648, "1"].map((maxRetries) => ({
       harness: {
-        ...harness,
         settings: { ...harness.settings, retry: { ...harness.settings.retry, maxRetries } },
       },
     })),
@@ -3641,41 +3615,30 @@ void test("settings input coercion rejects partial, null, unknown and out-of-ran
   for (const write of writes) assert.equal(write.mock.callCount(), 0);
 });
 
-void test("settings reject empty revisions and every negative policy field without saving", async (t) => {
+void test("settings reject negative policy fields without saving", async (t) => {
   const ctx = settingsContext();
-  const harness = (await ctx.settings.harness.read(execution)).settings;
-  const web = (await ctx.settings.web.read(execution)).settings;
-  const writes = [
-    t.mock.method(ctx.settings.web, "replace"),
-    t.mock.method(ctx.settings.harness, "replace"),
-  ];
-  const inputs: object[] = [
-    { web: { expectedRevision: "", settings: web } },
-    { harness: { expectedRevision: "", settings: harness } },
-  ];
+  const harness = await ctx.settings.harness.read(execution);
+  const write = t.mock.method(ctx.settings.harness, "replace");
   for (const [group, fields] of [
     ["retry", ["maxRetries", "baseDelayMs", "maxAgentDelayMs"]],
     ["compaction", ["reserveTokens", "keepRecentTokens", "backgroundTokens"]],
   ] as const) {
-    for (const field of fields)
-      inputs.push({
-        harness: {
-          expectedRevision: "absent",
-          settings: { ...harness, [group]: { ...harness[group], [field]: -1 } },
+    for (const field of fields) {
+      const result = await graphql({
+        schema,
+        contextValue: ctx,
+        source: saveSettingsMutation,
+        variableValues: {
+          input: {
+            harness: { settings: { ...harness, [group]: { ...harness[group], [field]: -1 } } },
+          },
         },
       });
+      assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
+      assert.equal(result.data?.saveSettings, null);
+    }
   }
-  for (const input of inputs) {
-    const result = await graphql({
-      schema,
-      contextValue: ctx,
-      source: saveSettingsMutation,
-      variableValues: { input },
-    });
-    assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
-    assert.equal(result.data?.saveSettings, null);
-  }
-  for (const write of writes) assert.equal(write.mock.callCount(), 0);
+  assert.equal(write.mock.callCount(), 0);
 });
 
 void test("settings service failures stay internal and preserve other selections", async (t) => {
@@ -3685,69 +3648,50 @@ void test("settings service failures stay internal and preserve other selections
     new GraphQLError("private", { extensions: { code: "BAD_REQUEST" } }),
   ]) {
     const ctx = settingsContext();
-    const web = await ctx.settings.web.read(execution);
     t.mock.method(ctx.settings.web, "read", async () => {
       throw error;
     });
     t.mock.method(ctx.settings.harness, "replace", async () => {
       throw error;
     });
-    const source = `{ bad:settings(app:web) { __typename } good:settings(app:harness) { __typename } }`;
-    const read = await graphql({ schema, contextValue: ctx, source });
+    const read = await graphql({
+      schema,
+      contextValue: ctx,
+      source: `{ bad:settings(app:web) { __typename } good:settings(app:harness) { __typename } }`,
+    });
     assert.deepEqual(JSON.parse(JSON.stringify(read.data)), {
       bad: null,
       good: { __typename: "HarnessSettings" },
     });
-    assert.equal(read.errors?.[0]?.message, "INTERNAL_SERVER_ERROR");
-    assert.deepEqual(read.errors?.[0]?.path, ["bad"]);
+    assert.equal(read.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
     const write = await graphql({
       schema,
       contextValue: ctx,
       source: saveSettingsMutation,
       variableValues: {
-        input: {
-          harness: {
-            expectedRevision: "absent",
-            settings: (await ctx.settings.harness.read(execution)).settings,
-          },
-        },
+        input: { harness: { settings: await ctx.settings.harness.read(execution) } },
       },
     });
     assert.equal(write.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
     assert.equal(write.data?.saveSettings, null);
-    assert.equal(web.revision, "absent");
   }
 });
 
-void test("invalid service snapshots are internal errors, never partial settings or defaults", async (t) => {
+void test("invalid service values stay internal on reads and writes", async (t) => {
   const ctx = settingsContext();
-  const web = await ctx.settings.web.read(execution);
-  for (const invalid of [
-    { ...web, revision: "" },
-    { ...web, settings: { ...web.settings, showImages: null } },
-    { ...web, settings: { ...web.settings, secret: "private" } },
-  ]) {
-    // Deliberately malformed service result at the typed boundary.
-    t.mock.method(ctx.settings.web, "read", async () => invalid as typeof web);
-    const result = await graphql({
-      schema,
-      contextValue: ctx,
-      source: `{ settings(app:web) { ${settingsFields} } }`,
-    });
-    assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
-    assert.equal(result.data?.settings, null);
+  for (const app of ["web", "harness"] as const) {
+    const value = await ctx.settings[app].read(execution);
+    const invalid = { ...value, secret: "private" };
+    t.mock.method(ctx.settings[app], "read", async () => invalid);
+    t.mock.method(ctx.settings[app], "replace", async () => invalid);
+    for (const request of [
+      { source: `{ settings(app:${app}) { __typename } }` },
+      { source: saveSettingsMutation, variableValues: { input: { [app]: { settings: value } } } },
+    ]) {
+      const result = await graphql({ schema, contextValue: ctx, ...request });
+      assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    }
   }
-  const harness = await ctx.settings.harness.read(execution);
-  t.mock.method(ctx.settings.harness, "read", async () => ({
-    ...harness,
-    settings: { ...harness.settings, retry: { ...harness.settings.retry, maxRetries: -1 } },
-  }));
-  const read = await graphql({
-    schema,
-    contextValue: ctx,
-    source: `{ settings(app:harness) { __typename } }`,
-  });
-  assert.equal(read.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
 });
 
 void test("settings cancellation prevents new admission and does not replay an admitted save", async (t) => {
@@ -3760,11 +3704,7 @@ void test("settings cancellation prevents new admission and does not replay an a
   const replace = t.mock.method(
     ctx.settings.web,
     "replace",
-    async (
-      _revision: string,
-      _settings: typeof web.settings,
-      context: ResolverContext["context"],
-    ) => {
+    async (_settings: typeof web, context: ResolverContext["context"]) => {
       assert.equal(context, contextValue.context);
       entered.resolve();
       return release.promise;
@@ -3774,7 +3714,7 @@ void test("settings cancellation prevents new admission and does not replay an a
     schema,
     contextValue,
     source: saveSettingsMutation,
-    variableValues: { input: { web: { expectedRevision: web.revision, settings: web.settings } } },
+    variableValues: { input: { web: { settings: web } } },
   };
   const response = graphql(request);
   await entered.promise;
@@ -3785,20 +3725,17 @@ void test("settings cancellation prevents new admission and does not replay an a
   assert.equal(replace.mock.callCount(), 1);
 });
 
-void test("settings projections detach nested values from service state before field execution", async (t) => {
+void test("settings projections detach nested values from service state", async (t) => {
   const ctx = settingsContext();
   const initial = await ctx.settings.harness.read(execution);
-  const snapshot = {
-    ...initial,
-    settings: { ...initial.settings, retry: { ...initial.settings.retry } },
-  };
-  t.mock.method(ctx.settings.harness, "read", async () => snapshot);
+  const value = { ...initial, retry: { ...initial.retry } };
+  t.mock.method(ctx.settings.harness, "read", async () => value);
   const localSchema = createSchema();
   const retry = localSchema.getType("HarnessRetrySettings");
   assert(isObjectType(retry));
   retry.getFields().enabled!.resolve = (source: unknown) => {
-    assert.notEqual(source, snapshot.settings.retry);
-    snapshot.settings.retry.maxRetries = 99;
+    assert.notEqual(source, value.retry);
+    value.retry.maxRetries = 99;
     return true;
   };
   const result = await graphql({
@@ -3808,39 +3745,9 @@ void test("settings projections detach nested values from service state before f
   });
   assert.equal(result.errors, undefined);
   assert.deepEqual(JSON.parse(JSON.stringify(result.data)), {
-    settings: { retry: { enabled: true, maxRetries: initial.settings.retry.maxRetries } },
+    settings: { retry: { enabled: true, maxRetries: initial.retry.maxRetries } },
   });
-  assert.equal(snapshot.settings.retry.maxRetries, 99);
-});
-
-void test("settings service serialization errors and invalid saved snapshots remain internal", async (t) => {
-  const ctx = settingsContext();
-  const web = await ctx.settings.web.read(execution);
-  t.mock.method(ctx.settings.web, "read", async () => ({
-    get revision(): string {
-      throw new StorageRequestError("private snapshot");
-    },
-    settings: web.settings,
-  }));
-  assert.equal(
-    (await graphql({ schema, contextValue: ctx, source: `{ settings(app:web) { __typename } }` }))
-      .errors?.[0]?.extensions.code,
-    "INTERNAL_SERVER_ERROR",
-  );
-  for (const app of ["web", "harness"] as const) {
-    const binding = settingsFixture()[app];
-    const snapshot = await binding.read(execution);
-    t.mock.method(ctx.settings[app], "replace", async () => ({ ...snapshot, revision: "" }));
-    const response = await graphql({
-      schema,
-      contextValue: ctx,
-      source: saveSettingsMutation,
-      variableValues: {
-        input: { [app]: { expectedRevision: "absent", settings: snapshot.settings } },
-      },
-    });
-    assert.equal(response.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
-  }
+  assert.equal(value.retry.maxRetries, 99);
 });
 
 void test("settings and Durable fields coexist without changing an open Harness policy or documents", async (t) => {
@@ -3853,12 +3760,7 @@ void test("settings and Durable fields coexist without changing an open Harness 
   const saved = await f.run(
     saveSettingsMutation,
     {
-      input: {
-        harness: {
-          expectedRevision: harness.revision,
-          settings: { ...harness.settings, retry: { ...harness.settings.retry, maxRetries: 17 } },
-        },
-      },
+      input: { harness: { settings: { ...harness, retry: { ...harness.retry, maxRetries: 17 } } } },
     },
     ctx,
   );
