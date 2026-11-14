@@ -5,23 +5,17 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { AgentDoc } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { graphql } from "graphql";
+import { graphql, type GraphQLArgs } from "graphql";
 import { Env, openHarness, SshExecutionEnv } from "durable-harness";
-import { createSchema, type ResolverContext } from "durable-api/graphql";
+import { createSchema, type ResolverContext } from "../graphql/src/index.ts";
 import { watch } from "durable-api/watch";
 import type { DeploymentConfiguration } from "./configuration.ts";
 import { createInventoryService } from "./inventory.ts";
 import { Problem } from "./problem.ts";
 import { Sessions } from "./sessions.ts";
-import { createSettingsService, readHarnessRuntimeSettings } from "./settings.ts";
+import { createSettingsService } from "./settings.ts";
 
 type Query = Parameters<typeof watch>[0];
-type Payload = {
-  readonly query: string;
-  readonly operationName?: string | null;
-  readonly variables?: Record<string, unknown> | null;
-};
-
 const externalIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
 const missing = (error: unknown) =>
   error instanceof Error && "code" in error && error.code === "ENOENT";
@@ -108,12 +102,23 @@ export async function openApplication(config: DeploymentConfiguration) {
     }
     const storage = await openNodeSqliteStorage(path);
     try {
-      const runtimeSettings = await readHarnessRuntimeSettings(config);
+      const { settings: policy } = await settings.harness.read(BACKGROUND_CONTEXT);
       return await openHarness(
         storage,
         {
           models,
-          settings: runtimeSettings,
+          settings: {
+            stream: {
+              transport:
+                policy.transport === "websocketCached" ? "websocket-cached" : policy.transport,
+            },
+            steeringMode:
+              policy.steeringMode === "oneAtATime" ? "one-at-a-time" : policy.steeringMode,
+            followUpMode:
+              policy.followUpMode === "oneAtATime" ? "one-at-a-time" : policy.followUpMode,
+            retry: policy.retry,
+            compaction: policy.compaction,
+          },
           async env(target, context) {
             const selected = await target.read.snapshot(Env, target.conversationId, context);
             const native = selected?.env;
@@ -184,13 +189,13 @@ export async function openApplication(config: DeploymentConfiguration) {
 
   return {
     api: {
-      async graphql(payload: unknown, signal: AbortSignal) {
-        const request = payload as Payload;
+      async graphql(
+        request: Pick<GraphQLArgs, "source" | "operationName" | "variableValues">,
+        signal: AbortSignal,
+      ) {
         return await graphql({
           schema,
-          source: request.query,
-          ...(request.operationName == null ? {} : { operationName: request.operationName }),
-          ...(request.variables == null ? {} : { variableValues: request.variables }),
+          ...request,
           contextValue: context(signal),
         });
       },

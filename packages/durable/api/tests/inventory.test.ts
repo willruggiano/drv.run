@@ -76,6 +76,27 @@ await test("inventory unifies retained state and installed/loaded units with sta
   );
 });
 
+await test("inventory uses retained identities without imposing an ID grammar or accepting paths", async (t) => {
+  const { config, state } = await setup(t);
+  await mkdir(join(state, "retained-name"));
+  await mkdir(join(state, "..", "outside"));
+  const service = createInventoryService(config);
+  const page = await service.list(10, undefined, BACKGROUND_CONTEXT);
+  assert.ok(!("invalidCursor" in page));
+  assert.equal(
+    page.items.some((item) => item.id === "retained-name"),
+    true,
+  );
+  assert.deepEqual(await service.lookup("retained-name", BACKGROUND_CONTEXT), {
+    id: "retained-name",
+    unit: "drv.run@retained-name.service",
+  });
+  for (const id of ["../outside", ".", state]) {
+    assert.equal(await service.lookup(id, BACKGROUND_CONTEXT), undefined);
+    assert.equal(await service.flakeReference(id, BACKGROUND_CONTEXT), undefined);
+  }
+});
+
 await test("inventory connect and observations use owner runtime artifacts", async (t) => {
   const { config, runtime } = await setup(t);
   const directory = join(runtime, "drv.run.loaded");

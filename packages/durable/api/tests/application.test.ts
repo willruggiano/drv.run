@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { Harness } from "@earendil-works/pi-durable";
 import { readDeploymentConfiguration } from "../src/configuration.ts";
 import { openApplication } from "../src/application.ts";
 
@@ -23,7 +24,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
   const signal = new AbortController().signal;
   const query = await app.api.graphql(
     {
-      query: `{
+      source: `{
         harnesses { externalId }
         accounts(limit: 10) { nodes { id } pageInfo { next } }
         authorizationServers(limit: 10) { nodes { id } pageInfo { next } }
@@ -57,10 +58,10 @@ await test("application composes GraphQL with persistent Harness discovery and o
   assert.equal(queryData.missing, null);
   const saved = await app.api.graphql(
     {
-      query: `mutation Save($input: SaveSettingsInput!) {
+      source: `mutation Save($input: SaveSettingsInput!) {
         saveSettings(input: $input) { ... on WebSettings { revision wrapCode } }
       }`,
-      variables: {
+      variableValues: {
         input: {
           web: {
             expectedRevision: queryData.web.revision,
@@ -81,7 +82,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
   assert.equal((saved.data as { saveSettings: { wrapCode: boolean } }).saveSettings.wrapCode, true);
   const unavailable = await app.api.graphql(
     {
-      query: `mutation {
+      source: `mutation {
         registerPushSubscription(input: {
           endpoint: "https://push.invalid/subscription",
           keys: { auth: "auth", p256dh: "key" }
@@ -93,7 +94,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
   assert.equal(unavailable.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   const unavailableRemoval = await app.api.graphql(
     {
-      query: `mutation {
+      source: `mutation {
         removePushSubscription(input: { endpoint: "https://push.invalid/subscription" })
       }`,
     },
@@ -102,7 +103,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
   assert.equal(unavailableRemoval.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
   const opened = await app.api.graphql(
     {
-      query: `mutation { open(input: { externalId: "test_session" }) { harness { externalId } } }`,
+      source: `mutation { open(input: { externalId: "test_session" }) { harness { externalId } } }`,
     },
     signal,
   );
@@ -117,7 +118,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
     ).isFile(),
     true,
   );
-  const listed = await app.api.graphql({ query: "{ harnesses { externalId } }" }, signal);
+  const listed = await app.api.graphql({ source: "{ harnesses { externalId } }" }, signal);
   assert.equal(listed.errors, undefined);
   const listedData = listed.data as { harnesses: { externalId: string }[] };
   assert.equal(listedData.harnesses[0]?.externalId, "test_session");
@@ -125,7 +126,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
 
   const reopened = await openApplication(config);
   t.after(async () => reopened.close());
-  const persisted = await reopened.api.graphql({ query: "{ harnesses { externalId } }" }, signal);
+  const persisted = await reopened.api.graphql({ source: "{ harnesses { externalId } }" }, signal);
   const persistedData = persisted.data as { harnesses: { externalId: string }[] };
   assert.equal(persistedData.harnesses[0]?.externalId, "test_session");
 });
@@ -149,16 +150,30 @@ await test("application retries a Harness open after invalid persisted runtime s
   t.after(async () => app.close());
   const signal = new AbortController().signal;
   const failed = await app.api.graphql(
-    { query: `mutation { open(input: { externalId: "recover" }) { harness { id } } }` },
+    { source: `mutation { open(input: { externalId: "recover" }) { harness { id } } }` },
     signal,
   );
   assert.equal(failed.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
-  await writeFile(harnessSettings, "{}");
+  await writeFile(
+    harnessSettings,
+    JSON.stringify({
+      transport: "websocketCached",
+      steeringMode: "all",
+      followUpMode: "all",
+    }),
+  );
+  const open = t.mock.method(Harness, "open");
   const recovered = await app.api.graphql(
-    { query: `mutation { open(input: { externalId: "recover" }) { harness { externalId } } }` },
+    { source: `mutation { open(input: { externalId: "recover" }) { harness { externalId } } }` },
     signal,
   );
   assert.equal(recovered.errors, undefined);
+  assert.equal(open.mock.callCount(), 1);
+  const policy = open.mock.calls[0]!.arguments[1].settings;
+  assert.ok(policy && typeof policy !== "function");
+  assert.deepEqual(policy.stream, { transport: "websocket-cached" });
+  assert.equal(policy.steeringMode, "all");
+  assert.equal(policy.followUpMode, "all");
   assert.equal(
     (recovered.data as { open: { harness: { externalId: string } } }).open.harness.externalId,
     "recover",
@@ -180,7 +195,7 @@ await test("application refuses unsafe external session identifiers before stora
   const app = await openApplication(config);
   t.after(async () => app.close());
   const result = await app.api.graphql(
-    { query: `mutation { open(input: { externalId: "../unsafe" }) { harness { id } } }` },
+    { source: `mutation { open(input: { externalId: "../unsafe" }) { harness { id } } }` },
     new AbortController().signal,
   );
   assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");

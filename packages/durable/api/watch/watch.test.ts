@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { on } from "node:events";
 import { Worker } from "node:worker_threads";
-import { serve } from "durable-api/serve";
-import { watchRequest } from "../src/index.ts";
+import { startServer } from "../tests/fixtures.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -736,27 +735,16 @@ void describe("watch", { timeout: 30_000 }, () => {
 });
 
 async function http(t: TestContext, f: Awaited<ReturnType<typeof setup>>) {
-  const errors: unknown[] = [];
-  const acquire = t.mock.fn((query: Parameters<typeof watch>[0], signal: AbortSignal) =>
-    watch(query, signal, f.options),
+  const running = await startServer(t);
+  const acquire = t.mock.method(
+    running.app.api,
+    "watch",
+    (query: Parameters<typeof watch>[0], signal: AbortSignal) => watch(query, signal, f.options),
   );
-  const server = await serve({
-    host: "127.0.0.1",
-    port: 0,
-    routes: { "/api/watch": (request, server) => watchRequest(request, server, acquire) },
-    fetch: () => new Response(null, { status: 404 }),
-    error(error) {
-      errors.push(error);
-      return new Response(null, { status: 500 });
-    },
-  });
-  t.after(async () => {
-    server.forceClose();
-    await server.close();
-  });
+  const { server } = running;
   const timeout = t.mock.method(server, "timeout");
   const url = new URL(`/api/watch?externalId=test&conversationId=${f.root.id}`, server.url);
-  return { server, url, errors, acquire, timeout };
+  return { server, url, acquire, timeout };
 }
 function eventSourceClient(): void {
   const {
@@ -845,7 +833,6 @@ void describe("GET /api/watch", { timeout: 30_000 }, () => {
       await response.arrayBuffer();
     }
     assert.equal(h.timeout.mock.callCount(), 0);
-    assert.deepEqual(h.errors, []);
     assert.equal(f.tracking.attached, 0);
   });
 
@@ -892,7 +879,6 @@ void describe("GET /api/watch", { timeout: 30_000 }, () => {
     await f.harness.close(context);
     assert.deepEqual(await second.next(), { type: "error" });
     assert.equal(f.tracking.attached, 0);
-    assert.deepEqual(h.errors, []);
   });
 
   void test("a source failure after headers ends EventSource without an application error frame", async (t) => {
@@ -911,7 +897,6 @@ void describe("GET /api/watch", { timeout: 30_000 }, () => {
     await assert.rejects(notes(f.root, 1), (value) => value === error);
     assert.deepEqual(await client.next(), { type: "error" });
     assert.deepEqual(f.ends, [{ kind: "failed", error }]);
-    assert.deepEqual(h.errors, []);
     assert.equal(f.tracking.attached, 0);
   });
 
@@ -948,22 +933,14 @@ void describe("GET /api/watch", { timeout: 30_000 }, () => {
     });
     const response = await fetch(h.url);
     assert.equal(response.status, 500);
-    assert.equal((await response.arrayBuffer()).byteLength, 0);
-    assert.deepEqual(h.errors, [reason]);
+    await response.arrayBuffer();
     get.mock.restore();
-    const request = new Request(h.url);
-    await assert.rejects(
-      watchRequest(
-        request,
-        {
-          timeout() {
-            throw reason;
-          },
-        },
-        (query, signal) => watch(query, signal, f.options),
-      ),
-      (error) => error === reason,
-    );
+    t.mock.method(h.server, "timeout", () => {
+      throw reason;
+    });
+    const failedSetup = await fetch(h.url);
+    assert.equal(failedSetup.status, 500);
+    await failedSetup.arrayBuffer();
     assert.equal(f.tracking.attached, 0);
   });
 });

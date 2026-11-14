@@ -20,10 +20,10 @@ function absolute(name: string, value: string | undefined, fallback?: string): s
 
 function port(value: string | undefined): number {
   if (value === undefined) return 8080;
-  if (!/^[0-9]+$/.test(value)) throw new TypeError("PORT must be an integer from 1 to 65535");
+  if (!/^[0-9]+$/.test(value)) throw new TypeError("PORT must be an integer from 0 to 65535");
   const result = Number(value);
-  if (!Number.isSafeInteger(result) || result < 1 || result > 65535)
-    throw new TypeError("PORT must be an integer from 1 to 65535");
+  if (!Number.isSafeInteger(result) || result < 0 || result > 65535)
+    throw new TypeError("PORT must be an integer from 0 to 65535");
   return result;
 }
 

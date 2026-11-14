@@ -43,7 +43,7 @@ import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/m
  * produce errors. Persisted task failures and blocked inspection states are data.
  *
  * GraphQL execution errors are distinct from HTTP transport errors. The transport
- * retains no-store responses, body limits, media-type checks, and method checks;
+ * retains no-store responses, media-type checks, and method checks;
  * mutations cannot run over GET. Disconnect cancels request-bound waits, not durable
  * execution, and does not establish whether a mutation committed. Neither SESSION_FAILED nor a transport failure
  * authorizes automatic replay or promises a recovery time.
@@ -2938,7 +2938,7 @@ type HarnessTransport = "auto" | "sse" | "websocket" | "websocketCached";
 type HarnessQueueMode = "oneAtATime" | "all";
 
 /** @gqlInput */
-interface WwwSettingsInput {
+export interface WwwSettingsInput {
   readonly wrapCode: boolean;
   readonly bottomAlign: boolean;
   readonly hideThinkingBlock: boolean;
@@ -3004,7 +3004,7 @@ interface HarnessCompactionSettings {
 }
 
 /** @gqlInput */
-interface HarnessSettingsInput {
+export interface HarnessSettingsInput {
   readonly transport: HarnessTransport;
   readonly steeringMode: HarnessQueueMode;
   readonly followUpMode: HarnessQueueMode;
@@ -3054,7 +3054,7 @@ interface ConfigurationSnapshot<T> {
 // defaults, strict file validation, content revisions, and atomic replacement.
 // Serialize saves per user/file and reread the revision before writing. Never
 // acquire a Harness, modify Durable documents, or reconfigure an open Harness.
-interface Configuration<T> {
+export interface Configuration<T> {
   read(context: Context): Promise<ConfigurationSnapshot<T>>;
   /**
    * Undefined means revision conflict, with no write. No automatic replay.
@@ -3067,14 +3067,14 @@ interface Configuration<T> {
     context: Context,
   ): Promise<ConfigurationSnapshot<T> | undefined>;
 }
-interface SettingsService {
+export interface SettingsService {
   readonly web: Configuration<WwwSettingsInput>;
   readonly harness: Configuration<HarnessSettingsInput>;
 }
 
 const PolicyInteger = Type.Integer({ minimum: 0, maximum: 2147483647 });
 const ConfigurationRevision = Type.String({ minLength: 1 });
-const WwwSettingsInput = Type.Object(
+export const WwwSettingsInput = Type.Object(
   {
     wrapCode: Type.Boolean(),
     bottomAlign: Type.Boolean(),
@@ -3085,7 +3085,7 @@ const WwwSettingsInput = Type.Object(
   { additionalProperties: false },
 );
 const HarnessQueueMode = Type.Union([Type.Literal("oneAtATime"), Type.Literal("all")]);
-const HarnessSettingsInput = Type.Object(
+export const HarnessSettingsInput = Type.Object(
   {
     transport: Type.Union([
       Type.Literal("auto"),
@@ -3190,7 +3190,7 @@ export async function saveSettings(
   }
 }
 
-interface InventoryRecord {
+export interface InventoryRecord {
   readonly id: string;
   readonly unit: string;
 }
@@ -3198,7 +3198,7 @@ interface InventoryPage {
   readonly items: readonly InventoryRecord[];
   readonly next?: Cursor | null;
 }
-interface InventoryPhase {
+export interface InventoryPhase {
   readonly phase: string;
   readonly clock: string;
   readonly monotonic_s: number;
@@ -3218,7 +3218,7 @@ interface InventoryTimings {
 // Authorized read-only binding. Membership combines retained inventory and known
 // units, including stopped/starting instances. Enumeration failure must throw,
 // never return partial membership. No operation starts or connects to a guest.
-interface InventoryService {
+export interface InventoryService {
   /** Stable, non-secret owner/deployment namespace; never reuse resource IDs. */
   readonly namespace: string;
   /** One page in ascending service-owned identity order; validate cursor scope. */

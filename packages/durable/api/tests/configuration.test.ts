@@ -10,6 +10,7 @@ await test("deployment config defaults to owner-scoped XDG paths", () => {
   assert.equal(config.instanceStateDirectory, "/home/pi/.local/state");
   assert.equal(config.runtimeDirectory, "/run/user/1000");
   assert.equal(config.systemctl, "systemctl");
+  assert.equal(readDeploymentConfiguration({ PORT: "0" }, 1000).server.port, 0);
 });
 
 await test("deployment config maps service env and derives owner-scoped paths", () => {
@@ -47,7 +48,7 @@ await test("deployment config ignores empty and relative XDG home overrides", ()
 });
 
 await test("deployment config rejects invalid ports and root execution", () => {
-  for (const value of ["0", "65536", "1.5", "abc"]) {
+  for (const value of ["-1", "65536", "1.5", "abc"]) {
     assert.throws(
       () => readDeploymentConfiguration({ PORT: value }, 1000),
       /PORT must be an integer/,

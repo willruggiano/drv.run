@@ -4,27 +4,18 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord/context";
-import type { ResolverContext } from "durable-api/graphql";
+import type { InventoryRecord, InventoryPhase, InventoryService } from "../graphql/src/graphql.ts";
 import type { DeploymentConfiguration } from "./configuration.ts";
 
 const exec = promisify(execFile);
-const instanceId = /^[A-Za-z0-9]+$/;
 const missing = (error: unknown) =>
   error instanceof Error && "code" in error && error.code === "ENOENT";
-
-type RecordItem = { readonly id: string; readonly unit: string };
-type Phase = {
-  readonly phase: string;
-  readonly clock: string;
-  readonly monotonic_s: number;
-  readonly resolution_s: number;
-};
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function phase(value: unknown): Phase | undefined {
+function phase(value: unknown): InventoryPhase | undefined {
   if (
     !isObject(value) ||
     typeof value.phase !== "string" ||
@@ -45,7 +36,7 @@ function phase(value: unknown): Phase | undefined {
   };
 }
 
-async function phases(path: string): Promise<Phase[] | undefined> {
+async function phases(path: string): Promise<InventoryPhase[] | undefined> {
   let content: string;
   try {
     content = await readFile(path, "utf8");
@@ -53,7 +44,7 @@ async function phases(path: string): Promise<Phase[] | undefined> {
     if (missing(error)) return undefined;
     throw error;
   }
-  const result: Phase[] = [];
+  const result: InventoryPhase[] = [];
   for (const line of content.split("\n")) {
     if (!line) continue;
     let item: unknown;
@@ -69,14 +60,12 @@ async function phases(path: string): Promise<Phase[] | undefined> {
   return result.length ? result : undefined;
 }
 
-export function createInventoryService(
-  config: DeploymentConfiguration,
-): ResolverContext["inventory"] {
+export function createInventoryService(config: DeploymentConfiguration): InventoryService {
   const namespace = `uid:${process.getuid?.() ?? "unknown"}`;
   const root = join(config.instanceStateDirectory, "drv.run");
   const unit = (id: string) => `drv.run@${id}.service`;
 
-  async function inventory(context: Context): Promise<RecordItem[]> {
+  async function inventory(context: Context): Promise<InventoryRecord[]> {
     context.abortSignal?.throwIfAborted();
     const [directories, loaded, installed] = await Promise.all([
       readdir(root, { withFileTypes: true }).catch((error: unknown) => {
@@ -118,11 +107,10 @@ export function createInventoryService(
     ]);
     const ids = new Set<string>();
     for (const entry of directories)
-      if (entry.isDirectory() && entry.name !== "harness" && instanceId.test(entry.name))
-        ids.add(entry.name);
+      if (entry.isDirectory() && entry.name !== "harness") ids.add(entry.name);
     for (const output of [loaded.stdout, installed.stdout]) {
       for (const line of output.split("\n")) {
-        const found = /^drv\.run@([A-Za-z0-9]+)\.service(?:\s|$)/.exec(line.trim());
+        const found = /^drv\.run@(.+)\.service(?:\s|$)/.exec(line.trim());
         if (found?.[1]) ids.add(found[1]);
       }
     }
@@ -133,10 +121,13 @@ export function createInventoryService(
   }
 
   async function known(id: string, context: Context): Promise<boolean> {
-    if (id === "harness" || !instanceId.test(id)) return false;
+    if (id === "harness") return false;
     context.abortSignal?.throwIfAborted();
     try {
-      const found = (await stat(join(root, id))).isDirectory();
+      // Resolve membership from directory entries, not an untrusted path component.
+      const found = (await readdir(root, { withFileTypes: true })).some(
+        (entry) => entry.name === id && entry.isDirectory(),
+      );
       context.abortSignal?.throwIfAborted();
       return found;
     } catch (error) {
@@ -154,8 +145,7 @@ export function createInventoryService(
         (!isObject(cursor) ||
           Object.keys(cursor).length !== 2 ||
           cursor.namespace !== namespace ||
-          after === undefined ||
-          !instanceId.test(after))
+          after === undefined)
       )
         return { invalidCursor: true };
       const all = await inventory(context);

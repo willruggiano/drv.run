@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { main } from "../src/index.ts";
 import type { TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -395,4 +399,29 @@ export function pushFixture(): {
       },
     },
   };
+}
+
+export async function startServer(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), "durable-api-server-"));
+  const previous = process.env;
+  process.env = {
+    ...previous,
+    HOST: "127.0.0.1",
+    PORT: "0",
+    XDG_CONFIG_HOME: join(directory, "config"),
+    XDG_STATE_HOME: join(directory, "state"),
+    XDG_RUNTIME_DIR: join(directory, "runtime"),
+  };
+  t.mock.method(process as NodeJS.Process & { getuid(): number }, "getuid", () => 1000);
+  let running: Awaited<ReturnType<typeof main>> | undefined;
+  t.after(async () => {
+    try {
+      await running?.shutdown().catch(() => {});
+    } finally {
+      process.env = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  running = await main();
+  return running;
 }
