@@ -33,7 +33,7 @@ fix:
 # Run Node tests and Nix evaluation (requires nix)
 test:
     ast-grep test --skip-snapshot-tests
-    NODE_OPTIONS=--conditions=development node --test "**/*.test.ts"
+    NODE_OPTIONS=--conditions=development node --experimental-test-module-mocks --test "**/*.test.ts"
     python3 -B -m unittest discover -s packages.bench.tests -p '*_test.py'
     python3 -B -m unittest discover -s packages/mitm-proxy/tests -t packages/mitm-proxy -p '*_test.py'
 

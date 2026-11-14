@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { main } from "../src/index.ts";
-import { startServer } from "./fixtures.ts";
+import { startServer, runMain } from "./fixtures.ts";
 
-await test("server converts resolver failures and aggregates application shutdown failures", async (t) => {
+await test("server converts resolver failures and propagates application shutdown failures", async (t) => {
   const running = await startServer(t);
   const failure = new Error("close failed");
   t.mock.method(running.app.api, "graphql", async () => {
@@ -19,11 +18,7 @@ await test("server converts resolver failures and aggregates application shutdow
   });
   assert.equal(response.status, 500);
   process.emit("SIGINT");
-  await assert.rejects(running.shutdown(), (error: unknown) => {
-    assert.ok(error instanceof AggregateError);
-    assert.deepEqual(error.errors, [failure]);
-    return true;
-  });
+  await assert.rejects(running.done, (error: unknown) => error === failure);
   assert.equal(close.mock.callCount(), 1);
 });
 
@@ -44,11 +39,11 @@ await test("Node entrypoint serves GraphQL and releases its listener on shutdown
   const missingRoute = await fetch(new URL("/not-found", running.server.url));
   assert.equal(missingRoute.status, 404);
   process.emit("SIGTERM");
-  await running.shutdown();
+  assert.equal(await running.shutdown(), undefined);
   await assert.rejects(fetch(running.server.url));
 
   const listeners = process.listenerCount("SIGTERM");
   process.env.HOST = "256.256.256.256";
-  await assert.rejects(main());
+  await assert.rejects(runMain());
   assert.equal(process.listenerCount("SIGTERM"), listeners);
 });

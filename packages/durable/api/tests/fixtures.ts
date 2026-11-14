@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { main } from "../src/index.ts";
-import type { TestContext } from "node:test";
+import { setImmediate } from "node:timers/promises";
+import { serve } from "../serve/serve.ts";
+import { openApplication } from "../src/application.ts";
+import { mock, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
@@ -396,7 +398,33 @@ export function pushFixture(): {
   };
 }
 
-export async function startServer(t: TestContext) {
+let opened: Awaited<ReturnType<typeof openApplication>>;
+let listening: ReturnType<typeof Promise.withResolvers<Awaited<ReturnType<typeof serve>>>>;
+mock.module("../src/application.ts", {
+  namedExports: {
+    openApplication: async (...args: Parameters<typeof openApplication>) => {
+      opened = await openApplication(...args);
+      return opened;
+    },
+  },
+});
+mock.module("durable-api/serve", {
+  namedExports: {
+    serve: async (...args: Parameters<typeof serve>) => {
+      const server = await serve(...args);
+      listening.resolve(server);
+      return server;
+    },
+  },
+});
+export const { main: runMain } = await import("../src/index.ts");
+
+export async function startServer(t: TestContext): Promise<{
+  server: Awaited<ReturnType<typeof serve>>;
+  app: Awaited<ReturnType<typeof openApplication>>;
+  shutdown(): Promise<void>;
+  done: Promise<void>;
+}> {
   const directory = await mkdtemp(join(tmpdir(), "durable-api-server-"));
   const previous = process.env;
   process.env = {
@@ -407,16 +435,31 @@ export async function startServer(t: TestContext) {
     XDG_STATE_HOME: join(directory, "state"),
     XDG_RUNTIME_DIR: join(directory, "runtime"),
   };
-  t.mock.method(process as NodeJS.Process & { getuid(): number }, "getuid", () => 1000);
-  let running: Awaited<ReturnType<typeof main>> | undefined;
+  listening = Promise.withResolvers();
+  const done = runMain();
+  void done.catch(() => {});
+  let stopping = false;
+  const shutdown = () => {
+    if (!stopping) {
+      stopping = true;
+      process.emit("SIGTERM");
+    }
+    return done;
+  };
   t.after(async () => {
     try {
-      await running?.shutdown().catch(() => {});
+      await shutdown().catch(() => {});
     } finally {
       process.env = previous;
       await rm(directory, { recursive: true, force: true });
     }
   });
-  running = await main();
-  return running;
+  const server = await Promise.race([
+    listening.promise,
+    done.then(() => {
+      throw new Error("Server did not start");
+    }),
+  ]);
+  await setImmediate();
+  return { server, app: opened, shutdown, done };
 }

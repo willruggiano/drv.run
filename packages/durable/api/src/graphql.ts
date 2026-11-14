@@ -1,4 +1,4 @@
-import { getOperationAST, parse, type GraphQLArgs } from "graphql";
+import type { GraphQLArgs } from "graphql";
 import Type from "typebox";
 import Value from "typebox/value";
 import { Problem } from "./problem.ts";
@@ -14,12 +14,9 @@ const RequestPayload = Type.Object(
   { additionalProperties: false },
 );
 
-// graphql.js parses documents, not HTTP envelopes. Decode the transport here and
-// pass its native execution arguments to the application.
-export async function decodeGraphQLRequest(
+export async function decode(
   request: Request,
 ): Promise<Pick<GraphQLArgs, "source" | "operationName" | "variableValues">> {
-  if (request.method !== "GET" && request.method !== "POST") throw new Problem(405, "GET, POST");
   let value: unknown;
   if (request.method === "GET") {
     const search = new URL(request.url).searchParams;
@@ -35,8 +32,6 @@ export async function decodeGraphQLRequest(
     }
     value = parameters;
   } else {
-    const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-    if (contentType !== "application/json") throw new Problem(415);
     try {
       value = await request.json();
     } catch {
@@ -49,15 +44,5 @@ export async function decodeGraphQLRequest(
     operationName: value.operationName ?? null,
     variableValues: value.variables ?? null,
   };
-  if (request.method === "GET") {
-    let operation;
-    try {
-      operation = getOperationAST(parse(value.query), value.operationName);
-    } catch {
-      // Syntax errors remain GraphQL execution results.
-      return args;
-    }
-    if (operation?.operation === "mutation") throw new Problem(405, "POST");
-  }
   return args;
 }

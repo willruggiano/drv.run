@@ -1,4 +1,5 @@
-import assert from "node:assert/strict";
+import Type from "typebox";
+import Value from "typebox/value";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { serve } from "durable-api/serve";
@@ -18,21 +19,15 @@ function absolute(name: string, value: string | undefined, fallback?: string): s
   return resolve(path);
 }
 
-function port(value: string | undefined): number {
-  if (value === undefined) return 8080;
-  if (!/^[0-9]+$/.test(value)) throw new TypeError("PORT must be an integer from 0 to 65535");
-  const result = Number(value);
-  if (!Number.isSafeInteger(result) || result < 0 || result > 65535)
-    throw new TypeError("PORT must be an integer from 0 to 65535");
-  return result;
-}
+const Port = Type.Integer({ minimum: 0, maximum: 65535 });
 
 export function readDeploymentConfiguration(
   env: NodeJS.ProcessEnv = process.env,
   uid = process.getuid?.(),
   home = homedir(),
 ): DeploymentConfiguration {
-  assert(uid !== undefined && uid !== 0, "Run the Durable API as an unprivileged user.");
+  const port = Number(env.PORT ?? 8080);
+  if (!Value.Check(Port, port)) throw new TypeError("Invalid PORT");
   const runtimeDirectory = absolute("XDG_RUNTIME_DIR", env.XDG_RUNTIME_DIR, `/run/user/${uid}`);
   const configHome =
     env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME)
@@ -45,7 +40,7 @@ export function readDeploymentConfiguration(
   return {
     server: {
       host: env.HOST ?? "127.0.0.1",
-      port: port(env.PORT),
+      port,
     },
     stateDirectory: join(stateHome, "drv.run", "harness"),
     configDirectory: join(configHome, "drv.run"),
