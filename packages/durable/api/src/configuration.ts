@@ -2,6 +2,7 @@ import Type from "typebox";
 import Value from "typebox/value";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import type { PushConfiguration } from "./push.ts";
 import { OAuthServers } from "./accounts.ts";
 import type { serve } from "durable-api/serve";
 
@@ -12,6 +13,7 @@ export type DeploymentConfiguration = {
   readonly runtimeDirectory: string;
   readonly instanceStateDirectory: string;
   readonly systemctl: string;
+  readonly push: PushConfiguration | undefined;
   readonly origin: string | undefined;
   readonly oauthServers: Type.Static<typeof OAuthServers>;
 };
@@ -51,6 +53,14 @@ export function readDeploymentConfiguration(
     instanceStateDirectory: resolve(stateHome),
     systemctl: env.SYSTEMCTL ?? "systemctl",
     origin: env.ORIGIN,
+    push:
+      env.VAPID_PRIVATE_KEY_FILE === undefined
+        ? undefined
+        : {
+            origins: Value.Parse(Type.Array(Type.String()), JSON.parse(env.PUSH_ORIGINS ?? "[]")),
+            subject: env.VAPID_SUBJECT ?? "",
+            privateKeyFile: env.VAPID_PRIVATE_KEY_FILE,
+          },
     oauthServers: Value.Parse(OAuthServers, JSON.parse(env.OAUTH_SERVERS ?? "[]")),
   };
 }

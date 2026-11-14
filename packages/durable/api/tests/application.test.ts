@@ -89,7 +89,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
     },
     signal,
   );
-  assert.equal(unavailable.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(unavailable.errors?.[0]?.extensions.code, "BAD_REQUEST");
   const unavailableRemoval = await app.api.graphql(
     {
       source: `mutation {
@@ -98,7 +98,8 @@ await test("application composes GraphQL with persistent Harness discovery and o
     },
     signal,
   );
-  assert.equal(unavailableRemoval.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal(unavailableRemoval.errors, undefined);
+  assert.equal(unavailableRemoval.data?.removePushSubscription, true);
   const opened = await app.api.graphql(
     {
       source: `mutation { open(input: { externalId: "test_session" }) { harness { id externalId } } }`,

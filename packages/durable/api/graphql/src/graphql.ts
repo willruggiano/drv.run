@@ -4012,7 +4012,7 @@ interface RemovePushSubscriptionInput {
 // Authorized user binding. Validate ownership, endpoint policy and cryptographic
 // key material before persistence or delivery. No credentials are returned here.
 // Delivery and service lifetime are independent of this API and its Harnesses.
-interface PushBinding {
+export interface PushBinding {
   /** Public VAPID key; undefined means delivery is disabled, not a read failure. */
   applicationServerKey(context: Context): Promise<string | undefined>;
   registered(endpoint: string, context: Context): Promise<ApplicationResult<boolean>>;

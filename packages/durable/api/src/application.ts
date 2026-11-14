@@ -13,6 +13,7 @@ import type { DeploymentConfiguration } from "./configuration.ts";
 import { createInventoryService } from "./inventory.ts";
 import { Problem } from "./problem.ts";
 import { Sessions } from "./sessions.ts";
+import { openPush } from "./push.ts";
 import { openAccounts } from "./accounts.ts";
 import { createSettingsService } from "./settings.ts";
 
@@ -20,26 +21,6 @@ type Query = Parameters<typeof watch>[0];
 const externalIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
 const missing = (error: unknown) =>
   error instanceof Error && "code" in error && error.code === "ENOENT";
-
-function noPush(): ResolverContext["push"] {
-  const unavailable = () => {
-    throw new Error("Push subscription persistence is not configured.");
-  };
-  return {
-    async applicationServerKey() {
-      return undefined;
-    },
-    async registered() {
-      return unavailable();
-    },
-    async register() {
-      return unavailable();
-    },
-    async remove() {
-      return unavailable();
-    },
-  };
-}
 
 export async function openApplication(config: DeploymentConfiguration) {
   const models = builtinModels();
@@ -56,6 +37,13 @@ export async function openApplication(config: DeploymentConfiguration) {
     models,
   });
 
+  const push = await openPush(dirname(config.stateDirectory), config.push).catch(
+    async (error: unknown) => {
+      await accounts.close();
+      throw error;
+    },
+  );
+
   const sessions = new Sessions(async (externalId, _context, create) => {
     if (!externalIdPattern.test(externalId)) throw new Problem(400);
     const path = join(sessionDirectory, `${externalId}.sqlite`);
@@ -70,7 +58,7 @@ export async function openApplication(config: DeploymentConfiguration) {
     const storage = await openNodeSqliteStorage(path);
     try {
       const configuration = await settings.harness.read(BACKGROUND_CONTEXT);
-      return await openHarness(
+      const harness = await openHarness(
         storage,
         {
           models,
@@ -93,13 +81,15 @@ export async function openApplication(config: DeploymentConfiguration) {
         },
         BACKGROUND_CONTEXT,
       );
+      push.attach(harness, externalId);
+      return harness;
     } catch (error) {
       await storage.close(BACKGROUND_CONTEXT).catch(() => {});
       throw error;
     }
   });
 
-  const services = { accounts: accounts.service, push: noPush() };
+  const services = { accounts: accounts.service, push: push.service };
   let closing: Promise<void> | undefined;
   const context = (signal: AbortSignal): ResolverContext => ({
     context: withAbortSignal(signal, BACKGROUND_CONTEXT),
@@ -161,6 +151,7 @@ export async function openApplication(config: DeploymentConfiguration) {
     close() {
       closing ??= (async () => {
         const failures: unknown[] = [];
+        await push.close().catch((error: unknown) => failures.push(error));
         try {
           await sessions.close(Promise.resolve());
         } catch (error) {
