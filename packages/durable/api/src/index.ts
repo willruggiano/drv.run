@@ -45,6 +45,33 @@ export async function watchRequest(
   }
 }
 
+function readDeploymentConfiguration(): Omit<
+  Parameters<typeof serve>[0],
+  "routes" | "fetch" | "error"
+> {
+  throw new Error("readDeploymentConfiguration is not implemented");
+}
+
+async function openApplication(_config: ReturnType<typeof readDeploymentConfiguration>): Promise<{
+  api: {
+    graphql(payload: unknown, signal: AbortSignal): Promise<unknown>;
+    watch: AcquireWatch;
+  };
+  close(): Promise<void>;
+}> {
+  throw new Error("openApplication is not implemented");
+}
+
+async function decodeGraphQLRequest(
+  _request: Request,
+): Promise<{ payload: unknown; responseType: string }> {
+  throw new Error("decodeGraphQLRequest is not implemented");
+}
+
+function encodeGraphQLResponse(_result: unknown, _responseType: string): Response {
+  throw new Error("encodeGraphQLResponse is not implemented");
+}
+
 async function main(): Promise<void> {
   const config = readDeploymentConfiguration();
   const app = await openApplication(config);
