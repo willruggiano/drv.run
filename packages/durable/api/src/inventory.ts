@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord/context";
 import type { InventoryRecord, InventoryPhase, InventoryService } from "../graphql/src/graphql.ts";
@@ -62,7 +62,7 @@ async function phases(path: string): Promise<InventoryPhase[] | undefined> {
 
 export function createInventoryService(config: DeploymentConfiguration): InventoryService {
   const namespace = `uid:${process.getuid?.() ?? "unknown"}`;
-  const root = join(config.instanceStateDirectory, "drv.run");
+  const root = dirname(config.stateDirectory);
   const unit = (id: string) => `drv.run@${id}.service`;
 
   async function inventory(context: Context): Promise<InventoryRecord[]> {

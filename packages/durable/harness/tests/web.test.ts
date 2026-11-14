@@ -14,11 +14,14 @@ const api = new Proxy({} as ToolExecutionApi, {
     assert.fail("Web tools must not access the guest execution API.");
   },
 });
-const extension: Extension = web.createWebExtension();
-assert(extension.tools);
-const [search, extract] = extension.tools;
-assert(search);
-assert(extract);
+function tools(path = process.env.PARALLEL_API_KEY_FILE) {
+  const extension: Extension = web.createWebExtension(path);
+  assert(extension.tools);
+  const [search, extract] = extension.tools;
+  assert(search);
+  assert(extract);
+  return { extension, search, extract };
+}
 
 async function credential(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "web-test-"));
@@ -36,12 +39,13 @@ async function credential(t: TestContext) {
 
 await test("web exposes only search and fetch, sends host-authenticated requests, and returns results", async (t) => {
   assert.deepEqual(Object.keys(web), ["createWebExtension"]);
+  const { extension, search, extract } = tools(await credential(t));
   assert.equal(extension.name, "web");
   assert.deepEqual(
     extension.tools?.map((tool) => tool.name),
     ["web_search", "web_fetch"],
   );
-  const path = await credential(t);
+  const path = process.env.PARALLEL_API_KEY_FILE!;
   const result = {
     results: [{ url: "https://example.com", excerpts: ["Source text"] }],
     errors: [
@@ -106,17 +110,18 @@ await test("missing, empty, and unreadable host credentials fail before HTTP", a
   );
   const args = { urls: ["https://example.com"] };
   delete process.env.PARALLEL_API_KEY_FILE;
-  await assert.rejects(extract.execute(args, api, context));
+  await assert.rejects(tools().extract.execute(args, api, context));
   process.env.PARALLEL_API_KEY_FILE = path;
   await writeFile(path, "\n");
-  await assert.rejects(extract.execute(args, api, context));
+  await assert.rejects(tools().extract.execute(args, api, context));
   await rm(path);
-  await assert.rejects(extract.execute(args, api, context));
+  await assert.rejects(tools().extract.execute(args, api, context));
   assert.equal(fetch.mock.callCount(), 0);
 });
 
 await test("HTTP failures expose actionable API fields, redact credentials, and handle undocumented bodies", async (t) => {
   const path = await credential(t);
+  const { search, extract } = tools(path);
   const key = 'test-"key';
   await writeFile(path, key);
   const cases = [
@@ -196,7 +201,7 @@ await test("HTTP failures expose actionable API fields, redact credentials, and 
 });
 
 await test("durable cancellation propagates during HTTP requests and error-body reads", async (t) => {
-  await credential(t);
+  const { search } = tools(await credential(t));
   for (const phase of ["request", "body"]) {
     const { context: cancelled, cancel } = withCancel(context);
     const fetch = t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
@@ -221,4 +226,16 @@ await test("durable cancellation propagates during HTTP requests and error-body 
     assert.equal(fetch.mock.callCount(), 1);
     fetch.mock.restore();
   }
+});
+
+await test("web tools retain their configured host credential path", async (t) => {
+  const path = await credential(t);
+  const { search } = tools(path);
+  process.env.PARALLEL_API_KEY_FILE = "/absent";
+  const fetch = t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    assert.equal(new Headers(init.headers).get("x-api-key"), "test-key");
+    return Response.json({ results: [] });
+  });
+  await search.execute({ objective: "Docs", search_queries: ["Nix"] }, api, context);
+  assert.equal(fetch.mock.callCount(), 1);
 });

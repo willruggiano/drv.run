@@ -23,6 +23,7 @@ export { Review } from "./review.ts";
 export { Env, SshExecutionEnv } from "./env.ts";
 
 type Options = Omit<HarnessOptions, "registry" | "settings"> & {
+  readonly parallelApiKeyFile?: string | undefined;
   readonly settings?: Omit<HarnessSettings, "extensions">;
   /** Opt-in prototype. The caller owns the sandbox and closes it after the harness. */
   readonly codemode?: CodemodeToolOptions["sandbox"];
@@ -45,7 +46,7 @@ export async function openHarness(
     }),
   );
   registry.install(createContextExtension());
-  registry.install(createWebExtension());
+  registry.install(createWebExtension(options.parallelApiKeyFile));
   registry.install(createReviewExtension(options.env));
   if (options.codemode) {
     const codemode = { sandbox: options.codemode, models: false };

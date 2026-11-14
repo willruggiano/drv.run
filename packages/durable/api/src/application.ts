@@ -62,6 +62,7 @@ export async function openApplication(config: DeploymentConfiguration) {
         storage,
         {
           models,
+          parallelApiKeyFile: config.parallelApiKeyFile,
           settings: configuration,
           async env(target, context) {
             const selected = await target.read.snapshot(Env, target.conversationId, context);

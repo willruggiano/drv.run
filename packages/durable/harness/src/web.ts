@@ -4,9 +4,13 @@ import type { Context } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 
-async function request(endpoint: "search" | "extract", body: object, context: Context) {
+async function request(
+  path: string | undefined,
+  endpoint: "search" | "extract",
+  body: object,
+  context: Context,
+) {
   // Read on the host, never through api.env. Re-read so SOPS key rotation needs no restart.
-  const path = process.env.PARALLEL_API_KEY_FILE;
   assert(path, "Configure PARALLEL_API_KEY_FILE on the host to use web tools.");
   const key = (await readFile(path, "utf8")).trim();
   assert(key, "The host Parallel API key file is empty.");
@@ -64,7 +68,7 @@ async function request(endpoint: "search" | "extract", body: object, context: Co
   return { output: [{ type: "text" as const, text: await response.text() }] };
 }
 
-export function createWebExtension() {
+export function createWebExtension(path = process.env.PARALLEL_API_KEY_FILE) {
   return defineExtension({
     name: "web",
     tools: [
@@ -76,7 +80,8 @@ export function createWebExtension() {
           objective: Type.String({ minLength: 1 }),
           search_queries: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
         }),
-        execute: (args, _api, context) => request("search", { ...args, mode: "fast" }, context),
+        execute: (args, _api, context) =>
+          request(path, "search", { ...args, mode: "fast" }, context),
       }),
       defineTool({
         name: "web_fetch",
@@ -90,7 +95,7 @@ export function createWebExtension() {
           objective: Type.Optional(Type.String({ minLength: 1 })),
           search_queries: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         }),
-        execute: (args, _api, context) => request("extract", args, context),
+        execute: (args, _api, context) => request(path, "extract", args, context),
       }),
     ],
   });

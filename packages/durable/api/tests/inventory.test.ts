@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { readDeploymentConfiguration } from "../src/configuration.ts";
 import { createInventoryService } from "../src/inventory.ts";
@@ -100,7 +100,7 @@ await test("inventory uses retained identities without imposing an ID grammar or
 await test("inventory connect and observations use owner runtime artifacts", async (t) => {
   const { config, runtime } = await setup(t);
   const directory = join(runtime, "drv.run.loaded");
-  await mkdir(join(config.instanceStateDirectory, "drv.run", "loaded"), { recursive: true });
+  await mkdir(join(dirname(config.stateDirectory), "loaded"), { recursive: true });
   await mkdir(directory, { recursive: true });
   await Promise.all(
     ["client-key", "known_hosts", "client.conf"].map((name) =>
