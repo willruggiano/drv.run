@@ -2,8 +2,11 @@
   importNpmLock,
   durable-harness,
   lib,
+  makeWrapper,
   nodejs,
+  openssh,
   stdenvNoCC,
+  systemd,
   typescript,
 }: let
   pkg = lib.importJSON ./package.json;
@@ -36,6 +39,7 @@ in
     npmRebuildFlags = ["--ignore-scripts"];
     nativeBuildInputs = [
       importNpmLock.npmConfigHook
+      makeWrapper
       nodejs
       typescript
     ];
@@ -64,6 +68,10 @@ in
       mkdir -p "$out/lib/${pkg.name}"
       cp -R package.json dist node_modules "$out/lib/${pkg.name}/"
       install -Dm644 graphql/schema.graphql "$out/lib/${pkg.name}/graphql/schema.graphql"
+      mkdir -p "$out/bin"
+      makeWrapper ${nodejs}/bin/node "$out/bin/${pkg.name}" \
+        --add-flags "$out/lib/${pkg.name}/dist/src/index.js" \
+        --prefix PATH : ${lib.makeBinPath [openssh systemd]}
       runHook postInstall
     '';
   }

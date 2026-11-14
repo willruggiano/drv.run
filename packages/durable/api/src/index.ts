@@ -3,6 +3,8 @@ import { sse } from "durable-api/sse";
 import type { watch } from "durable-api/watch";
 import { getOperationAST, parse } from "graphql";
 import { Problem } from "./problem.ts";
+import { openApplication } from "./application.ts";
+import { readDeploymentConfiguration } from "./configuration.ts";
 
 type WatchQuery = Parameters<typeof watch>[0];
 type AcquireWatch = (query: WatchQuery, signal: AbortSignal) => ReturnType<typeof watch>;
@@ -44,23 +46,6 @@ export async function watchRequest(
     if (!(error instanceof Problem)) throw error;
     return new Response(null, { status: error.status, headers: { "Cache-Control": "no-store" } });
   }
-}
-
-function readDeploymentConfiguration(): Omit<
-  Parameters<typeof serve>[0],
-  "routes" | "fetch" | "error"
-> {
-  throw new Error("readDeploymentConfiguration is not implemented");
-}
-
-async function openApplication(_config: ReturnType<typeof readDeploymentConfiguration>): Promise<{
-  api: {
-    graphql(payload: unknown, signal: AbortSignal): Promise<unknown>;
-    watch: AcquireWatch;
-  };
-  close(): Promise<void>;
-}> {
-  throw new Error("openApplication is not implemented");
 }
 
 type GraphQLPayload = {
@@ -209,15 +194,22 @@ export async function graphQLRequest(
   }
 }
 
-async function main(): Promise<void> {
-  const config = readDeploymentConfiguration();
-  const app = await openApplication(config);
+export async function main(
+  config = readDeploymentConfiguration(),
+  open = openApplication,
+): Promise<{
+  server: Awaited<ReturnType<typeof serve>>;
+  app: Awaited<ReturnType<typeof openApplication>>;
+  shutdown(): Promise<void>;
+}> {
+  const app = await open(config);
 
   try {
     const server = await serve({
-      ...config,
+      ...config.server,
       routes: {
-        "/api/graphql": (request) => graphQLRequest(request, app.api.graphql),
+        "/api/graphql": (request) =>
+          graphQLRequest(request, (payload, signal) => app.api.graphql(payload, signal)),
 
         "/api/watch": (request, server) =>
           watchRequest(request, server, (query, signal) => app.api.watch(query, signal)),
@@ -232,7 +224,30 @@ async function main(): Promise<void> {
         });
       },
     });
-    console.log(`Listening on ${server.url}`);
+    console.log(`Listening on ${server.url.href}`);
+    let closing: Promise<void> | undefined;
+    const shutdown = () => {
+      closing ??= (async () => {
+        process.off("SIGINT", stop);
+        process.off("SIGTERM", stop);
+        const failures: unknown[] = [];
+        server.forceClose();
+        await server.close();
+        try {
+          await app.close();
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length) throw new AggregateError(failures, "Server shutdown failed");
+      })();
+      return closing;
+    };
+    const stop = () => {
+      void shutdown().catch((error: unknown) => console.error("Shutdown failed", error));
+    };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+    return { server, app, shutdown };
   } catch (error) {
     await app.close();
     throw error;
