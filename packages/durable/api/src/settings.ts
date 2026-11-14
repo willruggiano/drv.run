@@ -111,7 +111,7 @@ export function createSettingsService(
   config: DeploymentConfiguration,
 ): ResolverContext["settings"] {
   async function read(app: "web" | "harness") {
-    const path = join(config.configDirectory, `${app}.json`);
+    const path = join(config.configDirectory, app, "settings.json");
     let content: string | undefined;
     try {
       content = await readFile(path, "utf8");
@@ -124,12 +124,12 @@ export function createSettingsService(
   }
 
   async function replace(app: "web" | "harness", expectedRevision: string, settings: unknown) {
-    const path = join(config.configDirectory, `${app}.json`);
+    const path = join(config.configDirectory, app, "settings.json");
     const current = await read(app);
     if (current.revision !== expectedRevision) return undefined;
     const next = mergeSettings(app, settings);
-    await mkdir(config.configDirectory, { recursive: true, mode: 0o700 });
-    const temporary = join(config.configDirectory, `.${app}.${randomUUID()}.tmp`);
+    await mkdir(join(config.configDirectory, app), { recursive: true, mode: 0o700 });
+    const temporary = join(config.configDirectory, app, `.settings.${randomUUID()}.tmp`);
     try {
       await writeFile(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600, flag: "wx" });
       await rename(temporary, path);

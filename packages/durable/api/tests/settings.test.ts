@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,8 +12,8 @@ await test("settings service applies defaults and performs revision-checked repl
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const config = readDeploymentConfiguration(
     {
-      DURABLE_API_STATE_DIRECTORY: join(directory, "state"),
-      DURABLE_API_CONFIG_DIRECTORY: join(directory, "config"),
+      XDG_STATE_HOME: join(directory, "state"),
+      XDG_CONFIG_HOME: join(directory, "config"),
     },
     1000,
     directory,
@@ -32,6 +32,10 @@ await test("settings service applies defaults and performs revision-checked repl
   const replacement = { ...initial.settings, wrapCode: true };
   const saved = await service.web.replace(initial.revision, replacement, BACKGROUND_CONTEXT);
   assert.equal(saved?.settings.wrapCode, true);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(directory, "config/drv.run/web/settings.json"), "utf8")),
+    replacement,
+  );
   assert.notEqual(saved?.revision, initial.revision);
   assert.equal(
     await service.web.replace(initial.revision, replacement, BACKGROUND_CONTEXT),
@@ -48,8 +52,8 @@ await test("harness settings map GraphQL enums to Durable runtime policy", async
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const config = readDeploymentConfiguration(
     {
-      DURABLE_API_STATE_DIRECTORY: join(directory, "state"),
-      DURABLE_API_CONFIG_DIRECTORY: join(directory, "config"),
+      XDG_STATE_HOME: join(directory, "state"),
+      XDG_CONFIG_HOME: join(directory, "config"),
     },
     1000,
     directory,
@@ -73,6 +77,10 @@ await test("harness settings map GraphQL enums to Durable runtime policy", async
     BACKGROUND_CONTEXT,
   );
   assert.ok(saved);
+  assert.deepEqual(
+    JSON.parse(await readFile(join(directory, "config/drv.run/harness/settings.json"), "utf8")),
+    saved.settings,
+  );
   assert.deepEqual(await readHarnessRuntimeSettings(config), {
     stream: { transport: "websocket-cached" },
     steeringMode: "all",
@@ -92,15 +100,15 @@ await test("settings service rejects malformed persisted values", async (t) => {
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const config = readDeploymentConfiguration(
     {
-      DURABLE_API_STATE_DIRECTORY: join(directory, "state"),
-      DURABLE_API_CONFIG_DIRECTORY: join(directory, "config"),
+      XDG_STATE_HOME: join(directory, "state"),
+      XDG_CONFIG_HOME: join(directory, "config"),
     },
     1000,
     directory,
   );
-  await mkdir(config.configDirectory, { recursive: true });
+  await mkdir(join(config.configDirectory, "harness"), { recursive: true });
   await writeFile(
-    join(config.configDirectory, "harness.json"),
+    join(config.configDirectory, "harness", "settings.json"),
     JSON.stringify({ transport: "auto", unknown: true }),
   );
   await assert.rejects(

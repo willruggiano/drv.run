@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { serve } from "durable-api/serve";
 
 export type DeploymentConfiguration = {
@@ -34,21 +34,23 @@ export function readDeploymentConfiguration(
 ): DeploymentConfiguration {
   assert(uid !== undefined && uid !== 0, "Run the Durable API as an unprivileged user.");
   const runtimeDirectory = absolute("XDG_RUNTIME_DIR", env.XDG_RUNTIME_DIR, `/run/user/${uid}`);
+  const configHome =
+    env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME)
+      ? env.XDG_CONFIG_HOME
+      : join(home, ".config");
+  const stateHome =
+    env.XDG_STATE_HOME && isAbsolute(env.XDG_STATE_HOME)
+      ? env.XDG_STATE_HOME
+      : join(home, ".local/state");
   return {
     server: {
       host: env.HOST ?? "127.0.0.1",
       port: port(env.PORT),
     },
-    stateDirectory: absolute("DURABLE_API_STATE_DIRECTORY", env.DURABLE_API_STATE_DIRECTORY),
-    configDirectory: absolute(
-      "DURABLE_API_CONFIG_DIRECTORY",
-      env.DURABLE_API_CONFIG_DIRECTORY,
-      env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME)
-        ? `${env.XDG_CONFIG_HOME}/drv.run`
-        : `${home}/.config/drv.run`,
-    ),
+    stateDirectory: join(stateHome, "drv.run", "harness"),
+    configDirectory: join(configHome, "drv.run"),
     runtimeDirectory,
-    instanceStateDirectory: absolute("XDG_STATE_HOME", env.XDG_STATE_HOME, `${home}/.local/state`),
+    instanceStateDirectory: resolve(stateHome),
     systemctl: env.SYSTEMCTL ?? "systemctl",
   };
 }

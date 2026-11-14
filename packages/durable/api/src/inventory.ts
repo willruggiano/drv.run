@@ -118,7 +118,8 @@ export function createInventoryService(
     ]);
     const ids = new Set<string>();
     for (const entry of directories)
-      if (entry.isDirectory() && instanceId.test(entry.name)) ids.add(entry.name);
+      if (entry.isDirectory() && entry.name !== "harness" && instanceId.test(entry.name))
+        ids.add(entry.name);
     for (const output of [loaded.stdout, installed.stdout]) {
       for (const line of output.split("\n")) {
         const found = /^drv\.run@([A-Za-z0-9]+)\.service(?:\s|$)/.exec(line.trim());
@@ -132,7 +133,7 @@ export function createInventoryService(
   }
 
   async function known(id: string, context: Context): Promise<boolean> {
-    if (!instanceId.test(id)) return false;
+    if (id === "harness" || !instanceId.test(id)) return false;
     context.abortSignal?.throwIfAborted();
     try {
       const found = (await stat(join(root, id))).isDirectory();

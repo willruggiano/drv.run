@@ -11,8 +11,7 @@ await test("server converts resolver failures and aggregates application shutdow
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const config = readDeploymentConfiguration(
     {
-      DURABLE_API_STATE_DIRECTORY: join(directory, "state"),
-      DURABLE_API_CONFIG_DIRECTORY: join(directory, "config"),
+      XDG_CONFIG_HOME: join(directory, "config"),
     },
     1000,
     directory,
@@ -54,8 +53,7 @@ await test("Node entrypoint serves GraphQL and closes application resources on s
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const config = readDeploymentConfiguration(
     {
-      DURABLE_API_STATE_DIRECTORY: join(directory, "state"),
-      DURABLE_API_CONFIG_DIRECTORY: join(directory, "config"),
+      XDG_CONFIG_HOME: join(directory, "config"),
       XDG_RUNTIME_DIR: join(directory, "runtime"),
       XDG_STATE_HOME: join(directory, "instance-state"),
     },

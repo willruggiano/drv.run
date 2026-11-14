@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -11,8 +11,7 @@ await test("application composes GraphQL with persistent Harness discovery and o
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const config = readDeploymentConfiguration(
     {
-      DURABLE_API_STATE_DIRECTORY: join(directory, "state"),
-      DURABLE_API_CONFIG_DIRECTORY: join(directory, "config"),
+      XDG_CONFIG_HOME: join(directory, "config"),
       XDG_RUNTIME_DIR: join(directory, "runtime"),
       XDG_STATE_HOME: join(directory, "instance-state"),
     },
@@ -112,6 +111,12 @@ await test("application composes GraphQL with persistent Harness discovery and o
     open: { harness: { externalId: string } };
   };
   assert.equal(openedData.open.harness.externalId, "test_session");
+  assert.equal(
+    (
+      await stat(join(directory, "instance-state/drv.run/harness/sessions/test_session.sqlite"))
+    ).isFile(),
+    true,
+  );
   const listed = await app.api.graphql({ query: "{ harnesses { externalId } }" }, signal);
   assert.equal(listed.errors, undefined);
   const listedData = listed.data as { harnesses: { externalId: string }[] };
@@ -130,16 +135,15 @@ await test("application retries a Harness open after invalid persisted runtime s
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const config = readDeploymentConfiguration(
     {
-      DURABLE_API_STATE_DIRECTORY: join(directory, "state"),
-      DURABLE_API_CONFIG_DIRECTORY: join(directory, "config"),
+      XDG_CONFIG_HOME: join(directory, "config"),
       XDG_RUNTIME_DIR: join(directory, "runtime"),
       XDG_STATE_HOME: join(directory, "instance-state"),
     },
     1000,
     directory,
   );
-  await mkdir(config.configDirectory, { recursive: true });
-  const harnessSettings = join(config.configDirectory, "harness.json");
+  await mkdir(join(config.configDirectory, "harness"), { recursive: true });
+  const harnessSettings = join(config.configDirectory, "harness", "settings.json");
   await writeFile(harnessSettings, JSON.stringify({ unexpected: true }));
   const app = await openApplication(config);
   t.after(async () => app.close());
@@ -166,8 +170,7 @@ await test("application refuses unsafe external session identifiers before stora
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const config = readDeploymentConfiguration(
     {
-      DURABLE_API_STATE_DIRECTORY: join(directory, "state"),
-      DURABLE_API_CONFIG_DIRECTORY: join(directory, "config"),
+      XDG_CONFIG_HOME: join(directory, "config"),
       XDG_RUNTIME_DIR: join(directory, "runtime"),
       XDG_STATE_HOME: join(directory, "instance-state"),
     },

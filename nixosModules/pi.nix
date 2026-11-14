@@ -156,8 +156,6 @@ in {
         ({
             HOST = cfg.host;
             PORT = toString cfg.port;
-            DURABLE_API_STATE_DIRECTORY = "%S/drv.run-api";
-            DURABLE_API_CONFIG_DIRECTORY = "%h/.config/drv.run";
           }
           // lib.optionalAttrs notifications.enable {
             NOTIFICATIONS_CONFIG = toString notificationConfig;
@@ -168,8 +166,6 @@ in {
         ExecStart = utils.escapeSystemdExecArgs [(lib.getExe cfg.package)];
         WorkingDirectory = "%h";
         UMask = "0077";
-        StateDirectory = "drv.run-api";
-        StateDirectoryMode = "0700";
         TimeoutStopSec = 20;
         Restart = "on-failure";
         RestartSec = 5;

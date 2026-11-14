@@ -33,8 +33,7 @@ esac
   await chmod(systemctl, 0o700);
   const config = readDeploymentConfiguration(
     {
-      DURABLE_API_STATE_DIRECTORY: join(directory, "api-state"),
-      DURABLE_API_CONFIG_DIRECTORY: join(directory, "config"),
+      XDG_CONFIG_HOME: join(directory, "config"),
       XDG_RUNTIME_DIR: runtime,
       XDG_STATE_HOME: stateHome,
       SYSTEMCTL: systemctl,
@@ -48,8 +47,10 @@ esac
 await test("inventory unifies retained state and installed/loaded units with stable pagination", async (t) => {
   const { config, state } = await setup(t);
   await mkdir(join(state, "retained"), { recursive: true });
+  await mkdir(join(state, "harness", "sessions"), { recursive: true });
   await writeFile(join(state, "retained", "reference"), "github:example/repo\n");
   const service = createInventoryService(config);
+  assert.equal(await service.lookup("harness", BACKGROUND_CONTEXT), undefined);
   const first = await service.list(2, undefined, BACKGROUND_CONTEXT);
   assert.ok(!("invalidCursor" in first));
   assert.deepEqual(
