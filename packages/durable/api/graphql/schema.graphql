@@ -107,6 +107,10 @@ enum DocumentScopeKind {
   task
 }
 
+enum ExecutionEnvType {
+  ssh
+}
+
 """GraphQL name for Awaited<ReturnType<Harness["abortSubmission"]>>."""
 enum HarnessAbortSubmissionResult {
   aborted
@@ -349,6 +353,7 @@ input CompactInput {
 input ConfigureInput {
   change: AgentChange!
   conversationId: ID!
+  env: SshTargetInput
 }
 
 input ContextEditInput @oneOf {
@@ -363,6 +368,7 @@ input ContextReplacementInput {
 
 input ConversationCreateOptionsInput {
   agent: AgentChange
+  env: SshTargetInput
   ownership: ConversationOwnershipInput!
 }
 
@@ -571,6 +577,7 @@ input RootInput {
 
 input RootOptionsInput {
   agent: AgentChange
+  env: SshTargetInput
 }
 
 input SaveHarnessSettingsInput {
@@ -586,6 +593,18 @@ input SaveSettingsInput @oneOf {
 input SaveWwwSettingsInput {
   expectedRevision: String!
   settings: WwwSettingsInput!
+}
+
+"""Optional target fields accept null as omission."""
+input SshTargetInput {
+  configFile: String
+  host: String!
+  hostKeyAlias: String!
+  identityFile: String
+  knownHostsFile: String!
+  port: Int
+  type: ExecutionEnvType!
+  user: String
 }
 
 """
@@ -875,6 +894,10 @@ type ConversationRecord implements Node {
   Fork-aware history, including inherited entries. Default order is descending.
   """
   entries(cursor: Cursor, limit: Int!, query: EntryQuery! = {}): EntryRecordConnection!
+  """
+  Persisted selection only. Reading it does not acquire an execution environment.
+  """
+  env: SshTarget
   harness: Harness!
   id: ID!
   owner: ConversationRecordOwner
@@ -1037,6 +1060,8 @@ type ImageContent {
 }
 
 type Instance implements Node {
+  """SSH connection data only; does not connect or start the instance."""
+  connect: SshTarget
   """
   Unavailable metadata is null; observation errors do not erase membership.
   """
@@ -1154,8 +1179,8 @@ type Mutation {
   """
   compact(input: CompactInput!): CompactPayload
   """
-  Change model, thinking level, or cwd overrides; return true after the commit.
-  Read resolved settings through agent.
+  Change agent overrides and env selection atomically, including during active work.
+  Read resolved agent settings through agent and persisted selection through env.
   """
   configure(input: ConfigureInput!): Boolean
   """
@@ -1201,7 +1226,7 @@ type Mutation {
   """
   revoke(input: RevokeInput!): Boolean
   """
-  Get or create the reserved root. Initial agent changes apply only at creation.
+  Get or create the reserved root. Initial agent and env changes apply only at creation.
   Does not submit input or enable scheduling.
   """
   root(input: RootInput!): RootPayload
@@ -1294,6 +1319,20 @@ type Query {
 
 type RootPayload {
   conversation: ConversationRecord!
+}
+
+"""
+Connection data, not an executable environment or SSH binary configuration.
+"""
+type SshTarget {
+  configFile: String
+  host: String!
+  hostKeyAlias: String!
+  identityFile: String
+  knownHostsFile: String!
+  port: Int
+  type: ExecutionEnvType!
+  user: String
 }
 
 type StringContent {

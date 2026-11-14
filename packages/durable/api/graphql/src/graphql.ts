@@ -1,27 +1,18 @@
 import assert from "node:assert/strict";
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { MIMEType } from "node:util";
 import { awaitWithContext } from "@earendil-works/chord/context";
-import { Problem } from "../../src/problem.ts";
 import type { Float, ID, Int, GqlScalar } from "grats";
-import {
-  GraphQLError,
-  execute,
-  getOperationAST,
-  parse,
-  validate,
-  valueFromASTUntyped,
-  type ExecutionResult,
-  type GraphQLSchema,
-} from "graphql";
+import { GraphQLError, valueFromASTUntyped, type GraphQLSchema } from "graphql";
 import Type from "typebox";
 import Value from "typebox/value";
 import {
+  configure as configureAgent,
   ConversationBusy,
   SessionFailed,
   StorageRequestError,
   ROOT_CONVERSATION_ID,
 } from "@earendil-works/pi-durable";
+import { Env } from "durable-harness";
+import { sshArguments, type SshTarget as NativeSshTarget } from "@earendil-works/pi-env";
 import { getSchema } from "./generated/graphql.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
@@ -322,198 +313,6 @@ export function createSchema(): GraphQLSchema {
       TelemetryCarrier: scalar(TelemetryCarrier),
     },
   });
-}
-
-function mediaType(value: string): MIMEType | undefined {
-  try {
-    return new MIMEType(value);
-  } catch {
-    return undefined;
-  }
-}
-
-function utf8(media: MIMEType): boolean {
-  const charset = media.params.get("charset")?.toLowerCase();
-  return charset === undefined || charset === "utf-8" || charset === "utf8";
-}
-
-function responseType(accept = "*/*"): string | undefined {
-  const ranges = accept.split(",").map(mediaType);
-  const candidates = ["application/json", "application/graphql-response+json"].map((type) => {
-    let quality = 0;
-    let specificity = -1;
-    let order = Infinity;
-    ranges.forEach((range, index) => {
-      if (!range || !utf8(range)) return;
-      for (const [parameter] of range.params) {
-        if (parameter !== "q" && parameter !== "charset") return;
-      }
-      const q = range.params.get("q") ?? "1";
-      if (!/^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(q)) return;
-      const rank =
-        range.essence === type
-          ? 2
-          : range.essence === "application/*"
-            ? 1
-            : range.essence === "*/*"
-              ? 0
-              : -1;
-      if (rank > specificity) {
-        quality = Number(q);
-        specificity = rank;
-        order = index;
-      }
-    });
-    return { type, quality, order };
-  });
-  candidates.sort((a, b) => b.quality - a.quality || a.order - b.order);
-  return candidates.find((candidate) => candidate.quality > 0)?.type;
-}
-
-const RequestParameters = Type.Object({
-  query: Type.String(),
-  operationName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-  variables: Type.Optional(Type.Union([Type.Record(JsonKey, Type.Unknown()), Type.Null()])),
-  extensions: Type.Optional(Type.Union([Type.Record(JsonKey, Type.Unknown()), Type.Null()])),
-});
-
-export function createGraphQLHandler(options: {
-  documents: DocumentService;
-  settings: SettingsService;
-  inventory: InventoryService;
-  accounts: AccountsService;
-  push: PushBinding;
-  getHarness: ResolverContext["session"];
-  isValidExternalId: ResolverContext["isValidExternalId"];
-  listHarnesses: (context: Context) => Promise<readonly string[]>;
-  models: ResolverContext["models"];
-  bodyLimit: number;
-}) {
-  const schema = createSchema();
-  return async (
-    request: IncomingMessage,
-    response: ServerResponse,
-    context: Context,
-    closing: boolean,
-  ): Promise<void> => {
-    let media: string | undefined;
-    response.setHeader("Cache-Control", "no-store");
-    const send = (status: number, result?: ExecutionResult) => {
-      if (response.destroyed) return;
-      const body = result === undefined ? undefined : JSON.stringify(result);
-      if (result !== undefined) response.setHeader("Content-Type", `${media}; charset=utf-8`);
-      response.writeHead(status).end(body);
-    };
-    const requestErrors = (errors: readonly GraphQLError[]) =>
-      send(media === "application/json" ? 200 : 400, { errors });
-    try {
-      if (closing) throw new Problem(503);
-      media = responseType(request.headers.accept);
-      if (!media) throw new Problem(406);
-      if (request.method !== "GET" && request.method !== "POST")
-        throw new Problem(405, "GET, POST");
-      let input: unknown;
-      if (request.method === "GET") {
-        const params = new URL(request.url!, "http://durable.invalid").searchParams;
-        for (const key of ["query", "operationName", "variables", "extensions"]) {
-          if (params.getAll(key).length > 1) throw new Problem(400);
-        }
-        try {
-          input = {
-            query: params.get("query"),
-            operationName: params.get("operationName"),
-            variables: JSON.parse(params.get("variables") ?? "null"),
-            extensions: JSON.parse(params.get("extensions") ?? "null"),
-          };
-        } catch {
-          throw new Problem(400);
-        }
-      } else {
-        const contentType = mediaType(request.headers["content-type"] ?? "");
-        if (!contentType || contentType.essence !== "application/json" || !utf8(contentType))
-          throw new Problem(415);
-        const chunks: Buffer[] = [];
-        let size = 0;
-        for await (const chunk of request.iterator({ destroyOnReturn: false })) {
-          assert(Buffer.isBuffer(chunk));
-          size += chunk.length;
-          if (size > options.bodyLimit) throw new Problem(413);
-          chunks.push(chunk);
-        }
-        try {
-          input = JSON.parse(
-            new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
-          );
-        } catch {
-          throw new Problem(400);
-        }
-      }
-      if (!Value.Check(RequestParameters, input)) throw new Problem(400);
-      let document;
-      try {
-        document = parse(input.query);
-      } catch (error) {
-        assert(error instanceof GraphQLError);
-        return requestErrors([error]);
-      }
-      const operation = getOperationAST(document, input.operationName);
-      if (!operation)
-        return requestErrors([new GraphQLError("Operation name is missing or unknown")]);
-      if (operation.operation === "mutation" && request.method === "GET")
-        throw new Problem(405, "POST");
-      if (operation.operation === "subscription")
-        return requestErrors([new GraphQLError("Subscriptions are not supported")]);
-      const errors = validate(schema, document);
-      if (errors.length) return requestErrors(errors);
-      async function lookup<T>(read: () => Promise<T>): Promise<T> {
-        try {
-          return await invokeWithContext(context, read);
-        } catch (error) {
-          if (error instanceof StorageRequestError)
-            throw new ResolverError("INTERNAL_SERVER_ERROR");
-          throw error;
-        }
-      }
-      const contextValue: ResolverContext = {
-        context,
-        documents: options.documents,
-        settings: options.settings,
-        inventory: options.inventory,
-        accounts: options.accounts,
-        push: options.push,
-        session: (externalId, create) => lookup(() => options.getHarness(externalId, create)),
-        isValidExternalId: options.isValidExternalId,
-        sessions: () => lookup(() => options.listHarnesses(context)),
-        models: options.models,
-      };
-      const result = await execute({
-        schema,
-        document,
-        contextValue,
-        operationName: input.operationName ?? null,
-        variableValues: input.variables ?? null,
-      });
-      const safe = result.errors
-        ? {
-            ...result,
-            errors: result.errors.map((error) => {
-              if (!error.path || error.originalError instanceof ResolverError) return error;
-              return new GraphQLError("INTERNAL_SERVER_ERROR", {
-                nodes: error.nodes ?? null,
-                path: error.path,
-                extensions: { code: "INTERNAL_SERVER_ERROR" },
-              });
-            }),
-          }
-        : result;
-      send("data" in result || media === "application/json" ? 200 : 400, safe);
-    } catch (error) {
-      if (error instanceof Problem) {
-        if (error.allow) response.setHeader("Allow", error.allow);
-        send(error.status);
-      } else send(500);
-    }
-  };
 }
 
 function jsonValue(value: unknown): JsonValue {
@@ -2808,6 +2607,7 @@ interface RootInput {
 
 /** @gqlInput */
 interface RootOptionsInput {
+  readonly env?: SshTargetInput | null;
   readonly agent?: AgentChange | null;
 }
 
@@ -2818,16 +2618,20 @@ interface RootPayload {
 }
 
 /**
- * Get or create the reserved root. Initial agent changes apply only at creation.
+ * Get or create the reserved root. Initial agent and env changes apply only at creation.
  * Does not submit input or enable scheduling.
  * @gqlMutationField
  */
 export async function root(input: RootInput, ctx: ResolverContext): Promise<RootPayload | null> {
   try {
     if (input.options === null) throw new ResolverError("BAD_REQUEST");
-    const options = input.options === undefined ? undefined : nonNull(input.options);
+    const { env, ...rest } = input.options ?? {};
+    const options = nonNull(rest);
+    const init = envInit(env);
     const { source, instance } = await mutationHarness(ctx, input.harnessId);
-    const handle = await harnessOperation(instance, ctx, () => instance.root(ctx.context, options));
+    const handle = await harnessOperation(instance, ctx, () =>
+      instance.root(ctx.context, { ...options, ...(init === undefined ? {} : { init }) }),
+    );
     return { conversation: await createdConversation(instance, source, handle.id, ctx) };
   } catch (error) {
     throw mapError(error);
@@ -2850,6 +2654,7 @@ const ConversationOwnership = Type.Union([
 
 /** @gqlInput */
 interface ConversationCreateOptionsInput {
+  readonly env?: SshTargetInput | null;
   readonly ownership: ConversationOwnershipInput;
   readonly agent?: AgentChange | null;
 }
@@ -2876,13 +2681,18 @@ export async function createConversation(
   ctx: ResolverContext,
 ): Promise<CreateConversationPayload | null> {
   try {
-    const options = nonNull(input.options);
+    const { env, ...rest } = input.options;
+    const options = nonNull(rest);
+    const init = envInit(env);
     const ownership = checked(ConversationOwnership, options.ownership);
     const { source, instance } = await mutationHarness(ctx, input.harnessId);
     if (ownership.kind === "task" && !(await instance.getTask(ownership.taskId, ctx.context)))
       throw new ResolverError("NOT_FOUND");
     const handle = await harnessOperation(instance, ctx, () =>
-      instance.createConversation({ ...options, ownership }, ctx.context),
+      instance.createConversation(
+        { ...options, ownership, ...(init === undefined ? {} : { init }) },
+        ctx.context,
+      ),
     );
     return { conversation: await createdConversation(instance, source, handle.id, ctx) };
   } catch (error) {
@@ -2971,8 +2781,103 @@ export async function compact(
   }
 }
 
+/** @gqlEnum */
+type ExecutionEnvType = "ssh";
+
+/** Connection data, not an executable environment or SSH binary configuration. @gqlType */
+interface SshTarget {
+  /** @gqlField */
+  readonly type: ExecutionEnvType;
+  /** @gqlField */
+  readonly host: string;
+  /** @gqlField */
+  readonly user?: string | null;
+  /** @gqlField */
+  readonly port?: Int | null;
+  /** @gqlField */
+  readonly identityFile?: string | null;
+  /** @gqlField */
+  readonly knownHostsFile: string;
+  /** @gqlField */
+  readonly hostKeyAlias: string;
+  /** @gqlField */
+  readonly configFile?: string | null;
+}
+
+/** Optional target fields accept null as omission. @gqlInput */
+interface SshTargetInput {
+  readonly type: ExecutionEnvType;
+  readonly host: string;
+  readonly user?: string | null;
+  readonly port?: Int | null;
+  readonly identityFile?: string | null;
+  readonly knownHostsFile: string;
+  readonly hostKeyAlias: string;
+  readonly configFile?: string | null;
+}
+
+const SshTarget = Type.Object(
+  {
+    type: Type.Literal("ssh"),
+    host: Type.String(),
+    user: Type.Optional(Type.String()),
+    port: Type.Optional(Type.Integer({ minimum: 1, maximum: 65535 })),
+    identityFile: Type.Optional(Type.String()),
+    knownHostsFile: Type.String(),
+    hostKeyAlias: Type.String(),
+    configFile: Type.Optional(Type.String({ minLength: 1, pattern: "^[^\\u0000]*$" })),
+  },
+  { additionalProperties: false },
+);
+
+function sshTarget(value: SshTargetInput): Type.Static<typeof SshTarget> {
+  const target = {
+    type: value.type,
+    host: value.host,
+    knownHostsFile: value.knownHostsFile,
+    hostKeyAlias: value.hostKeyAlias,
+    ...(value.user == null ? {} : { user: value.user }),
+    ...(value.port == null ? {} : { port: value.port }),
+    ...(value.identityFile == null ? {} : { identityFile: value.identityFile }),
+    ...(value.configFile == null ? {} : { configFile: value.configFile }),
+  };
+  assert(Value.Check(SshTarget, target));
+  sshArguments(target);
+  return target;
+}
+
+function envInit(value: SshTargetInput | null | undefined): Durable.ConversationInit | undefined {
+  if (value === undefined) return undefined;
+  let target: Type.Static<typeof SshTarget> | null;
+  try {
+    target = value === null ? null : sshTarget(value);
+  } catch {
+    throw new ResolverError("BAD_REQUEST");
+  }
+  return async (tx, id) => {
+    const draft = await tx.doc(Env, id);
+    if (target === null) delete draft.env;
+    else draft.env = target;
+  };
+}
+
+/** Persisted selection only. Reading it does not acquire an execution environment. @gqlField env */
+export async function conversationEnv(
+  source: ConversationRecord,
+  ctx: ResolverContext,
+): Promise<SshTarget | null> {
+  try {
+    const { instance } = await requireConversation(ctx, source);
+    const value = (await instance.snapshot(Env, source.durableId, ctx.context))?.env;
+    return value === undefined ? null : sshTarget(value);
+  } catch (error) {
+    throw mapError(error);
+  }
+}
+
 /** @gqlInput */
 interface ConfigureInput {
+  readonly env?: SshTargetInput | null;
   readonly conversationId: ID;
   readonly change: AgentChange;
 }
@@ -3000,8 +2905,8 @@ interface ModelRefInput {
 type ModelThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
- * Change model, thinking level, or cwd overrides; return true after the commit.
- * Read resolved settings through agent.
+ * Change agent overrides and env selection atomically, including during active work.
+ * Read resolved agent settings through agent and persisted selection through env.
  * @gqlMutationField
  */
 export async function configure(
@@ -3010,7 +2915,13 @@ export async function configure(
 ): Promise<boolean | null> {
   try {
     const { handle, instance } = await mutationConversation(ctx, input.conversationId);
-    await harnessOperation(instance, ctx, () => handle.configure(input.change, ctx.context));
+    const init = envInit(input.env);
+    await harnessOperation(instance, ctx, () =>
+      handle.commit(async (tx) => {
+        await configureAgent(tx, handle.id, input.change);
+        await init?.(tx, handle.id);
+      }, ctx.context),
+    );
     return true;
   } catch (error) {
     throw mapError(error);
@@ -3319,6 +3230,7 @@ interface InventoryService {
   lookup(id: string, context: Context): Promise<InventoryRecord | undefined>;
   /** Authorize each observation. Undefined means unavailable, not a read failure. */
   flakeReference(id: string, context: Context): Promise<string | undefined>;
+  connect(id: string, context: Context): Promise<Omit<NativeSshTarget, "ssh"> | undefined>;
   state(id: string, context: Context): Promise<InstanceState | undefined>;
   /** One invocation only. Omit unavailable/invalid/unfinished startup durations. */
   timings(id: string, context: Context): Promise<InventoryTimings | undefined>;
@@ -3457,6 +3369,17 @@ export async function instanceFlakeReference(
     if (value === undefined) return null;
     assert(typeof value === "string");
     return value;
+  });
+}
+
+/** SSH connection data only; does not connect or start the instance. @gqlField connect */
+export async function instanceConnect(
+  source: Instance,
+  ctx: ResolverContext,
+): Promise<SshTarget | null> {
+  return serviceCall(ctx, async () => {
+    const target = await ctx.inventory.connect(source.serviceId, ctx.context);
+    return target === undefined ? null : sshTarget({ ...target, type: "ssh" });
   });
 }
 

@@ -1,5 +1,6 @@
 {
   importNpmLock,
+  durable-harness,
   lib,
   nodejs,
   stdenvNoCC,
@@ -28,7 +29,10 @@ in
         ./serve
       ];
     };
-    npmDeps = importNpmLock {npmRoot = ./.;};
+    npmDeps = importNpmLock {
+      npmRoot = ./.;
+      packageSourceOverrides."node_modules/durable-harness" = "${durable-harness}/lib/durable-harness";
+    };
     npmRebuildFlags = ["--ignore-scripts"];
     nativeBuildInputs = [
       importNpmLock.npmConfigHook

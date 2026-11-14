@@ -84,7 +84,7 @@ Calls to `D.Conversation` methods acquire the handle through
 | Enable scheduling                               | `Mutation.resume`                        | `D.Harness.resume()`.                                                                                                                                           |
 | Admit a context reset                           | `Mutation.reset`                         | `D.Conversation.reset(handoff, context)`.                                                                                                                       |
 | Admit compaction                                | `Mutation.compact`                       | `D.Conversation.compact(instructions, context)`. Returns a task ID, not completion.                                                                             |
-| Change agent overrides                          | `Mutation.configure`                     | `D.Conversation.configure(change, context)`, with the writable projection below.                                                                                |
+| Change agent overrides and execution target     | `Mutation.configure`                     | `D.configure(tx, conversationId, change)` and the conversation env document in one conversation commit.                                                         |
 
 ### Roots, identities, records, and pages
 
@@ -152,19 +152,19 @@ combines record fields with conversation-scoped resolvers.
 | `ResetInput`              | Adapter addressing envelope around `D.Conversation.reset()`'s handoff.                                    |
 | `CompactInput`            | Adapter addressing envelope around `D.Conversation.compact()`'s instructions.                             |
 | `CompactPayload`          | Adapter reference to the task ID returned by `D.Conversation.compact()`.                                  |
-| `ConfigureInput`          | Adapter addressing envelope around the exposed `D.AgentChange` fields.                                    |
+| `ConfigureInput`          | Adapter addressing envelope around the exposed `D.AgentChange` fields and optional `env`.                 |
 
 Lifecycle input and result mappings:
 
-| Schema name                                            | Upstream name or adapter role                                               |
-| ------------------------------------------------------ | --------------------------------------------------------------------------- |
-| `OpenInput`, `OpenPayload`                             | Deployment storage key and returned Harness reference.                      |
-| `RootInput`, `RootPayload`                             | Adapter Harness addressing and returned conversation reference.             |
-| `RootOptionsInput`                                     | Data-only projection of `D.Harness.root` options. `init` stays server-side. |
-| `CreateConversationInput`, `CreateConversationPayload` | Adapter Harness addressing and returned conversation reference.             |
-| `ConversationCreateOptionsInput`                       | `D.ConversationCreateOptions` without the server-side `init` callback.      |
-| `ConversationOwnershipInput`                           | `D.ConversationOwnership`, with discriminator/payload validation.           |
-| `ConversationOwnershipKind`                            | `D.ConversationOwnership["kind"]`.                                          |
+| Schema name                                            | Upstream name or adapter role                                                                         |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `OpenInput`, `OpenPayload`                             | Deployment storage key and returned Harness reference.                                                |
+| `RootInput`, `RootPayload`                             | Adapter Harness addressing and returned conversation reference.                                       |
+| `RootOptionsInput`                                     | Data-only projection of `D.Harness.root` options plus `env`, initialized through server-side `init`.  |
+| `CreateConversationInput`, `CreateConversationPayload` | Adapter Harness addressing and returned conversation reference.                                       |
+| `ConversationCreateOptionsInput`                       | `D.ConversationCreateOptions` without executable `init`; `env` supplies the initial execution target. |
+| `ConversationOwnershipInput`                           | `D.ConversationOwnership`, with discriminator/payload validation.                                     |
+| `ConversationOwnershipKind`                            | `D.ConversationOwnership["kind"]`.                                                                    |
 
 ### Model catalog types
 
@@ -380,6 +380,7 @@ input RootInput {
 
 input RootOptionsInput {
   agent: AgentChange
+  env: SshTargetInput
 }
 
 type RootPayload {
@@ -394,6 +395,7 @@ input CreateConversationInput {
 input ConversationCreateOptionsInput {
   ownership: ConversationOwnershipInput!
   agent: AgentChange
+  env: SshTargetInput
 }
 
 input ConversationOwnershipInput {
@@ -464,23 +466,26 @@ return `NOT_FOUND`, not absence. Other failures use the
 ### Root and additional conversations
 
 `Mutation.root` finds the existing Harness by global ID and calls
-`harness.root(context, options)`. Omitted options mean no agent changes. For an
-absent root, creation and supplied agent changes commit atomically. For an
-existing root, the method returns it without changes, even if the supplied
-options differ. `configure` changes an existing root.
+`harness.root(context, options)`. Omitted options mean no initial agent changes
+or execution target. For an absent root, creation, supplied agent changes, and
+`env` initialization commit atomically. For an existing root, the method returns
+it without changes, even if the supplied options differ. `configure` changes an
+existing root.
 
 `Mutation.createConversation` calls
 `harness.createConversation(options, context)` on the addressed Harness. For
 `ownerless`, `taskId` must be absent. For `task`, `taskId` must be a non-null
 native task ID in that Harness. The adapter validates this pairing before it
 calls Durable. Other optional inputs can be absent but not null, except
-null-clearing fields in `AgentChange`. Neither creation operation submits input,
-enables scheduling, creates a fork, or starts a review workflow.
+null-clearing fields in `AgentChange` and the
+[execution target inputs](#execution-environment). Neither creation operation
+submits input, enables scheduling, creates a fork, or starts a review workflow.
 
 The native `init(tx, conversationId)` callback and creation hooks remain
 server-side. The API exposes no executable callbacks, arbitrary transactions, or
-document-initialization language. Application document changes use separate
-mutations outside the conversation-creation commit.
+document-initialization language. The server initializes the env document
+through `init` in the creating commit. Other application document changes use
+separate mutations outside that commit.
 
 Each successful `createConversation` creates another conversation. An uncertain
 response is not permission for automatic retry. Catalog absence does not prove
@@ -793,6 +798,7 @@ type Instance implements Node {
   id: ID!
   unit: String!
   flakeReference: String
+  connect: SshTarget
   state: InstanceState
   timings: InstanceTimings
 }
@@ -827,6 +833,15 @@ units, so it includes stopped instances and units at startup. An instance
 identifies a host service in its owner namespace, not a persisted Harness.
 `harnesses` is not the instance catalog. An inventory read does not start or
 connect to guests. There are no instance lifecycle mutations.
+
+`connect` returns the [SSH target](#execution-environment) for the instance. The
+inventory service supplies the hostname, user, SSH configuration, identity-file
+path, known-hosts-file path, and host-key alias. Consumers do not construct
+these values from an instance ID or runtime directory. The result can be
+supplied as conversation `env`, without GraphQL response metadata. Unavailable
+connection material returns null; observation failures produce a field error. A
+target does not guarantee reachability. Reading it does not start a guest or
+open SSH.
 
 `state` returns observed `ActiveState`, `SubState`, and `Result` strings without
 conversion to a closed enum. Unavailable metadata, state, or timings remain
@@ -1137,6 +1152,7 @@ extend type Mutation {
 input ConfigureInput {
   conversationId: ID!
   change: AgentChange!
+  env: SshTargetInput
 }
 
 input AgentChange {
@@ -1152,9 +1168,16 @@ field unchanged, a value replaces it, and null removes it. For example,
 `change: { cwd: "/work" }` keeps the stored model and thinking level.
 `change: { cwd: null }` removes only cwd.
 
-`configure` does not replace the whole document. `ConversationRecord.agent`
-returns resolved values. The existing SSE mount reports stored `pi.agent`
-changes.
+`change` updates only the supplied agent fields, not the whole document.
+`ConversationRecord.agent` returns resolved values. The existing SSE mount
+reports stored `pi.agent` changes.
+
+`env` selects the [execution environment](#execution-environment). Omission
+preserves the selection, null clears it, and an object replaces it. `change: {}`
+permits an env-only update. Agent changes and the env document update commit
+atomically through one conversation commit. Environment changes are allowed at
+any time, including during active execution; they do not require an idle
+conversation, abort, or restart.
 
 The write affects only Durable, not application files or their defaults. Initial
 values can populate conversation documents at creation. Those documents remain
@@ -1169,6 +1192,97 @@ Sources:
 [conversation initialization](../../../app/serve/sessions.ts),
 [Harness factory](../../harness/src/index.ts), and pinned
 [agent and policy defaults](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/agent.js).
+
+### Execution environment
+
+Execution selection belongs to each conversation, not to its Harness or an
+instance. `env` is the field name on creation/configuration inputs and on
+`ConversationRecord`. `cwd` remains in `pi.agent` and is not an SSH target
+field.
+
+```graphql
+enum ExecutionEnvType {
+  ssh
+}
+
+type SshTarget {
+  type: ExecutionEnvType!
+  host: String!
+  user: String
+  port: Int
+  identityFile: String
+  knownHostsFile: String!
+  hostKeyAlias: String!
+  configFile: String
+}
+
+input SshTargetInput {
+  type: ExecutionEnvType!
+  host: String!
+  user: String
+  port: Int
+  identityFile: String
+  knownHostsFile: String!
+  hostKeyAlias: String!
+  configFile: String
+}
+
+extend type ConversationRecord {
+  env: SshTarget
+}
+```
+
+`SshTarget` keeps the upstream name and connection fields, except `ssh`. The API
+adds only the `type: ssh` discriminator. `SshTargetInput` is the corresponding
+GraphQL input object. Neither exposes the SSH executable or daemon binary;
+`sshConnection` uses its upstream defaults. Optional target fields accept
+omission or null; null is normalized to omission before calling upstream. A
+supplied port is an integer from 1 through 65535. Invalid target inputs return
+`BAD_REQUEST`.
+
+All target paths refer to files on the host running the API, not the guest or
+browser. The API returns paths, never private-key contents. SSH retains upstream
+host-key verification; selecting an env does not accept or replace a host key.
+The target can come from `Instance.connect` or be supplied directly. The generic
+SSH adapter does not interpret drv.run instance IDs or construct runtime paths.
+
+The selection is stored in a conversation-scoped Durable document, separate from
+`pi.agent`. `ConversationRecord.env` reads that selection without connecting and
+returns null when none is selected. It is not a field added to the native
+Durable record. Reopening the Harness reads the persisted selection, not a
+second copy in application configuration.
+
+Creation initializes the selection in the creating commit. An omitted env leaves
+a new root or ownerless conversation unselected; a task-owned child inherits its
+owner's selection. Explicit null clears the initial selection, including an
+inherited one. Forks inherit the document at the fork point through rewindable
+history and `fork: asOf` semantics. An explicit creation value replaces the
+inherited selection. Existing roots ignore creation options.
+
+`HarnessOptions.env` reads the selected document at each acquisition and
+combines it with `EnvTarget.cwd`. The application supplies the lazy
+`sshConnection` and `RemoteExecutionEnv`. No selection means no execution
+environment, not implicit execution on the host. A connection failure remains a
+failure, not a fallback to another target.
+
+Changing env affects subsequent environment acquisitions. In-flight commands
+keep their existing environment; configuration does not retarget or cancel them.
+The application must not mutate an environment already borrowed by running work.
+Application shutdown closes Harnesses before cleaning up environments and
+closing their SSH connections. `RemoteExecutionEnv.cleanup` alone does not close
+its connection.
+
+Sources: pinned Pi 1.5.2
+[SSH target and connection contracts](../../harness/node_modules/@earendil-works/pi-env/dist/ssh.d.ts),
+[SSH argument validation and defaults](../../harness/node_modules/@earendil-works/pi-env/dist/ssh.js),
+[remote environment contract](../../harness/node_modules/@earendil-works/pi-env/dist/remote-env.d.ts),
+[remote cleanup](../../harness/node_modules/@earendil-works/pi-env/dist/remote-env.js),
+[Harness env and creation hooks](../node_modules/@earendil-works/pi-durable/dist/harness/types.d.ts),
+[transactional agent configuration](../node_modules/@earendil-works/pi-durable/dist/harness/agent.js),
+[current env document and child inheritance](../../../app/serve/sessions.ts),
+[current environment acquisition](../../../app/serve/application.ts),
+[SSH adapter and env document](../../harness/src/env.ts), and
+[host connection material](../../../../nixosModules/host/pre.sh).
 
 ### Linked accounts
 

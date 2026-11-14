@@ -50,9 +50,11 @@
     "@earendil-works/chord": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-durable": "1.5.2",
+    "@earendil-works/pi-env": "1.5.2",
     "@earendil-works/pi-telemetry": "1.5.2",
     "@opentelemetry/api": "1.9.0",
     "@opentelemetry/core": "2.12.0",
+    "durable-harness": "file:../harness",
     "typebox": "1.3.27"
   },
   "peerDependencies": {

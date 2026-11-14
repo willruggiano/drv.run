@@ -42,6 +42,7 @@ import {
   type Tx,
   type CommitOptions,
 } from "@earendil-works/pi-durable";
+import { Env, openHarness as openCodingHarness } from "durable-harness";
 import { createSchema, type ResolverContext } from "../src/index.ts";
 
 import {
@@ -97,12 +98,21 @@ function catalogContext(models: ResolverContext["models"], context = execution):
   };
 }
 
-async function fixture(t: TestContext, externalId = "test") {
+async function fixture(
+  t: TestContext,
+  externalId = "test",
+  open: (
+    storage: MemoryStorage,
+    options: Parameters<typeof openCodingHarness>[1] &
+      Pick<Parameters<typeof Harness.open>[1], "registry">,
+    context: ResolverContext["context"],
+  ) => Promise<Harness> = (storage, options, context) => Harness.open(storage, options, context),
+) {
   const models = createModels();
   const faux = fauxProvider({ models: [{ id: "test", reasoning: true }] });
   models.setProvider(faux.provider);
   const storage = new MemoryStorage();
-  const instance = await Harness.open(
+  const instance = await open(
     storage,
     {
       models,
@@ -780,10 +790,14 @@ for (const operation of ["abort", "reset", "configure"] as const) {
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     t.mock.method(f.instance, "conversation", async () => f.root);
-    const upstream = t.mock.method(f.root, operation, async () => {
-      entered.resolve();
-      await release.promise;
-    });
+    const upstream = t.mock.method(
+      f.root,
+      operation === "configure" ? "commit" : operation,
+      async () => {
+        entered.resolve();
+        await release.promise;
+      },
+    );
     const change = operation === "configure" ? ", change: {}" : "";
     const mutation = `mutation($id: ID!) { ${operation}(input: { conversationId: $id${change} }) }`;
     let acknowledged = false;
@@ -1004,7 +1018,7 @@ void test("healthy Harness failures retain the default typed error mapping", asy
     [new Error("private"), "INTERNAL_SERVER_ERROR"],
   ] as const) {
     t.mock.method(f.instance, "conversation", async () => f.root);
-    t.mock.method(f.root, "configure", async () => {
+    t.mock.method(f.root, "commit", async () => {
       throw error;
     });
     const result = await f.run(
@@ -3474,7 +3488,7 @@ void test("write operations release their close observer after success and rejec
   assert.equal((await f.run(request, { id: f.conversationId })).errors, undefined);
   assert.equal(listeners.size, 0);
   t.mock.method(f.instance, "conversation", async () => f.root);
-  t.mock.method(f.root, "configure", async () => {
+  t.mock.method(f.root, "commit", async () => {
     throw new StorageRequestError("rejected");
   });
   assert.equal(
@@ -4361,6 +4375,7 @@ void test("inventory exposes only read-only public fields and uses Float microse
   const instance = schema.getType("Instance");
   assert(isObjectType(instance));
   assert.deepEqual(Object.keys(instance.getFields()).sort(), [
+    "connect",
     "flakeReference",
     "id",
     "state",
@@ -5243,4 +5258,309 @@ void test("malformed push service results are internal errors, not configuration
         .errors?.[0]?.extensions.code,
       "INTERNAL_SERVER_ERROR",
     );
+});
+
+const envFields = "type host user port identityFile knownHostsFile hostKeyAlias configFile";
+const envTarget = {
+  type: "ssh" as const,
+  host: "guest-a",
+  knownHostsFile: "/known_hosts",
+  hostKeyAlias: "guest-a",
+};
+const configureEnv =
+  "mutation($id:ID!,$env:SshTargetInput,$change:AgentChange!) { configure(input:{conversationId:$id,env:$env,change:$change}) }";
+const envQuery = `query($id:ID!) { node(id:$id) { ... on ConversationRecord { env { ${envFields} } agent { cwd } } } }`;
+
+void test("env configuration replaces, clears, and reads selection without executing; agent changes share one commit", async (t) => {
+  const f = await fixture(t, "test", openCodingHarness);
+  assert.deepEqual(await f.instance.snapshot(Env, f.root.id, execution), {});
+  const writes = t.mock.method(f.storage, "commit");
+  const before = await f.success<{ node: { env: unknown } }>(envQuery, { id: f.conversationId });
+  assert.equal(before.node.env, null);
+  assert.equal(writes.mock.callCount(), 0);
+  const target = {
+    ...envTarget,
+    user: "root",
+    port: 2222,
+    identityFile: "/key",
+    configFile: "/config",
+  };
+  assert.deepEqual(
+    await f.success(configureEnv, { id: f.conversationId, env: target, change: { cwd: "/a" } }),
+    { configure: true },
+  );
+  assert.equal(writes.mock.callCount(), 1);
+  assert.deepEqual(await f.success(envQuery, { id: f.conversationId }), {
+    node: { env: target, agent: { cwd: "/a" } },
+  });
+  assert.deepEqual(await f.instance.snapshot(Env, f.root.id, execution), { env: target });
+  await f.success(configureEnv, { id: f.conversationId, change: { cwd: "/b" } });
+  assert.deepEqual(await f.instance.snapshot(Env, f.root.id, execution), { env: target });
+  await f.success(configureEnv, {
+    id: f.conversationId,
+    env: {
+      ...envTarget,
+      host: "guest-b",
+      user: null,
+      port: null,
+      identityFile: null,
+      configFile: null,
+    },
+    change: {},
+  });
+  assert.deepEqual(await f.instance.snapshot(Env, f.root.id, execution), {
+    env: { ...envTarget, host: "guest-b" },
+  });
+  await f.success(configureEnv, { id: f.conversationId, env: null, change: {} });
+  assert.deepEqual(await f.instance.snapshot(Env, f.root.id, execution), {});
+  assert.equal((await f.root.agent(execution)).cwd, "/b");
+  assert.equal((await f.instance.inspect(execution)).scheduling, "paused");
+});
+
+void test("invalid env targets cannot partially change agent or env state", async (t) => {
+  const f = await fixture(t, "test", openCodingHarness);
+  const writes = t.mock.method(f.storage, "commit");
+  for (const invalid of [
+    { host: "" },
+    { host: "-option" },
+    { host: "bad host" },
+    { user: "bad\nuser" },
+    { hostKeyAlias: "" },
+    { knownHostsFile: "" },
+    { knownHostsFile: 'bad"path' },
+    { identityFile: "\0" },
+    { port: 0 },
+    { port: 65536 },
+    { configFile: "" },
+    { configFile: "\0" },
+  ]) {
+    const result = await f.run(configureEnv, {
+      id: f.conversationId,
+      env: { ...envTarget, ...invalid },
+      change: { cwd: "/must-not-commit" },
+    });
+    assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
+    assert.equal(result.data?.configure, null);
+  }
+  for (const invalid of [
+    { ssh: "program" },
+    { binary: "daemon" },
+    { type: "local" },
+    { knownHostsFile: null },
+    { port: 1.5 },
+  ]) {
+    const result = await f.run(configureEnv, {
+      id: f.conversationId,
+      env: { ...envTarget, ...invalid },
+      change: {},
+    });
+    assert(result.errors?.length);
+    assert.equal(result.data, undefined);
+  }
+  assert.equal(writes.mock.callCount(), 0);
+  assert.equal((await f.root.agent(execution)).cwd, undefined);
+  assert.deepEqual(await f.instance.snapshot(Env, f.root.id, execution), {});
+
+  const commit = f.root.commit.bind(f.root);
+  t.mock.method(f.instance, "conversation", async () => f.root);
+  t.mock.method(f.root, "commit", (...[change, context, options]: Parameters<typeof commit>) =>
+    commit(
+      async (tx) => {
+        await change(tx);
+        throw new Error("rollback after both document edits");
+      },
+      context,
+      options,
+    ),
+  );
+  const result = await f.run(configureEnv, {
+    id: f.conversationId,
+    env: envTarget,
+    change: { cwd: "/rollback" },
+  });
+  assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.equal((await f.root.agent(execution)).cwd, undefined);
+  assert.deepEqual(await f.instance.snapshot(Env, f.root.id, execution), {});
+});
+
+void test("creation initializes env atomically, inherits task ownership, and permits clearing inherited selection", async (t) => {
+  const f = await fixture(t, "test", openCodingHarness);
+  await f.success(configureEnv, { id: f.conversationId, env: envTarget, change: {} });
+  const taskId = await f.instance.commit(
+    (tx) =>
+      tx.createTask(
+        CompactionTask,
+        { reason: "manual" },
+        { conversationId: f.root.id, ownership: { kind: "conversation" } },
+      ),
+    execution,
+  );
+  const create = `mutation($input:CreateConversationInput!) { createConversation(input:$input) { conversation { id durableId env { ${envFields} } agent { cwd } } } }`;
+  for (const ownership of [{ kind: "ownerless" }, { kind: "task", taskId }]) {
+    for (const env of [undefined, null, { ...envTarget, host: "override" }]) {
+      const writes = t.mock.method(f.storage, "commit");
+      const result = await f.success<{
+        createConversation: { conversation: Identity & { env: unknown; agent: { cwd: string } } };
+      }>(create, {
+        input: {
+          harnessId: f.harnessId,
+          options: { ownership, ...(env === undefined ? {} : { env }), agent: { cwd: "/created" } },
+        },
+      });
+      assert.equal(writes.mock.callCount(), 1);
+      writes.mock.restore();
+      const record = result.createConversation.conversation;
+      const selected = env === undefined ? (ownership.kind === "task" ? envTarget : null) : env;
+      assert.deepEqual(
+        record.env,
+        selected === null
+          ? null
+          : { ...selected, user: null, port: null, identityFile: null, configFile: null },
+      );
+      assert.equal(record.agent.cwd, "/created");
+    }
+  }
+  const result = await f.run(create, {
+    input: {
+      harnessId: f.harnessId,
+      options: { ownership: { kind: "ownerless" }, env: { ...envTarget, host: "" } },
+    },
+  });
+  assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
+});
+
+void test("root env applies only at initial creation and failed initialization leaves no root", async (t) => {
+  const f = await fixture(t);
+  const instance = await openCodingHarness(
+    new MemoryStorage(),
+    { models: createModels() },
+    execution,
+  );
+  t.after(() => instance.close(execution));
+  const ctx = f.request({ session: async () => instance });
+  const create = `mutation($id:ID!,$options:RootOptionsInput) { root(input:{harnessId:$id,options:$options}) { conversation { id env { ${envFields} } agent { cwd } } } }`;
+  const rejected = await f.run(
+    create,
+    { id: f.harnessId, options: { env: { ...envTarget, host: "" } } },
+    ctx,
+  );
+  assert.equal(rejected.errors?.[0]?.extensions.code, "BAD_REQUEST");
+  assert.equal(await instance.conversation(f.root.id, execution), undefined);
+  const first = await f.success(
+    create,
+    { id: f.harnessId, options: { env: envTarget, agent: { cwd: "/initial" } } },
+    ctx,
+  );
+  for (const env of [null, { ...envTarget, host: "ignored" }]) {
+    assert.deepEqual(
+      await f.success(
+        create,
+        { id: f.harnessId, options: { env, agent: { cwd: "/ignored" } } },
+        ctx,
+      ),
+      first,
+    );
+  }
+});
+
+void test("inventory connect returns SSH data, normalizes unavailable targets, and excludes executable options", async () => {
+  const inventory = inventoryFixture();
+  const target = { ...envTarget, user: "root", ssh: "private-program", binary: "private-daemon" };
+  const calls: string[] = [];
+  const ctx = {
+    ...catalogContext(() => assert.fail("no model access")),
+    inventory: {
+      ...inventory,
+      async connect(id: string, context: ResolverContext["context"]) {
+        assert.equal(context, execution);
+        calls.push(id);
+        return id === "running" ? target : undefined;
+      },
+    },
+  };
+  const result = await graphql({
+    schema,
+    source: `query { instances(limit:10) { nodes { id connect { ${envFields} } } } }`,
+    contextValue: ctx,
+  });
+  assert.equal(result.errors, undefined);
+  assert.deepEqual(calls, ["retained", "running", "starting"]);
+  const data = result.data?.instances as Connection<{ id: string; connect: unknown }>;
+  assert.deepEqual(JSON.parse(JSON.stringify(data.nodes.map((node) => node.connect))), [
+    null,
+    { ...envTarget, user: "root", port: null, identityFile: null, configFile: null },
+    null,
+  ]);
+  for (const value of [undefined, { ...target, port: 70000 }]) {
+    const next = await graphql({
+      schema,
+      source: `query($id:ID!) { node(id:$id) { ... on Instance { id connect { host } } } }`,
+      variableValues: { id: data.nodes[1]!.id },
+      contextValue: {
+        ...ctx,
+        inventory: {
+          ...inventory,
+          async connect() {
+            if (value === undefined) throw new Error("private service failure");
+            return value;
+          },
+        },
+      },
+    });
+    assert.equal(next.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    assert.deepEqual(next.errors?.[0]?.path, ["node", "connect"]);
+  }
+  const output = schema.getType("SshTarget");
+  const input = schema.getType("SshTargetInput");
+  assert(isObjectType(output));
+  assert(isInputObjectType(input));
+  assert.deepEqual(Object.keys(output.getFields()).sort(), Object.keys(input.getFields()).sort());
+  assert.equal(output.getFields().ssh, undefined);
+  assert.equal(output.getFields().binary, undefined);
+  assert.equal(output.getFields().cwd, undefined);
+});
+
+void test("GraphQL env changes succeed during active generation without cancelling it", async (t) => {
+  const f = await fixture(t, "test", openCodingHarness);
+  const entered = Promise.withResolvers<AbortSignal>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  f.faux.setResponses([
+    async (_request, options) => {
+      assert(options?.signal);
+      entered.resolve(options.signal);
+      await awaitWithContext(release.promise, withAbortSignal(options.signal, execution));
+      return fauxAssistantMessage("answer");
+    },
+  ]);
+  const submission = await f.root.submit({ type: "input", content: "hello" }, execution);
+  const signal = await entered.promise;
+  for (const env of [envTarget, { ...envTarget, host: "other-host" }, null]) {
+    await f.success(configureEnv, { id: f.conversationId, env, change: { cwd: "/changed" } });
+    assert.deepEqual(
+      await f.instance.snapshot(Env, f.root.id, execution),
+      env === null ? {} : { env },
+    );
+    assert.equal(signal.aborted, false);
+    assert.equal((await submission.status(execution)).status, "placed");
+  }
+  release.resolve();
+  assert.equal((await submission.wait(execution)).status, "done");
+});
+
+void test("env reads leave absent documents untouched and preserve lookup and storage failures", async (t) => {
+  const f = await fixture(t);
+  const writes = t.mock.method(f.storage, "commit");
+  assert.equal(
+    (await f.success<{ node: { env: unknown } }>(envQuery, { id: f.conversationId })).node.env,
+    null,
+  );
+  assert.equal(await f.instance.snapshot(Env, f.root.id, execution), undefined);
+  assert.equal(writes.mock.callCount(), 0);
+  t.mock.method(f.instance, "snapshot", async () => {
+    throw new Error("private storage failure");
+  });
+  const result = await f.run(envQuery, { id: f.conversationId });
+  assert.equal(result.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  assert.deepEqual(result.errors?.[0]?.path, ["node", "env"]);
 });

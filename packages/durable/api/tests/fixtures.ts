@@ -37,6 +37,9 @@ export const unavailableInventory: ResolverContext["inventory"] = {
   async flakeReference() {
     assert.fail("inventory service is not bound in this test");
   },
+  async connect() {
+    assert.fail("inventory service is not bound in this test");
+  },
   async state() {
     assert.fail("inventory service is not bound in this test");
   },
@@ -174,6 +177,18 @@ export function inventoryFixture(namespace = "host/user"): ResolverContext["inve
     },
     async flakeReference(id) {
       return id === "starting" ? undefined : `github:owner/${id}`;
+    },
+    async connect(id) {
+      return id === "running"
+        ? {
+            host: "drv.run.running",
+            user: "root",
+            configFile: "/etc/ssh/ssh_config",
+            identityFile: "/run/user/1000/drv.run.running/client-key",
+            knownHostsFile: "/run/user/1000/drv.run.running/known_hosts",
+            hostKeyAlias: "drv.run.running",
+          }
+        : undefined;
     },
     async state(id) {
       if (id === "retained") return undefined;
