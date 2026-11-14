@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { mock, test, type TestContext } from "node:test";
+import { CompactionTask } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import * as webPush from "web-push";
@@ -204,4 +205,159 @@ await test("VAPID startup validates key correspondence and contact policy", asyn
   key.x = randomBytes(32).toString("base64url");
   await writeFile(f.config.privateKeyFile, JSON.stringify(key));
   await assert.rejects(openPush(f.directory, f.config));
+});
+
+await test("push closes observation when Harness closes and excludes owned conversations", async (t) => {
+  const f = await fixture(t);
+  await f.service.register(f.subscription, context);
+  const { harness, root } = await openHarness(t);
+  const taskId = await harness.commit(
+    (tx) =>
+      tx.createTask(
+        CompactionTask,
+        { reason: "manual" },
+        { conversationId: root.id, ownership: { kind: "conversation" } },
+      ),
+    context,
+  );
+  const child = await harness.createConversation({ ownership: { kind: "task", taskId } }, context);
+  f.attach(harness, "session");
+  await child.commit(
+    (tx) =>
+      tx.createSubmission({
+        type: "input",
+        conversationId: child.id,
+        status: "unanswered",
+        reason: "failed",
+      }),
+    context,
+  );
+  await setImmediate();
+  assert.equal(sent.mock.callCount(), 0);
+  await harness.close(context);
+});
+
+await test("push bounds pending deliveries and waits for admitted sends on shutdown", async (t) => {
+  const pending = Promise.withResolvers<webPush.SendResult>();
+  t.after(() => pending.resolve({ statusCode: 201, headers: {}, body: "" }));
+  const f = await fixture(t);
+  await f.service.register(f.subscription, context);
+  const { harness } = await openHarness(t);
+  sent.mock.mockImplementation(() => pending.promise);
+  f.attach(harness, "session");
+  await harness.commit(async (tx) => {
+    for (let i = 0; i < 17; i++) {
+      const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
+      await tx.createSubmission({
+        type: "input",
+        conversationId: conversation.id,
+        status: "unanswered",
+        reason: "failed",
+      });
+    }
+  }, context);
+  await setImmediate();
+  assert.equal(sent.mock.callCount(), 16);
+  let closed = false;
+  const closing = f.close().then(() => {
+    closed = true;
+  });
+  await setImmediate();
+  assert.equal(closed, false);
+  pending.resolve({ statusCode: 201, headers: {}, body: "" });
+  await closing;
+  assert.equal(closed, true);
+});
+
+await test("push discards scheduled work after shutdown without entering the Harness", async (t) => {
+  const f = await fixture(t);
+  await f.service.register(f.subscription, context);
+  const { harness, root } = await openHarness(t);
+  f.attach(harness, "session");
+  harness.observeCommits({
+    advance() {
+      void f.close();
+    },
+    end() {},
+  });
+  await harness.commit(
+    (tx) =>
+      tx.createSubmission({
+        type: "input",
+        conversationId: root.id,
+        status: "unanswered",
+        reason: "failed",
+      }),
+    context,
+  );
+  await f.close();
+  assert.equal(sent.mock.callCount(), 0);
+});
+
+await test("push observation failures do not change committed execution", async (t) => {
+  const f = await fixture(t);
+  const { harness, root } = await openHarness(t);
+  f.attach(harness, "session");
+  harness.observeCommits({
+    advance() {
+      t.mock.method(harness, "commit", async () => {
+        throw new Error("storage unavailable");
+      });
+    },
+    end() {},
+  });
+  const submission = await harness.commit(
+    (tx) =>
+      tx.createSubmission({
+        type: "input",
+        conversationId: root.id,
+        status: "unanswered",
+        reason: "failed",
+      }),
+    context,
+  );
+  assert.equal(submission.status, "unanswered");
+  await setImmediate();
+  assert.equal(sent.mock.callCount(), 0);
+});
+
+await test("VAPID supports HTTPS contact addresses", async (t) => {
+  const f = await fixture(t);
+  await f.close();
+  const push = await openPush(f.directory, { ...f.config, subject: "https://operator.example" });
+  t.after(() => push.close());
+  assert(await push.service.applicationServerKey(context));
+});
+
+await test("a narrowed origin allowlist does not block delivery to remaining subscriptions", async (t) => {
+  const f = await fixture(t);
+  await f.service.register(f.subscription, context);
+  await f.close();
+  const both = await openPush(f.directory, {
+    ...f.config,
+    origins: [...f.config.origins, "https://other.example"],
+  });
+  const allowed = { ...f.subscription, endpoint: "https://other.example/subscription" };
+  await both.service.register(allowed, context);
+  await both.close();
+  const restricted = await openPush(f.directory, {
+    ...f.config,
+    origins: ["https://other.example"],
+  });
+  t.after(() => restricted.close());
+  const { harness, root } = await openHarness(t);
+  restricted.attach(harness, "session");
+  await harness.commit(
+    (tx) =>
+      tx.createSubmission({
+        type: "input",
+        conversationId: root.id,
+        status: "unanswered",
+        reason: "failed",
+      }),
+    context,
+  );
+  await setImmediate();
+  assert.equal(sent.mock.callCount(), 1);
+  assert.deepEqual(sent.mock.calls[0]!.arguments[0], allowed);
 });

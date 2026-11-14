@@ -61,7 +61,7 @@ async function phases(path: string): Promise<InventoryPhase[] | undefined> {
 }
 
 export function createInventoryService(config: DeploymentConfiguration): InventoryService {
-  const namespace = `uid:${process.getuid?.() ?? "unknown"}`;
+  const namespace = `uid:${process.getuid!()}`;
   const root = dirname(config.stateDirectory);
   const unit = (id: string) => `drv.run@${id}.service`;
 
@@ -116,7 +116,7 @@ export function createInventoryService(config: DeploymentConfiguration): Invento
     }
     context.abortSignal?.throwIfAborted();
     return [...ids]
-      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+      .sort((left, right) => left.localeCompare(right))
       .map((id) => ({ id, unit: unit(id) }));
   }
 
@@ -149,7 +149,9 @@ export function createInventoryService(config: DeploymentConfiguration): Invento
       )
         return { invalidCursor: true };
       const all = await inventory(context);
-      const remaining = all.filter((item) => after === undefined || item.id > after);
+      const remaining = all.filter(
+        (item) => after === undefined || item.id.localeCompare(after) > 0,
+      );
       const items = remaining.slice(0, limit);
       const next = remaining.length > items.length ? { namespace, after: items.at(-1)!.id } : null;
       return { items, next };

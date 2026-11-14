@@ -127,3 +127,11 @@ await test("settings service rejects malformed persisted values", async (t) => {
   assert.equal(settings.compaction.enabled, false);
   assert.equal(settings.compaction.reserveTokens, 16384);
 });
+
+await test("settings propagate filesystem read failures", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "durable-api-settings-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const config = readDeploymentConfiguration({ XDG_CONFIG_HOME: directory }, 1000, directory);
+  await mkdir(join(config.configDirectory, "web", "settings.json"), { recursive: true });
+  await assert.rejects(createSettingsService(config).web.read(BACKGROUND_CONTEXT));
+});

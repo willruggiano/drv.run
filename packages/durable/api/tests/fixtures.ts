@@ -3,9 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { serve } from "../serve/serve.ts";
-import { openApplication } from "../src/application.ts";
-import { mock, type TestContext } from "node:test";
+import { serve as nodeServe } from "../serve/serve.ts";
+import { registerHooks } from "node:module";
+import { openApplication as application } from "../src/application.ts";
+import type { TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
@@ -398,30 +399,42 @@ export function pushFixture(): {
   };
 }
 
-let opened: Awaited<ReturnType<typeof openApplication>>;
+let opened: Awaited<ReturnType<typeof application>>;
 let listening: ReturnType<typeof Promise.withResolvers<Awaited<ReturnType<typeof serve>>>>;
-mock.module("../src/application.ts", {
-  namedExports: {
-    openApplication: async (...args: Parameters<typeof openApplication>) => {
-      opened = await openApplication(...args);
-      return opened;
+export async function openApplication(...args: Parameters<typeof application>) {
+  opened = await application(...args);
+  return opened;
+}
+export const serve: typeof nodeServe = async (...args) => {
+  const server = await nodeServe(...args);
+  listening.resolve(server);
+  return server;
+};
+export async function runMain(): Promise<void> {
+  // Resolve test bindings to this fixture, rather than generating mock scripts
+  // with production source URLs (which corrupt V8's coverage ranges).
+  const entrypoint = new URL("../src/index.ts", import.meta.url).href;
+  const hooks = registerHooks({
+    resolve(specifier, context, next) {
+      if (
+        context.parentURL === entrypoint &&
+        (specifier === "./application.ts" || specifier === "durable-api/serve")
+      )
+        return next(import.meta.url, context);
+      return next(specifier, context);
     },
-  },
-});
-mock.module("durable-api/serve", {
-  namedExports: {
-    serve: async (...args: Parameters<typeof serve>) => {
-      const server = await serve(...args);
-      listening.resolve(server);
-      return server;
-    },
-  },
-});
-export const { main: runMain } = await import("../src/index.ts");
+  });
+  try {
+    const { main } = await import("../src/index.ts");
+    return main();
+  } finally {
+    hooks.deregister();
+  }
+}
 
 export async function startServer(t: TestContext): Promise<{
   server: Awaited<ReturnType<typeof serve>>;
-  app: Awaited<ReturnType<typeof openApplication>>;
+  app: Awaited<ReturnType<typeof application>>;
   shutdown(): Promise<void>;
   done: Promise<void>;
 }> {

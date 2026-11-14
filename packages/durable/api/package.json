@@ -101,6 +101,7 @@
   "knip": {
     "entry": [
       "tests/*.test.ts",
+      "tests/fixtures.ts",
       "graphql/src/generated/graphql.ts",
       "graphql/**/*.test.ts",
       "serve/*.test.ts"

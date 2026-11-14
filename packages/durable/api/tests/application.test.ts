@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
-import { Harness } from "@earendil-works/pi-durable";
+import { test, type TestContext } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { Env } from "durable-harness";
+import { DatabaseSync } from "node:sqlite";
+import { Harness, type ConversationId } from "@earendil-works/pi-durable";
 import { readDeploymentConfiguration } from "../src/configuration.ts";
 import { openApplication } from "../src/application.ts";
 
@@ -228,4 +231,173 @@ await test("application refuses unsafe external session identifiers before stora
     new AbortController().signal,
   );
   assert.equal(result.errors?.[0]?.extensions.code, "BAD_REQUEST");
+});
+
+async function applicationFixture(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), "application-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const config = readDeploymentConfiguration(
+    { XDG_STATE_HOME: directory, XDG_CONFIG_HOME: join(directory, "config") },
+    1000,
+    directory,
+  );
+  const app = await openApplication(config);
+  t.after(() => app.close().catch(() => {}));
+  return { app, config, directory };
+}
+
+await test("application environment acquisitions follow persisted selection without closing borrowed SSH environments", async (t) => {
+  const { app } = await applicationFixture(t);
+  const opened = t.mock.method(Harness, "open");
+  const result = await app.api.graphql(
+    { source: 'mutation { open(input:{externalId:"env"}) { harness { id } } }' },
+    new AbortController().signal,
+  );
+  assert.equal(result.errors, undefined);
+  const call = opened.mock.calls[0]!;
+  const harness = await call.result;
+  assert(harness);
+  const factory = call.arguments[1].env;
+  assert(factory);
+  const root = await harness.root(BACKGROUND_CONTEXT);
+  const target = { conversationId: root.id, read: harness };
+  const models = await app.api.graphql(
+    { source: "{ models { id } }" },
+    new AbortController().signal,
+  );
+  assert.equal(models.errors, undefined);
+  assert(Array.isArray(models.data?.models));
+  const watched = await app.api.watch(
+    { externalId: "env", conversationId: root.id },
+    new AbortController().signal,
+  );
+  await watched.cancel();
+  assert.equal(await factory(target, BACKGROUND_CONTEXT), undefined);
+  await harness.commit(async (tx) => {
+    (await tx.doc(Env, root.id)).env = {
+      type: "ssh",
+      host: "guest",
+      knownHostsFile: "/known-hosts",
+      hostKeyAlias: "guest",
+    };
+  }, BACKGROUND_CONTEXT);
+  const first = await factory(target, BACKGROUND_CONTEXT);
+  assert(first);
+  const cleanup = t.mock.method(first, "cleanup");
+  assert.equal(await factory(target, BACKGROUND_CONTEXT), first);
+  const otherCwd = await factory({ ...target, cwd: "/other" }, BACKGROUND_CONTEXT);
+  assert.notEqual(otherCwd, first);
+  await harness.commit(async (tx) => {
+    delete (await tx.doc(Env, root.id)).env;
+  }, BACKGROUND_CONTEXT);
+  assert.equal(await factory(target, BACKGROUND_CONTEXT), undefined);
+  assert.equal(cleanup.mock.callCount(), 0);
+  await app.close();
+  assert.equal(cleanup.mock.callCount(), 1);
+});
+
+await test("application surfaces storage lookup failures and invalid document addresses", async (t) => {
+  const { app, config } = await applicationFixture(t);
+  const signal = new AbortController().signal;
+  await assert.rejects(
+    app.api.watch({ externalId: "../unsafe", conversationId: 1 as ConversationId }, signal),
+  );
+  const sessions = join(config.stateDirectory, "sessions");
+  await mkdir(join(sessions, "directory.sqlite"));
+  await symlink("loop.sqlite", join(sessions, "loop.sqlite"));
+  const missing = await app.api.graphql(
+    { source: '{ harness(externalId:"directory") { id } }' },
+    signal,
+  );
+  assert.equal(missing.errors, undefined);
+  assert.equal(missing.data?.harness, null);
+  const failed = await app.api.graphql({ source: '{ harness(externalId:"loop") { id } }' }, signal);
+  assert.equal(failed.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+  await app.api.graphql(
+    { source: 'mutation { open(input:{externalId:"documents"}) { harness { id } } }' },
+    signal,
+  );
+  const docs = await app.api.graphql(
+    {
+      source:
+        '{ harness(externalId:"documents") { documentDefinitions(scope:{kind:session}) { kind } snapshot(address:{kind:"absent",scope:{kind:session}}) } }',
+    },
+    signal,
+  );
+  assert.equal(docs.errors, undefined);
+  const data = docs.data?.harness as { documentDefinitions: unknown[]; snapshot: unknown };
+  assert.deepEqual(data.documentDefinitions, []);
+  assert.equal(data.snapshot, null);
+});
+
+await test("application releases every owner when shutdown fails", async (t) => {
+  const { app } = await applicationFixture(t);
+  const original = t.mock.method(DatabaseSync.prototype, "close");
+  const close = t.mock.method(DatabaseSync.prototype, "close", function (this: DatabaseSync) {
+    original.call(this);
+    throw new Error("close failed");
+  });
+  const first = app.close();
+  assert.equal(app.close(), first);
+  await assert.rejects(first, AggregateError);
+  assert.equal(close.mock.callCount(), 2);
+});
+
+await test("application closes accounts when push startup fails", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "application-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const config = readDeploymentConfiguration(
+    {
+      XDG_STATE_HOME: directory,
+      VAPID_PRIVATE_KEY_FILE: join(directory, "absent"),
+      VAPID_SUBJECT: "mailto:a@b.example",
+      PUSH_ORIGINS: '["https://push.example"]',
+    },
+    1000,
+    directory,
+  );
+  const close = t.mock.method(DatabaseSync.prototype, "close");
+  await assert.rejects(openApplication(config));
+  assert.equal(close.mock.callCount(), 1);
+});
+
+await test("application aggregates Harness and SSH cleanup failures", async (t) => {
+  const { app } = await applicationFixture(t);
+  const opened = t.mock.method(Harness, "open");
+  await app.api.graphql(
+    { source: 'mutation { open(input:{externalId:"closing"}) { harness { id } } }' },
+    new AbortController().signal,
+  );
+  const call = opened.mock.calls[0]!;
+  const harness = await call.result;
+  assert(harness);
+  const root = await harness.root(BACKGROUND_CONTEXT);
+  await harness.commit(async (tx) => {
+    (await tx.doc(Env, root.id)).env = {
+      type: "ssh",
+      host: "guest",
+      knownHostsFile: "/known-hosts",
+      hostKeyAlias: "guest",
+    };
+  }, BACKGROUND_CONTEXT);
+  const env = await call.arguments[1].env?.(
+    { conversationId: root.id, read: harness },
+    BACKGROUND_CONTEXT,
+  );
+  assert(env);
+  const cleanup = env.cleanup.bind(env);
+  t.mock.method(env, "cleanup", async () => {
+    await cleanup(BACKGROUND_CONTEXT);
+    throw new Error("SSH cleanup failed");
+  });
+  const close = harness.close.bind(harness);
+  t.mock.method(harness, "close", async () => {
+    await close(BACKGROUND_CONTEXT);
+    throw new Error("Harness close failed");
+  });
+  await assert.rejects(app.close(), (error: unknown) => {
+    assert(error instanceof AggregateError);
+    assert.equal(error.errors.length, 2);
+    return true;
+  });
 });

@@ -122,12 +122,14 @@ export async function openPush(directory: string, config: PushConfiguration | un
     failed: boolean,
     harness: Harness,
   ) {
-    if (!config || !vapid) return;
+    assert(config);
+    assert(vapid);
     const conversation = await harness.commit(
       (tx) => tx.conversation(conversationId),
       BACKGROUND_CONTEXT,
     );
-    if (!conversation || conversation.owner) return;
+    assert(conversation);
+    if (conversation.owner) return;
     const url = `/sessions/${encodeURIComponent(externalId)}/conversations/${conversationId}`;
     const payload = JSON.stringify({
       title: failed ? "Conversation needs attention" : "Response ready",
@@ -136,10 +138,11 @@ export async function openPush(directory: string, config: PushConfiguration | un
       tag: url,
       timestamp: Date.now(),
     });
-    for (const row of db.prepare("SELECT data FROM subscriptions").all()) {
+    for (const row of db.prepare("SELECT endpoint, data FROM subscriptions").all()) {
+      assert(typeof row.endpoint === "string");
       assert(typeof row.data === "string");
-      const target = subscription(JSON.parse(row.data), config.origins);
       try {
+        const target = subscription(JSON.parse(row.data), config.origins);
         await sendNotification(target, payload, {
           vapidDetails: vapid,
           TTL: 300,
@@ -149,7 +152,7 @@ export async function openPush(directory: string, config: PushConfiguration | un
       } catch (error) {
         if (error instanceof WebPushError && (error.statusCode === 404 || error.statusCode === 410))
           db.prepare("DELETE FROM subscriptions WHERE endpoint = ? AND data = ?").run(
-            target.endpoint,
+            row.endpoint,
             row.data,
           );
         else console.error("Push delivery failed");

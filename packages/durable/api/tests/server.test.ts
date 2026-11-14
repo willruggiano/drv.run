@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startServer, runMain } from "./fixtures.ts";
@@ -46,4 +47,38 @@ await test("Node entrypoint serves GraphQL and releases its listener on shutdown
   process.env.HOST = "256.256.256.256";
   await assert.rejects(runMain());
   assert.equal(process.listenerCount("SIGTERM"), listeners);
+});
+
+await test("OAuth callbacks use the production router and do not expose failures", async (t) => {
+  const running = await startServer(t);
+  const { Problem } = await import("../src/problem.ts");
+  let failure: Error | undefined;
+  const callback = t.mock.method(running.app.api, "oauthCallback", async () => {
+    if (failure) throw failure;
+  });
+  const url = new URL("/api/oauth/callback?code=private", running.server.url);
+  assert.equal((await fetch(url, { method: "POST" })).status, 405);
+  assert.equal(callback.mock.callCount(), 0);
+  const accepted = await fetch(url);
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.headers.get("referrer-policy"), "no-referrer");
+  failure = new Problem(400);
+  assert.equal((await fetch(url)).status, 400);
+  failure = new Error("private");
+  assert.equal((await fetch(url)).status, 500);
+});
+
+await test("CLI invocation rejects invalid deployment configuration", async () => {
+  const { spawn } = await import("node:child_process");
+  const child = spawn(
+    process.execPath,
+    ["--conditions=development", new URL("../src/index.ts", import.meta.url).pathname],
+    {
+      env: { ...process.env, PORT: "invalid" },
+      stdio: "ignore",
+    },
+  );
+  const [code, signal] = await once(child, "exit");
+  assert.equal(code, 1);
+  assert.equal(signal, null);
 });

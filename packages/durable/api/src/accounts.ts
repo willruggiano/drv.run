@@ -540,7 +540,7 @@ export async function openAccounts(options: {
   }
   return {
     service,
-    async callback(url: URL): Promise<void> {
+    async callback(this: void, url: URL): Promise<void> {
       const state = url.searchParams.get("state");
       const flow = [...flows.values()].find((flow) => state !== null && flow.state === state);
       if (!flow || flow.record.status !== "pending" || flow.work) throw new Problem(400);

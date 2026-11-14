@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { readDeploymentConfiguration } from "../src/configuration.ts";
 import { createInventoryService } from "../src/inventory.ts";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 
 async function setup(t: { after(callback: () => Promise<void>): void }) {
   const directory = await mkdtemp(join(tmpdir(), "durable-api-inventory-"));
@@ -128,8 +128,79 @@ await test("inventory connect and observations use owner runtime artifacts", asy
     hostKeyAlias: "drv.run.loaded",
     configFile: join(directory, "client.conf"),
   });
+  const cancellable = withAbortSignal(new AbortController().signal, BACKGROUND_CONTEXT);
+  await service.list(10, undefined, cancellable);
+  await service.lookup("loaded", cancellable);
+  assert(await service.connect("loaded", cancellable));
   const timings = await service.timings("loaded", BACKGROUND_CONTEXT);
   assert.equal(timings?.invocation_id, "invocation-1");
   assert.equal(timings?.host_phases?.[0]?.phase, "boot-ready");
   assert.equal(timings?.guest_phases?.[0]?.clock, "monotonic");
+});
+
+await test("inventory distinguishes absent artifacts, malformed timings, and filesystem failures", async (t) => {
+  const { config, state, runtime } = await setup(t);
+  const service = createInventoryService(config);
+  await rm(state, { recursive: true });
+  const loaded = await service.list(10, undefined, BACKGROUND_CONTEXT);
+  assert("items" in loaded);
+  assert.equal(loaded.items.length, 2);
+  assert.equal(await service.lookup("absent", BACKGROUND_CONTEXT), undefined);
+  for (const operation of ["connect", "state", "timings"] as const)
+    assert.equal(await service[operation]("absent", BACKGROUND_CONTEXT), undefined);
+  await mkdir(join(state, "loaded"), { recursive: true });
+  assert.equal(await service.flakeReference("loaded", BACKGROUND_CONTEXT), undefined);
+  assert.equal(await service.connect("loaded", BACKGROUND_CONTEXT), undefined);
+  assert.equal(await service.timings("loaded", BACKGROUND_CONTEXT), undefined);
+  const directory = join(runtime, "drv.run.loaded");
+  await mkdir(directory, { recursive: true });
+  for (const name of ["client-key", "known_hosts", "client.conf"])
+    await mkdir(join(directory, name));
+  assert.equal(await service.connect("loaded", BACKGROUND_CONTEXT), undefined);
+  await rm(join(directory, "client-key"), { recursive: true });
+  await symlink("client-key", join(directory, "client-key"));
+  await assert.rejects(service.connect("loaded", BACKGROUND_CONTEXT));
+  await mkdir(join(state, "loaded", "reference"));
+  await assert.rejects(service.flakeReference("loaded", BACKGROUND_CONTEXT));
+  for (const value of [
+    "",
+    "not JSON",
+    JSON.stringify({}),
+    JSON.stringify({ phase: "a", clock: "b", monotonic_s: -1, resolution_s: 1 }),
+  ]) {
+    await writeFile(join(directory, "timings.jsonl"), value);
+    assert.equal(await service.timings("loaded", BACKGROUND_CONTEXT), undefined);
+  }
+  const phase = { phase: "ready", clock: "monotonic", monotonic_s: 1, resolution_s: 0.01 };
+  await writeFile(join(directory, "guest-timings.jsonl"), JSON.stringify(phase));
+  assert.deepEqual((await service.timings("loaded", BACKGROUND_CONTEXT))?.guest_phases, [phase]);
+  await writeFile(join(directory, "timings.jsonl"), JSON.stringify(phase));
+  await rm(join(directory, "guest-timings.jsonl"));
+  assert.equal((await service.timings("loaded", BACKGROUND_CONTEXT))?.guest_phases, null);
+  await rm(join(directory, "timings.jsonl"));
+  await mkdir(join(directory, "timings.jsonl"));
+  await assert.rejects(service.timings("loaded", BACKGROUND_CONTEXT));
+  await writeFile(config.systemctl, "#!/bin/sh\nprintf 'active\\nrunning\\n\\n'\n");
+  assert.equal((await service.state("loaded", BACKGROUND_CONTEXT))?.result, null);
+  await writeFile(config.systemctl, "#!/bin/sh\nexit 0\n");
+  assert.equal(await service.timings("loaded", BACKGROUND_CONTEXT), undefined);
+  await rm(state, { recursive: true });
+  await writeFile(state, "not a directory");
+  await assert.rejects(service.list(10, undefined, BACKGROUND_CONTEXT));
+  await assert.rejects(service.lookup("loaded", BACKGROUND_CONTEXT));
+});
+
+await test("inventory rejects malformed cursors and honors cancellation", async (t) => {
+  const { config } = await setup(t);
+  const service = createInventoryService(config);
+  for (const cursor of [
+    {},
+    { namespace: service.namespace },
+    { namespace: service.namespace, after: 1 },
+    { namespace: service.namespace, after: "loaded", extra: true },
+  ])
+    assert.deepEqual(await service.list(1, cursor, BACKGROUND_CONTEXT), { invalidCursor: true });
+  const aborted = withAbortSignal(AbortSignal.abort(), BACKGROUND_CONTEXT);
+  await assert.rejects(service.list(1, undefined, aborted));
+  await assert.rejects(service.lookup("loaded", aborted));
 });
