@@ -3538,9 +3538,9 @@ interface RevokeInput {
   readonly token_type_hint?: string | null;
 }
 
-type AuthorizationServerRecord = Omit<AuthorizationServer, "__typename" | "serviceId">;
-type AccountRecord = Omit<Account, "__typename" | "serviceId">;
-type AuthorizationRecord = Omit<Authorization, "__typename" | "serviceId">;
+export type AuthorizationServerRecord = Omit<AuthorizationServer, "__typename" | "serviceId">;
+export type AccountRecord = Omit<Account, "__typename" | "serviceId">;
+export type AuthorizationRecord = Omit<Authorization, "__typename" | "serviceId">;
 interface ApplicationPage<T> {
   readonly items: readonly T[];
   readonly next?: Cursor | null;
@@ -3552,9 +3552,11 @@ type ApplicationResult<T> = { readonly value: T } | { readonly error: "BAD_REQUE
 // a pinned client library and validate its public mappings against SPEC.md.
 // The service owns registration, PKCE/correlation, provider exchanges/polling,
 // identity validation, persistence, and lifetime after a disconnected waiter.
+// At most one account per provider/user, also across concurrent enrollments.
+// Reauthorization preserves its identity; switching accounts requires disconnect.
 // Records contain only safe public protocol values. Never return credentials in
 // URLs, descriptions, or error codes. Lookups/reads do not start authorization.
-interface AccountsService {
+export interface AccountsService {
   readonly namespace: string;
   servers(
     limit: number,

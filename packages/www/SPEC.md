@@ -451,9 +451,14 @@ Preserve the tracked identity across uncertain responses and reconcile through
 Node lookup or the server's authorization connection rather than automatically
 starting another flow.
 
-Supply an existing global `accountId` to reauthorize it. Failed or cancelled
+Allow one linked account per provider. Offer initial enrollment only when no
+account is linked; otherwise offer reauthorization or disconnect. Linking a
+different account requires disconnecting the existing account first. There is no
+execution-account selector.
+
+Supply the existing global `accountId` to reauthorize it. Failed or cancelled
 reauthorization preserves prior credentials; a different returned provider
-identity must not silently replace the selected account. Distinguish pending,
+identity must not silently replace the linked account. Distinguish pending,
 usable, expired/reauthorization required, denied, cancelled, and failed
 outcomes. Protocol errors retain codes such as `access_denied` and
 `expired_token`, rather than being renamed into application processing states.

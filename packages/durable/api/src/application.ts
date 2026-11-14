@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { AgentDoc } from "@earendil-works/pi-durable";
@@ -13,53 +13,13 @@ import type { DeploymentConfiguration } from "./configuration.ts";
 import { createInventoryService } from "./inventory.ts";
 import { Problem } from "./problem.ts";
 import { Sessions } from "./sessions.ts";
+import { openAccounts } from "./accounts.ts";
 import { createSettingsService } from "./settings.ts";
 
 type Query = Parameters<typeof watch>[0];
 const externalIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
 const missing = (error: unknown) =>
   error instanceof Error && "code" in error && error.code === "ENOENT";
-
-function noAccounts(namespace: string): ResolverContext["accounts"] {
-  const page = (cursor: unknown) =>
-    cursor === undefined ? { items: [], next: null } : { invalidCursor: true as const };
-  return {
-    namespace,
-    async servers(_limit, cursor) {
-      return page(cursor);
-    },
-    async accounts(_serverId, _limit, cursor) {
-      return page(cursor);
-    },
-    async authorizations(_serverId, _limit, cursor) {
-      return page(cursor);
-    },
-    async server() {
-      return undefined;
-    },
-    async account() {
-      return undefined;
-    },
-    async authorization() {
-      return undefined;
-    },
-    async authorize() {
-      return { error: "NOT_FOUND" as const };
-    },
-    async deviceAuthorization() {
-      return { error: "NOT_FOUND" as const };
-    },
-    async cancelAuthorization() {
-      return { error: "NOT_FOUND" as const };
-    },
-    async disconnect() {
-      return { error: "NOT_FOUND" as const };
-    },
-    async revoke() {
-      return { error: "NOT_FOUND" as const };
-    },
-  };
-}
 
 function noPush(): ResolverContext["push"] {
   const unavailable = () => {
@@ -88,6 +48,13 @@ export async function openApplication(config: DeploymentConfiguration) {
   const environments = new Map<string, SshExecutionEnv>();
   const sessionDirectory = join(config.stateDirectory, "sessions");
   await mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
+  const schema = createSchema();
+  const accounts = await openAccounts({
+    directory: dirname(config.stateDirectory),
+    origin: config.origin,
+    servers: config.oauthServers,
+    models,
+  });
 
   const sessions = new Sessions(async (externalId, _context, create) => {
     if (!externalIdPattern.test(externalId)) throw new Problem(400);
@@ -132,8 +99,7 @@ export async function openApplication(config: DeploymentConfiguration) {
     }
   });
 
-  const schema = createSchema();
-  const services = { accounts: noAccounts(inventory.namespace), push: noPush() };
+  const services = { accounts: accounts.service, push: noPush() };
   let closing: Promise<void> | undefined;
   const context = (signal: AbortSignal): ResolverContext => ({
     context: withAbortSignal(signal, BACKGROUND_CONTEXT),
@@ -174,6 +140,7 @@ export async function openApplication(config: DeploymentConfiguration) {
 
   return {
     api: {
+      oauthCallback: accounts.callback,
       async graphql(
         request: Pick<GraphQLArgs, "source" | "operationName" | "variableValues">,
         signal: AbortSignal,
@@ -204,6 +171,7 @@ export async function openApplication(config: DeploymentConfiguration) {
         );
         for (const result of cleaned)
           if (result.status === "rejected") failures.push(result.reason);
+        await accounts.close().catch((error: unknown) => failures.push(error));
         if (failures.length) throw new AggregateError(failures, "Application shutdown failed");
       })();
       return closing;

@@ -1441,18 +1441,26 @@ authorize(serverId) or deviceAuthorization(serverId)
   -> Authorization.account + accounts connection
 ```
 
-Omission of `accountId` links an account. A supplied `accountId` reauthorizes an
-existing account. Optional inputs can be absent but not null. Supplied IDs are
-global IDs of the required kind, not server keys or provider account
-identifiers. The account must belong to the selected server and initiating user.
+Each application user can link at most one Account per provider. Configured
+authorization servers for the same provider share this limit. The model catalog
+and Harness execution use that account's credentials; no account selector is
+required.
+
+Omission of `accountId` links an account only when none is linked for the
+provider; otherwise initiation returns `BAD_REQUEST`. A supplied `accountId`
+reauthorizes the existing account. Optional inputs can be absent but not null.
+Supplied IDs are global IDs of the required kind, not server keys or provider
+account identifiers. The account must belong to the selected server and
+initiating user. Account publication enforces the same limit: concurrent
+enrollments must not publish a second account or overwrite the first.
 
 The service validates the returned provider identity before it replaces
 credentials. A different identity must not replace the addressed account. Failed
-or canceled reauthorization keeps existing credentials. Known provider account
-identities have one Account in the user's server scope, also after
-reauthorization. Without provider identity metadata, the service supplies no
-invented identifier or unsupported identity check. The schema accepts multiple
-accounts per server.
+or canceled reauthorization keeps existing credentials. Successful
+reauthorization preserves the Account identity. Without provider identity
+metadata, the service supplies no invented identifier or unsupported identity
+check. Linking a different account requires disconnecting the existing account
+first.
 
 There is no `createAccount` mutation. The service publishes an Account only
 after successful authorization, credential validation, and persistence. It links

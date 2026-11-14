@@ -17,6 +17,22 @@ export async function main(): Promise<void> {
     const server = await serve({
       ...config.server,
       routes: {
+        async "/api/oauth/callback"(request) {
+          if (request.method !== "GET")
+            return new Response(null, { status: 405, headers: { Allow: "GET" } });
+          try {
+            await app.api.oauthCallback(new URL(request.url));
+            return new Response("Authorization processed. You may close this page.", {
+              headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
+            });
+          } catch (error) {
+            if (!(error instanceof Problem)) throw error;
+            return new Response(null, {
+              status: error.status,
+              headers: { "Cache-Control": "no-store" },
+            });
+          }
+        },
         async "/api/graphql"(request) {
           try {
             if (request.method !== "GET" && request.method !== "POST")

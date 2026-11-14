@@ -2,6 +2,7 @@ import Type from "typebox";
 import Value from "typebox/value";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { OAuthServers } from "./accounts.ts";
 import type { serve } from "durable-api/serve";
 
 export type DeploymentConfiguration = {
@@ -11,6 +12,8 @@ export type DeploymentConfiguration = {
   readonly runtimeDirectory: string;
   readonly instanceStateDirectory: string;
   readonly systemctl: string;
+  readonly origin: string | undefined;
+  readonly oauthServers: Type.Static<typeof OAuthServers>;
 };
 
 function absolute(name: string, value: string | undefined, fallback?: string): string {
@@ -47,5 +50,7 @@ export function readDeploymentConfiguration(
     runtimeDirectory,
     instanceStateDirectory: resolve(stateHome),
     systemctl: env.SYSTEMCTL ?? "systemctl",
+    origin: env.ORIGIN,
+    oauthServers: Value.Parse(OAuthServers, JSON.parse(env.OAUTH_SERVERS ?? "[]")),
   };
 }
