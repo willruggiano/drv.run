@@ -12,6 +12,7 @@
   makeWrapper,
   nodejs,
   openssh,
+  push-policy,
   runCommand,
   systemd,
   typescript,
@@ -28,8 +29,11 @@
     name = "app-npm-deps";
     src = manifests;
     fetcherVersion = 2;
-    hash = "sha256-CQ+q6euwx8u/gYEWXSfpdDNG+6k1WQoQ2ZqGtEC+EN4=";
+    hash = "sha256-AY8SYJCvBNYxAnG557+lrXTx99qfppubKYe7VIt//VQ=";
   };
+  preparePush = ''
+    cp -R ${push-policy}/lib/push-policy ../push-policy
+  '';
   patchDurable = ''
     patch --batch --forward --fuzz=0 \
       -d node_modules/@earendil-works/pi-durable -p1 \
@@ -42,6 +46,8 @@
     inherit npmDeps;
     npmDepsFetcherVersion = 2;
     npmRebuildFlags = ["--ignore-scripts"];
+    npmInstallFlags = ["--install-links"];
+    prePatch = preparePush;
     postConfigure = patchDurable;
     dontNpmBuild = true;
     installPhase = ''
@@ -80,6 +86,8 @@ in
     inherit npmDeps;
     npmDepsFetcherVersion = 2;
     npmRebuildFlags = ["--ignore-scripts"];
+    npmInstallFlags = ["--install-links"];
+    prePatch = preparePush;
     postConfigure = patchDurable;
     nativeBuildInputs = [esbuild git makeWrapper typescript elmPackages.elm elmPackages.elm-format elmPackages.elm-test];
     preBuild = ''
@@ -108,7 +116,7 @@ in
         done
       done
       cp -R node_modules "$dev/lib/app/"
-      npm prune --omit=dev --ignore-scripts --offline --no-audit --no-fund
+      npm prune --omit=dev --ignore-scripts --offline --no-audit --no-fund --install-links
       cp -R node_modules "$out/lib/app/"
 
       mkdir -p "$out/bin"

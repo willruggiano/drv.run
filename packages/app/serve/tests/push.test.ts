@@ -1,3 +1,4 @@
+import { pushSubscription, vapidKey, vapidPublic, pushURL } from "push-policy";
 import assert from "node:assert/strict";
 import {
   createDecipheriv,
@@ -14,17 +15,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { IncomingMessage, type ClientRequest } from "node:http";
 import { Socket } from "node:net";
 import { Writable } from "node:stream";
-import {
-  encryptedPush,
-  publicAddress,
-  pushSubscription,
-  pushTarget,
-  pushURL,
-  sendPush,
-  vapidAuthorization,
-  vapidKey,
-  vapidPublic,
-} from "../push.ts";
+import { encryptedPush, publicAddress, pushTarget, sendPush, vapidAuthorization } from "../push.ts";
 
 import { pushMessage, encodePushMessage } from "../push-message.ts";
 
@@ -141,8 +132,9 @@ await test("RFC 8291 payload decrypts with the subscriber key and contains the o
   assert.deepEqual(JSON.parse(plain.subarray(0, -1).toString()), message);
 });
 await test("VAPID signs an audience-bound expiring token with the sops-provided key", () => {
-  const ec = createECDH("prime256v1"),
-    pub = ec.generateKeys();
+  const ec = createECDH("prime256v1");
+  ec.setPrivateKey(Buffer.alloc(32, 1));
+  const pub = ec.getPublicKey();
   const key = vapidKey({
     kty: "EC",
     crv: "P-256",
@@ -171,8 +163,9 @@ await test("VAPID signs an audience-bound expiring token with the sops-provided 
 });
 
 await test("delivery pins the checked IP and TLS name, never follows redirects, and rechecks DNS on retry", async (t) => {
-  const ec = createECDH("prime256v1"),
-    publicKey = ec.generateKeys();
+  const ec = createECDH("prime256v1");
+  ec.setPrivateKey(Buffer.alloc(32, 1));
+  const publicKey = ec.getPublicKey();
   const key = vapidKey({
     kty: "EC",
     crv: "P-256",

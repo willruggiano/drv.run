@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
-import { createECDH } from "node:crypto";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness, CommitObservation, ConversationId } from "@earendil-works/pi-durable";
 import { sendNotification, WebPushError, type PushSubscription } from "web-push";
-import Type from "typebox";
-import Value from "typebox/value";
+import { pushURL, pushSubscription, vapidKey, vapidPublic } from "push-policy";
 import type { PushBinding } from "../graphql/src/graphql.ts";
 
 export type PushConfiguration = {
@@ -15,65 +13,26 @@ export type PushConfiguration = {
   subject: string;
   privateKeyFile: string;
 };
-const Key = Type.Object({
-  kty: Type.Literal("EC"),
-  crv: Type.Literal("P-256"),
-  x: Type.String(),
-  y: Type.String(),
-  d: Type.String(),
-});
-const Subscription = Type.Object({
-  endpoint: Type.String(),
-  keys: Type.Object({ p256dh: Type.String(), auth: Type.String() }),
-});
-function bytes(value: string, length: number): Buffer {
-  const decoded = Buffer.from(value, "base64url");
-  assert(decoded.length === length && decoded.toString("base64url") === value, "Invalid push key");
-  return decoded;
-}
-function endpoint(value: string, origins: readonly string[]): URL {
-  const url = new URL(value);
-  assert(
-    url.protocol === "https:" &&
-      !url.username &&
-      !url.password &&
-      !url.hash &&
-      !value.includes("#") &&
-      origins.includes(url.origin),
-    "Push origin is not permitted",
-  );
-  return url;
-}
-function subscription(value: unknown, origins: readonly string[]): PushSubscription {
-  Value.Assert(Subscription, value);
-  endpoint(value.endpoint, origins);
-  const publicKey = bytes(value.keys.p256dh, 65);
-  assert(publicKey[0] === 4, "Expected uncompressed P-256 key");
-  const ecdh = createECDH("prime256v1");
-  ecdh.generateKeys();
-  ecdh.computeSecret(publicKey);
-  bytes(value.keys.auth, 16);
-  return value;
+function stored(row: Record<string, SQLOutputValue>): PushSubscription {
+  assert(typeof row.data === "string");
+  const target = pushSubscription(JSON.parse(row.data));
+  assert.equal(target.endpoint, row.endpoint);
+  return target;
 }
 
 export async function openPush(directory: string, config: PushConfiguration | undefined) {
   let vapid: { subject: string; publicKey: string; privateKey: string } | undefined;
   if (config) {
-    const value: unknown = JSON.parse(await readFile(config.privateKeyFile, "utf8"));
-    Value.Assert(Key, value);
-    const key = createECDH("prime256v1");
-    key.setPrivateKey(bytes(value.d, 32));
-    const publicKey = Buffer.concat([Buffer.from([4]), bytes(value.x, 32), bytes(value.y, 32)]);
-    assert(key.getPublicKey().equals(publicKey), "VAPID key mismatch");
+    const value = vapidKey(JSON.parse(await readFile(config.privateKeyFile, "utf8")));
     const subject = new URL(config.subject);
     assert(
       subject.protocol === "mailto:" || subject.protocol === "https:",
       "Invalid VAPID subject",
     );
-    for (const origin of config.origins) assert(endpoint(origin, config.origins).origin === origin);
+    for (const origin of config.origins) assert(pushURL(origin, config.origins).origin === origin);
     vapid = {
       subject: config.subject,
-      publicKey: publicKey.toString("base64url"),
+      publicKey: vapidPublic(value),
       privateKey: value.d,
     };
   }
@@ -87,22 +46,24 @@ export async function openPush(directory: string, config: PushConfiguration | un
   );
   const observers = new Set<CommitObservation>();
   const sending = new Set<Promise<void>>();
+  const failures: unknown[] = [];
   let closing: Promise<void> | undefined;
   const service: PushBinding = {
     async applicationServerKey() {
       return vapid?.publicKey;
     },
     async registered(endpoint) {
-      return {
-        value:
-          db.prepare("SELECT 1 FROM subscriptions WHERE endpoint = ?").get(endpoint) !== undefined,
-      };
+      const row = db
+        .prepare("SELECT endpoint, data FROM subscriptions WHERE endpoint = ?")
+        .get(endpoint);
+      if (row) stored(row);
+      return { value: row !== undefined };
     },
     async register(value, context) {
       context.abortSignal?.throwIfAborted();
       let checked: PushSubscription;
       try {
-        checked = subscription(value, config?.origins ?? []);
+        checked = pushSubscription(value, config?.origins ?? []);
       } catch {
         return { error: "BAD_REQUEST" };
       }
@@ -139,10 +100,10 @@ export async function openPush(directory: string, config: PushConfiguration | un
       timestamp: Date.now(),
     });
     for (const row of db.prepare("SELECT endpoint, data FROM subscriptions").all()) {
-      assert(typeof row.endpoint === "string");
-      assert(typeof row.data === "string");
+      // Corruption is an invariant failure; a narrowed deployment allowlist is not.
+      const target = stored(row);
+      if (!config.origins.includes(new URL(target.endpoint).origin)) continue;
       try {
-        const target = subscription(JSON.parse(row.data), config.origins);
         await sendNotification(target, payload, {
           vapidDetails: vapid,
           TTL: 300,
@@ -152,10 +113,10 @@ export async function openPush(directory: string, config: PushConfiguration | un
       } catch (error) {
         if (error instanceof WebPushError && (error.statusCode === 404 || error.statusCode === 410))
           db.prepare("DELETE FROM subscriptions WHERE endpoint = ? AND data = ?").run(
-            row.endpoint,
-            row.data,
+            target.endpoint,
+            row.data!,
           );
-        else console.error("Push delivery failed");
+        else console.error("Push delivery failed", error);
       }
     }
   }
@@ -181,8 +142,9 @@ export async function openPush(directory: string, config: PushConfiguration | un
               .then(async () => {
                 if (!closing) await deliver(externalId, id, failed, harness);
               })
-              .catch(() => {
-                console.error("Push observation failed");
+              .catch((error: unknown) => {
+                failures.push(error);
+                console.error("Push observation failed", error);
               });
             sending.add(work);
             void work.finally(() => sending.delete(work));
@@ -199,6 +161,7 @@ export async function openPush(directory: string, config: PushConfiguration | un
         observers.clear();
         await Promise.all(sending);
         db.close();
+        if (failures.length) throw new AggregateError(failures, "Push observation failed");
       })();
       return closing;
     },

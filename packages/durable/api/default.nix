@@ -5,6 +5,7 @@
   makeWrapper,
   nodejs,
   openssh,
+  push-policy,
   stdenvNoCC,
   systemd,
   typescript,
@@ -34,6 +35,7 @@ in
     };
     npmDeps = importNpmLock {
       npmRoot = ./.;
+      packageSourceOverrides."node_modules/push-policy" = "${push-policy}/lib/push-policy";
       packageSourceOverrides."node_modules/durable-harness" = "${durable-harness}/lib/durable-harness";
     };
     npmRebuildFlags = ["--ignore-scripts"];

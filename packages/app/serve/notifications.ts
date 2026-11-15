@@ -1,3 +1,4 @@
+import { pushSubscription, vapidKey, vapidPublic } from "push-policy";
 import { NotificationRelay, relayPolicy, type RelayPolicy } from "./notification-relay.ts";
 import { readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -5,14 +6,7 @@ import type { JsonWebKey } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Activity, object, type ActivityOptions } from "./activity.ts";
 import { FormError } from "./forms.ts";
-import {
-  pushSubscription,
-  pushTarget,
-  sendPush,
-  vapidKey,
-  vapidPublic,
-  type PushPolicy,
-} from "./push.ts";
+import { pushTarget, sendPush, type PushPolicy } from "./push.ts";
 import type { Session } from "./sessions.ts";
 import { attachPiNotifications } from "./pi-notifications.ts";
 import { pushMessage } from "./push-message.ts";

@@ -1,7 +1,13 @@
-{pkgs, ...}: {
-  app = pkgs.callPackage ./app {};
+{pkgs, ...}: let
+  push-policy = pkgs.callPackage ./push-policy {};
+in {
+  inherit push-policy;
+  app = pkgs.callPackage ./app {inherit push-policy;};
   bench = pkgs.callPackage ./bench {};
-  durable-api = pkgs.callPackage ./durable/api {inherit (pkgs) durable-harness;};
+  durable-api = pkgs.callPackage ./durable/api {
+    inherit (pkgs) durable-harness;
+    inherit push-policy;
+  };
   durable-harness = pkgs.callPackage ./durable/harness {};
   # cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {}; # remove after: https://github.com/NixOS/nixpkgs/pull/574147
   mitm-proxy = pkgs.callPackage ./mitm-proxy {};

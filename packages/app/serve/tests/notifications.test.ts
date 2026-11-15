@@ -8,7 +8,7 @@ import { Activity, activityDefaults } from "../activity.ts";
 import { Notifications } from "../notifications.ts";
 import { Metadata } from "../sessions.ts";
 import { pushMessage } from "../push-message.ts";
-import { vapidKey } from "../push.ts";
+import { vapidKey } from "push-policy";
 import { httpServer } from "../server.ts";
 import { fixture, waitFor } from "./sessions-testing.ts";
 
@@ -109,8 +109,9 @@ await test("push failures are retried finitely and never erase accepted activity
   t.mock.method(Date, "now", () => now);
   const options = { ...activityDefaults, burst: 1, intervalMs: 1000 };
   const activity = new Activity(":memory:", options);
-  const ec = createECDH("prime256v1"),
-    publicKey = ec.generateKeys();
+  const ec = createECDH("prime256v1");
+  ec.setPrivateKey(Buffer.alloc(32, 1));
+  const publicKey = ec.getPublicKey();
   const key = vapidKey({
     kty: "EC",
     crv: "P-256",

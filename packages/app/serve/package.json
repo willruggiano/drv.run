@@ -18,7 +18,8 @@
     "@earendil-works/pi-env": "1.4.0",
     "@speed-highlight/core": "2.1.0",
     "dbus-next": "0.10.2",
-    "harness": "0.1.0"
+    "harness": "0.1.0",
+    "push-policy": "file:../../push-policy"
   },
   "exports": {
     "./*": {

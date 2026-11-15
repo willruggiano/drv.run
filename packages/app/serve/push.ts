@@ -12,10 +12,9 @@ import { request } from "node:https";
 import { BlockList, isIP } from "node:net";
 import { networkInterfaces } from "node:os";
 import { checkServerIdentity } from "node:tls";
-import { object } from "./activity.ts";
+import { bytes, pushURL, vapidPublic, type PushSubscription } from "push-policy";
 import { encodePushMessage, type PushMessage } from "./push-message.ts";
 
-export type PushSubscription = { endpoint: string; keys: { p256dh: string; auth: string } };
 export type PushPolicy = { origins: string[]; subject: string; privateKeyFile: string };
 export type PushTarget = { url: URL; hostname: string; address: string; family: 4 | 6 };
 type Resolver = (hostname: string) => Promise<{ address: string; family: number }[]>;
@@ -48,20 +47,6 @@ export function publicAddress(address: string): boolean {
   if (family === 4) return !blocked.check(address, "ipv4");
   return family === 6 && global6.check(address, "ipv6") && !blocked.check(address, "ipv6");
 }
-export function pushURL(endpoint: string, origins: readonly string[]): URL {
-  if (endpoint.length > 4096) throw new TypeError("Push endpoint too long.");
-  const url = new URL(endpoint);
-  if (
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.hash ||
-    endpoint.includes("#") ||
-    !origins.includes(url.origin)
-  )
-    throw new TypeError("Push origin is not permitted.");
-  return url;
-}
 export async function pushTarget(
   endpoint: string,
   origins: readonly string[],
@@ -89,56 +74,6 @@ export async function pushTarget(
   const chosen = addresses[0];
   if (chosen.family !== 4 && chosen.family !== 6) throw new TypeError("Invalid IP family.");
   return { url, hostname, address: chosen.address, family: chosen.family };
-}
-function bytes(value: unknown, length: number): Buffer {
-  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value))
-    throw new TypeError("Invalid push key.");
-  const result = Buffer.from(value, "base64url");
-  if (result.length !== length || result.toString("base64url") !== value)
-    throw new TypeError("Invalid push key length.");
-  return result;
-}
-export function pushSubscription(value: unknown, origins: readonly string[]): PushSubscription {
-  const data = object(value),
-    keys = object(data.keys);
-  if (typeof data.endpoint !== "string") throw new TypeError("Invalid endpoint.");
-  pushURL(data.endpoint, origins);
-  const publicKey = bytes(keys.p256dh, 65);
-  if (publicKey[0] !== 4) throw new TypeError("Expected uncompressed P-256 key.");
-  // computeSecret validates that the peer key lies on P-256.
-  const test = createECDH("prime256v1");
-  test.generateKeys();
-  test.computeSecret(publicKey);
-  return {
-    endpoint: data.endpoint,
-    keys: {
-      p256dh: publicKey.toString("base64url"),
-      auth: bytes(keys.auth, 16).toString("base64url"),
-    },
-  };
-}
-export function vapidKey(value: unknown): JsonWebKey {
-  const key = object(value);
-  if (key.kty !== "EC" || key.crv !== "P-256") throw new TypeError("Expected a P-256 private JWK.");
-  const x = bytes(key.x, 32),
-    y = bytes(key.y, 32),
-    d = bytes(key.d, 32);
-  const ecdh = createECDH("prime256v1");
-  ecdh.setPrivateKey(d);
-  if (!ecdh.getPublicKey().equals(Buffer.concat([Buffer.from([4]), x, y])))
-    throw new TypeError("VAPID public/private key mismatch.");
-  return {
-    kty: "EC",
-    crv: "P-256",
-    x: x.toString("base64url"),
-    y: y.toString("base64url"),
-    d: d.toString("base64url"),
-  };
-}
-export function vapidPublic(key: JsonWebKey): string {
-  return Buffer.concat([Buffer.from([4]), bytes(key.x, 32), bytes(key.y, 32)]).toString(
-    "base64url",
-  );
 }
 /** One bounded aes128gcm record with the message preview and a host-generated destination.
  * https://www.rfc-editor.org/rfc/rfc8291.html#section-3

@@ -19,7 +19,7 @@ mock.module("web-push", { namedExports: { ...webPush, sendNotification: sent } }
 const { openPush } = await import("../src/push.ts");
 const { openHarness } = await import("./fixtures.ts");
 const context = BACKGROUND_CONTEXT;
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, { expectFailure = false } = {}) {
   sent.mock.resetCalls();
   sent.mock.mockImplementation(async () => ({ statusCode: 201, headers: {}, body: "" }));
   const directory = await mkdtemp(join(tmpdir(), "push-"));
@@ -35,7 +35,7 @@ async function fixture(t: TestContext) {
     origins: ["https://push.example"],
   };
   const push = await openPush(directory, config);
-  t.after(() => push.close());
+  t.after(() => (expectFailure ? assert.rejects(push.close(), AggregateError) : push.close()));
   const ecdh = createECDH("prime256v1");
   const subscription = {
     endpoint: "https://push.example/subscription",
@@ -81,6 +81,7 @@ await test("push rejects untrusted endpoints and invalid browser key material", 
   const f = await fixture(t);
   for (const endpoint of [
     "not a URL",
+    "https://push.example/" + "x".repeat(4096),
     "http://push.example/a",
     "https://other.example/a",
     "https://user:password@push.example/a",
@@ -294,8 +295,8 @@ await test("push discards scheduled work after shutdown without entering the Har
   assert.equal(sent.mock.callCount(), 0);
 });
 
-await test("push observation failures do not change committed execution", async (t) => {
-  const f = await fixture(t);
+await test("push observation failures reach the owner without changing committed execution", async (t) => {
+  const f = await fixture(t, { expectFailure: true });
   const { harness, root } = await openHarness(t);
   f.attach(harness, "session");
   harness.observeCommits({
@@ -360,4 +361,44 @@ await test("a narrowed origin allowlist does not block delivery to remaining sub
   await setImmediate();
   assert.equal(sent.mock.callCount(), 1);
   assert.deepEqual(sent.mock.calls[0]!.arguments[0], allowed);
+});
+
+await test("corrupt stored subscriptions fail reads and propagate through shutdown", async (t) => {
+  const { DatabaseSync } = await import("node:sqlite");
+  for (const data of [
+    "not JSON",
+    JSON.stringify({
+      endpoint: "https://push.example/subscription",
+      keys: { p256dh: "invalid", auth: "invalid" },
+    }),
+  ]) {
+    await t.test(data === "not JSON" ? "decoding" : "validation", async (t) => {
+      const f = await fixture(t, { expectFailure: true });
+      await f.service.register(f.subscription, context);
+      const db = new DatabaseSync(join(f.directory, "push.sqlite"));
+      db.prepare("UPDATE subscriptions SET data = ?").run(data);
+      db.close();
+      await assert.rejects(f.service.registered(f.subscription.endpoint, context));
+      const { harness, root } = await openHarness(t);
+      f.attach(harness, "session");
+      await harness.commit(
+        (tx) =>
+          tx.createSubmission({
+            type: "input",
+            conversationId: root.id,
+            status: "unanswered",
+            reason: "failed",
+          }),
+        context,
+      );
+      await setImmediate();
+      assert.equal(sent.mock.callCount(), 0);
+      await assert.rejects(f.close(), (error: unknown) => {
+        assert(error instanceof AggregateError);
+        assert.equal(error.errors.length, 1);
+        assert(error.errors[0] instanceof Error);
+        return true;
+      });
+    });
+  }
 });
