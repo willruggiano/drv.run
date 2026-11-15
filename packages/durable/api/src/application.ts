@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import assert from "node:assert/strict";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -20,10 +16,6 @@ import { Sessions } from "./sessions.ts";
 import { openPush } from "./push.ts";
 import { openAccounts } from "./accounts.ts";
 import { createSettingsService } from "./settings.ts";
-
-/*
- * Exports: Application
- */
 
 export async function openApplication(config: DeploymentConfiguration) {
   const models = builtinModels();
@@ -173,10 +165,6 @@ export async function openApplication(config: DeploymentConfiguration) {
     },
   };
 }
-
-/*
- * Helpers: Application
- */
 
 type Query = Parameters<typeof watch>[0];
 

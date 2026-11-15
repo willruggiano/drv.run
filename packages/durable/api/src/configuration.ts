@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import Type from "typebox";
 import Value from "typebox/value";
 import { homedir } from "node:os";
@@ -9,10 +5,6 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { PushConfiguration } from "./push.ts";
 import { OAuthServers } from "./accounts.ts";
 import type { serve } from "durable-api/serve";
-
-/*
- * Exports: Configuration
- */
 
 export type DeploymentConfiguration = {
   readonly server: Omit<Parameters<typeof serve>[0], "routes" | "fetch" | "error">;
@@ -108,10 +100,6 @@ export function readDeploymentConfiguration(
         : secretFile("PARALLEL_API_KEY_FILE", env.PARALLEL_API_KEY_FILE),
   };
 }
-
-/*
- * Helpers: Configuration
- */
 
 const Port = Type.Integer({ minimum: 0, maximum: 65535 });
 

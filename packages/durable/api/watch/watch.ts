@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import assert from "node:assert/strict";
 import {
   BACKGROUND_CONTEXT,
@@ -20,10 +16,6 @@ import type {
 } from "@earendil-works/pi-durable";
 import { Problem } from "../src/problem.ts";
 import type { Sessions } from "../src/sessions.ts";
-
-/*
- * Exports: Watch
- */
 
 type Query = {
   readonly externalId: string;
@@ -159,10 +151,6 @@ export async function watch(
     throw error;
   }
 }
-
-/*
- * Helpers: Watch
- */
 
 type State = {
   readonly view: ConversationView;

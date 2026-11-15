@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
@@ -10,10 +6,6 @@ import { promisify } from "node:util";
 import type { Context } from "@earendil-works/chord/context";
 import type { InventoryRecord, InventoryPhase, InventoryService } from "../graphql/src/graphql.ts";
 import type { DeploymentConfiguration } from "./configuration.ts";
-
-/*
- * Exports: Inventory
- */
 
 export function createInventoryService(config: DeploymentConfiguration): InventoryService {
   const namespace = `uid:${process.getuid!()}`;
@@ -117,10 +109,6 @@ export function createInventoryService(config: DeploymentConfiguration): Invento
     },
   };
 
-  /*
-   * Helpers: Inventory
-   */
-
   async function inventory(context: Context): Promise<InventoryRecord[]> {
     context.abortSignal?.throwIfAborted();
     const [directories, loaded, installed] = await Promise.all([
@@ -180,10 +168,6 @@ export function createInventoryService(config: DeploymentConfiguration): Invento
     return (await inventory(context)).some((record) => record.id === id);
   }
 }
-
-/*
- * Helpers: Inventory
- */
 
 const exec = promisify(execFile);
 

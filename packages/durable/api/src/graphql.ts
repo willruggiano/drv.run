@@ -1,15 +1,7 @@
-/*
- * Imports
- */
-
 import type { GraphQLArgs } from "graphql";
 import Type from "typebox";
 import Value from "typebox/value";
 import { Problem } from "./problem.ts";
-
-/*
- * Exports: Graphql
- */
 
 export async function decode(
   request: Request,
@@ -43,10 +35,6 @@ export async function decode(
   };
   return args;
 }
-
-/*
- * Helpers: Graphql
- */
 
 const ObjectParameter = Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]);
 

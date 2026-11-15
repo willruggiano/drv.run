@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import assert from "node:assert/strict";
 import { awaitWithContext } from "@earendil-works/chord/context";
 import type { Float, ID, Int, GqlScalar } from "grats";
@@ -23,10 +19,6 @@ import type { Context } from "@earendil-works/chord/context";
 import type * as Chord from "@earendil-works/chord/json";
 import type * as AI from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
-
-/*
- * Exports: Schema
- */
 
 type DocumentToken =
   | Durable.DocToken<Durable.JsonObject, Durable.DocDefinition<Durable.JsonObject>>
@@ -168,10 +160,6 @@ export function createSchema(): GraphQLSchema {
     },
   });
 }
-
-/*
- * Exports: Messages
- */
 
 /**
  * Upstream pi-ai message variants. String/array content stays distinct through
@@ -504,10 +492,6 @@ interface NestedToolCallRecord {
 /** @gqlEnum */
 type NestedToolCallStatus = "ok" | "error" | "unfinished";
 
-/*
- * Exports: Nodes
- */
-
 /**
  * Globally refetchable identity. IDs encode object type and an authorized service
  * namespace/resource key, or persisted session identity and a durable ID. Durable IDs
@@ -632,10 +616,6 @@ export async function harnessRoot(
     throw mapError(error);
   }
 }
-
-/*
- * Exports: Documents
- */
 
 /** @gqlEnum */
 type DocumentScopeKind = "session" | "conversation" | "task";
@@ -845,10 +825,6 @@ export async function replaceDocument(
   }
 }
 
-/*
- * Exports: Model catalog
- */
-
 /**
  * Public Pi AI chat-model metadata, not a persisted Node or selected default.
  * @gqlType
@@ -952,10 +928,6 @@ export async function models(ctx: ResolverContext): Promise<Model[]> {
     throw mapError(error);
   }
 }
-
-/*
- * Exports: Inspection
- */
 
 /**
  * ConversationRecord, augmented with scoped Conversation operations, the read-only
@@ -1585,10 +1557,6 @@ export async function status(
   }
 }
 
-/*
- * Exports: Submissions
- */
-
 /** @gqlInput */
 interface SubmitInput {
   /** Global ConversationRecord ID, not its numeric durableId. */
@@ -1897,10 +1865,6 @@ export async function abortSubmission(
   }
 }
 
-/*
- * Exports: Conversation lifecycle
- */
-
 /** @gqlInput */
 interface AbortInput {
   readonly conversationId: ID;
@@ -2130,10 +2094,6 @@ export async function compact(
   }
 }
 
-/*
- * Exports: Environments
- */
-
 /** @gqlEnum */
 type ExecutionEnvType = "ssh";
 
@@ -2235,10 +2195,6 @@ export async function configure(
     throw mapError(error);
   }
 }
-
-/*
- * Exports: Settings
- */
 
 /** @gqlEnum */
 type App = "web" | "harness";
@@ -2476,10 +2432,6 @@ export async function saveSettings(
   }
 }
 
-/*
- * Exports: Inventory
- */
-
 export interface InventoryRecord {
   readonly id: string;
   readonly unit: string;
@@ -2649,10 +2601,6 @@ export async function instanceTimings(
     return result;
   });
 }
-
-/*
- * Exports: Accounts
- */
 
 /** @gqlEnum */
 type AccountStatus = "usable" | "temporarilyUnavailable" | "reauthorizationRequired";
@@ -3001,10 +2949,6 @@ export async function revoke(input: RevokeInput, ctx: ResolverContext): Promise<
   return true;
 }
 
-/*
- * Exports: Push
- */
-
 /** @gqlInput */
 interface PushSubscriptionKeysInput {
   readonly p256dh: string;
@@ -3092,10 +3036,6 @@ export async function removePushSubscription(
   if (value !== undefined) throw new ResolverError("INTERNAL_SERVER_ERROR");
   return true;
 }
-
-/*
- * Helpers: Schema
- */
 
 type ErrorCode =
   | "BAD_REQUEST"
@@ -3404,10 +3344,6 @@ function inputBlock(block: UserInputBlock): AI.TextContent | AI.ImageContent {
   }
 }
 
-/*
- * Helpers: Messages
- */
-
 function message(value: AI.Message): Message {
   switch (value.role) {
     case "system":
@@ -3523,10 +3459,6 @@ function assistantContent(
   }
 }
 
-/*
- * Helpers: Documents
- */
-
 const DocumentScope = Type.Union([
   Type.Object({ kind: Type.Literal("session") }, { additionalProperties: false }),
   Type.Object(
@@ -3583,10 +3515,6 @@ async function invokeWithContext<T>(context: Context, call: () => T | Promise<T>
   });
   return awaitWithContext(pending, context);
 }
-
-/*
- * Helpers: Submissions
- */
 
 const EntryHead = Type.Union([EntryId, Type.Literal("self")]);
 
@@ -3757,18 +3685,10 @@ function assistantInputContent(
   }
 }
 
-/*
- * Helpers: Conversation lifecycle
- */
-
 const ConversationOwnership = Type.Union([
   Type.Object({ kind: Type.Literal("ownerless") }, { additionalProperties: false }),
   Type.Object({ kind: Type.Literal("task"), taskId: TaskId }, { additionalProperties: false }),
 ]);
-
-/*
- * Helpers: Environments
- */
 
 const SshTarget = Type.Object(
   {
@@ -3815,10 +3735,6 @@ function sshTarget(value: SshTargetInput): Type.Static<typeof SshTarget> {
   return target;
 }
 
-/*
- * Helpers: Settings
- */
-
 function configurationValue<S extends Type.TSchema>(
   schema: S,
   value: Type.Static<S>,
@@ -3831,10 +3747,6 @@ function configurationValue<S extends Type.TSchema>(
     throw new ResolverError("INTERNAL_SERVER_ERROR");
   }
 }
-
-/*
- * Helpers: Inventory
- */
 
 type InventoryPage = ApplicationPage<InventoryRecord>;
 
@@ -3901,10 +3813,6 @@ function instancePhase(value: InventoryPhase): InstanceTimingPhase {
     resolutionSeconds: value.resolution_s,
   };
 }
-
-/*
- * Helpers: Accounts
- */
 
 interface ApplicationPage<T> {
   readonly items: readonly T[];

@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import {
   ROOT_CONTEXT,
   SpanStatusCode,
@@ -27,10 +23,6 @@ import {
   type TelemetryPropagation,
   type TelemetrySpan,
 } from "@earendil-works/pi-telemetry";
-
-/*
- * Exports: Telemetry
- */
 
 export function createTelemetry(tracer: Tracer, meter: Meter): TelemetryContext {
   const contexts = new WeakMap<TelemetryContext, Context>();
@@ -77,10 +69,6 @@ export function createTelemetry(tracer: Tracer, meter: Meter): TelemetryContext 
     );
 
   return contextual(ROOT_CONTEXT);
-
-  /*
-   * Helpers: Telemetry
-   */
 
   function contextual(context: Context): TelemetryContext {
     const result: TelemetryContext = {
@@ -150,10 +138,6 @@ export function createTelemetry(tracer: Tracer, meter: Meter): TelemetryContext 
     return context ? [{ context, attributes: attributes(value.attributes) }] : [];
   }
 }
-
-/*
- * Helpers: Telemetry
- */
 
 function attributes(values: SpanAttributes = {}): Attributes {
   const result: Attributes = {};

@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, open } from "node:fs/promises";
@@ -25,10 +21,6 @@ import type {
   AuthorizationServerRecord,
 } from "../graphql/src/graphql.ts";
 import { Problem } from "./problem.ts";
-
-/*
- * Exports: Accounts
- */
 
 type Registration = Type.Static<typeof OAuthServers>[number];
 
@@ -386,10 +378,6 @@ export async function openAccounts(options: {
     },
   };
 
-  /*
-   * Helpers: Accounts
-   */
-
   function page<T extends { id: string }>(
     items: T[],
     scope: string,
@@ -605,10 +593,6 @@ export async function openAccounts(options: {
     });
   }
 }
-
-/*
- * Helpers: Accounts
- */
 
 type Server = Registration & { client: oauth.Client; authenticate: oauth.ClientAuth };
 

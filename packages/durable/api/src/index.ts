@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import { serve } from "durable-api/serve";
 import { sse } from "durable-api/sse";
 import type { watch } from "durable-api/watch";
@@ -10,10 +6,6 @@ import { openApplication } from "./application.ts";
 import { readDeploymentConfiguration } from "./configuration.ts";
 import { decode } from "./graphql.ts";
 import { getOperationAST, parse } from "graphql";
-
-/*
- * Exports: Entrypoint
- */
 
 export async function main(): Promise<void> {
   const config = readDeploymentConfiguration();
@@ -149,14 +141,6 @@ export async function main(): Promise<void> {
   }
 }
 
-/*
- * Helpers: Entrypoint
- */
-
 type WatchQuery = Parameters<typeof watch>[0];
-
-/*
- * Entrypoint
- */
 
 if (import.meta.main) await main();

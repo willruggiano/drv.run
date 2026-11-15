@@ -14,21 +14,12 @@ its subdirectories. Tests, test fixtures, and generated files are excluded.
    dependencies. Keep overload signatures together. Preserve constant
    initialization dependencies.
 
-Use this multiline header for every nonempty section or topic group:
+Separate groups with blank lines, not comments. Keep captured helpers inside
+their lexical scope, below the function's main flow. Within classes, keep state
+fields first, public methods next, and private helper methods last. Keep
+executable module startup last.
 
-```typescript
-/*
- * Exports: Accounts
- */
-```
-
-Use `Imports`, `Exports: <topic>`, and `Helpers: <topic>` as labels. Omit empty
-sections. Keep captured helpers inside their lexical scope, below the function's
-main flow, with the same helper header. Within classes, keep state fields first,
-public methods next, and private helper methods last. Keep executable module
-startup last, under `Entrypoint`.
-
-Do not add other comments unless tooling requires them. Preserve Grats tags and
-schema descriptions: they define the generated GraphQL contract. See
+Only comments required by tooling are allowed. Preserve Grats tags and schema
+descriptions: they define the generated GraphQL contract. See
 [[packages/durable/api/graphql/src/graphql.ts]] and the Grats configuration in
 `graphql/tsconfig.grats.json`. Do not edit generated files.

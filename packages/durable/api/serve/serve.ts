@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import {
@@ -13,10 +9,6 @@ import {
 import type { ListenOptions } from "node:net";
 import { Readable } from "node:stream";
 import { finished, pipeline } from "node:stream/promises";
-
-/*
- * Exports: HTTP server
- */
 
 type BindOptions = Pick<
   ListenOptions,
@@ -83,10 +75,6 @@ export async function serve(options: Options): Promise<Server> {
     await server.close();
     throw error;
   }
-
-  /*
-   * Helpers: HTTP server
-   */
 
   async function dispatch(incoming: IncomingMessage, outgoing: ServerResponse): Promise<void> {
     const controller = new AbortController();
@@ -202,10 +190,6 @@ export async function serve(options: Options): Promise<Server> {
     }
   }
 }
-
-/*
- * Helpers: HTTP server
- */
 
 const hopHeaders = [
   "connection",

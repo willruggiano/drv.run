@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import Type from "typebox";
@@ -14,19 +10,11 @@ import {
 } from "../graphql/src/graphql.ts";
 import type { DeploymentConfiguration } from "./configuration.ts";
 
-/*
- * Exports: Settings
- */
-
 export function createSettingsService(config: DeploymentConfiguration): SettingsService {
   return {
     web: configuration("web", webSettings),
     harness: configuration("harness", harnessSettings),
   };
-
-  /*
-   * Helpers: Settings
-   */
 
   function configuration<T>(
     app: "web" | "harness",
@@ -53,10 +41,6 @@ export function createSettingsService(config: DeploymentConfiguration): Settings
     };
   }
 }
-
-/*
- * Helpers: Settings
- */
 
 const defaults = {
   web: {

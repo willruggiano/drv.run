@@ -1,15 +1,7 @@
-/*
- * Imports
- */
-
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { Problem } from "./problem.ts";
-
-/*
- * Exports: Sessions
- */
 
 export class Sessions {
   private readonly instances = new Map<
@@ -60,10 +52,6 @@ export class Sessions {
     this.closing ??= this.closeAll();
     return this.closing;
   }
-
-  /*
-   * Helpers: Sessions
-   */
 
   private async closeAll(): Promise<void> {
     const results = await Promise.allSettled(

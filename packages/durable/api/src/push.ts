@@ -1,7 +1,3 @@
-/*
- * Imports
- */
-
 import assert from "node:assert/strict";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,10 +7,6 @@ import type { Harness, CommitObservation, ConversationId } from "@earendil-works
 import { sendNotification, WebPushError, type PushSubscription } from "web-push";
 import { pushURL, pushSubscription, vapidKey, vapidPublic } from "push-policy";
 import type { PushBinding } from "../graphql/src/graphql.ts";
-
-/*
- * Exports: Push
- */
 
 export type PushConfiguration = {
   origins: readonly string[];
@@ -125,10 +117,6 @@ export async function openPush(directory: string, config: PushConfiguration | un
     },
   };
 
-  /*
-   * Helpers: HTTP server
-   */
-
   async function deliver(
     externalId: string,
     conversationId: ConversationId,
@@ -172,10 +160,6 @@ export async function openPush(directory: string, config: PushConfiguration | un
     }
   }
 }
-
-/*
- * Helpers: Push
- */
 
 function stored(row: Record<string, SQLOutputValue>): PushSubscription {
   assert(typeof row.data === "string");

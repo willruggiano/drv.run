@@ -1,7 +1,3 @@
-/*
- * Exports: Server-sent events
- */
-
 export function sse(events: ReadableStream<unknown>): Response {
   const encoder = new TextEncoder();
   const body = events.pipeThrough(

@@ -1,7 +1,3 @@
-/*
- * Exports: Problem
- */
-
 export class Problem extends Error {
   readonly status: number;
   readonly allow: string | undefined;
