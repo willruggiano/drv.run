@@ -1,3 +1,7 @@
+/*
+ * Imports
+ */
+
 import assert from "node:assert/strict";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -17,10 +21,9 @@ import { openPush } from "./push.ts";
 import { openAccounts } from "./accounts.ts";
 import { createSettingsService } from "./settings.ts";
 
-type Query = Parameters<typeof watch>[0];
-const externalIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
-const missing = (error: unknown) =>
-  error instanceof Error && "code" in error && error.code === "ENOENT";
+/*
+ * Exports: Application
+ */
 
 export async function openApplication(config: DeploymentConfiguration) {
   const models = builtinModels();
@@ -170,3 +173,14 @@ export async function openApplication(config: DeploymentConfiguration) {
     },
   };
 }
+
+/*
+ * Helpers: Application
+ */
+
+type Query = Parameters<typeof watch>[0];
+
+const externalIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
+
+const missing = (error: unknown) =>
+  error instanceof Error && "code" in error && error.code === "ENOENT";

@@ -1,3 +1,7 @@
+/*
+ * Imports
+ */
+
 import assert from "node:assert/strict";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,17 +12,15 @@ import { sendNotification, WebPushError, type PushSubscription } from "web-push"
 import { pushURL, pushSubscription, vapidKey, vapidPublic } from "push-policy";
 import type { PushBinding } from "../graphql/src/graphql.ts";
 
+/*
+ * Exports: Push
+ */
+
 export type PushConfiguration = {
   origins: readonly string[];
   subject: string;
   privateKeyFile: string;
 };
-function stored(row: Record<string, SQLOutputValue>): PushSubscription {
-  assert(typeof row.data === "string");
-  const target = pushSubscription(JSON.parse(row.data));
-  assert.equal(target.endpoint, row.endpoint);
-  return target;
-}
 
 export async function openPush(directory: string, config: PushConfiguration | undefined) {
   let vapid: { subject: string; publicKey: string; privateKey: string } | undefined;
@@ -77,49 +79,7 @@ export async function openPush(directory: string, config: PushConfiguration | un
       return { value: undefined };
     },
   };
-  async function deliver(
-    externalId: string,
-    conversationId: ConversationId,
-    failed: boolean,
-    harness: Harness,
-  ) {
-    assert(config);
-    assert(vapid);
-    const conversation = await harness.commit(
-      (tx) => tx.conversation(conversationId),
-      BACKGROUND_CONTEXT,
-    );
-    assert(conversation);
-    if (conversation.owner) return;
-    const url = `/sessions/${encodeURIComponent(externalId)}/conversations/${conversationId}`;
-    const payload = JSON.stringify({
-      title: failed ? "Conversation needs attention" : "Response ready",
-      body: "Open the conversation to continue.",
-      url,
-      tag: url,
-      timestamp: Date.now(),
-    });
-    for (const row of db.prepare("SELECT endpoint, data FROM subscriptions").all()) {
-      // Corruption is an invariant failure; a narrowed deployment allowlist is not.
-      const target = stored(row);
-      if (!config.origins.includes(new URL(target.endpoint).origin)) continue;
-      try {
-        await sendNotification(target, payload, {
-          vapidDetails: vapid,
-          TTL: 300,
-          timeout: 10_000,
-          contentEncoding: "aes128gcm",
-        });
-      } catch (error) {
-        if (error instanceof WebPushError && (error.statusCode === 404 || error.statusCode === 410))
-          db.prepare("DELETE FROM subscriptions WHERE endpoint = ? AND data = ?").run(
-            target.endpoint,
-            row.data!,
-          );
-        else console.error("Push delivery failed", error);
-      }
-    }
-  }
+
   return {
     service,
     attach(harness: Harness, externalId: string): void {
@@ -135,8 +95,6 @@ export async function openPush(directory: string, config: PushConfiguration | un
               completed.set(submission.conversationId, true);
           }
           for (const [id, failed] of completed) {
-            // Commit observers never call the Session or await delivery. Dropping a
-            // notification under load is preferable to blocking agent execution.
             if (sending.size >= 16) continue;
             const work = Promise.resolve()
               .then(async () => {
@@ -166,4 +124,62 @@ export async function openPush(directory: string, config: PushConfiguration | un
       return closing;
     },
   };
+
+  /*
+   * Helpers: HTTP server
+   */
+
+  async function deliver(
+    externalId: string,
+    conversationId: ConversationId,
+    failed: boolean,
+    harness: Harness,
+  ) {
+    assert(config);
+    assert(vapid);
+    const conversation = await harness.commit(
+      (tx) => tx.conversation(conversationId),
+      BACKGROUND_CONTEXT,
+    );
+    assert(conversation);
+    if (conversation.owner) return;
+    const url = `/sessions/${encodeURIComponent(externalId)}/conversations/${conversationId}`;
+    const payload = JSON.stringify({
+      title: failed ? "Conversation needs attention" : "Response ready",
+      body: "Open the conversation to continue.",
+      url,
+      tag: url,
+      timestamp: Date.now(),
+    });
+    for (const row of db.prepare("SELECT endpoint, data FROM subscriptions").all()) {
+      const target = stored(row);
+      if (!config.origins.includes(new URL(target.endpoint).origin)) continue;
+      try {
+        await sendNotification(target, payload, {
+          vapidDetails: vapid,
+          TTL: 300,
+          timeout: 10_000,
+          contentEncoding: "aes128gcm",
+        });
+      } catch (error) {
+        if (error instanceof WebPushError && (error.statusCode === 404 || error.statusCode === 410))
+          db.prepare("DELETE FROM subscriptions WHERE endpoint = ? AND data = ?").run(
+            target.endpoint,
+            row.data!,
+          );
+        else console.error("Push delivery failed", error);
+      }
+    }
+  }
+}
+
+/*
+ * Helpers: Push
+ */
+
+function stored(row: Record<string, SQLOutputValue>): PushSubscription {
+  assert(typeof row.data === "string");
+  const target = pushSubscription(JSON.parse(row.data));
+  assert.equal(target.endpoint, row.endpoint);
+  return target;
 }

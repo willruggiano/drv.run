@@ -1,18 +1,15 @@
+/*
+ * Imports
+ */
+
 import type { GraphQLArgs } from "graphql";
 import Type from "typebox";
 import Value from "typebox/value";
 import { Problem } from "./problem.ts";
 
-const ObjectParameter = Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]);
-const RequestPayload = Type.Object(
-  {
-    query: Type.String({ minLength: 1 }),
-    operationName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-    variables: Type.Optional(ObjectParameter),
-    extensions: Type.Optional(ObjectParameter),
-  },
-  { additionalProperties: false },
-);
+/*
+ * Exports: Graphql
+ */
 
 export async function decode(
   request: Request,
@@ -46,3 +43,19 @@ export async function decode(
   };
   return args;
 }
+
+/*
+ * Helpers: Graphql
+ */
+
+const ObjectParameter = Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]);
+
+const RequestPayload = Type.Object(
+  {
+    query: Type.String({ minLength: 1 }),
+    operationName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+    variables: Type.Optional(ObjectParameter),
+    extensions: Type.Optional(ObjectParameter),
+  },
+  { additionalProperties: false },
+);

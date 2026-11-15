@@ -1,7 +1,15 @@
+/*
+ * Imports
+ */
+
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { Problem } from "./problem.ts";
+
+/*
+ * Exports: Sessions
+ */
 
 export class Sessions {
   private readonly instances = new Map<
@@ -29,7 +37,6 @@ export class Sessions {
     if (this.closing) throw new Problem(503);
     let instance = this.instances.get(id);
     if (!instance) {
-      // Opening belongs to the service, not the first request's cancellation.
       const promise = Promise.resolve().then(() => this.open(id, BACKGROUND_CONTEXT, create));
       instance = { create, promise };
       this.instances.set(id, instance);
@@ -45,7 +52,6 @@ export class Sessions {
     }
     const harness = await instance.promise;
     if (this.closing) throw new Problem(503);
-    // A non-creating lookup may have occupied the slot before provisioning arrived.
     if (!harness && create && !instance.create) return this.get(id, true);
     return harness;
   }
@@ -54,6 +60,10 @@ export class Sessions {
     this.closing ??= this.closeAll();
     return this.closing;
   }
+
+  /*
+   * Helpers: Sessions
+   */
 
   private async closeAll(): Promise<void> {
     const results = await Promise.allSettled(

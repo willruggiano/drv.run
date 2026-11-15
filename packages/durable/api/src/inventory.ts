@@ -1,3 +1,7 @@
+/*
+ * Imports
+ */
+
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
@@ -7,122 +11,14 @@ import type { Context } from "@earendil-works/chord/context";
 import type { InventoryRecord, InventoryPhase, InventoryService } from "../graphql/src/graphql.ts";
 import type { DeploymentConfiguration } from "./configuration.ts";
 
-const exec = promisify(execFile);
-const missing = (error: unknown) =>
-  error instanceof Error && "code" in error && error.code === "ENOENT";
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function phase(value: unknown): InventoryPhase | undefined {
-  if (
-    !isObject(value) ||
-    typeof value.phase !== "string" ||
-    typeof value.clock !== "string" ||
-    typeof value.monotonic_s !== "number" ||
-    !Number.isFinite(value.monotonic_s) ||
-    value.monotonic_s < 0 ||
-    typeof value.resolution_s !== "number" ||
-    !Number.isFinite(value.resolution_s) ||
-    value.resolution_s <= 0
-  )
-    return undefined;
-  return {
-    phase: value.phase,
-    clock: value.clock,
-    monotonic_s: value.monotonic_s,
-    resolution_s: value.resolution_s,
-  };
-}
-
-async function phases(path: string): Promise<InventoryPhase[] | undefined> {
-  let content: string;
-  try {
-    content = await readFile(path, "utf8");
-  } catch (error) {
-    if (missing(error)) return undefined;
-    throw error;
-  }
-  const result: InventoryPhase[] = [];
-  for (const line of content.split("\n")) {
-    if (!line) continue;
-    let item: unknown;
-    try {
-      item = JSON.parse(line) as unknown;
-    } catch {
-      return undefined;
-    }
-    const parsed = phase(item);
-    if (!parsed) return undefined;
-    result.push(parsed);
-  }
-  return result.length ? result : undefined;
-}
+/*
+ * Exports: Inventory
+ */
 
 export function createInventoryService(config: DeploymentConfiguration): InventoryService {
   const namespace = `uid:${process.getuid!()}`;
   const root = dirname(config.stateDirectory);
   const unit = (id: string) => `drv.run@${id}.service`;
-
-  async function inventory(context: Context): Promise<InventoryRecord[]> {
-    context.abortSignal?.throwIfAborted();
-    const [directories, loaded, installed] = await Promise.all([
-      readdir(root, { withFileTypes: true }).catch((error: unknown) => {
-        if (missing(error)) return [];
-        throw error;
-      }),
-      exec(
-        config.systemctl,
-        [
-          "--user",
-          "list-units",
-          "--all",
-          "--type=service",
-          "--plain",
-          "--no-legend",
-          "--no-pager",
-          "drv.run@*.service",
-        ],
-        {
-          timeout: 10_000,
-          signal: context.abortSignal,
-        },
-      ),
-      exec(
-        config.systemctl,
-        [
-          "--user",
-          "list-unit-files",
-          "--type=service",
-          "--no-legend",
-          "--no-pager",
-          "drv.run@*.service",
-        ],
-        {
-          timeout: 10_000,
-          signal: context.abortSignal,
-        },
-      ),
-    ]);
-    const ids = new Set<string>();
-    for (const entry of directories) if (entry.isDirectory()) ids.add(entry.name);
-    for (const output of [loaded.stdout, installed.stdout]) {
-      for (const line of output.split("\n")) {
-        const found = /^drv\.run@(.+)\.service(?:\s|$)/.exec(line.trim());
-        if (found?.[1]) ids.add(found[1]);
-      }
-    }
-    context.abortSignal?.throwIfAborted();
-    return [...ids]
-      .filter((id) => !["harness", ".", ".."].includes(id) && basename(id) === id)
-      .sort((left, right) => left.localeCompare(right))
-      .map((id) => ({ id, unit: unit(id) }));
-  }
-
-  async function known(id: string, context: Context): Promise<boolean> {
-    return (await inventory(context)).some((record) => record.id === id);
-  }
 
   return {
     namespace,
@@ -219,5 +115,126 @@ export function createInventoryService(config: DeploymentConfiguration): Invento
         guest_phases: guest ?? null,
       };
     },
+  };
+
+  /*
+   * Helpers: Inventory
+   */
+
+  async function inventory(context: Context): Promise<InventoryRecord[]> {
+    context.abortSignal?.throwIfAborted();
+    const [directories, loaded, installed] = await Promise.all([
+      readdir(root, { withFileTypes: true }).catch((error: unknown) => {
+        if (missing(error)) return [];
+        throw error;
+      }),
+      exec(
+        config.systemctl,
+        [
+          "--user",
+          "list-units",
+          "--all",
+          "--type=service",
+          "--plain",
+          "--no-legend",
+          "--no-pager",
+          "drv.run@*.service",
+        ],
+        {
+          timeout: 10_000,
+          signal: context.abortSignal,
+        },
+      ),
+      exec(
+        config.systemctl,
+        [
+          "--user",
+          "list-unit-files",
+          "--type=service",
+          "--no-legend",
+          "--no-pager",
+          "drv.run@*.service",
+        ],
+        {
+          timeout: 10_000,
+          signal: context.abortSignal,
+        },
+      ),
+    ]);
+    const ids = new Set<string>();
+    for (const entry of directories) if (entry.isDirectory()) ids.add(entry.name);
+    for (const output of [loaded.stdout, installed.stdout]) {
+      for (const line of output.split("\n")) {
+        const found = /^drv\.run@(.+)\.service(?:\s|$)/.exec(line.trim());
+        if (found?.[1]) ids.add(found[1]);
+      }
+    }
+    context.abortSignal?.throwIfAborted();
+    return [...ids]
+      .filter((id) => !["harness", ".", ".."].includes(id) && basename(id) === id)
+      .sort((left, right) => left.localeCompare(right))
+      .map((id) => ({ id, unit: unit(id) }));
+  }
+
+  async function known(id: string, context: Context): Promise<boolean> {
+    return (await inventory(context)).some((record) => record.id === id);
+  }
+}
+
+/*
+ * Helpers: Inventory
+ */
+
+const exec = promisify(execFile);
+
+const missing = (error: unknown) =>
+  error instanceof Error && "code" in error && error.code === "ENOENT";
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function phases(path: string): Promise<InventoryPhase[] | undefined> {
+  let content: string;
+  try {
+    content = await readFile(path, "utf8");
+  } catch (error) {
+    if (missing(error)) return undefined;
+    throw error;
+  }
+  const result: InventoryPhase[] = [];
+  for (const line of content.split("\n")) {
+    if (!line) continue;
+    let item: unknown;
+    try {
+      item = JSON.parse(line) as unknown;
+    } catch {
+      return undefined;
+    }
+    const parsed = phase(item);
+    if (!parsed) return undefined;
+    result.push(parsed);
+  }
+  return result.length ? result : undefined;
+}
+
+function phase(value: unknown): InventoryPhase | undefined {
+  if (
+    !isObject(value) ||
+    typeof value.phase !== "string" ||
+    typeof value.clock !== "string" ||
+    typeof value.monotonic_s !== "number" ||
+    !Number.isFinite(value.monotonic_s) ||
+    value.monotonic_s < 0 ||
+    typeof value.resolution_s !== "number" ||
+    !Number.isFinite(value.resolution_s) ||
+    value.resolution_s <= 0
+  )
+    return undefined;
+  return {
+    phase: value.phase,
+    clock: value.clock,
+    monotonic_s: value.monotonic_s,
+    resolution_s: value.resolution_s,
   };
 }

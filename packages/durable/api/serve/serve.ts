@@ -1,3 +1,7 @@
+/*
+ * Imports
+ */
+
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import {
@@ -9,6 +13,10 @@ import {
 import type { ListenOptions } from "node:net";
 import { Readable } from "node:stream";
 import { finished, pipeline } from "node:stream/promises";
+
+/*
+ * Exports: HTTP server
+ */
 
 type BindOptions = Pick<
   ListenOptions,
@@ -29,28 +37,6 @@ interface Server {
   timeout(request: Request, milliseconds: number): void;
   close(): Promise<void>;
   forceClose(): void;
-}
-
-const hopHeaders = [
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-];
-
-function hasBody(incoming: IncomingMessage): boolean {
-  return (
-    incoming.headers["transfer-encoding"] !== undefined ||
-    Number(incoming.headers["content-length"] ?? 0) !== 0
-  );
-}
-
-function discard(response: Response): void {
-  if (response.body && !response.body.locked) void response.body.cancel().catch(() => {});
 }
 
 export async function serve(options: Options): Promise<Server> {
@@ -78,50 +64,29 @@ export async function serve(options: Options): Promise<Server> {
     },
   };
 
-  async function respond(
-    response: Response,
-    incoming: IncomingMessage,
-    outgoing: ServerResponse,
-    signal: AbortSignal,
-  ): Promise<void> {
-    try {
-      if (outgoing.destroyed) {
-        discard(response);
-        return;
-      }
-      if (response.bodyUsed || response.body?.locked)
-        throw new TypeError("Response body is unavailable");
-      for (const name of outgoing.getHeaderNames()) outgoing.removeHeader(name);
-      const headers = new Headers(response.headers);
-      const connection = headers.get("connection");
-      if (connection) {
-        for (const name of connection.split(",")) headers.delete(name.trim());
-      }
-      for (const name of hopHeaders) headers.delete(name);
-      if (response.status === 204) headers.delete("content-length");
-      if (response.status === 205) headers.set("content-length", "0");
-      for (const [name, value] of headers) {
-        if (name !== "set-cookie") outgoing.setHeader(name, value);
-      }
-      const cookies = headers.getSetCookie();
-      if (cookies.length) outgoing.setHeader("set-cookie", cookies);
-      outgoing.statusCode = response.status;
-      outgoing.statusMessage = response.statusText;
-      if (hasBody(incoming) && !incoming.readableEnded) outgoing.shouldKeepAlive = false;
-      outgoing.flushHeaders();
-      if (incoming.method === "HEAD" || response.body === null) {
-        discard(response);
-        outgoing.end();
-        await finished(outgoing, { cleanup: true });
-      } else {
-        await pipeline(Readable.fromWeb(response.body), outgoing, { signal });
-      }
-    } catch (error) {
-      discard(response);
-      if (outgoing.headersSent) outgoing.destroy();
-      throw error;
-    }
+  http.on("request", (incoming, outgoing) => {
+    void dispatch(incoming, outgoing);
+  });
+  http.on("upgrade", (_request, socket) => socket.destroy());
+  http.on("connect", (_request, socket) => socket.destroy());
+  try {
+    const { host, port, backlog, exclusive, ipv6Only, reusePort, signal } = options;
+    http.listen({ host, port, backlog, exclusive, ipv6Only, reusePort, signal });
+    await once(http, "listening", { signal });
+    const address = http.address();
+    assert(address && typeof address !== "string");
+    const hostAddress = address.family === "IPv6" ? `[${address.address}]` : address.address;
+    origin = `http://${hostAddress}:${address.port}`;
+    return server;
+  } catch (error) {
+    server.forceClose();
+    await server.close();
+    throw error;
   }
+
+  /*
+   * Helpers: HTTP server
+   */
 
   async function dispatch(incoming: IncomingMessage, outgoing: ServerResponse): Promise<void> {
     const controller = new AbortController();
@@ -192,23 +157,74 @@ export async function serve(options: Options): Promise<Server> {
     }
   }
 
-  http.on("request", (incoming, outgoing) => {
-    void dispatch(incoming, outgoing);
-  });
-  http.on("upgrade", (_request, socket) => socket.destroy());
-  http.on("connect", (_request, socket) => socket.destroy());
-  try {
-    const { host, port, backlog, exclusive, ipv6Only, reusePort, signal } = options;
-    http.listen({ host, port, backlog, exclusive, ipv6Only, reusePort, signal });
-    await once(http, "listening", { signal });
-    const address = http.address();
-    assert(address && typeof address !== "string");
-    const hostAddress = address.family === "IPv6" ? `[${address.address}]` : address.address;
-    origin = `http://${hostAddress}:${address.port}`;
-    return server;
-  } catch (error) {
-    server.forceClose();
-    await server.close();
-    throw error;
+  async function respond(
+    response: Response,
+    incoming: IncomingMessage,
+    outgoing: ServerResponse,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      if (outgoing.destroyed) {
+        discard(response);
+        return;
+      }
+      if (response.bodyUsed || response.body?.locked)
+        throw new TypeError("Response body is unavailable");
+      for (const name of outgoing.getHeaderNames()) outgoing.removeHeader(name);
+      const headers = new Headers(response.headers);
+      const connection = headers.get("connection");
+      if (connection) {
+        for (const name of connection.split(",")) headers.delete(name.trim());
+      }
+      for (const name of hopHeaders) headers.delete(name);
+      if (response.status === 204) headers.delete("content-length");
+      if (response.status === 205) headers.set("content-length", "0");
+      for (const [name, value] of headers) {
+        if (name !== "set-cookie") outgoing.setHeader(name, value);
+      }
+      const cookies = headers.getSetCookie();
+      if (cookies.length) outgoing.setHeader("set-cookie", cookies);
+      outgoing.statusCode = response.status;
+      outgoing.statusMessage = response.statusText;
+      if (hasBody(incoming) && !incoming.readableEnded) outgoing.shouldKeepAlive = false;
+      outgoing.flushHeaders();
+      if (incoming.method === "HEAD" || response.body === null) {
+        discard(response);
+        outgoing.end();
+        await finished(outgoing, { cleanup: true });
+      } else {
+        await pipeline(Readable.fromWeb(response.body), outgoing, { signal });
+      }
+    } catch (error) {
+      discard(response);
+      if (outgoing.headersSent) outgoing.destroy();
+      throw error;
+    }
   }
+}
+
+/*
+ * Helpers: HTTP server
+ */
+
+const hopHeaders = [
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+];
+
+function discard(response: Response): void {
+  if (response.body && !response.body.locked) void response.body.cancel().catch(() => {});
+}
+
+function hasBody(incoming: IncomingMessage): boolean {
+  return (
+    incoming.headers["transfer-encoding"] !== undefined ||
+    Number(incoming.headers["content-length"] ?? 0) !== 0
+  );
 }

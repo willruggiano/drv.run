@@ -1,3 +1,7 @@
+/*
+ * Imports
+ */
+
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, open } from "node:fs/promises";
@@ -22,8 +26,16 @@ import type {
 } from "../graphql/src/graphql.ts";
 import { Problem } from "./problem.ts";
 
+/*
+ * Exports: Accounts
+ */
+
+type Registration = Type.Static<typeof OAuthServers>[number];
+
 const Text = Type.String({ minLength: 1 });
+
 const Https = Type.String({ pattern: "^https://[^\\s]+$" });
+
 export const OAuthServers = Type.Array(
   Type.Object(
     {
@@ -49,35 +61,6 @@ export const OAuthServers = Type.Array(
     { additionalProperties: false },
   ),
 );
-type Registration = Type.Static<typeof OAuthServers>[number];
-type Server = Registration & { client: oauth.Client; authenticate: oauth.ClientAuth };
-const Stored = Type.Object({
-  id: Text,
-  provider: Text,
-  serverId: Text,
-  identifier: Type.Union([Type.String(), Type.Null()]),
-  displayName: Type.Union([Type.String(), Type.Null()]),
-  scope: Type.Union([Type.String(), Type.Null()]),
-  status: Type.Enum(["usable", "temporarilyUnavailable", "reauthorizationRequired"]),
-  access_token: Text,
-  refresh_token: Type.Optional(Text),
-  expiresAt: Type.Union([Type.Number(), Type.Null()]),
-});
-type StoredAccount = Type.Static<typeof Stored>;
-type Flow = {
-  record: AuthorizationRecord;
-  server: Server;
-  controller: AbortController;
-  verifier?: string;
-  state?: string;
-  work?: Promise<void>;
-};
-const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
-const protocolCode = (error: unknown): string =>
-  (error instanceof oauth.ResponseBodyError || error instanceof oauth.AuthorizationResponseError) &&
-  /^[a-z][a-z0-9_]{0,63}$/.test(error.error)
-    ? error.error
-    : "server_error";
 
 export async function openAccounts(options: {
   directory: string;
@@ -115,209 +98,6 @@ export async function openAccounts(options: {
   const redirect =
     options.origin === undefined ? undefined : new URL("/api/oauth/callback", options.origin).href;
 
-  function stored(id: string): StoredAccount | undefined {
-    const row = db.prepare("SELECT data FROM accounts WHERE id = ?").get(id);
-    if (!row) return undefined;
-    assert(typeof row.data === "string");
-    const value: unknown = JSON.parse(row.data);
-    Value.Assert(Stored, value);
-    return value;
-  }
-  function all(): StoredAccount[] {
-    return db
-      .prepare("SELECT id FROM accounts ORDER BY id")
-      .all()
-      .map((row) => {
-        assert(typeof row.id === "string");
-        return stored(row.id)!;
-      });
-  }
-  function save(account: StoredAccount) {
-    db.prepare(
-      "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
-    ).run(account.id, account.provider, JSON.stringify(account));
-  }
-  function publicAccount(account: StoredAccount): AccountRecord {
-    const { id, serverId, identifier, displayName, scope, status } = account;
-    return { id, serverId, identifier, displayName, scope, status };
-  }
-  function serial<T>(provider: string, fn: () => Promise<T>): Promise<T> {
-    const work = (locks.get(provider) ?? Promise.resolve()).then(fn, fn);
-    locks.set(provider, work);
-    void work
-      .finally(() => {
-        if (locks.get(provider) === work) locks.delete(provider);
-      })
-      .catch(() => {});
-    return work;
-  }
-  function request(signal: AbortSignal) {
-    return { signal: AbortSignal.any([signal, stopped.signal, AbortSignal.timeout(30_000)]) };
-  }
-  function fail(flow: Flow, error: unknown) {
-    if (flow.record.status !== "pending") return;
-    flow.record = { ...flow.record, status: "failed", error: { error: protocolCode(error) } };
-  }
-  function launch(flow: Flow, fn: () => Promise<void>): Promise<void> {
-    flow.work = fn().catch((error: unknown) => {
-      fail(flow, error);
-      if (
-        error instanceof oauth.ResponseBodyError ||
-        error instanceof oauth.AuthorizationResponseError
-      )
-        return;
-      if (flow.controller.signal.aborted && error instanceof Error && error.name === "AbortError")
-        return;
-      throw error;
-    });
-    return flow.work;
-  }
-  async function publish(flow: Flow, tokens: oauth.TokenEndpointResponse) {
-    assert(tokens.token_type === "bearer", "Unsupported token type");
-    const { server } = flow;
-    let identifier: string | null = null;
-    let displayName: string | null = null;
-    if (server.metadata.userinfo_endpoint) {
-      const response = await oauth.userInfoRequest(
-        server.metadata,
-        server.client,
-        tokens.access_token,
-        request(flow.controller.signal),
-      );
-      const info = await oauth.processUserInfoResponse(
-        server.metadata,
-        server.client,
-        oauth.skipSubjectCheck,
-        response,
-      );
-      identifier = info.sub;
-      displayName = typeof info.name === "string" ? info.name : null;
-    }
-    await serial(server.provider, async () => {
-      flow.controller.signal.throwIfAborted();
-      const existing = flow.record.accountId ? stored(flow.record.accountId) : undefined;
-      if (flow.record.accountId) {
-        assert(existing, "Account was disconnected");
-        assert(
-          existing.identifier === null || existing.identifier === identifier,
-          "Account identity changed",
-        );
-      } else
-        assert(!all().some((item) => item.provider === server.provider), "Provider already linked");
-      const account: StoredAccount = {
-        id: existing?.id ?? randomUUID(),
-        serverId: server.id,
-        provider: server.provider,
-        identifier,
-        displayName,
-        scope: tokens.scope ?? null,
-        status: "usable",
-        access_token: tokens.access_token,
-        ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
-        expiresAt: tokens.expires_in === undefined ? null : Date.now() + tokens.expires_in * 1000,
-      };
-      save(account);
-      flow.record = { ...flow.record, accountId: account.id, status: "completed", error: null };
-    });
-  }
-  async function poll(flow: Flow, device: oauth.DeviceAuthorizationResponse) {
-    const { server } = flow;
-    const expiresAt = flow.record.createdAt + device.expires_in * 1000;
-    let interval = (device.interval ?? 5) * 1000;
-    while (Date.now() < expiresAt) {
-      await timers.setTimeout(Math.min(interval, expiresAt - Date.now()), undefined, {
-        signal: flow.controller.signal,
-      });
-      if (Date.now() >= expiresAt) break;
-      try {
-        const response = await oauth.deviceCodeGrantRequest(
-          server.metadata,
-          server.client,
-          server.authenticate,
-          device.device_code,
-          request(flow.controller.signal),
-        );
-        const tokens = await oauth.processDeviceCodeResponse(
-          server.metadata,
-          server.client,
-          response,
-        );
-        if (Date.now() >= expiresAt) break;
-        await publish(flow, tokens);
-        return;
-      } catch (error) {
-        if (error instanceof oauth.ResponseBodyError && error.error === "authorization_pending")
-          continue;
-        if (error instanceof oauth.ResponseBodyError && error.error === "slow_down") {
-          interval += 5000;
-          continue;
-        }
-        if (error instanceof DOMException && error.name === "TimeoutError") {
-          interval *= 2;
-          continue;
-        }
-        throw error;
-      }
-    }
-    flow.record = { ...flow.record, status: "failed", error: { error: "expired_token" } };
-  }
-  function admit(
-    serverId: string,
-    accountId: string | undefined,
-    grant: string,
-    context: Context,
-  ): { flow: Flow } | { error: "BAD_REQUEST" | "NOT_FOUND" } {
-    context.abortSignal?.throwIfAborted();
-    stopped.signal.throwIfAborted();
-    const server = servers.get(serverId);
-    if (!server) return { error: "NOT_FOUND" } as const;
-    if (!server.metadata.grant_types_supported.includes(grant))
-      return { error: "BAD_REQUEST" } as const;
-    const existing = accountId === undefined ? undefined : stored(accountId);
-    if (accountId !== undefined && (!existing || existing.serverId !== serverId))
-      return { error: "NOT_FOUND" } as const;
-    if (accountId === undefined && all().some((account) => account.provider === server.provider))
-      return { error: "BAD_REQUEST" } as const;
-    const flow: Flow = {
-      record: {
-        id: randomUUID(),
-        serverId,
-        accountId: accountId ?? null,
-        createdAt: Date.now(),
-        status: "pending",
-      },
-      server,
-      controller: new AbortController(),
-    };
-    flows.set(flow.record.id, flow);
-    return { flow };
-  }
-  function page<T extends { id: string }>(
-    items: T[],
-    scope: string,
-    limit: number,
-    cursor: Parameters<AccountsService["accounts"]>[2],
-  ) {
-    let offset = 0;
-    if (cursor !== undefined) {
-      if (
-        cursor.namespace !== options.directory ||
-        cursor.scope !== scope ||
-        typeof cursor.after !== "string"
-      )
-        return { invalidCursor: true } as const;
-      offset = items.findIndex((item) => item.id === cursor.after) + 1;
-      if (offset === 0) return { invalidCursor: true } as const;
-    }
-    const selected = items.slice(offset, offset + limit);
-    return {
-      items: structuredClone(selected),
-      next:
-        offset + limit < items.length
-          ? { namespace: options.directory, scope, after: selected.at(-1)!.id }
-          : null,
-    };
-  }
   const serverRecord = (server: Server): AuthorizationServerRecord => ({
     id: server.id,
     label: server.label,
@@ -524,8 +304,6 @@ export async function openAccounts(options: {
                     server.client,
                     server.authenticate,
                     account.refresh_token,
-                    // An admitted refresh may rotate credentials. Only its own timeout
-                    // can cancel it; shutdown joins persistence before closing the DB.
                     { signal: AbortSignal.timeout(30_000) },
                   );
                   tokens = await oauth.processRefreshTokenResponse(
@@ -607,4 +385,261 @@ export async function openAccounts(options: {
       return closing;
     },
   };
+
+  /*
+   * Helpers: Accounts
+   */
+
+  function page<T extends { id: string }>(
+    items: T[],
+    scope: string,
+    limit: number,
+    cursor: Parameters<AccountsService["accounts"]>[2],
+  ) {
+    let offset = 0;
+    if (cursor !== undefined) {
+      if (
+        cursor.namespace !== options.directory ||
+        cursor.scope !== scope ||
+        typeof cursor.after !== "string"
+      )
+        return { invalidCursor: true } as const;
+      offset = items.findIndex((item) => item.id === cursor.after) + 1;
+      if (offset === 0) return { invalidCursor: true } as const;
+    }
+    const selected = items.slice(offset, offset + limit);
+    return {
+      items: structuredClone(selected),
+      next:
+        offset + limit < items.length
+          ? { namespace: options.directory, scope, after: selected.at(-1)!.id }
+          : null,
+    };
+  }
+
+  function publicAccount(account: StoredAccount): AccountRecord {
+    const { id, serverId, identifier, displayName, scope, status } = account;
+    return { id, serverId, identifier, displayName, scope, status };
+  }
+
+  function all(): StoredAccount[] {
+    return db
+      .prepare("SELECT id FROM accounts ORDER BY id")
+      .all()
+      .map((row) => {
+        assert(typeof row.id === "string");
+        return stored(row.id)!;
+      });
+  }
+
+  function stored(id: string): StoredAccount | undefined {
+    const row = db.prepare("SELECT data FROM accounts WHERE id = ?").get(id);
+    if (!row) return undefined;
+    assert(typeof row.data === "string");
+    const value: unknown = JSON.parse(row.data);
+    Value.Assert(Stored, value);
+    return value;
+  }
+
+  function admit(
+    serverId: string,
+    accountId: string | undefined,
+    grant: string,
+    context: Context,
+  ): { flow: Flow } | { error: "BAD_REQUEST" | "NOT_FOUND" } {
+    context.abortSignal?.throwIfAborted();
+    stopped.signal.throwIfAborted();
+    const server = servers.get(serverId);
+    if (!server) return { error: "NOT_FOUND" } as const;
+    if (!server.metadata.grant_types_supported.includes(grant))
+      return { error: "BAD_REQUEST" } as const;
+    const existing = accountId === undefined ? undefined : stored(accountId);
+    if (accountId !== undefined && (!existing || existing.serverId !== serverId))
+      return { error: "NOT_FOUND" } as const;
+    if (accountId === undefined && all().some((account) => account.provider === server.provider))
+      return { error: "BAD_REQUEST" } as const;
+    const flow: Flow = {
+      record: {
+        id: randomUUID(),
+        serverId,
+        accountId: accountId ?? null,
+        createdAt: Date.now(),
+        status: "pending",
+      },
+      server,
+      controller: new AbortController(),
+    };
+    flows.set(flow.record.id, flow);
+    return { flow };
+  }
+
+  function request(signal: AbortSignal) {
+    return { signal: AbortSignal.any([signal, stopped.signal, AbortSignal.timeout(30_000)]) };
+  }
+
+  async function poll(flow: Flow, device: oauth.DeviceAuthorizationResponse) {
+    const { server } = flow;
+    const expiresAt = flow.record.createdAt + device.expires_in * 1000;
+    let interval = (device.interval ?? 5) * 1000;
+    while (Date.now() < expiresAt) {
+      await timers.setTimeout(Math.min(interval, expiresAt - Date.now()), undefined, {
+        signal: flow.controller.signal,
+      });
+      if (Date.now() >= expiresAt) break;
+      try {
+        const response = await oauth.deviceCodeGrantRequest(
+          server.metadata,
+          server.client,
+          server.authenticate,
+          device.device_code,
+          request(flow.controller.signal),
+        );
+        const tokens = await oauth.processDeviceCodeResponse(
+          server.metadata,
+          server.client,
+          response,
+        );
+        if (Date.now() >= expiresAt) break;
+        await publish(flow, tokens);
+        return;
+      } catch (error) {
+        if (error instanceof oauth.ResponseBodyError && error.error === "authorization_pending")
+          continue;
+        if (error instanceof oauth.ResponseBodyError && error.error === "slow_down") {
+          interval += 5000;
+          continue;
+        }
+        if (error instanceof DOMException && error.name === "TimeoutError") {
+          interval *= 2;
+          continue;
+        }
+        throw error;
+      }
+    }
+    flow.record = { ...flow.record, status: "failed", error: { error: "expired_token" } };
+  }
+
+  function launch(flow: Flow, fn: () => Promise<void>): Promise<void> {
+    flow.work = fn().catch((error: unknown) => {
+      fail(flow, error);
+      if (
+        error instanceof oauth.ResponseBodyError ||
+        error instanceof oauth.AuthorizationResponseError
+      )
+        return;
+      if (flow.controller.signal.aborted && error instanceof Error && error.name === "AbortError")
+        return;
+      throw error;
+    });
+    return flow.work;
+  }
+
+  function fail(flow: Flow, error: unknown) {
+    if (flow.record.status !== "pending") return;
+    flow.record = { ...flow.record, status: "failed", error: { error: protocolCode(error) } };
+  }
+
+  function serial<T>(provider: string, fn: () => Promise<T>): Promise<T> {
+    const work = (locks.get(provider) ?? Promise.resolve()).then(fn, fn);
+    locks.set(provider, work);
+    void work
+      .finally(() => {
+        if (locks.get(provider) === work) locks.delete(provider);
+      })
+      .catch(() => {});
+    return work;
+  }
+
+  function save(account: StoredAccount) {
+    db.prepare(
+      "INSERT INTO accounts VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+    ).run(account.id, account.provider, JSON.stringify(account));
+  }
+
+  async function publish(flow: Flow, tokens: oauth.TokenEndpointResponse) {
+    assert(tokens.token_type === "bearer", "Unsupported token type");
+    const { server } = flow;
+    let identifier: string | null = null;
+    let displayName: string | null = null;
+    if (server.metadata.userinfo_endpoint) {
+      const response = await oauth.userInfoRequest(
+        server.metadata,
+        server.client,
+        tokens.access_token,
+        request(flow.controller.signal),
+      );
+      const info = await oauth.processUserInfoResponse(
+        server.metadata,
+        server.client,
+        oauth.skipSubjectCheck,
+        response,
+      );
+      identifier = info.sub;
+      displayName = typeof info.name === "string" ? info.name : null;
+    }
+    await serial(server.provider, async () => {
+      flow.controller.signal.throwIfAborted();
+      const existing = flow.record.accountId ? stored(flow.record.accountId) : undefined;
+      if (flow.record.accountId) {
+        assert(existing, "Account was disconnected");
+        assert(
+          existing.identifier === null || existing.identifier === identifier,
+          "Account identity changed",
+        );
+      } else
+        assert(!all().some((item) => item.provider === server.provider), "Provider already linked");
+      const account: StoredAccount = {
+        id: existing?.id ?? randomUUID(),
+        serverId: server.id,
+        provider: server.provider,
+        identifier,
+        displayName,
+        scope: tokens.scope ?? null,
+        status: "usable",
+        access_token: tokens.access_token,
+        ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
+        expiresAt: tokens.expires_in === undefined ? null : Date.now() + tokens.expires_in * 1000,
+      };
+      save(account);
+      flow.record = { ...flow.record, accountId: account.id, status: "completed", error: null };
+    });
+  }
 }
+
+/*
+ * Helpers: Accounts
+ */
+
+type Server = Registration & { client: oauth.Client; authenticate: oauth.ClientAuth };
+
+type StoredAccount = Type.Static<typeof Stored>;
+
+type Flow = {
+  record: AuthorizationRecord;
+  server: Server;
+  controller: AbortController;
+  verifier?: string;
+  state?: string;
+  work?: Promise<void>;
+};
+
+const Stored = Type.Object({
+  id: Text,
+  provider: Text,
+  serverId: Text,
+  identifier: Type.Union([Type.String(), Type.Null()]),
+  displayName: Type.Union([Type.String(), Type.Null()]),
+  scope: Type.Union([Type.String(), Type.Null()]),
+  status: Type.Enum(["usable", "temporarilyUnavailable", "reauthorizationRequired"]),
+  access_token: Text,
+  refresh_token: Type.Optional(Text),
+  expiresAt: Type.Union([Type.Number(), Type.Null()]),
+});
+
+const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
+
+const protocolCode = (error: unknown): string =>
+  (error instanceof oauth.ResponseBodyError || error instanceof oauth.AuthorizationResponseError) &&
+  /^[a-z][a-z0-9_]{0,63}$/.test(error.error)
+    ? error.error
+    : "server_error";

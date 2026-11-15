@@ -1,3 +1,7 @@
+/*
+ * Imports
+ */
+
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import Type from "typebox";
@@ -9,6 +13,50 @@ import {
   type SettingsService,
 } from "../graphql/src/graphql.ts";
 import type { DeploymentConfiguration } from "./configuration.ts";
+
+/*
+ * Exports: Settings
+ */
+
+export function createSettingsService(config: DeploymentConfiguration): SettingsService {
+  return {
+    web: configuration("web", webSettings),
+    harness: configuration("harness", harnessSettings),
+  };
+
+  /*
+   * Helpers: Settings
+   */
+
+  function configuration<T>(
+    app: "web" | "harness",
+    decode: (value: unknown) => T,
+  ): Configuration<T> {
+    const directory = join(config.configDirectory, app);
+    const path = join(directory, "settings.json");
+    return {
+      async read() {
+        let content: string;
+        try {
+          content = await readFile(path, "utf8");
+        } catch (error) {
+          if (missing(error)) return decode({});
+          throw error;
+        }
+        return decode(JSON.parse(content));
+      },
+      async replace(settings: T) {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await writeFile(path, `${JSON.stringify(settings)}\n`, { mode: 0o600 });
+        return settings;
+      },
+    };
+  }
+}
+
+/*
+ * Helpers: Settings
+ */
 
 const defaults = {
   web: {
@@ -34,7 +82,9 @@ const defaults = {
 
 const missing = (error: unknown) =>
   error instanceof Error && "code" in error && error.code === "ENOENT";
+
 const WebOverrides = Type.Partial(WwwSettingsInput, { additionalProperties: false });
+
 const HarnessOverrides = Type.Partial(
   Type.Object({
     ...HarnessSettingsInput.properties,
@@ -60,36 +110,5 @@ function harnessSettings(value: unknown): HarnessSettingsInput {
     stream: { ...defaults.harness.stream, ...value.stream },
     retry: { ...defaults.harness.retry, ...value.retry },
     compaction: { ...defaults.harness.compaction, ...value.compaction },
-  };
-}
-
-export function createSettingsService(config: DeploymentConfiguration): SettingsService {
-  function configuration<T>(
-    app: "web" | "harness",
-    decode: (value: unknown) => T,
-  ): Configuration<T> {
-    const directory = join(config.configDirectory, app);
-    const path = join(directory, "settings.json");
-    return {
-      async read() {
-        let content: string;
-        try {
-          content = await readFile(path, "utf8");
-        } catch (error) {
-          if (missing(error)) return decode({});
-          throw error;
-        }
-        return decode(JSON.parse(content));
-      },
-      async replace(settings: T) {
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        await writeFile(path, `${JSON.stringify(settings)}\n`, { mode: 0o600 });
-        return settings;
-      },
-    };
-  }
-  return {
-    web: configuration("web", webSettings),
-    harness: configuration("harness", harnessSettings),
   };
 }

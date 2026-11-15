@@ -1,3 +1,7 @@
+/*
+ * Imports
+ */
+
 import assert from "node:assert/strict";
 import {
   BACKGROUND_CONTEXT,
@@ -17,39 +21,20 @@ import type {
 import { Problem } from "../src/problem.ts";
 import type { Sessions } from "../src/sessions.ts";
 
+/*
+ * Exports: Watch
+ */
+
 type Query = {
   readonly externalId: string;
   readonly conversationId: ConversationId;
 };
+
 type Options = {
   readonly sessions: Sessions;
   readonly window?: Pick<ConversationWindow, "min" | "max">;
-  /** Server-side lifecycle diagnostics. An observer's failed end need not mean storage failed. */
   readonly onEnd: (end: WatchEnd) => void;
 };
-type State = {
-  readonly view: ConversationView;
-  readonly head: EntryRecord | null;
-};
-
-function prefixed(op: Op): Op {
-  // Pi 1.5.2 observers deliver unfolded view operations, never root replacements.
-  assert(op[0] !== "r");
-  switch (op[0]) {
-    case "s":
-      return ["s", ["view", ...op[1]], op[2]];
-    case "d":
-      return ["d", ["view", ...op[1]]];
-    case "a":
-      return ["a", ["view", ...op[1]], op[2]];
-    case "t":
-      return ["t", ["view", ...op[1]], op[2]];
-    case "m":
-      return ["m", ["view", ...op[1]], op[2]];
-    case "p":
-      return ["p", ["view", ...op[1]], op[2], op[3], op[4]];
-  }
-}
 
 export async function watch(
   query: Query,
@@ -93,7 +78,6 @@ export async function watch(
             for (const value of op[4]) {
               assert(value !== null && typeof value === "object" && !Array.isArray(value));
               if (value.head !== undefined) {
-                // Native EntryRecords lose their branded IDs and readonly type in Chord's Op payload.
                 head = value as EntryRecord & typeof value;
               }
             }
@@ -157,7 +141,6 @@ export async function watch(
               resume = demand.resolve;
               controller.enqueue(call.ops);
               delivered();
-              // Keep Chord's listener busy until the next read; it folds intervening commits.
               await demand.promise;
             });
           } else resume();
@@ -174,5 +157,32 @@ export async function watch(
     output?.end({ kind: "failed", error });
     detach();
     throw error;
+  }
+}
+
+/*
+ * Helpers: Watch
+ */
+
+type State = {
+  readonly view: ConversationView;
+  readonly head: EntryRecord | null;
+};
+
+function prefixed(op: Op): Op {
+  assert(op[0] !== "r");
+  switch (op[0]) {
+    case "s":
+      return ["s", ["view", ...op[1]], op[2]];
+    case "d":
+      return ["d", ["view", ...op[1]]];
+    case "a":
+      return ["a", ["view", ...op[1]], op[2]];
+    case "t":
+      return ["t", ["view", ...op[1]], op[2]];
+    case "m":
+      return ["m", ["view", ...op[1]], op[2]];
+    case "p":
+      return ["p", ["view", ...op[1]], op[2], op[3], op[4]];
   }
 }

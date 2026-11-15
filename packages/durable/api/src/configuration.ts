@@ -1,3 +1,7 @@
+/*
+ * Imports
+ */
+
 import Type from "typebox";
 import Value from "typebox/value";
 import { homedir } from "node:os";
@@ -5,6 +9,10 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { PushConfiguration } from "./push.ts";
 import { OAuthServers } from "./accounts.ts";
 import type { serve } from "durable-api/serve";
+
+/*
+ * Exports: Configuration
+ */
 
 export type DeploymentConfiguration = {
   readonly server: Omit<Parameters<typeof serve>[0], "routes" | "fetch" | "error">;
@@ -17,27 +25,6 @@ export type DeploymentConfiguration = {
   readonly origin: string | undefined;
   readonly oauthServers: Type.Static<typeof OAuthServers>;
 };
-
-function absolute(name: string, value: string | undefined, fallback?: string): string {
-  const path = value ?? fallback;
-  if (!path || !isAbsolute(path)) throw new TypeError(`${name} must be an absolute path`);
-  return resolve(path);
-}
-
-function https(value: string): URL {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || url.username || url.password || value.includes("#"))
-    throw new TypeError("Expected an HTTPS URL without credentials or fragment");
-  return url;
-}
-
-function secretFile(name: string, value: string): string {
-  const path = absolute(name, value);
-  if (path.startsWith("/nix/store/")) throw new TypeError(`${name} must be outside the Nix store`);
-  return path;
-}
-
-const Port = Type.Integer({ minimum: 0, maximum: 65535 });
 
 export function readDeploymentConfiguration(
   env: NodeJS.ProcessEnv = process.env,
@@ -120,4 +107,29 @@ export function readDeploymentConfiguration(
         ? undefined
         : secretFile("PARALLEL_API_KEY_FILE", env.PARALLEL_API_KEY_FILE),
   };
+}
+
+/*
+ * Helpers: Configuration
+ */
+
+const Port = Type.Integer({ minimum: 0, maximum: 65535 });
+
+function absolute(name: string, value: string | undefined, fallback?: string): string {
+  const path = value ?? fallback;
+  if (!path || !isAbsolute(path)) throw new TypeError(`${name} must be an absolute path`);
+  return resolve(path);
+}
+
+function https(value: string): URL {
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.username || url.password || value.includes("#"))
+    throw new TypeError("Expected an HTTPS URL without credentials or fragment");
+  return url;
+}
+
+function secretFile(name: string, value: string): string {
+  const path = absolute(name, value);
+  if (path.startsWith("/nix/store/")) throw new TypeError(`${name} must be outside the Nix store`);
+  return path;
 }

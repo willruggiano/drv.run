@@ -1,3 +1,7 @@
+/*
+ * Imports
+ */
+
 import {
   ROOT_CONTEXT,
   SpanStatusCode,
@@ -24,15 +28,10 @@ import {
   type TelemetrySpan,
 } from "@earendil-works/pi-telemetry";
 
-function attributes(values: SpanAttributes = {}): Attributes {
-  const result: Attributes = {};
-  for (const [key, value] of Object.entries(values)) {
-    if (value !== undefined) result[key] = typeof value === "object" ? value.slice() : value;
-  }
-  return result;
-}
+/*
+ * Exports: Telemetry
+ */
 
-/** Bind explicit Pi contexts to deployment-owned OTel instruments, without globals. */
 export function createTelemetry(tracer: Tracer, meter: Meter): TelemetryContext {
   const contexts = new WeakMap<TelemetryContext, Context>();
   const propagator = new W3CTraceContextPropagator();
@@ -77,10 +76,11 @@ export function createTelemetry(tracer: Tracer, meter: Meter): TelemetryContext 
       callback({ ...span, ...capabilities, startSpan: inert }),
     );
 
-  function link(value: SpanLink): Link[] {
-    const context = trace.getSpanContext(parent(value.context));
-    return context ? [{ context, attributes: attributes(value.attributes) }] : [];
-  }
+  return contextual(ROOT_CONTEXT);
+
+  /*
+   * Helpers: Telemetry
+   */
 
   function contextual(context: Context): TelemetryContext {
     const result: TelemetryContext = {
@@ -144,5 +144,21 @@ export function createTelemetry(tracer: Tracer, meter: Meter): TelemetryContext 
     contexts.set(result, context);
     return result;
   }
-  return contextual(ROOT_CONTEXT);
+
+  function link(value: SpanLink): Link[] {
+    const context = trace.getSpanContext(parent(value.context));
+    return context ? [{ context, attributes: attributes(value.attributes) }] : [];
+  }
+}
+
+/*
+ * Helpers: Telemetry
+ */
+
+function attributes(values: SpanAttributes = {}): Attributes {
+  const result: Attributes = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) result[key] = typeof value === "object" ? value.slice() : value;
+  }
+  return result;
 }
