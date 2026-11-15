@@ -2604,7 +2604,8 @@ void test("root creation without options is atomic and failed initialization lea
       assert.equal(response.data?.root, null);
     } else {
       assert.equal(response.errors, undefined);
-      assert.equal((response.data?.root as { conversation: Identity }).conversation.durableId, 1);
+      assert(response.data?.root);
+      assert.equal((response.data.root as { conversation: Identity }).conversation.durableId, 1);
     }
     const record = await instance.commit((tx) => tx.conversation(f.root.id), execution);
     assert.equal(record !== undefined, !fail);
@@ -4436,7 +4437,8 @@ void test("account catalogs, scoped connections, identities and relationships us
   for (const id of [f.serverId, f.accountId]) {
     const refetch = await f.run(`query($id:ID!) { node(id:$id) { id } }`, { id });
     assert.equal(refetch.errors, undefined);
-    assert.equal((refetch.data?.node as { id: string }).id, id);
+    assert(refetch.data?.node);
+    assert.equal((refetch.data.node as { id: string }).id, id);
     const foreign = await f.run(
       `query($id:ID!) { node(id:$id) { id } }`,
       { id },
@@ -4502,14 +4504,17 @@ void test("authorization code and device initiation return refetchable safe chal
     { id: auth.id },
   );
   assert.equal(completed.errors, undefined);
-  assert.equal((completed.data?.node as { status: string }).status, "completed");
+  assert(completed.data?.node);
+  assert.equal((completed.data.node as { status: string }).status, "completed");
   assert.deepEqual(lookup.mock.calls[0]!.arguments, ["flow-1", execution]);
   const listing = await f.run(
     `query($id:ID!) { node(id:$id) { ... on AuthorizationServer { authorizations(limit:1) { nodes { id } pageInfo { next } } } } }`,
     { id: f.serverId },
   );
+  assert.equal(listing.errors, undefined);
+  assert(listing.data?.node);
   const page = (
-    listing.data?.node as {
+    listing.data.node as {
       authorizations: { nodes: { id: string }[]; pageInfo: { next: Cursor } };
     }
   ).authorizations;
@@ -4654,7 +4659,9 @@ void test("cancellation, local disconnect and revocation acknowledge success ind
   const started = await f.run(`mutation($id:ID!){authorize(input:{serverId:$id}){id}}`, {
     id: f.serverId,
   });
-  const id = (started.data?.authorize as { id: string }).id;
+  assert.equal(started.errors, undefined);
+  assert(started.data?.authorize);
+  const id = (started.data.authorize as { id: string }).id;
   const cancelled = await f.run(
     `mutation($id:ID!){cancelAuthorization(input:{authorizationId:$id})}`,
     { id },
@@ -4698,7 +4705,9 @@ void test("account command errors are explicit, safe, and never false acknowledg
   const initial = await f.run(`mutation($id:ID!){authorize(input:{serverId:$id}){id}}`, {
     id: f.serverId,
   });
-  const authorizationId = (initial.data?.authorize as { id: string }).id;
+  assert.equal(initial.errors, undefined);
+  assert(initial.data?.authorize);
+  const authorizationId = (initial.data.authorize as { id: string }).id;
   for (const error of ["BAD_REQUEST", "NOT_FOUND"] as const) {
     for (const method of [
       "authorize",
@@ -4819,7 +4828,9 @@ void test("account lookups distinguish absent resources, failed reads, and broke
     `mutation($id:ID!){authorize(input:{serverId:$id,accountId:"${f.accountId}"}){id}}`,
     { id: f.serverId },
   );
-  const id = (started.data?.authorize as { id: string }).id;
+  assert.equal(started.errors, undefined);
+  assert(started.data?.authorize);
+  const id = (started.data.authorize as { id: string }).id;
   for (const [method, target] of [
     ["server", f.serverId],
     ["account", f.accountId],
