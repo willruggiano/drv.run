@@ -25,7 +25,7 @@ void test("provisioning waits for a non-creating miss and then shares one acquis
   t.after(async () => {
     read.resolve(undefined);
     create.resolve(harness);
-    await sessions.close(Promise.resolve());
+    await sessions.close();
   });
   const absent = sessions.get("test");
   await reading.promise;
@@ -58,7 +58,7 @@ void test("a refused provision is shared but not retried automatically or cached
   assert.equal(calls, 1);
   assert.equal(await sessions.get("test", true), undefined);
   assert.equal(calls, 2);
-  await sessions.close(Promise.resolve());
+  await sessions.close();
 });
 
 void test("shutdown prevents provisioning after a pending non-creating lookup misses", async () => {
@@ -76,7 +76,7 @@ void test("shutdown prevents provisioning after a pending non-creating lookup mi
   const rejected = Promise.all(
     [read, create].map((request) => assert.rejects(request, { status: 503 })),
   );
-  const closing = sessions.close(rejected.then(() => {}));
+  const closing = sessions.close();
   release.resolve(undefined);
   await rejected;
   await closing;

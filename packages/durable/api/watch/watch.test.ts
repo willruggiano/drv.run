@@ -108,7 +108,7 @@ async function setup(t: TestContext, readOnly = false) {
     assert.equal(ctx.abortSignal, undefined);
     return id === "test" ? harness : undefined;
   });
-  t.after(() => sessions.close(Promise.resolve()));
+  t.after(() => sessions.close());
   t.after(() => harness.close(context));
   const tracking = track(t, harness);
   const ends: WatchEnd[] = [];
@@ -423,7 +423,7 @@ void describe("watch", { timeout: 30_000 }, () => {
       await hold.release.promise;
       return f.harness;
     });
-    t.after(() => sessions.close(Promise.resolve()));
+    t.after(() => sessions.close());
     const pending = new AbortController();
     const acquiring = watch(f.query, pending.signal, { ...f.options, sessions });
     await hold.entered.promise;
@@ -709,7 +709,7 @@ void describe("watch", { timeout: 30_000 }, () => {
     const storage = await openNodeSqliteStorage(path);
     const harness = await Harness.open(storage, { ...options, readOnly: true }, context);
     const sessions = new Sessions(async () => harness);
-    t.after(() => sessions.close(Promise.resolve()));
+    t.after(() => sessions.close());
     const scan = t.mock.method(storage, "scanEntries");
     const find = t.mock.method(storage, "findLatestHeadMarker");
     const writes = t.mock.method(storage, "commit");

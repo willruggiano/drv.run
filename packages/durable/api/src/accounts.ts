@@ -4,7 +4,12 @@ import { mkdir, readFile, open } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import timers from "node:timers/promises";
-import type { Context } from "@earendil-works/chord/context";
+import {
+  BACKGROUND_CONTEXT,
+  awaitWithContext,
+  withAbortSignal,
+  type Context,
+} from "@earendil-works/chord/context";
 import type { MutableModels } from "@earendil-works/pi-ai/models";
 import * as oauth from "oauth4webapi";
 import Type from "typebox";
@@ -105,6 +110,7 @@ export async function openAccounts(options: {
   const flows = new Map<string, Flow>();
   const locks = new Map<string, Promise<unknown>>();
   const stopped = new AbortController();
+  const failures: unknown[] = [];
   let closing: Promise<void> | undefined;
   const redirect =
     options.origin === undefined ? undefined : new URL("/api/oauth/callback", options.origin).href;
@@ -153,7 +159,17 @@ export async function openAccounts(options: {
     flow.record = { ...flow.record, status: "failed", error: { error: protocolCode(error) } };
   }
   function launch(flow: Flow, fn: () => Promise<void>): Promise<void> {
-    flow.work = fn().catch((error: unknown) => fail(flow, error));
+    flow.work = fn().catch((error: unknown) => {
+      fail(flow, error);
+      if (
+        error instanceof oauth.ResponseBodyError ||
+        error instanceof oauth.AuthorizationResponseError
+      )
+        return;
+      if (flow.controller.signal.aborted && error instanceof Error && error.name === "AbortError")
+        return;
+      throw error;
+    });
     return flow.work;
   }
   async function publish(flow: Flow, tokens: oauth.TokenEndpointResponse) {
@@ -407,7 +423,10 @@ export async function openAccounts(options: {
             interval: device.interval ?? null,
           },
         };
-        void launch(flow, () => poll(flow, device));
+        void launch(flow, () => poll(flow, device)).catch((error: unknown) => {
+          failures.push(error);
+          console.error("OAuth polling failed", error);
+        });
       } catch (error) {
         fail(flow, error);
         if (!(error instanceof oauth.ResponseBodyError)) throw error;
@@ -484,7 +503,11 @@ export async function openAccounts(options: {
             return (await provider.auth.apiKey?.resolve(input)) ? { type: "api_key" } : undefined;
           },
           async resolve(input) {
-            return serial(providerId, async () => {
+            stopped.signal.throwIfAborted();
+            input.signal.throwIfAborted();
+            const work = serial(providerId, async () => {
+              stopped.signal.throwIfAborted();
+              input.signal.throwIfAborted();
               let account = all().find((item) => item.provider === providerId);
               if (!account) return provider.auth.apiKey?.resolve(input);
               if (account.expiresAt !== null && account.expiresAt <= Date.now()) {
@@ -494,32 +517,22 @@ export async function openAccounts(options: {
                 }
                 const server = servers.get(account.serverId);
                 assert(server, "Authorization server is no longer configured");
+                let tokens: oauth.TokenEndpointResponse;
                 try {
                   const response = await oauth.refreshTokenGrantRequest(
                     server.metadata,
                     server.client,
                     server.authenticate,
                     account.refresh_token,
-                    request(input.signal),
+                    // An admitted refresh may rotate credentials. Only its own timeout
+                    // can cancel it; shutdown joins persistence before closing the DB.
+                    { signal: AbortSignal.timeout(30_000) },
                   );
-                  const tokens = await oauth.processRefreshTokenResponse(
+                  tokens = await oauth.processRefreshTokenResponse(
                     server.metadata,
                     server.client,
                     response,
                   );
-                  assert(tokens.token_type === "bearer");
-                  account = {
-                    ...account,
-                    access_token: tokens.access_token,
-                    refresh_token: tokens.refresh_token ?? account.refresh_token,
-                    expiresAt:
-                      tokens.expires_in === undefined
-                        ? null
-                        : Date.now() + tokens.expires_in * 1000,
-                    scope: tokens.scope ?? account.scope,
-                    status: "usable",
-                  };
-                  save(account);
                 } catch (error) {
                   save({
                     ...account,
@@ -530,9 +543,21 @@ export async function openAccounts(options: {
                   });
                   throw new Error("Account credentials unavailable", { cause: error });
                 }
+                assert(tokens.token_type === "bearer");
+                account = {
+                  ...account,
+                  access_token: tokens.access_token,
+                  refresh_token: tokens.refresh_token ?? account.refresh_token,
+                  expiresAt:
+                    tokens.expires_in === undefined ? null : Date.now() + tokens.expires_in * 1000,
+                  scope: tokens.scope ?? account.scope,
+                  status: "usable",
+                };
+                save(account);
               }
               return { auth: { apiKey: account.access_token }, source: "Linked account" };
             });
+            return awaitWithContext(work, withAbortSignal(input.signal, BACKGROUND_CONTEXT));
           },
         },
       },
@@ -577,6 +602,7 @@ export async function openAccounts(options: {
         );
         await Promise.allSettled(locks.values());
         db.close();
+        if (failures.length) throw new AggregateError(failures, "OAuth polling failed");
       })();
       return closing;
     },

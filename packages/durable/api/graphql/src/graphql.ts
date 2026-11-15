@@ -119,18 +119,21 @@ type ErrorCode =
   | "INTERNAL_SERVER_ERROR";
 
 class ResolverError extends GraphQLError {
-  constructor(code: ErrorCode | { readonly protocol: string }) {
+  constructor(code: ErrorCode | { readonly protocol: string }, options?: ErrorOptions) {
     const value = typeof code === "string" ? code : code.protocol;
     super(value, { extensions: { code: value } });
+    this.cause = options?.cause;
   }
 }
 
 function mapError(error?: unknown): ResolverError {
   if (error instanceof ResolverError) return error;
-  if (error instanceof SessionFailed) return new ResolverError("SESSION_FAILED");
-  if (error instanceof StorageRequestError) return new ResolverError("BAD_REQUEST");
-  if (error instanceof ConversationBusy) return new ResolverError("CONVERSATION_BUSY");
-  return new ResolverError("INTERNAL_SERVER_ERROR");
+  if (error instanceof SessionFailed) return new ResolverError("SESSION_FAILED", { cause: error });
+  if (error instanceof StorageRequestError)
+    return new ResolverError("BAD_REQUEST", { cause: error });
+  if (error instanceof ConversationBusy)
+    return new ResolverError("CONVERSATION_BUSY", { cause: error });
+  return new ResolverError("INTERNAL_SERVER_ERROR", { cause: error });
 }
 
 const SafeInteger = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
@@ -1146,8 +1149,8 @@ async function invokeWithContext<T>(context: Context, call: () => T | Promise<T>
 async function serviceCall<T>(ctx: ResolverContext, call: () => T | Promise<T>): Promise<T> {
   try {
     return await invokeWithContext(ctx.context, call);
-  } catch {
-    throw new ResolverError("INTERNAL_SERVER_ERROR");
+  } catch (error) {
+    throw new ResolverError("INTERNAL_SERVER_ERROR", { cause: error });
   }
 }
 
@@ -3172,10 +3175,7 @@ export interface InventoryRecord {
   readonly id: string;
   readonly unit: string;
 }
-interface InventoryPage {
-  readonly items: readonly InventoryRecord[];
-  readonly next?: Cursor | null;
-}
+type InventoryPage = ApplicationPage<InventoryRecord>;
 export interface InventoryPhase {
   readonly phase: string;
   readonly clock: string;
@@ -3313,28 +3313,14 @@ export async function instances(
   ctx: ResolverContext,
   cursor?: Cursor | null,
 ): Promise<Connection<Instance> | null> {
-  try {
-    checked(PageLimit, limit);
-    const result = await serviceCall(ctx, async () => {
-      const namespace = checked(ServiceKey, ctx.inventory.namespace);
-      const page = await ctx.inventory.list(limit, cursor ?? undefined, ctx.context);
-      if ("invalidCursor" in page) {
-        assert.equal(page.invalidCursor, true);
-        return undefined;
-      }
-      const { items, next } = page;
-      assert(Array.isArray(items) && items.length <= limit);
-      const nodes = items.map((record) => instanceNode(namespace, record));
-      assert.equal(new Set(nodes.map((record) => record.serviceId)).size, nodes.length);
-      const continuation = structuredClone(next ?? null);
-      assert(continuation === null || Value.Check(Cursor, continuation));
-      return { nodes, pageInfo: { next: continuation } };
-    });
-    if (result === undefined) throw new ResolverError("BAD_REQUEST");
-    return result;
-  } catch (error) {
-    throw mapError(error);
-  }
+  return applicationPage(
+    ctx,
+    ctx.inventory.namespace,
+    limit,
+    cursor,
+    (limit, cursor, context) => ctx.inventory.list(limit, cursor, context),
+    instanceNode,
+  );
 }
 
 /** Unavailable metadata is null; observation errors do not erase membership. @gqlField flakeReference */
@@ -3751,8 +3737,9 @@ async function accountNode(
   });
 }
 
-async function accountPage<T, N extends Node & { readonly serviceId: string }>(
+async function applicationPage<T, N extends Node & { readonly serviceId: string }>(
   ctx: ResolverContext,
+  namespace: string,
   limit: Int,
   cursor: Cursor | null | undefined,
   read: (
@@ -3764,7 +3751,7 @@ async function accountPage<T, N extends Node & { readonly serviceId: string }>(
 ): Promise<Connection<N>> {
   checked(PageLimit, limit);
   const result = await serviceCall(ctx, async () => {
-    const namespace = checked(ServiceKey, ctx.accounts.namespace);
+    checked(ServiceKey, namespace);
     const page = await read(limit, cursor ?? undefined, ctx.context);
     if ("invalidCursor" in page) {
       assert.equal(page.invalidCursor, true);
@@ -3787,8 +3774,9 @@ export async function authorizationServers(
   ctx: ResolverContext,
   cursor?: Cursor | null,
 ): Promise<Connection<AuthorizationServer> | null> {
-  return accountPage(
+  return applicationPage(
     ctx,
+    ctx.accounts.namespace,
     limit,
     cursor,
     (limit, cursor, context) => ctx.accounts.servers(limit, cursor, context),
@@ -3801,8 +3789,9 @@ export async function accounts(
   ctx: ResolverContext,
   cursor?: Cursor | null,
 ): Promise<Connection<Account> | null> {
-  return accountPage(
+  return applicationPage(
     ctx,
+    ctx.accounts.namespace,
     limit,
     cursor,
     (limit, cursor, context) => ctx.accounts.accounts(undefined, limit, cursor, context),
@@ -3816,8 +3805,9 @@ export async function serverAccounts(
   ctx: ResolverContext,
   cursor?: Cursor | null,
 ): Promise<Connection<Account> | null> {
-  return accountPage(
+  return applicationPage(
     ctx,
+    ctx.accounts.namespace,
     limit,
     cursor,
     (limit, cursor, context) => ctx.accounts.accounts(source.serviceId, limit, cursor, context),
@@ -3835,8 +3825,9 @@ export async function authorizations(
   ctx: ResolverContext,
   cursor?: Cursor | null,
 ): Promise<Connection<Authorization> | null> {
-  return accountPage(
+  return applicationPage(
     ctx,
+    ctx.accounts.namespace,
     limit,
     cursor,
     (limit, cursor, context) =>

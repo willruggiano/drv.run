@@ -154,7 +154,7 @@ export async function openApplication(config: DeploymentConfiguration) {
         const failures: unknown[] = [];
         await push.close().catch((error: unknown) => failures.push(error));
         try {
-          await sessions.close(Promise.resolve());
+          await sessions.close();
         } catch (error) {
           failures.push(error);
         }

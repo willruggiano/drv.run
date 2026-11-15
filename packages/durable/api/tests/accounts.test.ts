@@ -168,8 +168,9 @@ await test("reauthorization preserves identity and failures never replace creden
   const first = await f.enroll();
   assert(first.accountId);
   f.subject("other-user");
-  const mismatch = await f.enroll(first.accountId);
-  assert.equal(mismatch.status, "failed");
+  const mismatch = await f.begin(first.accountId);
+  await assert.rejects(f.callback(mismatch.callback));
+  assert.equal((await f.service.authorization(mismatch.record.id, context))?.status, "failed");
   assert.equal((await f.service.account(first.accountId, context))?.identifier, "user-1");
   f.subject("user-1");
   assert.equal((await f.enroll(first.accountId)).accountId, first.accountId);
@@ -183,7 +184,8 @@ await test("reauthorization preserves identity and failures never replace creden
 await test("concurrent enrollment, cancellation, and disconnect cannot replace another account", async (t) => {
   const f = await fixture(t);
   const [a, b] = await Promise.all([f.begin(), f.begin()]);
-  await Promise.all([f.callback(a.callback), f.callback(b.callback)]);
+  const completions = await Promise.allSettled([f.callback(a.callback), f.callback(b.callback)]);
+  assert.equal(completions.filter((result) => result.status === "rejected").length, 1);
   const records = await Promise.all(
     [a, b].map(({ record }) => f.service.authorization(record.id, context)),
   );
@@ -616,4 +618,105 @@ await test("grant admission, callback origin, and optional identity metadata are
   const device = await noScope.service.deviceAuthorization("example", undefined, context);
   assert("value" in device);
   assert.equal(noScope.requests[0]?.parameters.has("scope"), false);
+});
+
+await test("cancelled model waiters and shutdown do not discard rotated refresh credentials", async (t) => {
+  const response = Promise.withResolvers<Response>();
+  const rotated = () =>
+    Response.json({
+      token_type: "bearer",
+      access_token: "rotated-access",
+      refresh_token: "rotated-refresh",
+      expires_in: 3600,
+    });
+  t.after(() => response.resolve(rotated()));
+  const f = await fixture(t);
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  f.expiresIn(1);
+  const flow = await f.enroll();
+  assert(flow.accountId);
+  t.mock.timers.tick(2000);
+  const entered = Promise.withResolvers<AbortSignal>();
+  const original = globalThis.fetch;
+  let refreshes = 0;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    if (init?.body instanceof URLSearchParams && init.body.get("grant_type") === "refresh_token") {
+      assert(init.signal);
+      refreshes++;
+      entered.resolve(init.signal);
+      return response.promise;
+    }
+    return original(input, init);
+  });
+  const caller = new AbortController();
+  const pending = f.models.getAuth("faux", { signal: caller.signal });
+  const cancelled = assert.rejects(pending);
+  const signal = await entered.promise;
+  const queued = new AbortController();
+  const waiting = assert.rejects(f.models.getAuth("faux", { signal: queued.signal }));
+  queued.abort();
+  caller.abort();
+  await Promise.all([cancelled, waiting]);
+  assert.equal(signal.aborted, false);
+  assert.equal((await f.service.account(flow.accountId, context))?.status, "usable");
+  let closed = false;
+  const closing = f.close().then(() => {
+    closed = true;
+  });
+  await setImmediate();
+  assert.equal(closed, false);
+  assert.equal(signal.aborted, false);
+  response.resolve(rotated());
+  await closing;
+  assert.equal(refreshes, 1);
+  const models = createModelsWithFaux();
+  const reopened = await openAccounts({ ...f.options, models });
+  t.after(() => reopened.close());
+  assert.equal((await models.getAuth("faux"))?.auth.apiKey, "rotated-access");
+  await reopened.service.revoke(flow.accountId, "refresh_token", context);
+  assert.equal(f.requests.at(-1)?.parameters.get("token"), "rotated-refresh");
+});
+
+await test("OAuth persistence failures reject callbacks while retaining terminal flow state", async (t) => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const f = await fixture(t);
+  const db = new DatabaseSync(join(f.directory, "accounts.sqlite"));
+  t.after(() => db.close());
+  db.exec(
+    "CREATE TRIGGER deny_accounts BEFORE INSERT ON accounts BEGIN SELECT RAISE(ABORT, 'persistence failure'); END",
+  );
+  const flow = await f.begin();
+  await assert.rejects(f.callback(flow.callback), { code: "ERR_SQLITE_ERROR" });
+  const record = await f.service.authorization(flow.record.id, context);
+  assert.equal(record?.status, "failed");
+  assert.deepEqual(record?.error, { error: "server_error" });
+  const accounts = await f.service.accounts(undefined, 10, undefined, context);
+  assert("items" in accounts);
+  assert.deepEqual(accounts.items, []);
+});
+
+await test("detached OAuth polling failures reach the service owner", async (t) => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const f = await fixture(t);
+  await f.close();
+  const app = await openAccounts({ ...f.options, models: createModelsWithFaux() });
+  t.after(() => assert.rejects(app.close(), AggregateError));
+  const db = new DatabaseSync(join(f.directory, "accounts.sqlite"));
+  t.after(() => db.close());
+  db.exec(
+    "CREATE TRIGGER deny_accounts BEFORE INSERT ON accounts BEGIN SELECT RAISE(ABORT, 'persistence failure'); END",
+  );
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  const flow = await app.service.deviceAuthorization("example", undefined, context);
+  assert("value" in flow);
+  t.mock.timers.tick(1000);
+  await setImmediate();
+  assert.equal((await app.service.authorization(flow.value.id, context))?.status, "failed");
+  await assert.rejects(app.close(), (error: unknown) => {
+    assert(error instanceof AggregateError);
+    assert.equal(error.errors.length, 1);
+    assert(error.errors[0] instanceof Error && "code" in error.errors[0]);
+    assert.equal(error.errors[0].code, "ERR_SQLITE_ERROR");
+    return true;
+  });
 });

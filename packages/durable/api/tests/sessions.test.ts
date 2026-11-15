@@ -46,7 +46,7 @@ await test("sessions reject acquisitions after close and aggregate Harness close
   } as unknown as Harness;
   const sessions = new Sessions(async () => harness);
   assert.equal(await sessions.get("one"), harness);
-  await assert.rejects(sessions.close(Promise.resolve()), (error: unknown) => {
+  await assert.rejects(sessions.close(), (error: unknown) => {
     assert.ok(error instanceof AggregateError);
     assert.deepEqual(error.errors, [failure]);
     return true;
@@ -58,29 +58,24 @@ await test("sessions reject acquisitions after close and aggregate Harness close
   });
 });
 
-await test("sessions wait for drained requests before closing owners", async () => {
-  let closeOwner!: () => void;
+await test("sessions wait for admitted opens and reject new acquisitions during shutdown", async () => {
+  const opening = Promise.withResolvers<Harness>();
+  let closed = false;
   const harness = {
     closed: new Promise<void>(() => {}),
     async close() {
-      closeOwner();
+      closed = true;
     },
   } as unknown as Harness;
-  const sessions = new Sessions(async () => harness);
-  await sessions.get("one");
-  let drain!: () => void;
-  const drained = new Promise<void>((resolve) => {
-    drain = resolve;
-  });
-  let done = false;
-  const closing = sessions.close(drained).then(() => {
-    done = true;
-  });
-  await Promise.resolve();
-  assert.equal(done, false);
-  closeOwner = () => {};
-  drain();
+  const sessions = new Sessions(() => opening.promise);
+  const pending = sessions.get("one");
+  const rejected = assert.rejects(pending, Problem);
+  const closing = sessions.close();
+  assert.equal(sessions.close(), closing);
+  await assert.rejects(sessions.get("two"), Problem);
+  assert.equal(closed, false);
+  opening.resolve(harness);
   await closing;
-  assert.equal(done, true);
-  await assert.rejects(sessions.get("one"), Problem);
+  await rejected;
+  assert.equal(closed, true);
 });

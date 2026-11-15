@@ -50,13 +50,12 @@ export class Sessions {
     return harness;
   }
 
-  close(drained: Promise<void>): Promise<void> {
-    this.closing ??= this.closeAll(drained);
+  close(): Promise<void> {
+    this.closing ??= this.closeAll();
     return this.closing;
   }
 
-  private async closeAll(drained: Promise<void>): Promise<void> {
-    await drained;
+  private async closeAll(): Promise<void> {
     const results = await Promise.allSettled(
       [...this.instances.values()].map(async (instance) => {
         const harness = await instance.promise.catch(() => undefined);

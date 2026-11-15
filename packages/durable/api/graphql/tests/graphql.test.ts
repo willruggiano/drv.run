@@ -3644,6 +3644,7 @@ void test("settings reject negative policy fields without saving", async (t) => 
 void test("settings service failures stay internal and preserve other selections", async (t) => {
   for (const error of [
     new Error("private file contents"),
+    { private: "non-Error diagnostic" },
     new StorageRequestError("private path"),
     new GraphQLError("private", { extensions: { code: "BAD_REQUEST" } }),
   ]) {
@@ -3664,6 +3665,16 @@ void test("settings service failures stay internal and preserve other selections
       good: { __typename: "HarnessSettings" },
     });
     assert.equal(read.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    assert.equal(read.errors?.[0]?.originalError?.cause, error);
+    const publicError = JSON.parse(JSON.stringify(read.errors?.[0])) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(publicError).sort(), [
+      "extensions",
+      "locations",
+      "message",
+      "path",
+    ]);
+    assert.equal(publicError.message, "INTERNAL_SERVER_ERROR");
+    assert.deepEqual(publicError.extensions, { code: "INTERNAL_SERVER_ERROR" });
     const write = await graphql({
       schema,
       contextValue: ctx,
@@ -3673,6 +3684,7 @@ void test("settings service failures stay internal and preserve other selections
       },
     });
     assert.equal(write.errors?.[0]?.extensions.code, "INTERNAL_SERVER_ERROR");
+    assert.equal(write.errors?.[0]?.originalError?.cause, error);
     assert.equal(write.data?.saveSettings, null);
   }
 });
@@ -4061,9 +4073,10 @@ void test("inventory enumeration and lookup failures stay internal rather than r
       node: null,
       settings: { __typename: "WebSettings" },
     });
+    assert.equal(response.errors?.length, 2);
     assert.deepEqual(
-      response.errors?.map((error) => error.path),
-      [["instances"], ["node"]],
+      new Set(response.errors?.map((error) => error.path)),
+      new Set([["instances"], ["node"]]),
     );
     for (const error of response.errors!) {
       assert.equal(error.extensions.code, "INTERNAL_SERVER_ERROR");
