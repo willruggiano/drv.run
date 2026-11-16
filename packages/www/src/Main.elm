@@ -5,7 +5,7 @@ import Browser.Navigation as Nav
 import Html exposing (Html, a, div, h1, header, main_, p, text)
 import Html.Attributes as Attr
 import Page.Home as Home
-import Route exposing (Route)
+import Route
 import Svg
 import Svg.Attributes as SvgAttr
 import Url exposing (Url)
@@ -40,7 +40,8 @@ type alias Model =
 
 type Page
     = Home Home.Model
-    | Unavailable Route
+    | SettingsUnavailable
+    | SessionUnavailable String
     | NotFound
 
 
@@ -86,7 +87,10 @@ update msg model =
                     else
                         ( model, Cmd.none )
 
-                Unavailable _ ->
+                SettingsUnavailable ->
+                    ( model, Cmd.none )
+
+                SessionUnavailable _ ->
                     ( model, Cmd.none )
 
                 NotFound ->
@@ -102,6 +106,7 @@ stepHome model ( home, command ) =
 
 
 -- ROUTING
+-- Page messages capture the visit generation. Leaving discards the page and its draft.
 
 
 changePage : Url -> Model -> ( Model, Cmd Msg )
@@ -119,8 +124,11 @@ changePage url model =
                 Just Route.Home ->
                     stepHome next (Home.init ())
 
-                Just destination ->
-                    ( { next | page = Unavailable destination }, Cmd.none )
+                Just Route.Settings ->
+                    ( { next | page = SettingsUnavailable }, Cmd.none )
+
+                Just (Route.Session externalId) ->
+                    ( { next | page = SessionUnavailable externalId }, Cmd.none )
 
                 Nothing ->
                     ( { next | page = NotFound }, Cmd.none )
@@ -136,7 +144,10 @@ subscriptions model =
         Home home ->
             Sub.map (HomeMsg model.generation) (Home.subscriptions home)
 
-        Unavailable _ ->
+        SettingsUnavailable ->
+            Sub.none
+
+        SessionUnavailable _ ->
             Sub.none
 
         NotFound ->
@@ -153,8 +164,11 @@ view model =
         Home home ->
             viewDocument (HomeMsg model.generation) (Home.view home)
 
-        Unavailable route ->
-            viewDocument never (viewUnavailable route)
+        SettingsUnavailable ->
+            viewDocument never (viewProblem "Settings unavailable" "The settings page is not implemented yet.")
+
+        SessionUnavailable externalId ->
+            viewDocument never (viewProblem "Session unavailable" ("The session page for " ++ externalId ++ " is not implemented yet."))
 
         NotFound ->
             viewDocument never (viewProblem "Not found" "This address does not identify a page.")
@@ -183,19 +197,6 @@ viewHeader =
                 [ settingsIcon ]
             ]
         ]
-
-
-viewUnavailable : Route -> Browser.Document msg
-viewUnavailable route =
-    case route of
-        Route.Home ->
-            viewProblem "Unavailable" "The session catalog is unavailable."
-
-        Route.Settings ->
-            viewProblem "Settings unavailable" "The settings page is not implemented yet."
-
-        Route.Session externalId ->
-            viewProblem "Session unavailable" ("The session page for " ++ externalId ++ " is not implemented yet.")
 
 
 viewProblem : String -> String -> Browser.Document msg

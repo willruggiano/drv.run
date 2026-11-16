@@ -32,6 +32,10 @@ import Json.Decode as Decode exposing (Decoder)
 import Json.Encode as Encode
 
 
+
+-- TYPES
+
+
 type ConversationId
     = ConversationId Int
 
@@ -85,6 +89,14 @@ type TelemetryCarrier
     = TelemetryCarrier (List ( String, String ))
 
 
+
+-- CODECS
+
+
+{-| Native conversation, entry, submission, and task IDs must be nonnegative
+integers no greater than 9007199254740991. They remain numeric on the wire.
+Global IDs are opaque strings, not native IDs or external session keys.
+-}
 codecs : Api.Scalar.Codecs ConversationId Cursor EntryHead EntryId HarnessQueueMode HarnessTransport Id JsonObject JsonValue SubmissionId TaskId TelemetryCarrier
 codecs =
     Api.Scalar.defineCodecs
@@ -101,6 +113,10 @@ codecs =
         , codecTaskId = taskId
         , codecTelemetryCarrier = telemetryCarrier
         }
+
+
+
+-- NATIVE IDS
 
 
 conversationId : Codec ConversationId
@@ -139,6 +155,10 @@ nativeId wrap unwrap =
     }
 
 
+
+-- GLOBAL IDS
+
+
 id : Codec Id
 id =
     { encoder = \(Id value) -> Encode.string value
@@ -146,6 +166,13 @@ id =
     }
 
 
+
+-- CURSORS
+
+
+{-| Require an object and preserve its opaque fields for the next request.
+A cursor is not a display value or an application-owned pagination offset.
+-}
 cursor : Codec Cursor
 cursor =
     { encoder = \(Cursor value) -> value
@@ -153,6 +180,13 @@ cursor =
     }
 
 
+
+-- ENTRY HEADS
+
+
+{-| Encode `Self` as "self" and `At` as a validated native entry ID.
+Unknown strings and invalid IDs fail decoding.
+-}
 entryHead : Codec EntryHead
 entryHead =
     { encoder =
@@ -177,6 +211,10 @@ entryHead =
                     )
             ]
     }
+
+
+
+-- HARNESS OPTIONS
 
 
 harnessQueueMode : Codec HarnessQueueMode
@@ -249,6 +287,12 @@ harnessTransport =
     }
 
 
+
+-- OPAQUE JSON
+
+
+{-| Require a JSON object; nested values are intentionally uninterpreted.
+-}
 jsonObject : Codec JsonObject
 jsonObject =
     { encoder = \(JsonObject value) -> value
@@ -268,6 +312,13 @@ jsonValue =
     }
 
 
+
+-- TELEMETRY
+
+
+{-| Accept only objects whose values are strings. Propagation fields remain
+opaque; the browser does not interpret tracing identifiers.
+-}
 telemetryCarrier : Codec TelemetryCarrier
 telemetryCarrier =
     { encoder = \(TelemetryCarrier fields) -> Encode.object (List.map (Tuple.mapSecond Encode.string) fields)

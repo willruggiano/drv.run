@@ -17,6 +17,10 @@ import Graphql.OptionalArgument exposing (OptionalArgument(..))
 import Graphql.SelectionSet as SelectionSet exposing (SelectionSet)
 
 
+
+-- CATALOG TYPES
+
+
 type alias Session =
     { id : Scalars.Id
     , externalId : String
@@ -45,6 +49,10 @@ type alias EnvironmentPage =
     }
 
 
+
+-- SESSIONS
+
+
 sessions : SelectionSet (List Session) RootQuery
 sessions =
     Query.harnesses
@@ -66,10 +74,24 @@ sessions =
         )
 
 
+
+-- MODELS
+
+
 models : SelectionSet (List ModelChoice) RootQuery
 models =
     Query.models
-        (SelectionSet.map4 ModelChoice Model.provider Model.id Model.name Model.thinkingLevels)
+        (SelectionSet.map4
+            (\provider modelId name levels -> { provider = provider, id = modelId, name = name, thinkingLevels = levels })
+            Model.provider
+            Model.id
+            Model.name
+            Model.thinkingLevels
+        )
+
+
+
+-- ENVIRONMENTS
 
 
 environments : Maybe Scalars.Cursor -> SelectionSet (Maybe EnvironmentPage) RootQuery

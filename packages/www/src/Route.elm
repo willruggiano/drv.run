@@ -47,4 +47,4 @@ href route =
             Builder.absolute [ "settings" ] []
 
         Session externalId ->
-            Builder.absolute [ "sessions", externalId ] []
+            Builder.absolute [ "sessions", Url.percentEncode externalId ] []

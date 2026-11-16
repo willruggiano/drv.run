@@ -17,7 +17,15 @@ const schema = buildSchema(
 );
 
 type Catalog = "harnesses" | "models" | "instances";
-type Fault = "http" | "network" | "malformed" | "denied" | "graphql";
+type Fault =
+  | "http"
+  | "network"
+  | "malformed"
+  | "denied"
+  | "unauthenticated"
+  | "graphql"
+  | "graphql-denied"
+  | "graphql-unauthenticated";
 const initialModels = [
   {
     id: "same/id",
@@ -58,7 +66,14 @@ async function fixture(t: TestContext, browser: Browser, width = 1280, height = 
   const errors: unknown[] = [];
   const rootValue = {
     harnesses() {
-      if (state.faults.harnesses === "graphql") throw new GraphQLError("unavailable");
+      switch (state.faults.harnesses) {
+        case "graphql":
+          throw new GraphQLError("unavailable");
+        case "graphql-denied":
+          throw new GraphQLError("private diagnostic", { extensions: { code: "FORBIDDEN" } });
+        case "graphql-unauthenticated":
+          throw new GraphQLError("private diagnostic", { extensions: { code: "UNAUTHENTICATED" } });
+      }
       return state.sessions;
     },
     models() {
@@ -108,8 +123,8 @@ async function fixture(t: TestContext, browser: Browser, width = 1280, height = 
         await state.hold[field];
         const fault = state.faults[field];
         if (fault === "network") return request.socket.destroy();
-        if (fault === "http" || fault === "denied") {
-          response.writeHead(fault === "http" ? 503 : 403).end();
+        if (fault === "http" || fault === "denied" || fault === "unauthenticated") {
+          response.writeHead({ http: 503, denied: 403, unauthenticated: 401 }[fault]).end();
           return;
         }
         if (fault === "malformed") {
@@ -288,6 +303,41 @@ await test("read-only home", async (suite) => {
   );
 
   await suite.test(
+    "session links encode opaque external IDs once and retain native link behavior",
+    async (t) => {
+      const { page, state, url } = await fixture(t, browser);
+      const externalId = "opaque /?#% λ";
+      state.sessions[0]!.externalId = externalId;
+      await page.goto(url);
+      await ready(page);
+      await page.locator("#prompt").fill("stay on this page");
+      const link = page.locator(".session").first();
+      const path = `/sessions/${encodeURIComponent(externalId)}`;
+      assert.equal(await link.getAttribute("href"), path);
+      const opened = page.context().waitForEvent("page");
+      await link.click({ modifiers: ["Control"] });
+      const destination = await opened;
+      t.after(() => destination.close());
+      await destination.getByRole("heading", { name: "Session unavailable" }).waitFor();
+      assert.equal(new URL(destination.url()).pathname, path);
+      assert.equal(
+        await destination.getByRole("alert").textContent(),
+        `The session page for ${externalId} is not implemented yet.`,
+      );
+      assert.equal(page.url(), url);
+      assert.equal(await page.locator("#prompt").inputValue(), "stay on this page");
+      await link.click();
+      await page.getByRole("heading", { name: "Session unavailable" }).waitFor();
+      assert.equal(
+        await page.getByRole("alert").textContent(),
+        `The session page for ${externalId} is not implemented yet.`,
+      );
+      await page.goto(new URL("sessions/%FF", url).href);
+      await page.getByRole("heading", { name: "Not found" }).waitFor();
+    },
+  );
+
+  await suite.test(
     "a response from a previous home visit cannot replace the current catalog",
     async (t) => {
       const { page, state, url } = await fixture(t, browser);
@@ -451,7 +501,10 @@ await test("read-only home", async (suite) => {
         ["network", "Could not reach the server."],
         ["malformed", "Invalid API response."],
         ["denied", "Access denied."],
+        ["unauthenticated", "Authentication required."],
         ["graphql", "The server could not complete this read."],
+        ["graphql-denied", "Access denied."],
+        ["graphql-unauthenticated", "Authentication required."],
       ] as const) {
         state.faults.harnesses = fault;
         await refresh(page, "sessions");

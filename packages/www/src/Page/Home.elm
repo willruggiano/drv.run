@@ -8,11 +8,10 @@ import Browser
 import Bytes exposing (Bytes)
 import Bytes.Decode as ByteDecode
 import Bytes.Encode as ByteEncode
-import Dict
 import File exposing (File)
 import File.Select
 import Graphql.Http as Http
-import Graphql.Http.GraphqlError exposing (GraphqlError, PossiblyParsedData(..))
+import Graphql.Http.GraphqlError exposing (PossiblyParsedData(..))
 import Html exposing (Html, a, button, div, fieldset, footer, form, h2, input, label, main_, option, p, section, select, span, text, textarea)
 import Html.Attributes as Attr exposing (attribute, class, id)
 import Html.Events as Events exposing (onClick, onInput, onSubmit)
@@ -31,8 +30,8 @@ import Task
 type Read data
     = Loading (Maybe data)
     | Loaded data
-    | Partial data (List GraphqlError)
-    | Failed (Maybe data) (Http.Error data)
+    | Partial data (Api.Failure data)
+    | Failed (Maybe data) (Api.Failure data)
 
 
 type alias Model =
@@ -50,12 +49,26 @@ type alias Model =
 
 
 type alias Attachment =
-    { id : Int, file : File, state : AttachmentState }
+    { id : AttachmentId, file : File, state : AttachmentState }
+
+
+type AttachmentId
+    = AttachmentId Int
+
+
+type AttachmentContent
+    = Image String
+    | Text String
+
+
+type Pagination
+    = Replace
+    | Append
 
 
 type AttachmentState
     = Reading
-    | Ready String
+    | Ready AttachmentContent
     | Rejected String
 
 
@@ -79,7 +92,7 @@ init _ =
     , Cmd.batch
         [ Api.query SessionsReceived Home.sessions
         , Api.query ModelsReceived Home.models
-        , Api.query (EnvironmentsReceived False) (Home.environments Nothing)
+        , Api.query (EnvironmentsReceived Replace) (Home.environments Nothing)
         ]
     )
 
@@ -91,7 +104,7 @@ init _ =
 type Msg
     = SessionsReceived (Api.Response (List Session))
     | ModelsReceived (Api.Response (List ModelChoice))
-    | EnvironmentsReceived Bool (Api.Response (Maybe EnvironmentPage))
+    | EnvironmentsReceived Pagination (Api.Response (Maybe EnvironmentPage))
     | RefreshSessions
     | RefreshModels
     | RefreshEnvironments
@@ -103,8 +116,8 @@ type Msg
     | PromptEdited String
     | PickFiles
     | FilesSelected (List File)
-    | AttachmentRead Int AttachmentState
-    | AttachmentRemoved Int
+    | AttachmentRead AttachmentId (Result String AttachmentContent)
+    | AttachmentRemoved AttachmentId
     | NoOp
 
 
@@ -112,51 +125,13 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         SessionsReceived response ->
-            ( { model | sessions = receive model.sessions response }, Cmd.none )
+            ( { model | sessions = receive response model.sessions }, Cmd.none )
 
         ModelsReceived response ->
-            ( { model | models = receive model.models response }, Cmd.none )
+            ( { model | models = receive response model.models }, Cmd.none )
 
-        EnvironmentsReceived append response ->
-            let
-                previous =
-                    observed model.environments |> Maybe.andThen identity
-
-                combine page =
-                    case ( append, previous, page ) of
-                        ( True, Just before, Just after ) ->
-                            Just
-                                { after
-                                    | nodes =
-                                        List.map (\old -> List.filter (\item -> item.id == old.id) after.nodes |> List.head |> Maybe.withDefault old) before.nodes
-                                            ++ List.filter (\item -> not (List.any (\old -> old.id == item.id) before.nodes)) after.nodes
-                                }
-
-                        _ ->
-                            page
-
-                combined =
-                    case response of
-                        Ok page ->
-                            Ok (combine page)
-
-                        Err (Http.GraphqlError (ParsedData page) errors) ->
-                            Err (Http.GraphqlError (ParsedData (combine page)) errors)
-
-                        Err error ->
-                            Err error
-            in
-            ( { model
-                | environments =
-                    case response of
-                        Err ((Http.GraphqlError (ParsedData Nothing) _) as error) ->
-                            Failed (observed model.environments) error
-
-                        _ ->
-                            receive model.environments combined
-              }
-            , Cmd.none
-            )
+        EnvironmentsReceived pagination response ->
+            ( { model | environments = receiveEnvironments pagination response model.environments }, Cmd.none )
 
         RefreshSessions ->
             if pending model.sessions then
@@ -177,7 +152,7 @@ update msg model =
                 ( model, Cmd.none )
 
             else
-                ( { model | environments = Loading (observed model.environments) }, Api.query (EnvironmentsReceived False) (Home.environments Nothing) )
+                ( { model | environments = Loading (observed model.environments) }, Api.query (EnvironmentsReceived Replace) (Home.environments Nothing) )
 
         MoreEnvironments ->
             case observed model.environments |> Maybe.andThen identity |> Maybe.andThen .next of
@@ -186,7 +161,7 @@ update msg model =
                         ( model, Cmd.none )
 
                     else
-                        ( { model | environments = Loading (observed model.environments) }, Api.query (EnvironmentsReceived True) (Home.environments (Just cursor)) )
+                        ( { model | environments = Loading (observed model.environments) }, Api.query (EnvironmentsReceived Append) (Home.environments (Just cursor)) )
 
                 Nothing ->
                     ( model, Cmd.none )
@@ -194,47 +169,27 @@ update msg model =
         ModelSelected key ->
             let
                 selected =
-                    observed model.models |> Maybe.withDefault [] |> List.filter (modelKey >> (==) key) |> List.head
+                    observed model.models
+                        |> Maybe.withDefault []
+                        |> List.filter (\choice -> modelKey choice == key)
+                        |> List.head
 
-                thinking =
-                    model.thinking
-                        |> Maybe.andThen
-                            (\level ->
-                                selected
-                                    |> Maybe.andThen
-                                        (\choice ->
-                                            if List.member level choice.thinkingLevels then
-                                                Just level
-
-                                            else
-                                                Nothing
-                                        )
-                            )
+                levels =
+                    selected |> Maybe.map .thinkingLevels |> Maybe.withDefault []
             in
-            ( { model | selectedModel = selected, thinking = thinking }, Cmd.none )
+            ( { model | selectedModel = selected, thinking = supportedThinking levels model.thinking }, Cmd.none )
 
         ThinkingSelected value ->
             let
-                supported =
-                    currentModel model.selectedModel (observed model.models |> Maybe.withDefault []) |> Maybe.map .thinkingLevels |> Maybe.withDefault []
+                levels =
+                    currentModel model.selectedModel (observed model.models |> Maybe.withDefault [])
+                        |> Maybe.map .thinkingLevels
+                        |> Maybe.withDefault []
             in
-            ( { model
-                | thinking =
-                    Thinking.fromString value
-                        |> Maybe.andThen
-                            (\level ->
-                                if List.member level supported then
-                                    Just level
-
-                                else
-                                    Nothing
-                            )
-              }
-            , Cmd.none
-            )
+            ( { model | thinking = supportedThinking levels (Thinking.fromString value) }, Cmd.none )
 
         EnvironmentSelected key ->
-            ( { model | environment = environmentChoices model.environments |> List.filter (\item -> environmentKey item == key && item.host /= Nothing) |> List.head }, Cmd.none )
+            ( { model | environment = selectedEnvironment key (environmentChoices model.environments) }, Cmd.none )
 
         DirectoryEdited value ->
             ( { model | directory = value }, Cmd.none )
@@ -248,27 +203,14 @@ update msg model =
         FilesSelected files ->
             let
                 added =
-                    List.indexedMap (\index file -> { id = model.nextAttachment + index, file = file, state = Reading }) files
+                    List.indexedMap (\index file -> { id = AttachmentId (model.nextAttachment + index), file = file, state = Reading }) files
             in
             ( { model | attachments = model.attachments ++ added, nextAttachment = model.nextAttachment + List.length files }
             , Cmd.batch (List.map readAttachment added)
             )
 
-        AttachmentRead key state ->
-            ( { model
-                | attachments =
-                    List.map
-                        (\item ->
-                            if item.id == key then
-                                { item | state = state }
-
-                            else
-                                item
-                        )
-                        model.attachments
-              }
-            , Cmd.none
-            )
+        AttachmentRead key result ->
+            ( { model | attachments = List.map (receiveAttachment key result) model.attachments }, Cmd.none )
 
         AttachmentRemoved key ->
             ( { model | attachments = List.filter (.id >> (/=) key) model.attachments }, Cmd.none )
@@ -304,21 +246,79 @@ pending read =
         Loading _ ->
             True
 
-        _ ->
+        Loaded _ ->
+            False
+
+        Partial _ _ ->
+            False
+
+        Failed _ _ ->
             False
 
 
-receive : Read data -> Api.Response data -> Read data
-receive previous response =
+receive : Api.Response data -> Read data -> Read data
+receive response previous =
     case response of
         Ok value ->
             Loaded value
 
-        Err (Http.GraphqlError (ParsedData value) errors) ->
-            Partial value errors
+        Err failure ->
+            case failure.detail of
+                Http.GraphqlError (ParsedData value) _ ->
+                    Partial value failure
 
-        Err error ->
-            Failed (observed previous) error
+                _ ->
+                    Failed (observed previous) failure
+
+
+
+-- ENVIRONMENT PAGES
+
+
+receiveEnvironments : Pagination -> Api.Response (Maybe EnvironmentPage) -> Read (Maybe EnvironmentPage) -> Read (Maybe EnvironmentPage)
+receiveEnvironments pagination response previous =
+    let
+        combine page =
+            case pagination of
+                Replace ->
+                    page
+
+                Append ->
+                    Maybe.map (appendEnvironmentPage (observed previous |> Maybe.andThen identity)) page
+    in
+    case response of
+        Ok page ->
+            Loaded (combine page)
+
+        Err failure ->
+            case failure.detail of
+                Http.GraphqlError (ParsedData Nothing) _ ->
+                    Failed (observed previous) failure
+
+                Http.GraphqlError (ParsedData page) _ ->
+                    Partial (combine page) failure
+
+                _ ->
+                    Failed (observed previous) failure
+
+
+appendEnvironmentPage : Maybe EnvironmentPage -> EnvironmentPage -> EnvironmentPage
+appendEnvironmentPage previous incoming =
+    case previous of
+        Nothing ->
+            incoming
+
+        Just before ->
+            let
+                replace old =
+                    List.filter (\item -> item.id == old.id) incoming.nodes
+                        |> List.head
+                        |> Maybe.withDefault old
+
+                isNew item =
+                    not (List.any (\old -> old.id == item.id) before.nodes)
+            in
+            { incoming | nodes = List.map replace before.nodes ++ List.filter isNew incoming.nodes }
 
 
 
@@ -337,12 +337,38 @@ environmentKey environment =
 
 currentModel : Maybe ModelChoice -> List ModelChoice -> Maybe ModelChoice
 currentModel selected choices =
-    selected |> Maybe.andThen (\choice -> List.filter (\item -> modelKey item == modelKey choice) choices |> List.head)
+    selected
+        |> Maybe.andThen
+            (\choice ->
+                choices
+                    |> List.filter (\item -> item.provider == choice.provider && item.id == choice.id)
+                    |> List.head
+            )
 
 
 environmentChoices : Read (Maybe EnvironmentPage) -> List Environment
 environmentChoices environments =
     observed environments |> Maybe.andThen identity |> Maybe.map .nodes |> Maybe.withDefault []
+
+
+supportedThinking : List ModelThinkingLevel -> Maybe ModelThinkingLevel -> Maybe ModelThinkingLevel
+supportedThinking levels selected =
+    selected
+        |> Maybe.andThen
+            (\level ->
+                if List.member level levels then
+                    Just level
+
+                else
+                    Nothing
+            )
+
+
+selectedEnvironment : String -> List Environment -> Maybe Environment
+selectedEnvironment key choices =
+    choices
+        |> List.filter (\item -> environmentKey item == key && item.host /= Nothing)
+        |> List.head
 
 
 
@@ -440,7 +466,7 @@ viewComposer draft options =
         [ form [ id "composer", class "new-composer", onSubmit NoOp ]
             [ fieldset [ id "new-options", attribute "aria-label" "New session options" ] [ options ]
             , div [ id "composer-shell", class "composer-shell" ]
-                [ div [ class "compose-box", Events.preventDefaultOn "dragover" (Decode.succeed ( NoOp, True )), fileEvent "drop" "dataTransfer" ]
+                [ div [ class "compose-box", Events.preventDefaultOn "dragover" (Decode.succeed ( NoOp, True )), fileEvent { event = "drop", field = "dataTransfer" } ]
                     [ viewPrompt draft.prompt
                     , div [ id "previews", attribute "aria-label" "Attached files" ] (List.map (viewAttachment AttachmentRemoved) draft.attachments)
                     , viewComposerActions
@@ -461,7 +487,7 @@ viewPrompt prompt =
         , attribute "aria-label" "Message"
         , Attr.value prompt
         , onInput PromptEdited
-        , fileEvent "paste" "clipboardData"
+        , fileEvent { event = "paste", field = "clipboardData" }
         , Events.preventDefaultOn "keydown" submitKey
         ]
         []
@@ -768,13 +794,13 @@ viewReadStatus name retry read =
                     )
                 ]
 
-        Partial value errors ->
-            viewReadFailure name retry (errorMessage (Http.GraphqlError (ParsedData value) errors) ++ " Partial data shown.")
+        Partial _ failure ->
+            viewReadFailure name retry (errorMessage failure.problem ++ " Partial data shown.")
 
         Failed previous error ->
             viewReadFailure name
                 retry
-                (errorMessage error
+                (errorMessage error.problem
                     ++ (if previous /= Nothing then
                             " Previous data is stale."
 
@@ -792,47 +818,32 @@ viewReadFailure name retry description =
         ]
 
 
-errorMessage : Http.Error data -> String
-errorMessage error =
-    case error of
-        Http.GraphqlError _ errors ->
-            let
-                codes =
-                    List.filterMap (\item -> Dict.get "extensions" item.details |> Maybe.andThen (Decode.decodeValue (Decode.field "code" Decode.string) >> Result.toMaybe)) errors
-            in
-            if List.member "FORBIDDEN" codes then
-                "Access denied."
+errorMessage : Api.Problem -> String
+errorMessage problem =
+    case problem of
+        Api.AccessDenied ->
+            "Access denied."
 
-            else if List.member "UNAUTHENTICATED" codes then
-                "Authentication required."
+        Api.AuthenticationRequired ->
+            "Authentication required."
 
-            else
-                "The server could not complete this read."
+        Api.ExecutionFailure ->
+            "The server could not complete this read."
 
-        Http.HttpError problem ->
-            case problem of
-                Http.BadUrl _ ->
-                    "Invalid API address."
+        Api.InvalidAddress ->
+            "Invalid API address."
 
-                Http.Timeout ->
-                    "The request timed out."
+        Api.TimedOut ->
+            "The request timed out."
 
-                Http.NetworkError ->
-                    "Could not reach the server."
+        Api.NetworkFailure ->
+            "Could not reach the server."
 
-                Http.BadPayload _ ->
-                    "Invalid API response."
+        Api.InvalidResponse ->
+            "Invalid API response."
 
-                Http.BadStatus metadata _ ->
-                    case metadata.statusCode of
-                        401 ->
-                            "Authentication required."
-
-                        403 ->
-                            "Access denied."
-
-                        status ->
-                            "HTTP " ++ String.fromInt status ++ "."
+        Api.HttpFailure status ->
+            "HTTP " ++ String.fromInt status ++ "."
 
 
 
@@ -851,10 +862,10 @@ submitKey =
         (Decode.field "isComposing" Decode.bool)
 
 
-fileEvent : String -> String -> Html.Attribute Msg
-fileEvent event field =
-    Events.preventDefaultOn event
-        (Decode.at [ field, "files" ] (Decode.list File.decoder)
+fileEvent : { event : String, field : String } -> Html.Attribute Msg
+fileEvent config =
+    Events.preventDefaultOn config.event
+        (Decode.at [ config.field, "files" ] (Decode.list File.decoder)
             |> Decode.andThen
                 (\files ->
                     if List.isEmpty files then
@@ -870,28 +881,46 @@ fileEvent event field =
 -- ATTACHMENTS
 
 
+receiveAttachment : AttachmentId -> Result String AttachmentContent -> Attachment -> Attachment
+receiveAttachment key result attachment =
+    if attachment.id == key then
+        { attachment
+            | state =
+                case result of
+                    Ok content ->
+                        Ready content
+
+                    Err problem ->
+                        Rejected problem
+        }
+
+    else
+        attachment
+
+
 readAttachment : Attachment -> Cmd Msg
 readAttachment item =
     (if List.member (File.mime item.file) [ "image/png", "image/jpeg", "image/gif", "image/webp" ] then
-        File.toUrl item.file |> Task.map Ready
+        File.toUrl item.file |> Task.map (Image >> Ok)
 
      else
-        File.toBytes item.file
-            |> Task.map
-                (\bytes ->
-                    case ByteDecode.decode (ByteDecode.string (Bytes.width bytes)) bytes of
-                        Just content ->
-                            if byteList bytes == byteList (ByteEncode.encode (ByteEncode.string content)) && not (String.any unsupportedControl content) then
-                                Ready ""
-
-                            else
-                                Rejected "Not a supported image or UTF-8 text file"
-
-                        Nothing ->
-                            Rejected "Could not decode this file"
-                )
+        File.toBytes item.file |> Task.map readTextAttachment
     )
         |> Task.perform (AttachmentRead item.id)
+
+
+readTextAttachment : Bytes -> Result String AttachmentContent
+readTextAttachment bytes =
+    case ByteDecode.decode (ByteDecode.string (Bytes.width bytes)) bytes of
+        Just content ->
+            if byteList bytes == byteList (ByteEncode.encode (ByteEncode.string content)) && not (String.any unsupportedControl content) then
+                Ok (Text content)
+
+            else
+                Err "Not a supported image or UTF-8 text file"
+
+        Nothing ->
+            Err "Could not decode this file"
 
 
 byteList : Bytes -> Maybe (List Int)
@@ -922,7 +951,7 @@ unsupportedControl character =
 -- VIEW ATTACHMENT
 
 
-viewAttachment : (Int -> msg) -> Attachment -> Html msg
+viewAttachment : (AttachmentId -> msg) -> Attachment -> Html msg
 viewAttachment remove item =
     let
         name =
@@ -937,12 +966,11 @@ viewAttachment remove item =
                 Reading ->
                     span [ attribute "role" "status" ] [ text (name ++ " — reading…") ]
 
-                Ready url ->
-                    if String.isEmpty url then
-                        text name
+                Ready (Text _) ->
+                    text name
 
-                    else
-                        Html.img [ Attr.src url, Attr.alt name ] []
+                Ready (Image url) ->
+                    Html.img [ Attr.src url, Attr.alt name ] []
 
                 Rejected _ ->
                     text name
@@ -951,7 +979,10 @@ viewAttachment remove item =
             Rejected problem ->
                 span [ class "error", attribute "role" "alert" ] [ text (name ++ ": " ++ problem) ]
 
-            _ ->
+            Reading ->
+                text ""
+
+            Ready _ ->
                 text ""
         ]
 
