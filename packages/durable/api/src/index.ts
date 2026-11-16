@@ -5,7 +5,6 @@ import { Problem } from "./problem.ts";
 import { openApplication } from "./application.ts";
 import { readDeploymentConfiguration } from "./configuration.ts";
 import { decode } from "./graphql.ts";
-import { getOperationAST, parse } from "graphql";
 
 export async function main(): Promise<void> {
   const config = readDeploymentConfiguration();
@@ -36,24 +35,14 @@ export async function main(): Promise<void> {
         },
         async "/api/graphql"(request) {
           try {
-            if (request.method !== "GET" && request.method !== "POST")
-              throw new Problem(405, "GET, POST");
-            if (request.method === "POST") {
-              const contentType = request.headers
-                .get("content-type")
-                ?.split(";", 1)[0]
-                ?.trim()
-                .toLowerCase();
-              if (contentType !== "application/json") throw new Problem(415);
-            }
+            if (request.method !== "POST") throw new Problem(405, "POST");
+            const contentType = request.headers
+              .get("content-type")
+              ?.split(";", 1)[0]
+              ?.trim()
+              .toLowerCase();
+            if (contentType !== "application/json") throw new Problem(415);
             const args = await decode(request);
-            if (request.method === "GET") {
-              let operation;
-              try {
-                operation = getOperationAST(parse(args.source), args.operationName);
-              } catch {}
-              if (operation?.operation === "mutation") throw new Problem(405, "POST");
-            }
             const result = await app.api.graphql(args, request.signal);
             for (const error of result.errors ?? [])
               if (error.extensions.code === "INTERNAL_SERVER_ERROR")

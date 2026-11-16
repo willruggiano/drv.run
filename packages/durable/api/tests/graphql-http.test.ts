@@ -1,25 +1,30 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { decode } from "../src/graphql.ts";
 import { startServer } from "./fixtures.ts";
 
 const result = { data: { ok: true } };
 
-await test("GET decodes GraphQL arguments and uses JSON regardless of Accept", async (t) => {
+await test("POST decodes GraphQL arguments and uses JSON regardless of Accept", async (t) => {
   const running = await startServer(t);
   const execute = t.mock.method(running.app.api, "graphql", async () => result);
   const url = new URL("/api/graphql", running.server.url);
-  url.search = new URLSearchParams({
+  const payload = {
     query: "query Q($id:ID!){node(id:$id){id}}",
     operationName: "Q",
-    variables: JSON.stringify({ id: "x" }),
-    extensions: JSON.stringify({ persistedQuery: { version: 1 } }),
-  }).toString();
+    variables: { id: "x" },
+    extensions: { persistedQuery: { version: 1 } },
+  };
   for (const accept of [
     "text/plain",
     "application/json;q=0",
     "application/graphql-response+json",
   ]) {
-    const response = await fetch(url, { headers: { Accept: accept } });
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { Accept: accept, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "application/json");
     assert.equal(response.headers.get("cache-control"), "no-store");
@@ -51,29 +56,26 @@ await test("POST decodes JSON GraphQL payloads into upstream arguments", async (
   });
 });
 
-await test("GET rejects mutations and invalid parameters before execution", async (t) => {
+await test("non-POST requests are rejected before GraphQL execution", async (t) => {
   const running = await startServer(t);
   const execute = t.mock.method(running.app.api, "graphql", async () => result);
-  for (const [search, status, allow] of [
-    ["?query=mutation%20%7Bx%7D", 405, "POST"],
-    ["", 400, null],
-    ["?query=%7B", 200, null],
-    ["?query=%7Bx%7D&query=%7By%7D", 400, null],
-    ["?query=%7Bx%7D&unknown=1", 400, null],
-    ["?query=%7Bx%7D&toString=1", 400, null],
-    ["?query=%7Bx%7D&variables=%5B%5D", 400, null],
-    ["?query=%7Bx%7D&variables=%7B", 400, null],
-  ] as const) {
-    const response = await fetch(new URL(`/api/graphql${search}`, running.server.url));
-    assert.equal(response.status, status);
-    assert.equal(response.headers.get("allow"), allow);
+  for (const method of ["GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+    const response = await fetch(new URL("/api/graphql?query=%7Bx%7D", running.server.url), {
+      method,
+    });
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get("allow"), "POST");
+    assert.equal(response.headers.get("cache-control"), "no-store");
     await response.arrayBuffer();
   }
-  const wrongMethod = await fetch(new URL("/api/graphql", running.server.url), { method: "PUT" });
-  assert.equal(wrongMethod.status, 405);
-  assert.equal(wrongMethod.headers.get("allow"), "GET, POST");
-  await wrongMethod.arrayBuffer();
-  assert.equal(execute.mock.callCount(), 1);
+  assert.equal(execute.mock.callCount(), 0);
+});
+
+await test("decode asserts that its caller supplies a POST request", async () => {
+  await assert.rejects(
+    decode(new Request("https://example.test/api/graphql")),
+    assert.AssertionError,
+  );
 });
 
 await test("malformed envelopes and unsupported request media types fail before execution", async (t) => {
@@ -107,8 +109,11 @@ await test("syntax and validation failures remain GraphQL execution results", as
   const running = await startServer(t);
   for (const query of ["{", "{ unknownField }"]) {
     const url = new URL("/api/graphql", running.server.url);
-    url.searchParams.set("query", query);
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
     assert.equal(response.status, 200);
     const result = (await response.json()) as { errors: unknown[] };
     assert.equal(result.errors.length, 1);
