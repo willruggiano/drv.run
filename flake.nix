@@ -82,6 +82,7 @@
     in {
       app-tests = pkgs.app;
       bench-tests = pkgs.bench;
+      www-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.www;
       durable-api-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.durable-api;
       durable-harness-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.durable-harness;
       environment-image-tests = environmentImage.artifact;

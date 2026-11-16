@@ -12,6 +12,7 @@ export type DeploymentConfiguration = {
   readonly configDirectory: string;
   readonly runtimeDirectory: string;
   readonly systemctl: string;
+  readonly wwwDirectory: string | undefined;
   readonly parallelApiKeyFile: string | undefined;
   readonly push: PushConfiguration | undefined;
   readonly origin: string | undefined;
@@ -91,6 +92,7 @@ export function readDeploymentConfiguration(
     configDirectory: join(configHome, "drv.run"),
     runtimeDirectory,
     systemctl: env.SYSTEMCTL ?? "systemctl",
+    wwwDirectory: env.WWW_ROOT === undefined ? undefined : absolute("WWW_ROOT", env.WWW_ROOT),
     origin,
     oauthServers,
     push,

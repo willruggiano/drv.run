@@ -9,6 +9,7 @@
   stdenvNoCC,
   systemd,
   typescript,
+  www,
 }: let
   pkg = lib.importJSON ./package.json;
 in
@@ -73,6 +74,7 @@ in
       mkdir -p "$out/bin"
       makeWrapper ${nodejs}/bin/node "$out/bin/${pkg.name}" \
         --add-flags "$out/lib/${pkg.name}/dist/src/index.js" \
+        --set-default WWW_ROOT ${www}/share/www \
         --prefix PATH : ${lib.makeBinPath [openssh systemd]}
       runHook postInstall
     '';

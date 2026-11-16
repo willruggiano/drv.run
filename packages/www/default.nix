@@ -1,16 +1,30 @@
 {
+  chromium,
+  dejavu_fonts,
   elmPackages,
   importNpmLock,
   lib,
+  makeFontsConf,
   nodejs,
   stdenvNoCC,
+  typescript,
 }:
 stdenvNoCC.mkDerivation {
   pname = "www";
   version = "0.1.0";
   src = lib.fileset.toSource {
     root = ./.;
-    fileset = lib.fileset.unions [./elm.json ./package.json ./package-lock.json ./src];
+    fileset = lib.fileset.unions [
+      ./elm.json
+      ./package.json
+      ./package-lock.json
+      ./src
+      ./index.html
+      ./styles.css
+      ./bootstrap.js
+      ./tests
+      ./tsconfig.json
+    ];
   };
   npmDeps = importNpmLock {npmRoot = ./.;};
   npmRebuildFlags = ["--ignore-scripts"];
@@ -21,6 +35,13 @@ stdenvNoCC.mkDerivation {
     importNpmLock.npmConfigHook
     nodejs
   ];
+  nativeCheckInputs = [chromium typescript];
+  CHROMIUM_BINARY = lib.getExe chromium;
+  FONTCONFIG_FILE = makeFontsConf {
+    fontDirectories = [dejavu_fonts];
+    impureFontDirectories = [];
+    includes = [];
+  };
   preBuild = elmPackages.fetchElmDeps {
     elmVersion = elmPackages.elm.version;
     elmPackages = lib.importJSON ./deps.json;
@@ -28,20 +49,21 @@ stdenvNoCC.mkDerivation {
   };
   buildPhase = ''
     runHook preBuild
-    npm run generate
-    elm make src/Main.elm --optimize --output=index.html
+    npm run build
     runHook postBuild
   '';
   doCheck = true;
   checkPhase = ''
     runHook preCheck
+    export HOME="$(mktemp -d)"
     npm run check
+    npm test
     runHook postCheck
   '';
   installPhase = ''
     runHook preInstall
     mkdir -p "$out/share/www"
-    cp index.html "$out/share/www/"
+    cp dist/* "$out/share/www/"
     runHook postInstall
   '';
 }

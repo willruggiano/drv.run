@@ -9,6 +9,12 @@ await test("deployment config defaults to owner-scoped XDG paths", () => {
   assert.equal(config.configDirectory, "/home/pi/.config/drv.run");
   assert.equal(config.runtimeDirectory, "/run/user/1000");
   assert.equal(config.systemctl, "systemctl");
+  assert.equal(config.wwwDirectory, undefined);
+  assert.equal(
+    readDeploymentConfiguration({ WWW_ROOT: "/srv/www" }, 1000).wwwDirectory,
+    "/srv/www",
+  );
+  assert.throws(() => readDeploymentConfiguration({ WWW_ROOT: "relative" }, 1000));
   assert.equal(readDeploymentConfiguration({ PORT: "0" }, 1000).server.port, 0);
 });
 

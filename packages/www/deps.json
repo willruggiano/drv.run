@@ -3,6 +3,10 @@
     "version": "5.0.12",
     "sha256": "sha256-jZ3GLTh2NCafw21ujfiwD3Ui607lMIuWy4vGAx/kmkE="
   },
+  "elm/browser": {
+    "version": "1.0.2",
+    "sha256": "sha256-I/QUkdMlr8cmSdUSdB+4FzclAUyT5ILSW6szJVVaT1k="
+  },
   "elm/bytes": {
     "version": "1.0.8",
     "sha256": "sha256-ki81JuO0MOlH0dLqxZZeTKrmJQE2Sd4vZX1PJYpb3As="
@@ -30,6 +34,10 @@
   "elm/regex": {
     "version": "1.0.0",
     "sha256": "sha256-QumNZXBAM5wFxAAeoPdGnsKb7KXMPFlPscEeDsrVMlI="
+  },
+  "elm/svg": {
+    "version": "1.0.1",
+    "sha256": "sha256-E9jJoSlCG+lb912Mw93wXl6vxt9548cxLwQHc8eRjLM="
   },
   "elm/time": {
     "version": "1.0.0",

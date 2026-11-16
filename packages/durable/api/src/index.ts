@@ -5,6 +5,7 @@ import { Problem } from "./problem.ts";
 import { openApplication } from "./application.ts";
 import { readDeploymentConfiguration } from "./configuration.ts";
 import { decode } from "./graphql.ts";
+import { website } from "./www.ts";
 
 export async function main(): Promise<void> {
   const config = readDeploymentConfiguration();
@@ -100,7 +101,7 @@ export async function main(): Promise<void> {
         },
       },
 
-      fetch: () => new Response("Not Found", { status: 404 }),
+      fetch: await website(config.wwwDirectory),
 
       error(error) {
         console.error("HTTP request failed", error);

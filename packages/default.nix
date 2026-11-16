@@ -1,12 +1,13 @@
 {pkgs, ...}: let
   push-policy = pkgs.callPackage ./push-policy {};
+  www = pkgs.callPackage ./www {};
 in {
-  inherit push-policy;
+  inherit push-policy www;
   app = pkgs.callPackage ./app {inherit push-policy;};
   bench = pkgs.callPackage ./bench {};
   durable-api = pkgs.callPackage ./durable/api {
     inherit (pkgs) durable-harness;
-    inherit push-policy;
+    inherit push-policy www;
   };
   durable-harness = pkgs.callPackage ./durable/harness {};
   # cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {}; # remove after: https://github.com/NixOS/nixpkgs/pull/574147
@@ -26,5 +27,4 @@ in {
   });
   tap = pkgs.callPackage ./tap {};
   treefmt-wrapped = pkgs.callPackage ./formatter.nix {};
-  www = pkgs.callPackage ./www {};
 }

@@ -1,6 +1,7 @@
 import { once } from "node:events";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startServer, runMain } from "./fixtures.ts";
@@ -182,4 +183,50 @@ await test("service diagnostics remain server-side through the HTTP GraphQL boun
       },
     ],
   });
+});
+
+await test("the production listener serves only the built www assets alongside GraphQL", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "www-assets-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const assets = [
+    ["/", "index.html", "text/html; charset=utf-8"],
+    ["/main.js", "main.js", "text/javascript; charset=utf-8"],
+    ["/bootstrap.js", "bootstrap.js", "text/javascript; charset=utf-8"],
+    ["/styles.css", "styles.css", "text/css; charset=utf-8"],
+  ] as const;
+  const bytes = Uint8Array.from([1, 2, 3]);
+  for (const [, file] of assets) await writeFile(join(directory, file), bytes);
+  const running = await startServer(t, { WWW_ROOT: directory });
+  for (const [path, , type] of assets) {
+    const url = new URL(path, running.server.url);
+    const response = await fetch(url);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), type);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+    assert(response.headers.has("content-security-policy"));
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes);
+    const head = await fetch(url, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal((await head.arrayBuffer()).byteLength, 0);
+    const rejected = await fetch(url, { method: "POST" });
+    assert.equal(rejected.status, 405);
+    assert.equal(rejected.headers.get("allow"), "GET, HEAD");
+  }
+  for (const path of [
+    "/package.json",
+    "/src/index.ts",
+    "/%2e%2e%2findex.html",
+    "/sessions/alpha",
+    "/settings",
+  ])
+    assert.equal((await fetch(new URL(path, running.server.url))).status, 404);
+  const result = await fetch(new URL("/api/graphql", running.server.url), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ query: "{ harnesses { externalId } }" }),
+  });
+  assert.equal(result.status, 200);
+  assert.deepEqual(await result.json(), { data: { harnesses: [] } });
 });
