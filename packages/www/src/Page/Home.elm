@@ -14,13 +14,13 @@ import File.Select
 import Graphql.Http as Http
 import Graphql.Http.GraphqlError exposing (GraphqlError, PossiblyParsedData(..))
 import Html exposing (Html, a, button, div, fieldset, footer, form, h2, input, label, main_, option, p, section, select, span, text, textarea)
-import Html.Attributes as A exposing (attribute, class, id)
+import Html.Attributes as Attr exposing (attribute, class, id)
 import Html.Events as Events exposing (onClick, onInput, onSubmit)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Route
 import Svg
-import Svg.Attributes as S
+import Svg.Attributes as SvgAttr
 import Task
 
 
@@ -216,7 +216,7 @@ update msg model =
         ThinkingSelected value ->
             let
                 supported =
-                    currentModel model |> Maybe.map .thinkingLevels |> Maybe.withDefault []
+                    currentModel model.selectedModel (observed model.models |> Maybe.withDefault []) |> Maybe.map .thinkingLevels |> Maybe.withDefault []
             in
             ( { model
                 | thinking =
@@ -234,7 +234,7 @@ update msg model =
             )
 
         EnvironmentSelected key ->
-            ( { model | environment = environmentChoices model |> List.filter (\item -> environmentKey item == key && item.host /= Nothing) |> List.head }, Cmd.none )
+            ( { model | environment = environmentChoices model.environments |> List.filter (\item -> environmentKey item == key && item.host /= Nothing) |> List.head }, Cmd.none )
 
         DirectoryEdited value ->
             ( { model | directory = value }, Cmd.none )
@@ -335,15 +335,14 @@ environmentKey environment =
     Encode.encode 0 (Scalars.id.encoder environment.id)
 
 
-currentModel : Model -> Maybe ModelChoice
-currentModel model =
-    model.selectedModel
-        |> Maybe.andThen (\selected -> observed model.models |> Maybe.withDefault [] |> List.filter (\choice -> modelKey choice == modelKey selected) |> List.head)
+currentModel : Maybe ModelChoice -> List ModelChoice -> Maybe ModelChoice
+currentModel selected choices =
+    selected |> Maybe.andThen (\choice -> List.filter (\item -> modelKey item == modelKey choice) choices |> List.head)
 
 
-environmentChoices : Model -> List Environment
-environmentChoices model =
-    observed model.environments |> Maybe.andThen identity |> Maybe.map .nodes |> Maybe.withDefault []
+environmentChoices : Read (Maybe EnvironmentPage) -> List Environment
+environmentChoices environments =
+    observed environments |> Maybe.andThen identity |> Maybe.map .nodes |> Maybe.withDefault []
 
 
 
@@ -363,277 +362,378 @@ view : Model -> Browser.Document Msg
 view model =
     { title = "Sessions"
     , body =
-        [ main_ [ id "main-area" ]
-            [ section [ id "landing", class "pane", attribute "aria-label" "Sessions" ]
-                [ div []
-                    [ div [ class "catalog-heading" ]
-                        [ h2
-                            [ id "recent-title"
-                            , A.hidden
-                                (case model.sessions of
-                                    Loaded [] ->
-                                        True
-
-                                    _ ->
-                                        False
-                                )
-                            ]
-                            [ text "Recent sessions" ]
-                        , refresh "sessions" (pending model.sessions) RefreshSessions
-                        ]
-                    , readStatus "sessions" RefreshSessions model.sessions
-                    , div [ id "session-list" ] (observed model.sessions |> Maybe.withDefault [] |> List.map sessionView)
-                    , case model.sessions of
-                        Loaded [] ->
-                            p [ id "sessions-empty" ] [ text "No sessions" ]
-
-                        _ ->
-                            text ""
-                    ]
-                ]
-            ]
-        , footer [ id "app-footer", class "composer-area" ]
-            [ form [ id "composer", class "new-composer", onSubmit NoOp ]
-                [ fieldset [ id "new-options", attribute "aria-label" "New session options" ]
-                    [ div [ id "options" ]
-                        [ environmentView model
-                        , modelView model
-                        ]
-                    ]
-                , div [ id "composer-shell", class "composer-shell" ]
-                    [ div [ class "compose-box", Events.preventDefaultOn "dragover" (Decode.succeed ( NoOp, True )), fileEvent "drop" "dataTransfer" ]
-                        [ textarea
-                            [ id "prompt"
-                            , A.name "content"
-                            , A.rows 2
-                            , A.maxlength 100000
-                            , A.placeholder "Ask Pi…"
-                            , attribute "aria-label" "Message"
-                            , A.value model.prompt
-                            , onInput PromptEdited
-                            , fileEvent "paste" "clipboardData"
-                            , Events.preventDefaultOn "keydown" submitKey
-                            ]
-                            []
-                        , div [ id "previews", attribute "aria-label" "Attached files" ] (List.map attachmentView model.attachments)
-                        , div [ id "controls", class "actions" ]
-                            [ button [ id "input-toggle", class "icon", A.type_ "button", attribute "aria-label" "Upload attachments", onClick PickFiles ] [ text "+" ]
-                            , span [ class "spacer" ] []
-                            , button [ id "create", class "icon", A.type_ "submit", attribute "aria-label" "Create session", A.title "Create session (Ctrl/Cmd+Enter)" ]
-                                [ glyph [ Svg.path [ S.d "M12 20V4m-7 7 7-7 7 7" ] [] ] ]
-                            ]
-                        ]
-                    ]
-                ]
-            ]
+        [ viewSessions model.sessions
+        , viewComposer
+            { prompt = model.prompt, attachments = model.attachments }
+            (viewCreationOptions model)
         ]
     }
 
 
-sessionView : Session -> Html Msg
-sessionView session =
-    div [ class "session-row" ]
-        [ a [ class "session", A.href (Route.href (Route.Session session.externalId)) ]
-            [ span [ class "session-heading" ] [ Html.strong [] [ text session.externalId ] ]
-            , span [ class "session-detail" ]
-                [ span [ class "session-environment" ]
-                    [ text (session.root |> Maybe.map (\root -> String.join ":" (List.filterMap identity [ root.host, root.cwd ])) |> Maybe.withDefault "Root details unavailable") ]
-                , span [ class "model-summary" ] [ span [ class "model-name" ] [ text (session.root |> Maybe.andThen .model |> Maybe.withDefault "") ] ]
+
+-- VIEW SESSIONS
+
+
+viewSessions : Read (List Session) -> Html Msg
+viewSessions sessions =
+    let
+        empty =
+            case sessions of
+                Loaded [] ->
+                    True
+
+                _ ->
+                    False
+    in
+    main_ [ id "main-area" ]
+        [ section [ id "landing", class "pane", attribute "aria-label" "Sessions" ]
+            [ div []
+                [ div [ class "catalog-heading" ]
+                    [ h2 [ id "recent-title", Attr.hidden empty ] [ text "Recent sessions" ]
+                    , viewRefresh "sessions" (pending sessions) RefreshSessions
+                    ]
+                , viewReadStatus "sessions" RefreshSessions sessions
+                , div [ id "session-list" ] (observed sessions |> Maybe.withDefault [] |> List.map (viewSession NoOp))
+                , if empty then
+                    p [ id "sessions-empty" ] [ text "No sessions" ]
+
+                  else
+                    text ""
                 ]
             ]
-        , button [ class "icon session-archive", A.type_ "button", attribute "aria-label" "Archive session", A.title "Archive session (read-only preview)", onClick NoOp ]
-            [ glyph [ Svg.path [ S.d "m6 6 12 12M18 6 6 18" ] [] ] ]
         ]
 
 
-environmentView : Model -> Html Msg
-environmentView model =
+viewSession : msg -> Session -> Html msg
+viewSession archive session =
+    div [ class "session-row" ]
+        [ a [ class "session", Attr.href (Route.href (Route.Session session.externalId)) ]
+            [ span [ class "session-heading" ] [ Html.strong [] [ text session.externalId ] ]
+            , span [ class "session-detail" ]
+                [ span [ class "session-environment" ] [ text (sessionEnvironment session) ]
+                , span [ class "model-summary" ]
+                    [ span [ class "model-name" ] [ text (session.root |> Maybe.andThen .model |> Maybe.withDefault "") ] ]
+                ]
+            ]
+        , button [ class "icon session-archive", Attr.type_ "button", attribute "aria-label" "Archive session", Attr.title "Archive session (read-only preview)", onClick archive ]
+            [ glyph [ Svg.path [ SvgAttr.d "m6 6 12 12M18 6 6 18" ] [] ] ]
+        ]
+
+
+sessionEnvironment : Session -> String
+sessionEnvironment session =
+    case session.root of
+        Nothing ->
+            "Root details unavailable"
+
+        Just root ->
+            String.join ":" (List.filterMap identity [ root.host, root.cwd ])
+
+
+
+-- VIEW COMPOSER
+
+
+viewComposer : { prompt : String, attachments : List Attachment } -> Html Msg -> Html Msg
+viewComposer draft options =
+    footer [ id "app-footer", class "composer-area" ]
+        [ form [ id "composer", class "new-composer", onSubmit NoOp ]
+            [ fieldset [ id "new-options", attribute "aria-label" "New session options" ] [ options ]
+            , div [ id "composer-shell", class "composer-shell" ]
+                [ div [ class "compose-box", Events.preventDefaultOn "dragover" (Decode.succeed ( NoOp, True )), fileEvent "drop" "dataTransfer" ]
+                    [ viewPrompt draft.prompt
+                    , div [ id "previews", attribute "aria-label" "Attached files" ] (List.map (viewAttachment AttachmentRemoved) draft.attachments)
+                    , viewComposerActions
+                    ]
+                ]
+            ]
+        ]
+
+
+viewPrompt : String -> Html Msg
+viewPrompt prompt =
+    textarea
+        [ id "prompt"
+        , Attr.name "content"
+        , Attr.rows 2
+        , Attr.maxlength 100000
+        , Attr.placeholder "Ask Pi…"
+        , attribute "aria-label" "Message"
+        , Attr.value prompt
+        , onInput PromptEdited
+        , fileEvent "paste" "clipboardData"
+        , Events.preventDefaultOn "keydown" submitKey
+        ]
+        []
+
+
+viewComposerActions : Html Msg
+viewComposerActions =
+    div [ id "controls", class "actions" ]
+        [ button [ id "input-toggle", class "icon", Attr.type_ "button", attribute "aria-label" "Upload attachments", onClick PickFiles ] [ text "+" ]
+        , span [ class "spacer" ] []
+        , button [ id "create", class "icon", Attr.type_ "submit", attribute "aria-label" "Create session", Attr.title "Create session (Ctrl/Cmd+Enter)" ]
+            [ glyph [ Svg.path [ SvgAttr.d "M12 20V4m-7 7 7-7 7 7" ] [] ] ]
+        ]
+
+
+
+-- VIEW CREATION OPTIONS
+
+
+viewCreationOptions : Model -> Html Msg
+viewCreationOptions model =
+    div [ id "options" ]
+        [ viewEnvironment
+            { selected = model.environment, directory = model.directory }
+            model.environments
+        , viewModels
+            { selected = model.selectedModel, thinking = model.thinking }
+            model.models
+        ]
+
+
+
+-- VIEW ENVIRONMENT
+
+
+viewEnvironment : { selected : Maybe Environment, directory : String } -> Read (Maybe EnvironmentPage) -> Html Msg
+viewEnvironment selection environments =
+    div [ id "footer-instance", class "selector-summary" ]
+        [ viewEnvironmentPicker selection.selected (environmentChoices environments)
+        , viewDirectory DirectoryEdited selection.directory
+        , viewEnvironmentStatus environments
+        ]
+
+
+viewEnvironmentPicker : Maybe Environment -> List Environment -> Html Msg
+viewEnvironmentPicker selected choices =
     let
         selectedKey =
-            model.environment |> Maybe.map environmentKey |> Maybe.withDefault ""
-
-        choices =
-            environmentChoices model
+            selected |> Maybe.map environmentKey |> Maybe.withDefault ""
 
         unavailable =
-            model.environment
-                |> Maybe.andThen
-                    (\selected ->
-                        if List.any (\item -> item.id == selected.id && item.host /= Nothing) choices then
-                            Nothing
-
-                        else
-                            Just selected
-                    )
+            selected |> Maybe.andThen (unavailableEnvironment choices)
 
         summary =
             case unavailable of
-                Just selected ->
-                    selected.unit ++ " (unavailable)"
+                Just environment ->
+                    environment.unit ++ " (unavailable)"
 
                 Nothing ->
-                    model.environment |> Maybe.map .unit |> Maybe.withDefault "No execution environment"
+                    selected |> Maybe.map .unit |> Maybe.withDefault "No execution environment"
     in
-    div [ id "footer-instance", class "selector-summary" ]
-        [ picker "Environment"
-            summary
-            (select [ id "targets", attribute "aria-label" "Environment", A.name "target", A.value selectedKey, onInput EnvironmentSelected ]
-                (viewChoice selectedKey "" "No execution environment" False
-                    :: List.map
-                        (\item ->
-                            viewChoice selectedKey
-                                (environmentKey item)
-                                (item.unit
-                                    ++ (if item.host == Nothing then
-                                            " (unavailable)"
-
-                                        else
-                                            ""
-                                       )
-                                )
-                                (item.host == Nothing)
-                        )
-                        choices
-                    ++ (unavailable
-                            |> Maybe.map
-                                (\item ->
-                                    if List.any (\other -> other.id == item.id) choices then
-                                        []
-
-                                    else
-                                        [ viewChoice selectedKey (environmentKey item) summary True ]
-                                )
-                            |> Maybe.withDefault []
-                       )
-                )
+    viewPicker "Environment"
+        summary
+        (select [ id "targets", attribute "aria-label" "Environment", Attr.name "target", Attr.value selectedKey, onInput EnvironmentSelected ]
+            (viewChoice selectedKey { key = "", caption = "No execution environment", disabled = False }
+                :: List.map (viewEnvironmentChoice selectedKey) choices
+                ++ viewMissingEnvironment choices unavailable
             )
-        , label []
-            [ span [ class "selector-label" ] [ text "Working directory" ]
-            , input [ id "base-directory", A.name "cwd", A.placeholder "/workspace", A.maxlength 4096, A.value model.directory, onInput DirectoryEdited, A.title "Literal path in the selected environment; not validated and ~ is not expanded." ] []
-            ]
-        , div [ class "catalog-tools" ]
-            [ readStatus "environments" RefreshEnvironments model.environments
-            , case model.environments of
-                Loaded Nothing ->
-                    span [ attribute "role" "status" ] [ text "Environments unavailable" ]
+        )
 
-                Loaded (Just { nodes }) ->
-                    if List.isEmpty nodes then
-                        span [ attribute "role" "status" ] [ text "No environments" ]
 
-                    else
-                        text ""
+unavailableEnvironment : List Environment -> Environment -> Maybe Environment
+unavailableEnvironment choices selected =
+    if List.any (\item -> item.id == selected.id && item.host /= Nothing) choices then
+        Nothing
 
-                _ ->
-                    text ""
-            , refresh "environments" (pending model.environments) RefreshEnvironments
-            , if (observed model.environments |> Maybe.andThen identity |> Maybe.andThen .next) /= Nothing then
-                button [ A.type_ "button", A.disabled (pending model.environments), onClick MoreEnvironments ] [ text "More environments" ]
+    else
+        Just selected
 
-              else
-                text ""
-            ]
+
+viewEnvironmentChoice : String -> Environment -> Html msg
+viewEnvironmentChoice selected item =
+    viewChoice selected
+        { key = environmentKey item
+        , caption =
+            if item.host == Nothing then
+                item.unit ++ " (unavailable)"
+
+            else
+                item.unit
+        , disabled = item.host == Nothing
+        }
+
+
+viewMissingEnvironment : List Environment -> Maybe Environment -> List (Html msg)
+viewMissingEnvironment choices unavailable =
+    case unavailable of
+        Nothing ->
+            []
+
+        Just selected ->
+            if List.any (\item -> item.id == selected.id) choices then
+                []
+
+            else
+                [ viewChoice (environmentKey selected)
+                    { key = environmentKey selected, caption = selected.unit ++ " (unavailable)", disabled = True }
+                ]
+
+
+viewDirectory : (String -> msg) -> String -> Html msg
+viewDirectory edited directory =
+    label []
+        [ span [ class "selector-label" ] [ text "Working directory" ]
+        , input [ id "base-directory", Attr.name "cwd", Attr.placeholder "/workspace", Attr.maxlength 4096, Attr.value directory, onInput edited, Attr.title "Literal path in the selected environment; not validated and ~ is not expanded." ] []
         ]
 
 
-modelView : Model -> Html Msg
-modelView model =
+viewEnvironmentStatus : Read (Maybe EnvironmentPage) -> Html Msg
+viewEnvironmentStatus environments =
+    div [ class "catalog-tools" ]
+        [ viewReadStatus "environments" RefreshEnvironments environments
+        , case environments of
+            Loaded Nothing ->
+                span [ attribute "role" "status" ] [ text "Environments unavailable" ]
+
+            Loaded (Just { nodes }) ->
+                if List.isEmpty nodes then
+                    span [ attribute "role" "status" ] [ text "No environments" ]
+
+                else
+                    text ""
+
+            _ ->
+                text ""
+        , viewRefresh "environments" (pending environments) RefreshEnvironments
+        , if (observed environments |> Maybe.andThen identity |> Maybe.andThen .next) /= Nothing then
+            button [ Attr.type_ "button", Attr.disabled (pending environments), onClick MoreEnvironments ] [ text "More environments" ]
+
+          else
+            text ""
+        ]
+
+
+
+-- VIEW MODELS
+
+
+viewModels : { selected : Maybe ModelChoice, thinking : Maybe ModelThinkingLevel } -> Read (List ModelChoice) -> Html Msg
+viewModels selection models =
     let
-        selectedKey =
-            model.selectedModel |> Maybe.map modelKey |> Maybe.withDefault ""
-
-        available =
-            currentModel model
-
         choices =
-            observed model.models |> Maybe.withDefault []
-
-        unavailable =
-            model.selectedModel /= Nothing && available == Nothing
-
-        summary =
-            model.selectedModel |> Maybe.map .name |> Maybe.withDefault "No model"
-
-        levels =
-            available |> Maybe.map .thinkingLevels |> Maybe.withDefault []
-
-        thinking =
-            model.thinking |> Maybe.map Thinking.toString |> Maybe.withDefault ""
-
-        unsupported =
-            model.thinking |> Maybe.map (\level -> not (List.member level levels)) |> Maybe.withDefault False
+            observed models |> Maybe.withDefault []
     in
     div [ id "bottom-line", attribute "aria-label" "New session settings" ]
         [ div [ class "footer-row" ]
             [ div [ class "footer-model-context" ]
                 [ div [ id "footer-model", class "model-summary selector-summary" ]
-                    [ span [ class "model-name" ]
-                        [ picker "Model"
-                            (summary
-                                ++ (if unavailable then
-                                        " (unavailable)"
-
-                                    else
-                                        ""
-                                   )
-                            )
-                            (select [ id "models", attribute "aria-label" "Model", A.name "model", A.value selectedKey, onInput ModelSelected ]
-                                (viewChoice selectedKey "" "No model" False
-                                    :: List.map (\item -> viewChoice selectedKey (modelKey item) (item.provider ++ " / " ++ item.name) False) choices
-                                    ++ (if unavailable then
-                                            [ viewChoice selectedKey selectedKey (summary ++ " (unavailable)") True ]
-
-                                        else
-                                            []
-                                       )
-                                )
-                            )
-                        ]
+                    [ span [ class "model-name" ] [ viewModelPicker selection.selected choices ]
                     , span [ class "footer-dot", attribute "aria-hidden" "true" ] []
-                    , span [ class "model-effort" ]
-                        [ picker "Thinking"
-                            (if thinking == "" then
-                                "Default"
-
-                             else
-                                thinking
-                                    ++ (if unsupported then
-                                            " (unavailable)"
-
-                                        else
-                                            ""
-                                       )
-                            )
-                            (select [ id "thinking", attribute "aria-label" "Thinking", A.name "thinkingLevel", A.value thinking, onInput ThinkingSelected, A.disabled (available == Nothing) ]
-                                (viewChoice thinking "" "Default" False
-                                    :: List.map (\level -> viewChoice thinking (Thinking.toString level) (Thinking.toString level) False) levels
-                                    ++ (if unsupported then
-                                            [ viewChoice thinking thinking (thinking ++ " (unavailable)") True ]
-
-                                        else
-                                            []
-                                       )
-                                )
-                            )
-                        ]
+                    , span [ class "model-effort" ] [ viewThinkingPicker selection.thinking (currentModel selection.selected choices) ]
                     ]
-                , div [ class "catalog-tools" ]
-                    [ readStatus "models" RefreshModels model.models
-                    , case model.models of
-                        Loaded [] ->
-                            span [ attribute "role" "status" ] [ text "No available models" ]
-
-                        _ ->
-                            text ""
-                    , refresh "models" (pending model.models) RefreshModels
-                    ]
+                , viewModelsStatus models
                 ]
             ]
         ]
 
 
-picker : String -> String -> Html Msg -> Html Msg
-picker caption summary control =
+viewModelPicker : Maybe ModelChoice -> List ModelChoice -> Html Msg
+viewModelPicker selected choices =
+    let
+        selectedKey =
+            selected |> Maybe.map modelKey |> Maybe.withDefault ""
+
+        unavailable =
+            selected /= Nothing && currentModel selected choices == Nothing
+
+        summary =
+            (selected |> Maybe.map .name |> Maybe.withDefault "No model")
+                ++ (if unavailable then
+                        " (unavailable)"
+
+                    else
+                        ""
+                   )
+
+        missing =
+            if unavailable then
+                [ viewChoice selectedKey { key = selectedKey, caption = summary, disabled = True } ]
+
+            else
+                []
+    in
+    viewPicker "Model"
+        summary
+        (select [ id "models", attribute "aria-label" "Model", Attr.name "model", Attr.value selectedKey, onInput ModelSelected ]
+            (viewChoice selectedKey { key = "", caption = "No model", disabled = False }
+                :: List.map (viewModelChoice selectedKey) choices
+                ++ missing
+            )
+        )
+
+
+viewModelChoice : String -> ModelChoice -> Html msg
+viewModelChoice selected item =
+    viewChoice selected { key = modelKey item, caption = item.provider ++ " / " ++ item.name, disabled = False }
+
+
+viewThinkingPicker : Maybe ModelThinkingLevel -> Maybe ModelChoice -> Html Msg
+viewThinkingPicker selected available =
+    let
+        levels =
+            available |> Maybe.map .thinkingLevels |> Maybe.withDefault []
+
+        thinking =
+            selected |> Maybe.map Thinking.toString |> Maybe.withDefault ""
+
+        unsupported =
+            selected |> Maybe.map (\level -> not (List.member level levels)) |> Maybe.withDefault False
+
+        summary =
+            if thinking == "" then
+                "Default"
+
+            else if unsupported then
+                thinking ++ " (unavailable)"
+
+            else
+                thinking
+
+        missing =
+            if unsupported then
+                [ viewChoice thinking { key = thinking, caption = summary, disabled = True } ]
+
+            else
+                []
+    in
+    viewPicker "Thinking"
+        summary
+        (select [ id "thinking", attribute "aria-label" "Thinking", Attr.name "thinkingLevel", Attr.value thinking, onInput ThinkingSelected, Attr.disabled (available == Nothing) ]
+            (viewChoice thinking { key = "", caption = "Default", disabled = False }
+                :: List.map (viewThinkingChoice thinking) levels
+                ++ missing
+            )
+        )
+
+
+viewThinkingChoice : String -> ModelThinkingLevel -> Html msg
+viewThinkingChoice selected level =
+    viewChoice selected { key = Thinking.toString level, caption = Thinking.toString level, disabled = False }
+
+
+viewModelsStatus : Read (List ModelChoice) -> Html Msg
+viewModelsStatus models =
+    div [ class "catalog-tools" ]
+        [ viewReadStatus "models" RefreshModels models
+        , case models of
+            Loaded [] ->
+                span [ attribute "role" "status" ] [ text "No available models" ]
+
+            _ ->
+                text ""
+        , viewRefresh "models" (pending models) RefreshModels
+        ]
+
+
+
+-- VIEW CONTROLS
+
+
+viewPicker : String -> String -> Html msg -> Html msg
+viewPicker caption summary control =
     label []
         [ span [ class "selector-label" ] [ text caption ]
         , control
@@ -641,18 +741,18 @@ picker caption summary control =
         ]
 
 
-viewChoice : String -> String -> String -> Bool -> Html Msg
-viewChoice selected key caption disabled =
-    option [ A.value key, A.selected (selected == key), A.disabled disabled ] [ text caption ]
+viewChoice : String -> { key : String, caption : String, disabled : Bool } -> Html msg
+viewChoice selected choice =
+    option [ Attr.value choice.key, Attr.selected (selected == choice.key), Attr.disabled choice.disabled ] [ text choice.caption ]
 
 
-refresh : String -> Bool -> Msg -> Html Msg
-refresh name busy msg =
-    button [ class "refresh", A.type_ "button", A.disabled busy, attribute "aria-label" ("Refresh " ++ name), onClick msg ] [ glyph [ Svg.path [ S.d "M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1" ] [] ] ]
+viewRefresh : String -> Bool -> msg -> Html msg
+viewRefresh name busy msg =
+    button [ class "refresh", Attr.type_ "button", Attr.disabled busy, attribute "aria-label" ("Refresh " ++ name), onClick msg ] [ glyph [ Svg.path [ SvgAttr.d "M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1" ] [] ] ]
 
 
-readStatus : String -> Msg -> Read data -> Html Msg
-readStatus name retry read =
+viewReadStatus : String -> msg -> Read data -> Html msg
+viewReadStatus name retry read =
     case read of
         Loaded _ ->
             text ""
@@ -669,10 +769,10 @@ readStatus name retry read =
                 ]
 
         Partial value errors ->
-            readFailure name retry (errorMessage (Http.GraphqlError (ParsedData value) errors) ++ " Partial data shown.")
+            viewReadFailure name retry (errorMessage (Http.GraphqlError (ParsedData value) errors) ++ " Partial data shown.")
 
         Failed previous error ->
-            readFailure name
+            viewReadFailure name
                 retry
                 (errorMessage error
                     ++ (if previous /= Nothing then
@@ -684,11 +784,11 @@ readStatus name retry read =
                 )
 
 
-readFailure : String -> Msg -> String -> Html Msg
-readFailure name retry description =
+viewReadFailure : String -> msg -> String -> Html msg
+viewReadFailure name retry description =
     p [ class "read-status error", attribute "role" "alert" ]
         [ text (name ++ ": " ++ description)
-        , button [ A.type_ "button", onClick retry ] [ text "Retry" ]
+        , button [ Attr.type_ "button", onClick retry ] [ text "Retry" ]
         ]
 
 
@@ -818,8 +918,12 @@ unsupportedControl character =
     (code < 32 && not (List.member code [ 9, 10, 13 ])) || (code >= 127 && code <= 159) || (code >= 55296 && code <= 57343)
 
 
-attachmentView : Attachment -> Html Msg
-attachmentView item =
+
+-- VIEW ATTACHMENT
+
+
+viewAttachment : (Int -> msg) -> Attachment -> Html msg
+viewAttachment remove item =
     let
         name =
             File.name item.file
@@ -828,7 +932,7 @@ attachmentView item =
             name ++ " (" ++ String.fromInt (File.size item.file) ++ " bytes)"
     in
     div [ class "attachment" ]
-        [ button [ A.type_ "button", A.title ("Remove " ++ description), attribute "aria-label" ("Remove " ++ name), onClick (AttachmentRemoved item.id) ]
+        [ button [ Attr.type_ "button", Attr.title ("Remove " ++ description), attribute "aria-label" ("Remove " ++ name), onClick (remove item.id) ]
             [ case item.state of
                 Reading ->
                     span [ attribute "role" "status" ] [ text (name ++ " — reading…") ]
@@ -838,7 +942,7 @@ attachmentView item =
                         text name
 
                     else
-                        Html.img [ A.src url, A.alt name ] []
+                        Html.img [ Attr.src url, Attr.alt name ] []
 
                 Rejected _ ->
                     text name
@@ -858,4 +962,4 @@ attachmentView item =
 
 glyph : List (Svg.Svg msg) -> Html msg
 glyph children =
-    Svg.svg [ S.class "glyph", S.viewBox "0 0 24 24", attribute "aria-hidden" "true" ] children
+    Svg.svg [ SvgAttr.class "glyph", SvgAttr.viewBox "0 0 24 24", attribute "aria-hidden" "true" ] children
