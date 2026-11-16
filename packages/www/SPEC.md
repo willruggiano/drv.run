@@ -5,8 +5,7 @@
 `www` is an Elm application for browsing drv.run instances and persisted
 sessions, creating sessions and conversations, working in conversations, and
 managing application settings and linked accounts. It uses `elm-graphql` for
-queries and commands, and the existing HTTP SSE endpoint for live conversation
-state:
+queries and commands, and HTTP SSE for live conversation state:
 
 ```text
 Elm frontend
@@ -16,27 +15,33 @@ Elm frontend
 ```
 
 For Durable resources, both transports address the same persisted sessions and
-conversations under the same access policy. Opening a page, reconnecting, or
-refreshing a read never creates a session, submits input, or resumes execution.
-Leaving a page stops observation, not admitted work.
+conversations. Deployment must enforce the same access policy on both
+transports; the current executable does not implement authentication or per-user
+authorization. Opening a page, reconnecting, or refreshing a read never creates
+a session, submits input, or resumes execution. Leaving a page stops
+observation, not admitted work.
 
 The [GraphQL schema](../durable/api/graphql/schema.graphql) owns implemented
 field contracts; [[packages/durable/api/graphql/SPEC.md]] defines Durable
 semantics and the application-service boundary. The watch contract in
-[[packages/durable/api/SPEC.md]] owns SSE observations. No other application or
-Durable REST endpoint is a dependency. OAuth authorization redirects and
-callbacks are provider-protocol exchanges, not alternative application APIs.
+[[packages/durable/api/watch/SPEC.md]] owns SSE observations. Send queries and
+mutations as JSON `POST /api/graphql`; GET is not supported. Observe a
+conversation through `GET /api/watch?externalId=…&conversationId=…`, using
+encoded query values. No other application or Durable REST endpoint is a
+dependency. OAuth authorization redirects and callbacks are provider-protocol
+exchanges, not alternative application APIs. The
+[HTTP entrypoint](../durable/api/src/index.ts) owns routing and transport
+errors; GraphQL execution errors remain distinct from non-2xx HTTP responses.
 
 This document specifies the target features and UX, not module layout, build
 steps, or a claim that every feature is implemented.
 [[packages/www/FEATURE_GAPS.md]] records only parity gaps remaining after this
 specification is implemented. Specified features are implementation work, not
 feature gaps. Unavailable features do not gain local substitutes or fallback
-REST calls. The existing SSE API stays unchanged except for bug fixes; new
-document and application views use GraphQL reads where that stream has no
-coverage. Elm conventions belong to [[packages/www/CONTRIBUTING.md]]. The
-reviewed elm-graphql source is identified in [^elm-graphql]; it is not yet a
-pinned project dependency.
+REST calls. Document and application views use GraphQL reads where the watch
+stream has no coverage. Elm conventions belong to
+[[packages/www/CONTRIBUTING.md]]. The reviewed elm-graphql source is identified
+in [^elm-graphql]; it is not yet a pinned project dependency.
 
 ## Instance inventory
 
@@ -61,6 +66,10 @@ can fail independently while other fields remain usable. Distinguish loading,
 empty, paginated/incomplete, failed, and stale views. Refresh is read-only.
 Listing never starts or connects to a guest. There are no instance lifecycle
 controls in this iteration.
+
+`Instance.connect` supplies optional SSH connection data for conversation
+configuration, not a session link or a connection attempt. Missing connection
+data remains unavailable; a failed field read must not erase the inventory row.
 
 Show available activation timings with their service invocation identity. The
 API's aggregate durations are microseconds; phase timestamps and resolution are
@@ -122,28 +131,27 @@ claim a transactionally consistent view while the service changes.
 
 Sources:
 [[packages/durable/api/graphql/SPEC.md#Discovery and passive root lookup]],
-[implemented record contracts](../durable/api/graphql/schema.graphql), existing
-[site](../app/serve/elm/src/Site.elm) and
-[conversation navigation](../app/serve/elm/src/Main.elm).
+[implemented record contracts](../durable/api/graphql/schema.graphql).
 
 ## Creating sessions and conversations
 
 Offer an explicit New session action from the home page and through `/new`.
-Collect initial model, thinking level, and literal cwd choices separately from
-the optional first message and attachments. Preserve the draft while creation is
-in progress or fails. Assign one fresh external ID to the new-session draft and
-retain it across uncertain responses; changing message text does not mint
-another store identity.
+Collect initial model, thinking level, literal cwd, and optional SSH target
+choices separately from the optional first message and attachments. Preserve the
+draft while creation is in progress or fails. Assign one fresh external ID
+matching the deployment [constraint](../durable/api/src/application.ts),
+`[A-Za-z0-9_-]{1,128}`, to the new-session draft and retain it across uncertain
+responses; changing message text does not mint another store identity. IDs
+remain opaque storage keys, not necessarily UUIDs.
 
 Create in separate stages:
 
 1. `open(externalId)` obtains a persisted store and its global `Harness.id`.
 2. `root(harnessId, options)` obtains its reserved root, applying initial agent
-   choices only when creating that root.
-3. If needed, save environment or other application document values through the
-   document editor before submitting work.
-4. An explicit Send uses the existing submission draft, including attachments
-   and request ID, addressed by the returned global conversation ID.
+   choices and `env` atomically only when creating that root.
+3. An explicit Send uses the existing submission draft, including attachments
+   and request ID, addressed by the returned global conversation ID. Generic
+   document editing is not a prerequisite.
 
 Show the completed stage and preserve returned identities. A failure does not
 undo earlier stages. Recover an uncertain open with the same external ID. Read
@@ -151,15 +159,15 @@ an existing root rather than assuming a repeated root call will update its
 settings; subsequent edits use `configure`. Recover uncertain submission through
 its original request ID. Do not replay the whole creation sequence or clear the
 composer merely because storage or root creation succeeded. A session without a
-first message is valid. No stage claims directory validation or target
-discovery.
+first message is valid. Creation does not connect to the selected target or
+validate its working directory.
 
 The conversation list also offers explicit New conversation in the existing
-Harness. It calls `createConversation` with ownerless ownership and chosen agent
-values. This creates a fresh transcript, not a fork or a review conversation,
-and does not submit a message. If its result is uncertain, preserve that state
-and offer refresh/reconciliation, not automatic creation retry or selection of a
-guessed newest conversation.
+Harness. It calls `createConversation` with ownerless ownership, chosen agent
+values, and optional `env`. This creates a fresh transcript, not a fork or a
+review conversation, and does not submit a message. If its result is uncertain,
+preserve that state and offer refresh/reconciliation, not automatic creation
+retry or selection of a guessed newest conversation.
 
 No session archival action is specified yet. Closing a page or stopping its
 observation neither closes the shared Harness nor archives its store.
@@ -173,21 +181,36 @@ The conversation page contains a transcript, compact execution/usage status,
 queued submissions, and a composer. Configuration and inspection are secondary
 panels. Preserve the existing stacked layout and compact tool/code treatment.
 
-SSE supplies the active conversation, active entries, and built-in documents.
-GraphQL supplies history and explicit reads; a history response must not replace
-live progress. Active context is not complete history. [^watch]
+SSE synchronizes `{ view, head }`: `view` contains the conversation, a bounded
+window of chronological fork-visible entries, and built-in documents; `head` is
+the newest visible head-marker record or null, even when outside that window.
+The window is not the active context and may contain entries before its
+boundary. GraphQL supplies history and explicit reads; a history response must
+not replace live progress. [^watch]
+
+Each SSE message contains one Chord operation batch. The first batch is
+`[["r", state]]`; subsequent batches transform the prior state. Later root
+replacements are also valid, including after operation overflow. Apply each
+batch atomically to the live replica, keeping drafts, disclosures, selection,
+and separately loaded history outside it. There are no SSE event IDs, replay
+cursors, or terminal application frames. A completed answer appears in state and
+does not end observation. [^watch]
 
 Connection health and execution state are independent:
 
-- Before the first valid snapshot, show that live state is loading. A connection
+- Before the first valid baseline, show that live state is loading. A connection
   opening alone is not evidence of current state.
 - During interruption, retain useful content marked stale. Do not turn a lost
   connection into “Idle,” “Completed,” or “Aborted.”
-- Reconnection shows a fresh snapshot, not replay of every missed event. Refresh
-  history and relevant read panels without duplicating entries or tool output.
-- A terminal stream event ends observation and offers explicit reconnect.
-  Invalid or mismatched data leaves the last valid view stale and shows an
-  error.
+- Reconnection replaces the live replica with a fresh bounded baseline, not
+  replay of every missed event. Refresh relevant read panels without duplicating
+  entries or tool output or implicitly backfilling older history.
+- Source termination closes delivery without an application end frame. A lost
+  connection may reconnect through EventSource; offer explicit reconnect when
+  observation remains stopped.
+- Invalid or mismatched data leaves the last valid view stale and shows an
+  error. Stop that connection and require a fresh baseline before applying more
+  operations.
 - A stream-open failure may expose only a connection error. Do not fabricate an
   HTTP status or diagnostic that EventSource did not provide.
 - Updates from an old page or connection cannot alter the current page.
@@ -286,10 +309,6 @@ unavailable commands show an explanation rather than becoming model input.
 Commands never silently consume attachments. Remote path completion and
 validated `/cd` behavior are gaps, not implied by a literal cwd editor.
 
-Sources: existing [commands](../app/serve/completions.ts),
-[composer](../app/serve/elm/src/Main.elm), and
-[input encoding](../app/serve/forms.ts).
-
 ## Queue and execution controls
 
 Queue rows show observed submission identity, content, and delivery mode.
@@ -317,9 +336,9 @@ finished summary. Show duration only from recorded task timing and established
 summary placement; request latency is not compaction duration. Reset and
 compaction preserve access to earlier transcript history.
 
-Sources: [GraphQL operation semantics](../durable/api/graphql/graphql.ts),
-[[packages/durable/api/graphql/SPEC.md]], and existing
-[compaction timing](../app/serve/presentation.ts).
+Sources: [GraphQL operation semantics](../durable/api/graphql/src/graphql.ts),
+[[packages/durable/api/graphql/SPEC.md]], and
+[task and entry records](../durable/api/graphql/schema.graphql).
 
 ## Application settings
 
@@ -386,9 +405,27 @@ it does not reload application configuration. Merely opening the panel does not
 rewrite the document. The resolved instructions remain readable, not editable in
 this panel.
 
-The cwd field is a literal value in the service-selected environment. Saving it
-does not verify directory existence, expand `~`, select a target, or reproduce
-the old validated `/cd` command. Explain this beside the field.
+Read the persisted execution target through `ConversationRecord.env`; reading it
+does not connect. Select or clear it through the typed `configure` input, not
+generic document replacement. Omitted `env` preserves the selection, null clears
+it, and an `SshTargetInput` replaces it. `change: {}` permits an env-only
+update; combined agent and env changes commit atomically.
+
+The target can come from `Instance.connect` or be supplied directly. Preserve
+the typed SSH fields and host-key verification; do not include GraphQL response
+metadata in the input or expose key contents. Target file paths refer to the API
+host, not the browser or guest. Selecting a target does not validate
+connectivity or accept a new host key.
+
+An unselected new root or ownerless conversation has no execution environment,
+not an implicit host target. Keep this state visible. Target changes are allowed
+during execution and affect subsequent environment acquisitions; they neither
+retarget nor cancel in-flight commands. A connection failure must not select a
+different target.
+
+The cwd field is a literal value in the selected execution environment. Saving
+it does not verify directory existence, expand `~`, select a target, or perform
+a validated `/cd` operation. Explain this beside the field.
 
 Autosave shows dirty, saving, saved, rejected, and uncertain states. Only one
 save is pending for the configuration at a time. An acknowledgement advances the
@@ -411,23 +448,29 @@ Deployment enforces read/write and initialization policy on each operation.
 Generic `pi.agent` reads are allowed, but edits use typed `configure`, not
 generic replacement.
 
-Other exposed application documents can be edited through `replaceDocument`,
-using the global Harness ID and native document address. This replaces the
-complete JSON object: omitted properties are removed; JSON null remains a value
-where valid. Definition discovery and reads do not initialize documents.
-Distinguish an absent document from an empty object or a failed read. Permission
-and validation failures preserve the draft and show the failure. Changes to
-documents outside the existing SSE mount require a GraphQL reread to show
-current state.
+Generic document editing requires an explicit deployment write binding. The
+current [application bindings](../durable/api/src/application.ts) expose only
+`AgentDoc` and `Env` for discovery and reads, without generic write bindings; do
+not offer a generic editor for them. Agent and target edits use `configure`.
 
-Document access does not add `/review`, `/endreview`, validated `/cd`, or
-execution-environment workflow operations. Reading or editing review/environment
-data does not promise conversation creation, report transfer, directory
-validation, or a successful connection to an execution target.
+Where deployment permits it, other exposed application documents can be edited
+through `replaceDocument`, using the global Harness ID and native document
+address. This replaces the complete JSON object: omitted properties are removed;
+JSON null remains a value where valid. Definition discovery and reads do not
+initialize documents. Distinguish an absent document from an empty object or a
+failed read. Permission and validation failures preserve the draft and show the
+failure. Changes to documents outside the watch view require a GraphQL reread to
+show current state.
+
+Document access does not add `/review`, `/endreview`, or validated `/cd`.
+Reading or editing application data does not promise review creation, report
+transfer, directory validation, or a successful connection to an execution
+target. Typed target configuration is separate from these workflows.
 
 Sources: [[packages/durable/api/graphql/SPEC.md#Durable documents]],
-[existing Agent contracts](../durable/api/graphql/schema.graphql), [^watch], and
-existing [autosave behavior](../app/serve/elm/src/Autosave.elm).
+[[packages/durable/api/graphql/SPEC.md#Execution environment]],
+[configuration resolver](../durable/api/graphql/src/graphql.ts),
+[SSH environment adapter](../durable/harness/src/env.ts), and [^watch].
 
 ## Linked OAuth2 accounts
 
@@ -482,8 +525,8 @@ tokens. Linking a provider account does not establish login to drv.run itself.
 Access tokens, refresh tokens, and client secrets never appear in page state,
 GraphQL results, URLs generated by the application, or browser persistence.
 
-Sources: [[packages/durable/api/graphql/SPEC.md#Linked accounts]], and the
-existing [provider adapter](../app/serve/auth.ts).
+Sources: [[packages/durable/api/graphql/SPEC.md#Linked accounts]] and the
+[account service](../durable/api/src/accounts.ts).
 
 ## Push notifications
 
@@ -504,9 +547,8 @@ success or failure. Do not promise delivery, replay, or recovery of missed
 notifications after service restart. Push failures do not affect agent
 execution, and delivery does not require an open SSE connection.
 
-Sources: [[packages/durable/api/graphql/SPEC.md#Push subscriptions]], existing
-[push integration](../app/serve/pwa.ts), and
-[notification service](../app/serve/notifications.ts).
+Sources: [[packages/durable/api/graphql/SPEC.md#Push subscriptions]] and
+[notification service](../durable/api/src/push.ts).
 
 ## Transcript, history, and inspection
 
@@ -532,10 +574,23 @@ their arbitrary JSON payloads as executable content. [^rendering]
 ### History and search
 
 History loads incrementally through GraphQL with More, Refresh, progress, and
-retry controls. Retain already loaded history across live snapshot replacement;
-a reset must not make it disappear from history browsing. Deduplicate inherited
-entries by identity and do not infer complete history from the highest observed
-entry ID.
+retry controls. Retain separately loaded history across live-window eviction and
+replica replacement; a reset must not make it disappear from history browsing.
+Deduplicate inherited entries by identity and do not infer complete history from
+the highest observed entry ID.
+
+Start with the bounded watch window. Optional automatic backfill must be bounded
+and stop at the current active-context boundary; never drain all pages
+automatically. The newest head marker defines that boundary: its `head` target
+is the first retained entry, not necessarily the marker's chronological
+position. With no marker, the boundary is the start of fork-visible history.
+Keep entries already present before the boundary.
+
+Check the boundary before each automatic page request, including gap filling.
+Loading older history requires an explicit user request; reconnect is not such a
+request. If reset or compaction changes the boundary while a page request is in
+flight, let it finish and accept its history without changing current head or
+live state. Subsequent automatic requests use the new boundary. [^watch]
 
 Search covers loaded transcript text, including folded groups and tool output.
 Show when results are partial and offer further history loading. Selecting a
@@ -569,8 +624,7 @@ establish the effective policy of an already-open Harness.
 
 Sources:
 [history/context/ancestry fields](../durable/api/graphql/schema.graphql),
-existing [trees](../app/serve/trees.ts), [branches](../app/serve/branches.ts),
-[context inspection](../app/serve/inspection.ts), and [^rendering].
+[[packages/durable/api/watch/SPEC.md#Loading policy]], and [^rendering].
 
 ## Interface behavior
 
@@ -593,9 +647,6 @@ color-only. Dialogs support Escape and predictable focus return; completion
 selection is keyboard-accessible. Announce operation and connection outcomes,
 not every streamed token. Ordinary editing, copy, and modifier navigation remain
 available. Unicode text and caret movement must not corrupt characters.
-
-Sources: existing [styles](../app/serve/styles.css) and
-[interaction regressions](../app/serve/elm/tests/frontend.chromium.ts).
 
 ## Failure and privacy behavior
 
@@ -637,30 +688,28 @@ open browser page promises background notification delivery.
     Its subscription helpers do not provide this API's non-GraphQL SSE stream.
 
 [^watch]:
-    [HTTP SSE implementation](../durable/api/src/stream.ts),
-    [[packages/durable/api/SPEC.md]], and pinned Durable 1.4.0
-    [ConversationView](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/view.d.ts).
-    The current protocol sends full replacement snapshots, without deltas, event
-    IDs, or replay cursors.
+    [[packages/durable/api/watch/SPEC.md]],
+    [watch implementation](../durable/api/watch/watch.ts),
+    [SSE encoding](../durable/api/serve/sse.ts), and
+    [watch regressions](../durable/api/watch/watch.test.ts). Durable 1.5.2
+    [ConversationView](../durable/api/node_modules/@earendil-works/pi-durable/dist/harness/view.d.ts)
+    matches the [package pin](../durable/api/package.json).
 
 [^observations]:
-    Pinned Durable 1.4.0
-    [live state](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/live.d.ts),
-    [usage ledger](/nix/store/57n99acvmwvfw5qjn7ryqzh8gxg5gcj9-app-node-modules-0.1.0/node_modules/@earendil-works/pi-durable/dist/harness/usage.d.ts),
-    and existing [presentation](../app/serve/elm/stream.ts).
+    Pinned Durable 1.5.2
+    [live state](../durable/api/node_modules/@earendil-works/pi-durable/dist/harness/live.d.ts)
+    and
+    [usage ledger](../durable/api/node_modules/@earendil-works/pi-durable/dist/harness/usage.d.ts).
 
 [^input]:
-    [GraphQL submission inputs](../durable/api/graphql/schema.graphql),
-    [[packages/durable/api/graphql/SPEC.md#Application data and input content]],
-    and existing [file encoding](../app/serve/forms.ts).
+    [GraphQL submission inputs](../durable/api/graphql/schema.graphql), and
+    [[packages/durable/api/graphql/SPEC.md#Application data and input content]].
 
 [^admission]:
     [[packages/durable/api/graphql/SPEC.md#Execution and observations]],
     [[packages/durable/api/graphql/SPEC.md#Validation and errors]], and
-    [submission/receipt resolvers](../durable/api/graphql/graphql.ts).
+    [submission/receipt resolvers](../durable/api/graphql/src/graphql.ts).
 
 [^rendering]:
-    Existing [transcript](../app/serve/elm/src/Transcript.elm),
-    [presentation](../app/serve/elm/stream.ts),
-    [syntax behavior](../app/serve/elm/src/Syntax.elm), and
-    [rendering regressions](../app/serve/elm/tests/views.chromium.ts).
+    [Entry and message contracts](../durable/api/graphql/schema.graphql) and
+    [[packages/www/CONTRIBUTING.md#Rendering transcripts and structured content]].
