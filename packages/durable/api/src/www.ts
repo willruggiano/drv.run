@@ -16,7 +16,15 @@ export async function website(
     }
   }
   return (request) => {
-    const asset = assets.get(new URL(request.url).pathname);
+    const path = new URL(request.url).pathname;
+    const document =
+      request.headers
+        .get("accept")
+        ?.split(",")
+        .some((type) => type.trim().split(";")[0] === "text/html") &&
+      path !== "/api" &&
+      !path.startsWith("/api/");
+    const asset = assets.get(path) ?? (document ? assets.get("/") : undefined);
     if (!asset) return new Response(null, { status: 404 });
     if (request.method !== "GET" && request.method !== "HEAD")
       return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });

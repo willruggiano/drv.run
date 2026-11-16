@@ -185,7 +185,7 @@ await test("service diagnostics remain server-side through the HTTP GraphQL boun
   });
 });
 
-await test("the production listener serves only the built www assets alongside GraphQL", async (t) => {
+await test("the production listener serves www assets and navigation documents alongside GraphQL", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "www-assets-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const assets = [
@@ -222,6 +222,19 @@ await test("the production listener serves only the built www assets alongside G
     "/settings",
   ])
     assert.equal((await fetch(new URL(path, running.server.url))).status, 404);
+  for (const path of ["/settings", "/sessions/alpha", "/unknown"]) {
+    const response = await fetch(new URL(path, running.server.url), {
+      headers: { accept: "text/html,application/xhtml+xml" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), bytes);
+  }
+  assert.equal(
+    (await fetch(new URL("/api/unknown", running.server.url), { headers: { accept: "text/html" } }))
+      .status,
+    404,
+  );
   const result = await fetch(new URL("/api/graphql", running.server.url), {
     method: "POST",
     headers: { "content-type": "application/json" },

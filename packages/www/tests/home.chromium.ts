@@ -125,7 +125,9 @@ async function fixture(t: TestContext, browser: Browser, width = 1280, height = 
         response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
         return;
       }
-      const name = assets[request.url ?? ""];
+      const path = new URL(request.url ?? "/", "http://localhost").pathname;
+      const name =
+        assets[path] ?? (request.headers.accept?.includes("text/html") ? "index.html" : undefined);
       if (!name) {
         response.writeHead(404).end();
         return;
@@ -192,7 +194,7 @@ await test("read-only home", async (suite) => {
   suite.after(() => browser.close());
 
   await suite.test(
-    "home reads independent catalogs; all controls stay local and never navigate or mutate",
+    "home reads independent catalogs; draft controls stay local and never mutate",
     async (t) => {
       const { page, state, requests, url } = await fixture(t, browser);
       await page.goto(url);
@@ -213,8 +215,6 @@ await test("read-only home", async (suite) => {
         .selectOption(JSON.stringify(instance.id));
       await page.getByLabel("Working directory", { exact: true }).fill("~/literal/space here");
       await page.getByRole("textbox", { name: "Message" }).fill("  hello 🧑🏽‍💻\nsecond line  ");
-      await page.getByRole("button", { name: "Global settings" }).click();
-      await page.locator(".session").first().click();
       await page.getByRole("button", { name: "Archive session", exact: true }).first().click();
       await page.getByRole("button", { name: "Create session", exact: true }).click();
       await page.getByRole("textbox", { name: "Message" }).press("Control+Enter");
@@ -222,7 +222,11 @@ await test("read-only home", async (suite) => {
       await page.getByRole("textbox", { name: "Message" }).press("Alt+Enter");
       assert.equal(await page.locator("#prompt").inputValue(), "  hello 🧑🏽‍💻\nsecond line  ");
       assert.equal(page.url(), url);
-      assert.equal(await page.locator("a[href]").count(), 0);
+      assert.equal(
+        await page.getByRole("link", { name: "Global settings" }).getAttribute("href"),
+        "/settings",
+      );
+      assert.equal(await page.locator(".session").first().getAttribute("href"), "/sessions/alpha");
       assert.equal(requests.length, 3);
       assert.deepEqual(state.sessions, initialSessions);
 
@@ -245,6 +249,75 @@ await test("read-only home", async (suite) => {
         await page.getByLabel("Working directory", { exact: true }).inputValue(),
         "~/literal/space here",
       );
+    },
+  );
+
+  await suite.test(
+    "navigation owns page-local drafts and supports history and deep links",
+    async (t) => {
+      const { page, requests, url } = await fixture(t, browser);
+      await page.goto(url);
+      await ready(page);
+      await page.locator("#prompt").fill("discard on leaving");
+      await page.locator("#prompt").evaluate(() => {
+        location.hash = "local";
+      });
+      await page.waitForURL(new URL("#local", url).href);
+      assert.equal(await page.locator("#prompt").inputValue(), "discard on leaving");
+      await page.getByRole("link", { name: "Global settings" }).click();
+      await page.getByRole("heading", { name: "Settings unavailable" }).waitFor();
+      assert.equal(page.url(), new URL("settings", url).href);
+      assert.equal(requests.length, 3);
+      await page.goBack();
+      await ready(page);
+      assert.equal(await page.locator("#prompt").inputValue(), "");
+      await page.goForward();
+      await page.getByRole("heading", { name: "Settings unavailable" }).waitFor();
+      await page.reload();
+      await page.getByRole("heading", { name: "Settings unavailable" }).waitFor();
+      await page.getByRole("link", { name: "Home", exact: true }).click();
+      await ready(page);
+      await page.locator(".session").first().click();
+      await page.getByRole("heading", { name: "Session unavailable" }).waitFor();
+      assert.equal(page.url(), new URL("sessions/alpha", url).href);
+      await page.goto(new URL("unknown", url).href);
+      await page.getByRole("heading", { name: "Not found" }).waitFor();
+      await page.getByRole("link", { name: "Home", exact: true }).click();
+      await ready(page);
+    },
+  );
+
+  await suite.test(
+    "a response from a previous home visit cannot replace the current catalog",
+    async (t) => {
+      const { page, state, url } = await fixture(t, browser);
+      await page.goto(url);
+      await ready(page);
+      const delayed = Promise.withResolvers<void>();
+      t.after(() => delayed.resolve());
+      state.hold.harnesses = delayed.promise;
+      const requested = page.waitForRequest(
+        (request) => new URL(request.url()).pathname === "/api/graphql",
+      );
+      await refresh(page, "sessions");
+      const oldRequest = await requested;
+      await page.getByRole("link", { name: "Global settings" }).click();
+      await page.getByRole("heading", { name: "Settings unavailable" }).waitFor();
+      delete state.hold.harnesses;
+      await page.getByRole("link", { name: "Home", exact: true }).click();
+      await ready(page);
+      state.sessions = [];
+      const received = page.waitForResponse((response) => response.request() === oldRequest);
+      delayed.resolve();
+      await (await received).finished();
+      // Let Elm consume the obsolete response before inspecting the rendered state.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+      assert.equal(await page.locator(".session").count(), 2);
     },
   );
 
