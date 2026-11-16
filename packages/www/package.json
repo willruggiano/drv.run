@@ -1,0 +1,13 @@
+{
+  "name": "www",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "generate": "elm-graphql --schema-file \"${GRAPHQL_SCHEMA:-../durable/api/graphql/schema.graphql}\" --base Api --output generated --scalar-codecs Api.Scalars",
+    "check": "elm-format src --validate && elm make src/Api.elm generated/Api/*.elm generated/Api/*/*.elm --optimize --output=/dev/null"
+  },
+  "devDependencies": {
+    "@dillonkearns/elm-graphql": "4.3.2",
+    "graphql": "16.14.2"
+  }
+}
