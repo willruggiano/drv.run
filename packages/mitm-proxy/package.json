@@ -1,0 +1,17 @@
+{
+  "name": "drv-run-tangled-auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@atproto/oauth-client-node": "0.5.17",
+    "@atproto/oauth-types": "0.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1"
+  }
+}
