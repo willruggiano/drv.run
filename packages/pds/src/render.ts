@@ -14,7 +14,7 @@ import {
   type InboxState,
   type LiveState,
 } from "@earendil-works/pi-durable";
-import { Env } from "durable-harness";
+import { Env } from "./harness/index.ts";
 import { context, modelKey, type Application } from "./application.ts";
 
 export const escape = (value: unknown): string =>

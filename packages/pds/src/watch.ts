@@ -14,7 +14,7 @@ import {
   type EntryRecord,
   type Observation,
 } from "@earendil-works/pi-durable";
-import { Env } from "durable-harness";
+import { Env } from "./harness/index.ts";
 import { context, type Application } from "./application.ts";
 import { regions } from "./render.ts";
 

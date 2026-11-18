@@ -20,8 +20,8 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { FileError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { createContextExtension, contextPaths, loadContextFiles } from "../src/context.ts";
-import { openHarness } from "../src/index.ts";
+import { createContextExtension, contextPaths, loadContextFiles } from "../src/harness/context.ts";
+import { openHarness } from "../src/harness/index.ts";
 
 const context = BACKGROUND_CONTEXT;
 const done = () => fauxAssistantMessage("Done.");

@@ -14,7 +14,7 @@ import {
   RemoteExecutionEnv,
   type SshConnectOptions,
 } from "@earendil-works/pi-env";
-import * as api from "../src/index.ts";
+import * as api from "../src/harness/index.ts";
 
 const context = BACKGROUND_CONTEXT;
 

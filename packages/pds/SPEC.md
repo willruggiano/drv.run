@@ -637,11 +637,9 @@ serialized HTML, stdout/stderr, private helpers, or production test hooks.
 - Prefer the existing [PDS fixtures](tests/fixtures.ts),
   [application tests](tests/application.test.ts),
   [watch tests](tests/watch.test.ts), and
-  [Chromium flows](tests/flow.chromium.ts). The
-  [API session tests](../durable/api/tests/sessions.test.ts) and
-  [GraphQL lifecycle/configuration tests](../durable/api/graphql/tests/graphql.test.ts)
-  supply behavioral scenarios, not a requirement to retain their transport or
-  runtime. Move surviving tests with PDS before removing their source owner.
+  [Chromium flows](tests/flow.chromium.ts), together with the retained
+  [Harness tests](tests/harness.test.ts) and
+  [conversation tests](tests/conversations.test.ts).
 - Verify actual ordinary SSH through native configuration, including trust
   rejection, rather than matching command arguments. Test optional drv.run
   discovery independently. The parent specification assigns OS-level
@@ -690,16 +688,11 @@ serialized HTML, stdout/stderr, private helpers, or production test hooks.
   [[tasks/030-credential-contract.md]]; native SSH and discovery semantics are
   [[tasks/050-infrastructure-contract.md]]. These override old prototype limits,
   GraphQL transport, and the frozen JSON watch in the extraction source.
-- Adaptation source: [[packages/durable/api/SPEC.md]]. Its complete REST
-  operation inventory survives here, together with applicable public-interface
-  verification requirements. Telemetry deployment, Knip, coverage mandates, old
-  wire envelopes, and stale Pi 1.4.0 assumptions do not. Removing that source
-  later does not remove any required PDS contract from this document.
 - Current code is evidence, not a claim of conformance:
   [application](src/application.ts), [server](src/server.ts),
   [observation](src/watch.ts), [browser](src/browser.ts),
-  [retained harness](../durable/harness/src/index.ts), and
-  [environment wrapper](../durable/harness/src/env.ts).
+  [retained harness](src/harness/index.ts), and
+  [environment wrapper](src/harness/env.ts).
 - [PDS packaging](default.nix) selects Datastar 1.0.5 and applies the retained
   conversation-context patch. [Manifest](package.json) and
   [lock](package-lock.json) pin the Pi family to 1.5.2. Keep necessary patches

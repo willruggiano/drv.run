@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { AgentDoc, CompactionEntry, LiveDoc } from "@earendil-works/pi-durable";
-import { Env } from "durable-harness";
+import { Env } from "../src/harness/index.ts";
 import { attachments, context, discoverEnvironments } from "../src/application.ts";
 import { fixture, form } from "./fixtures.ts";
 

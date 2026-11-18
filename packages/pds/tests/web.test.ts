@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import type { Extension, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
-import * as web from "../src/web.ts";
+import * as web from "../src/harness/web.ts";
 
 const context = BACKGROUND_CONTEXT;
 // Neither tool may read the guest environment (or any other execution API state).

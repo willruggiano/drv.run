@@ -40,7 +40,7 @@ test:
 # Run Chromium integration tests and renderer benchmarks
 chromium:
     npm --prefix packages/app run test:browser
-    nix build ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).www-tests" --no-link
+    nix build ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).pds-visual-tests" --no-link
 
 # Run updater scripts
 update:

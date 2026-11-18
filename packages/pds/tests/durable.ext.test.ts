@@ -29,7 +29,7 @@ import {
   MessageSchema,
   TaskIdSchema,
   UserInputSchema,
-} from "../src/durable.ext.ts";
+} from "../src/harness/durable.ext.ts";
 
 await test("schema-inferred types are assignable to the upstream API types", () => {
   const compatible: [
