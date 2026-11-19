@@ -5,25 +5,32 @@
 
 ```text
 Host: hyperfine
-  |
-  |
-  v
-launch.sh
-  +-- validate request; create runtime directory
-  +-- systemctl --user start drv.run@ID.service
-  |     +-- ExecStartPre: worker
-  |     +-- ExecStart: TAP -> runner -> Cloud Hypervisor -> Guest READY=1
-  |     +-- ExecStartPost: SSH store probe -> copy -> root Flake closure -> publish client.conf
-  |     `-- active
-  `-- exec ssh -T drv.run.ID exit
-        `-- Guest ForceCommand -> nix develop -> bash -c exit
-  |
-  `-- hyperfine stops timing
-        |
-        `-- conclude hook: collect systemd properties -> stop -> clean
+  +-- prepare hook: capture baseline inventory [outside timing]
+  +-- timed launcher: drv.run
+  |     +-- validate request; create control runtime directory
+  |     +-- systemctl --user start drv.run@ID.service
+  |     |     Requires= + After= order activation:
+  |     |     drv.run-prepare@ID.service: resource worker
+  |     |       -> core/integration producers: canonical trees
+  |     |       -> drv.run-image@ID.service: guest-file snapshot ready
+  |     |       -> drv.run@ID.service
+  |     |            +-- ExecStart: TAP -> runner -> CH -> Guest READY=1
+  |     |            +-- ExecStartPost: verify environment; publish client.conf
+  |     |            `-- active
+  |     `-- exec ssh -T drv.run.ID exit
+  |           `-- Guest login shell -> nix develop project profile -> bash -c exit
+  `-- conclude hook [outside timing]
+        collect instance/prepare/image properties
+          -> stop instance + preparation -> clean preparation state
 ```
 
-## Time to Shell
+Current `worker_us` runs from the start of preparation `ExecStart` to the image
+unit's `ActiveEnterTimestampMonotonic`, including producer execution and
+dependency waits. See [[packages/bench/main.py]] for timing boundaries and
+cleanup, and [[nixosModules/host/default.nix]], [[nixosModules/host/post.sh]],
+and [[nixosModules/guest/shell.sh]] for activation and shell behavior.
+
+## Historical Time to Shell
 
 | Commit   |     Shell (s) |    Worker (s) | Boot wait (s) | Provision (s) | Manager gaps (s) |
 | -------- | ------------: | ------------: | ------------: | ------------: | ---------------: |
