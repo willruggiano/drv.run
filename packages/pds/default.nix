@@ -35,6 +35,7 @@ in
         ./tsconfig.build.json
         ./src
         ./tests
+        ./test-utils
         ./assets/style.css
       ];
     };

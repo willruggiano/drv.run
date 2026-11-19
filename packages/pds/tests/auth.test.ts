@@ -50,7 +50,7 @@ function oauth(
 }
 
 async function peer(t: TestContext, path: string, mode = "cli", env: Record<string, string> = {}) {
-  const child = fork(new URL("./credential-peer.ts", import.meta.url), [path, mode], {
+  const child = fork(new URL("../test-utils/credential-peer.ts", import.meta.url), [path, mode], {
     stdio: ["ignore", "ignore", "inherit", "ipc"],
     env,
     cwd: env.HOME ?? dirname(path),
@@ -184,30 +184,25 @@ await test("default shared credential selection honors the CLI home and agent-di
   }
 });
 
-await test("storage failures reject resolution without stale credentials, ambient fallback, or raw errors", async (t) => {
+await test("storage failures preserve diagnostics without stale credentials or ambient fallback", async (t) => {
   const f = await fixture(t);
   const models = hostModels(f.path, { ...noAmbient, env: async () => "ambient-must-not-win" });
   await f.save({ openai: { type: "api_key", key: "stored" } });
   assert.equal((await models.getAuth("openai"))?.auth.apiKey, "stored");
-  const failure = (error: unknown) => {
-    assert(error instanceof Error && "code" in error);
-    assert.equal(error.code, "auth");
-    assert(error.cause instanceof Error);
-    assert(!(error.cause instanceof SyntaxError));
-    assert.equal("path" in error.cause, false);
-    assert.deepEqual(
-      { message: error.cause.message, cause: error.cause.cause },
-      { message: "Model credential storage is unavailable.", cause: undefined },
-    );
-    return true;
-  };
-  for (const data of [
-    "secret-not-json",
-    "",
-    "[]",
-    "null",
-    '{"openai":{"type":"oauth","access":17}}',
-  ]) {
+  for (const [data, failureType] of [
+    ["secret-not-json", SyntaxError],
+    ["", SyntaxError],
+    ["[]", Error],
+    ["null", Error],
+    ['{"openai":{"type":"oauth","access":17}}', Error],
+  ] as const) {
+    const failure = (error: unknown) => {
+      assert(error instanceof Error && "code" in error);
+      assert.equal(error.code, "auth");
+      assert(error.cause instanceof Error);
+      assert.equal(error.cause.constructor, failureType);
+      return true;
+    };
     await writeFile(f.path, data);
     const before = await readFile(f.path);
     await assert.rejects(models.getAuth("openai"), failure);
@@ -216,7 +211,13 @@ await test("storage failures reject resolution without stale credentials, ambien
   }
   await rename(f.path, join(f.directory, "old"));
   await mkdir(f.path);
-  await assert.rejects(models.getAuth("openai"), failure);
+  await assert.rejects(models.getAuth("openai"), (error: unknown) => {
+    assert(error instanceof Error && "code" in error);
+    assert.equal(error.code, "auth");
+    assert(error.cause instanceof Error && "code" in error.cause);
+    assert.equal(error.cause.code, "EISDIR");
+    return true;
+  });
 });
 
 await test("CLI JSON with a BOM preserves opaque records and existing file ownership and modes", async (t) => {
@@ -250,7 +251,13 @@ await test("credential resolution rejects expressions and escapes without evalua
     "$!literal",
   ]) {
     await f.save({ openai: { type: "api_key", key }, unrelated });
-    await assert.rejects(f.models.getAuth("openai"), { code: "auth" });
+    await assert.rejects(f.models.getAuth("openai"), (error: unknown) => {
+      assert(error instanceof Error && "code" in error);
+      assert.equal(error.code, "auth");
+      assert(error.cause instanceof Error);
+      assert.equal(error.cause.name, "NotImplementedError");
+      return true;
+    });
   }
   for (const literal of ["literal-$9-${not-a-variable}", "${not-${VARIABLE}}", "${bad-$!x}"]) {
     await f.models.login("openai", "api_key", { prompt: async () => literal, notify() {} });
@@ -283,21 +290,22 @@ await test("concurrent first logins create owner-only storage without losing eit
   assert.equal((await stat(dirname(dirname(f.path)))).mode & 0o777, 0o700);
 });
 
-await test("refresh failures preserve stored credentials for retry without exposing provider causes", async (t) => {
+await test("refresh failures preserve provider errors and stored credentials for retry", async (t) => {
   const f = await fixture(t);
   await f.save({ openai: expired });
   let attempts = 0;
   const replacement = fresh();
+  const failure = new Error("provider-response-with-fixture-secret", {
+    cause: new Error("underlying provider failure"),
+  });
   oauth(f.models, async () => {
-    if (++attempts === 1) throw new Error("provider-response-with-fixture-secret");
+    if (++attempts === 1) throw failure;
     return replacement;
   });
   await assert.rejects(f.models.getAuth("openai"), (error: unknown) => {
     assert(error instanceof Error && "code" in error);
-    assert.deepEqual(
-      { code: error.code, message: error.message, cause: error.cause },
-      { code: "oauth", message: "Model authorization failed.", cause: undefined },
-    );
+    assert.equal(error.code, "oauth");
+    assert.equal(error.cause, failure);
     return true;
   });
   assert.deepEqual(await f.read(), { openai: expired });

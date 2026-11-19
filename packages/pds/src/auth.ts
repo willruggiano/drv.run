@@ -1,3 +1,21 @@
+/**
+ * Owner-scoped PDS model auth; pi-ai owns provider protocols and error wrapping.
+ *
+ * PDS -> pi-ai Models -> this CredentialStore --+
+ *                                               +-> realpath lock -> auth.json
+ * Pi CLI file backend --------------------------+
+ *
+ * Read:   lock -> guard -> load -> guard -> unlock -> result.
+ * Modify: lock -> guard -> load -> callback -> guard -> persist -> guard -> unlock.
+ * Logout uses the same lock and persistence path, removing only its provider.
+ * No credential cache: each operation observes the shared file afresh.
+ * Pi-compatible paths and records preserve opaque fields and unrelated providers.
+ * OAuth and literal API keys are supported; executable/template keys are not.
+ * Lock waits are cancellable. pi-ai shields started refresh through persistence.
+ * Refresh failures preserve the stored credential and allow retry.
+ * Native errors and causes reach the owner unchanged by this store.
+ * Writes retain the existing inode/access; CLI interoperability is not crash-atomic.
+ */
 import { randomUUID } from "node:crypto";
 import { link, mkdir, open, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -12,7 +30,6 @@ import type {
   CredentialStore,
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { ModelsError } from "@earendil-works/pi-ai/utils/models-error";
 
 export function hostModels(
   path = join(
@@ -33,16 +50,20 @@ function normalizePath(path: string): string {
   return resolve(path.startsWith("file://") ? fileURLToPath(path) : path);
 }
 
+class NotImplementedError extends Error {
+  override readonly name = "NotImplementedError";
+}
+
 function credentialStore(path: string): CredentialStore {
   async function locked<T>(
     fn: (file: string, guard: () => Promise<void>) => Promise<T>,
     options?: AuthOperationOptions,
   ) {
     options?.signal?.throwIfAborted();
-    const file = await storage(() => ensureFile(path));
+    const file = await ensureFile(path);
     const deadline = Date.now() + 30_000;
     let retry = 0;
-    let compromised = false;
+    let compromised: Error | undefined;
     let release: () => Promise<void>;
     while (true) {
       options?.signal?.throwIfAborted();
@@ -52,16 +73,15 @@ function credentialStore(path: string): CredentialStore {
           stale: 30_000,
           // CLI synchronous readers use the library's shorter 10s stale window.
           update: 5_000,
-          onCompromised() {
-            compromised = true;
+          onCompromised(error) {
+            // Report heartbeat failures through the operation, not an unhandled timer throw.
+            compromised = error;
           },
         });
         break;
       } catch (error) {
         const remaining = deadline - Date.now();
-        if (!hasCode(error, "ELOCKED") || remaining <= 0) {
-          throw new Error("Model credential storage is unavailable.");
-        }
+        if (!hasCode(error, "ELOCKED") || remaining <= 0) throw error;
         // Match the CLI's bounded jitter; catalog reads contend for this same file.
         const base = Math.min(10 * 2 ** retry++, 1_000);
         await sleep(
@@ -72,39 +92,42 @@ function credentialStore(path: string): CredentialStore {
       }
     }
     async function guard() {
-      if (compromised || !(await storage(() => lockfile.check(file, { stale: 30_000 })))) {
-        throw new Error("Model credential storage is unavailable.");
+      if (compromised) throw compromised;
+      if (!(await lockfile.check(file, { stale: 30_000 }))) {
+        throw new Error("Model credential storage lock is no longer held.");
       }
     }
     try {
       options?.signal?.throwIfAborted();
+      // Reject lock loss before touching the shared records.
       await guard();
       const result = await fn(file, guard);
+      // Do not return credentials after losing the lock during the operation.
       await guard();
       return result;
     } finally {
-      if (!compromised) await storage(release);
+      // A compromised lock is no longer ours to release.
+      if (!compromised) await release();
     }
   }
-  function load(path: string) {
-    return storage(async () => {
-      const content = await readFile(path, "utf8");
-      const value: unknown = JSON.parse(content.replace(/^\uFEFF/, ""));
-      if (!object(value)) throw new Error("Invalid credential file");
-      const data = new Map<string, Credential>();
-      for (const [providerId, entry] of Object.entries(value)) {
-        if (!credential(entry)) throw new Error("Invalid credential record");
-        data.set(providerId, entry);
-      }
-      return data;
-    });
+  async function load(path: string) {
+    const content = await readFile(path, "utf8");
+    // U+FEFF is a leading byte-order mark; Pi's file reader strips it too.
+    const value: unknown = JSON.parse(content.replace(/^\uFEFF/, ""));
+    if (!object(value)) throw new Error("Invalid credential file");
+    const data = new Map<string, Credential>();
+    for (const [providerId, entry] of Object.entries(value)) {
+      if (!credential(entry)) throw new Error("Invalid credential record");
+      data.set(providerId, entry);
+    }
+    return data;
   }
   return {
     read(providerId, options) {
       return locked(async (file) => {
         const value = (await load(file)).get(providerId);
         if (value?.type === "api_key" && value.key !== undefined && isExpression(value.key)) {
-          throw new Error("Credential expressions are not supported by PDS.");
+          throw new NotImplementedError("Credential expressions are not supported by PDS.");
         }
         return value;
       }, options);
@@ -120,18 +143,12 @@ function credentialStore(path: string): CredentialStore {
       return locked(async (file, guard) => {
         const data = await load(file);
         options?.signal?.throwIfAborted();
-        let next: Credential | undefined;
-        try {
-          next = await fn(data.get(providerId));
-        } catch (error) {
-          // Keep pi-ai's classification, not its possibly secret-bearing cause/message.
-          if (error instanceof ModelsError)
-            throw new ModelsError(error.code, "Model authorization failed.");
-          throw error;
-        }
+        // Hold the lock across pi-ai's callback so rotating refresh cannot race another writer.
+        const next = await fn(data.get(providerId));
         options?.signal?.throwIfAborted();
         if (next !== undefined) {
           data.set(providerId, next);
+          // Recheck lock health before persisting a potentially slow refresh.
           await guard();
           options?.signal?.throwIfAborted();
           await persist(file, data);
@@ -143,6 +160,7 @@ function credentialStore(path: string): CredentialStore {
       return locked(async (file, guard) => {
         const data = await load(file);
         data.delete(providerId);
+        // Refuse deletion if the lock was lost while loading the file.
         await guard();
         options?.signal?.throwIfAborted();
         await persist(file, data);
@@ -152,25 +170,15 @@ function credentialStore(path: string): CredentialStore {
 }
 
 async function persist(path: string, data: Map<string, Credential>): Promise<void> {
-  await storage(async () => {
-    const content = JSON.stringify(Object.fromEntries(data), null, 2);
-    const file = await open(path, "r+");
-    try {
-      await file.writeFile(content);
-      await file.truncate(Buffer.byteLength(content));
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-  });
-}
-
-async function storage<T>(operation: () => Promise<T>): Promise<T> {
+  const content = JSON.stringify(Object.fromEntries(data), null, 2);
+  // Match Pi's in-place writes to retain inode, ownership, and permissions.
+  const file = await open(path, "r+");
   try {
-    return await operation();
-  } catch {
-    // ModelsError incorporates cause.message; neither JSON contents nor paths may escape.
-    throw new Error("Model credential storage is unavailable.");
+    await file.writeFile(content);
+    await file.truncate(Buffer.byteLength(content));
+    await file.sync();
+  } finally {
+    await file.close();
   }
 }
 

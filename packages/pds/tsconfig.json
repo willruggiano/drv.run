@@ -15,5 +15,10 @@
     "customConditions": ["development"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "tests/*.chromium.ts"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "tests/*.chromium.ts",
+    "test-utils/**/*.ts"
+  ]
 }
