@@ -56,7 +56,6 @@ in
         writableStoreUseTmpfs = false;
       };
       users.users = {
-        root.linger = true;
         alice = {
           isNormalUser = true;
           uid = 1000;
@@ -93,77 +92,89 @@ in
       def run(owner, command):
           return machine.succeed(as_user(owner, "export XDG_RUNTIME_DIR=/run/user/" + str({"alice": 1000, "bob": 1001}[owner]) + "; " + command))
 
-      def inventory(owner):
-          document = json.loads(run(owner, "SSH_ORIGINAL_COMMAND=fixture:must-not-launch drv.run list --json"))
+      def inventory(owner, arguments="list --json"):
+          command = "SSH_ORIGINAL_COMMAND=fixture:must-not-launch drv.run " + arguments
+          document = json.loads(machine.succeed(command) if owner is None else run(owner, command))
           assert document["version"] == 1
           assert set(document) == {"version", "instances"}
           return document["instances"]
 
-      def record(name, active, sub, ready, result="success"):
-          return {"id": name, "reference": "fixture:" + name, "host": "drv.run." + name,
+      def record(user, name, active, sub, ready, result="success"):
+          return {"user": user, "id": name, "reference": "fixture:" + name, "host": "drv.run." + name,
                   "activeState": active, "subState": sub, "result": result, "ready": ready}
 
       machine.start()
       machine.wait_for_unit("multi-user.target")
-      machine.wait_for_unit("user@0.service")
       for owner, uid in [("alice", 1000), ("bob", 1001)]:
           machine.wait_for_unit(f"user@{uid}.service")
           machine.wait_until_succeeds(f"test -S /run/user/{uid}/bus")
           assert inventory(owner) == []
           machine.fail(f"test -e /home/{owner}/.local/state/drv.run")
+      assert inventory(None) == []
+      assert inventory(None, "list --json -u alice") == []
 
-      state = "/home/alice/.local/state/drv.run/alpha"
-      runtime = "/run/user/1000/drv.run.alpha"
-      unit = "drv.run@alpha.service"
+      state = "/home/alice/.local/state/drv.run/zeta"
+      runtime = "/run/user/1000/drv.run.zeta"
+      unit = "drv.run@zeta.service"
 
       with subtest("provisioning, running, stopped, and restart keep one stable identity"):
           run("alice", f"systemctl --user start --no-block {unit}")
           machine.wait_until_succeeds(f"test -f {state}/provisioning")
-          assert inventory("alice") == [record("alpha", "activating", "start-post", False)]
+          assert inventory("alice") == [record("alice", "zeta", "activating", "start-post", False)]
           assert inventory("bob") == []
           machine.fail(f"test -e {runtime}/client.conf")
           run("alice", f"touch {state}/release")
           machine.wait_until_succeeds(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
-          assert inventory("alice") == [record("alpha", "active", "running", True)]
+          assert inventory("alice") == [record("alice", "zeta", "active", "running", True)]
           invocation = UUID(run("alice", f"systemctl --user show {unit} -p InvocationID --value").strip())
           for _ in range(2):
-              assert inventory("alice") == [record("alpha", "active", "running", True)]
+              assert inventory("alice") == [record("alice", "zeta", "active", "running", True)]
               assert UUID(run("alice", f"systemctl --user show {unit} -p InvocationID --value").strip()) == invocation
           run("alice", f"systemctl --user stop {unit}")
           machine.fail(f"test -e {runtime}")
           # Exact-name queries must include retained units after systemd unloads them.
           machine.wait_until_fails(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager GetUnit s {unit}"))
-          assert inventory("alice") == [record("alpha", "inactive", "dead", False)]
+          assert inventory("alice") == [record("alice", "zeta", "inactive", "dead", False)]
           run("alice", f"rm {state}/release {state}/provisioning; systemctl --user start --no-block {unit}")
           machine.wait_until_succeeds(f"test -f {state}/provisioning")
           machine.succeed(f"test -d {state}/ready")
           machine.fail(f"test -e {runtime}/client.conf")
-          assert inventory("alice") == [record("alpha", "activating", "start-post", False)]
+          assert inventory("alice") == [record("alice", "zeta", "activating", "start-post", False)]
           run("alice", f"touch {state}/release")
           machine.wait_until_succeeds(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
-          assert inventory("alice") == [record("alpha", "active", "running", True)]
+          assert inventory("alice") == [record("alice", "zeta", "active", "running", True)]
           assert UUID(run("alice", f"systemctl --user show {unit} -p InvocationID --value").strip()) != invocation
 
       with subtest("failed provisioning remains visible without retry or failure reset"):
           run("alice", f"systemctl --user stop {unit}; touch {state}/fail")
           machine.fail(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start {unit}"))
           for _ in range(2):
-              assert inventory("alice") == [record("alpha", "failed", "failed", False, "exit-code")]
+              assert inventory("alice") == [record("alice", "zeta", "failed", "failed", False, "exit-code")]
               run("alice", f"systemctl --user is-failed --quiet {unit}")
           machine.fail(f"test -e {runtime}/client.conf")
 
       with subtest("two real owners have separate inventories and cannot select each other"):
           run("bob", "mkdir -p ~/.local/state/drv.run/beta; touch ~/.local/state/drv.run/beta/release; systemctl --user start drv.run@beta.service")
-          assert inventory("bob") == [record("beta", "active", "running", True)]
-          assert inventory("alice") == [record("alpha", "failed", "failed", False, "exit-code")]
+          assert inventory("bob") == [record("bob", "beta", "active", "running", True)]
+          assert inventory("alice") == [record("alice", "zeta", "failed", "failed", False, "exit-code")]
           for owner, other in [("alice", "bob"), ("bob", "alice")]:
               for arguments in [f"list --json -u {other}", f"list -u {other} --json"]:
                   machine.fail(as_user(owner, "drv.run " + arguments))
               machine.fail(as_user(owner, f"XDG_STATE_HOME=/home/{other}/.local/state drv.run list --json"))
-          # Root JSON must not fall through to the administrative all-owner list.
-          assert json.loads(machine.succeed("drv.run list --json")) == {"version": 1, "instances": []}
-          machine.succeed("drv.run list; drv.run list -u alice; drv.run list -u bob")
-          assert inventory("bob") == [record("beta", "active", "running", True)]
+          # Output format does not change root's existing owner selection.
+          assert inventory(None) == [record("bob", "beta", "active", "running", True), record("alice", "zeta", "failed", "failed", False, "exit-code")]
+          for owner in ["alice", "bob"]:
+              run(owner, "drv.run list")
+              machine.succeed("drv.run list -u " + owner)
+              for arguments in [f"list --json -u {owner}", f"list -u {owner} --json"]:
+                  assert inventory(None, arguments) == inventory(owner)
+              machine.fail(as_user(owner, "drv.run list -u " + {"alice": "bob", "bob": "alice"}[owner]))
+          machine.succeed("drv.run list")
+          machine.fail("drv.run list --json -u nobody")
+          # The same ID can be retained by different users without ambiguity.
+          run("bob", "mkdir -p ~/.local/state/drv.run/zeta; touch ~/.local/state/drv.run/zeta/release; systemctl --user start drv.run@zeta.service")
+          assert inventory("bob") == [record("bob", "beta", "active", "running", True), record("bob", "zeta", "active", "running", True)]
+          assert inventory(None) == [record("bob", "beta", "active", "running", True), record("alice", "zeta", "failed", "failed", False, "exit-code"), record("bob", "zeta", "active", "running", True)]
 
       with subtest("unreadable state fails discovery instead of returning an empty or partial inventory"):
           for path, inaccessible, original in [
@@ -173,12 +184,29 @@ in
               (state + "/reference", "000", "600"),
           ]:
               machine.succeed(f"chmod {inaccessible} {path}")
-              machine.fail(as_user("alice", "drv.run list --json"))
+              for arguments in ["list", "list --json"]:
+                  machine.fail(as_user("alice", "drv.run " + arguments))
               machine.succeed(f"chmod {original} {path}")
-              assert inventory("alice") == [record("alpha", "failed", "failed", False, "exit-code")]
+              assert inventory("alice") == [record("alice", "zeta", "failed", "failed", False, "exit-code")]
           # Even readable foreign state is not an alternate-owner inventory source.
           machine.succeed("chmod 755 /home/bob /home/bob/.local /home/bob/.local/state /home/bob/.local/state/drv.run")
-          machine.fail(as_user("alice", "XDG_STATE_HOME=/home/bob/.local/state drv.run list --json"))
-          assert inventory("bob") == [record("beta", "active", "running", True)]
+          for arguments in ["list", "list --json"]:
+              machine.fail(as_user("alice", "XDG_STATE_HOME=/home/bob/.local/state drv.run " + arguments))
+          assert inventory("bob") == [record("bob", "beta", "active", "running", True), record("bob", "zeta", "active", "running", True)]
+
+      with subtest("multi-user discovery withholds the document if any selected user fails"):
+          machine.succeed("chmod 000 /home/bob/.local/state/drv.run/beta/reference")
+          for arguments in ["list --json", "list --json -u bob"]:
+              status, output = machine.execute("drv.run " + arguments + " 2>/dev/null")
+              assert status != 0
+              try:
+                  json.loads(output)
+              except json.JSONDecodeError:
+                  pass
+              else:
+                  raise AssertionError("discovery failure published a JSON document")
+          assert inventory(None, "list --json -u alice") == inventory("alice")
+          machine.succeed("chmod 600 /home/bob/.local/state/drv.run/beta/reference")
+          assert inventory(None) == [record("bob", "beta", "active", "running", True), record("alice", "zeta", "failed", "failed", False, "exit-code"), record("bob", "zeta", "active", "running", True)]
     '';
   }

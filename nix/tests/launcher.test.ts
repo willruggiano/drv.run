@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 
@@ -27,6 +27,7 @@ const bash = (process.env.PATH ?? "")
   .map((directory) => join(directory, "bash"))
   .find(existsSync);
 assert.ok(bash);
+const { username: owner, uid } = userInfo();
 
 async function inventoryFixture(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "drv-inventory-"));
@@ -42,6 +43,14 @@ async function inventoryFixture(t: TestContext) {
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
   const commands = {
     "systemd-path": 'printf "%s/state\\n" "$FIXTURE"',
+    // All Node fixture state belongs to the caller. Real cross-owner execution
+    // and root's multi-owner aggregation are exercised by the NixOS test.
+    runuser: `
+      test "$1" = --user
+      test "$2" = "$FIXTURE_OWNER"
+      test "$3" = --
+      shift 3
+      exec "$@"`,
     systemctl: `
       test ! -e "$FIXTURE/unavailable"
       test "$1" = --user
@@ -75,7 +84,7 @@ async function inventoryFixture(t: TestContext) {
     cli,
     readFileSync(new URL("../../nixosModules/host/cli.sh", import.meta.url), "utf8")
       .replaceAll("@launcher@", launcher)
-      .replace("@owners@", "fixture other"),
+      .replace("@owners@", `'${owner.replaceAll("'", "'\\''")}'`),
   );
   return {
     directory,
@@ -91,6 +100,8 @@ async function inventoryFixture(t: TestContext) {
           ...process.env,
           PATH: `${join(directory, "bin")}:${process.env.PATH ?? ""}`,
           FIXTURE: directory,
+          FIXTURE_OWNER: owner,
+          USER: "not-the-calling-owner",
           SSH_ORIGINAL_COMMAND: "fixture:must-not-launch",
         },
         encoding: "utf8",
@@ -136,6 +147,7 @@ test("owner inventory reports sorted retained instances without changing their s
     version: 1,
     instances: [
       {
+        user: owner,
         id: "alpha",
         reference: 'path:/project#"shell"',
         host: "drv.run.alpha",
@@ -145,6 +157,7 @@ test("owner inventory reports sorted retained instances without changing their s
         result: "success",
       },
       {
+        user: owner,
         id: "beta",
         reference: "fixture:failed",
         host: "drv.run.beta",
@@ -154,6 +167,7 @@ test("owner inventory reports sorted retained instances without changing their s
         result: "exit-code",
       },
       {
+        user: owner,
         id: "zeta",
         reference: "fixture:stopped",
         host: "drv.run.zeta",
@@ -195,6 +209,7 @@ test("owner inventory requires published provisioning and a running instance for
       version: 1,
       instances: [
         {
+          user: owner,
           id: "alpha",
           reference: "fixture:retained",
           host: "drv.run.alpha",
@@ -244,9 +259,11 @@ test("owner inventory distinguishes missing state from invalid state paths", asy
     const target = join(fixture.directory, path);
     rmSync(target, { recursive: true, force: true });
     writeFileSync(target, "not a directory");
-    const result = fixture.run();
-    assert.notEqual(result.status, 0);
-    assert.throws(() => JSON.parse(result.stdout), SyntaxError);
+    for (const args of [["list"], ["list", "--json"]]) {
+      const result = fixture.run(args);
+      assert.notEqual(result.status, 0);
+      if (args.includes("--json")) assert.throws(() => JSON.parse(result.stdout), SyntaxError);
+    }
     rmSync(target);
   }
   const result = fixture.run();
@@ -272,6 +289,7 @@ test("owner inventory follows owner state-directory links without treating inval
     version: 1,
     instances: [
       {
+        user: owner,
         id: "alpha",
         reference: "fixture:retained",
         host: "drv.run.alpha",
@@ -284,16 +302,58 @@ test("owner inventory follows owner state-directory links without treating inval
   });
 });
 
-test("JSON inventory rejects owner selectors and extra arguments without creating instances", async (t) => {
+test("list formats preserve authorized owner selection without changing instance state", async (t) => {
+  const fixture = await inventoryFixture(t);
+  fixture.retain(
+    "alpha",
+    "fixture:retained",
+    "ActiveState=inactive\nSubState=dead\nResult=success\n",
+  );
+  const before = readdirSync(fixture.directory, { recursive: true });
+  const argumentsList = [["list"], ["list", "--json"]];
+  if (uid === 0) {
+    argumentsList.push(
+      ["list", "--json", "-u", owner],
+      ["list", "-u", owner, "--json"],
+      ["list", "-u", owner],
+    );
+  }
+  for (const args of argumentsList) {
+    const result = fixture.run(args);
+    assert.equal(result.status, 0);
+    if (args.includes("--json")) {
+      assert.deepEqual(JSON.parse(result.stdout), {
+        version: 1,
+        instances: [
+          {
+            user: owner,
+            id: "alpha",
+            reference: "fixture:retained",
+            host: "drv.run.alpha",
+            ready: false,
+            activeState: "inactive",
+            subState: "dead",
+            result: "success",
+          },
+        ],
+      });
+    }
+  }
+  assert.deepEqual(readdirSync(fixture.directory, { recursive: true }), before);
+});
+
+test("inventory rejects unauthorized owner selectors and extra arguments without creating instances", async (t) => {
   const fixture = await inventoryFixture(t);
   for (const args of [
     ["list", "--json", "-u", "other"],
     ["list", "-u", "other", "--json"],
     ["list", "--json", "extra"],
+    ["list", "--json", "--json"],
+    ["list", "-u", "other"],
   ]) {
     const result = fixture.run(args);
     assert.notEqual(result.status, 0);
-    assert.throws(() => JSON.parse(result.stdout), SyntaxError);
+    if (args.includes("--json")) assert.throws(() => JSON.parse(result.stdout), SyntaxError);
   }
   assert.deepEqual(readdirSync(join(fixture.directory, "state")), []);
   assert.deepEqual(readdirSync(join(fixture.directory, "runtime")), ["bus"]);

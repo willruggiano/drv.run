@@ -1,21 +1,19 @@
 # shellcheck shell=bash
 set -euo pipefail
 
-# JSON inventory always stays caller-scoped, including when called by root.
 # Preserve local, unprivileged launcher use; SSH calls the launcher directly.
-if ((EUID != 0)) || [[ ${1:-} == list && ${2:-} == --json ]]; then
+if ((EUID != 0)); then
   exec @launcher@ "$@"
 fi
 
 usage() {
   printf '%s\n' \
-    'Usage: drv.run list --json' \
-    '       drv.run list [-u <user>]' \
+    'Usage: drv.run list [--json] [-u <user>]' \
     '       drv.run stop [-u <user>] --all|<instance>' \
     '       drv.run reset [-u <user>] --all|<instance>' \
     '       drv.run clean [-u <user>] --all|<instance>' \
     '       drv.run grow <instance>' \
-    'Administrative commands without -u target all configured instance owners.' \
+    'Without -u, target all configured instance owners.' \
     'stop stops instances via systemd and retains their state.' \
     'reset clears the failed state of instances via systemd.' \
     'clean removes instance state via systemd; instances must be stopped.'
@@ -37,6 +35,11 @@ fi
 action=$1
 shift
 [[ $action == list || $action == stop || $action == reset || $action == clean || $action == grow ]] || invalid
+json=false
+if [[ $action == list && ${1:-} == --json ]]; then
+  json=true
+  shift
+fi
 owners=(@owners@)
 if [[ ${1:-} == -u ]]; then
   (($# >= 2)) && [[ -n $2 ]] || invalid
@@ -53,6 +56,10 @@ if [[ ${1:-} == -u ]]; then
   shift 2
 fi
 if [[ $action == list ]]; then
+  if [[ $json == false && ${1:-} == --json ]]; then
+    json=true
+    shift
+  fi
   (($# == 0)) || invalid
 else
   (($# == 1)) || invalid
@@ -65,6 +72,11 @@ else
 fi
 
 found=false
+instances=()
+list_args=()
+if [[ $json == true ]]; then
+  list_args=(list --json)
+fi
 for owner in "${owners[@]}"; do
   if [[ $action == reset && $target == --all ]]; then
     # Include failed units even if they have not written durable state.
@@ -78,9 +90,13 @@ for owner in "${owners[@]}"; do
   fi
   # Read user-owned inventory without root privileges. Do not interpret an
   # inherited SSH command or root's XDG paths as a request to launch a Guest.
-  inventory=$(runuser --user "$owner" -- env \
+  instance=$(runuser --user "$owner" -- env \
     -u SSH_ORIGINAL_COMMAND -u XDG_STATE_HOME -u XDG_CONFIG_HOME \
-    @launcher@)
+    @launcher@ "${list_args[@]}")
+  if [[ $json == true ]]; then
+    instances+=("$instance")
+    continue
+  fi
   while read -r instance details; do
     [[ -n $instance ]] || continue
     if [[ $action == list ]]; then
@@ -113,8 +129,13 @@ for owner in "${owners[@]}"; do
       fi
       found=true
     fi
-  done <<<"$inventory"
+  done <<<"$instance"
 done
+if [[ $json == true ]]; then
+  # Publish only after every selected user's discovery succeeded.
+  printf '%s\n' "${instances[@]}" | jq --slurp \
+    '{version: 1, instances: ([.[].instances[]] | sort_by(.id, .user))}'
+fi
 if [[ $action != list && $target != --all && $found == false ]]; then
   fail "instance not found: $target"
 fi

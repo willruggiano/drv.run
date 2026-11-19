@@ -250,6 +250,7 @@ in {
           config.systemd.package
           coreutils
           e2fsprogs
+          jq
           util-linux
         ];
         text =

@@ -4,10 +4,13 @@ read -r request_uptime _ </proc/uptime
 
 ref=${SSH_ORIGINAL_COMMAND:-}
 json=false
-if [[ $# == 2 && $1 == list && $2 == --json ]]; then
-  json=true
+if [[ ${1:-} == list ]]; then
   ref=
-  shift 2
+  shift
+  if [[ ${1:-} == --json ]]; then
+    json=true
+    shift
+  fi
 fi
 command=
 # Only split the reference boundary; the Guest shell interprets the command.
@@ -17,8 +20,7 @@ if [[ $ref =~ ^([^[:space:]]+)[[:space:]]+(.*)$ ]]; then
 fi
 if (($# != 0)) || [[ $ref == -* || $ref == *[[:space:]]* ]]; then
   printf '%s\n' 'Usage: ssh [-t] drv.run <flake-reference> [<command>]' \
-    '       ssh -T drv.run connect drv.run.<instance>' \
-    '       drv.run list --json' >&2
+    '       ssh -T drv.run connect drv.run.<instance>' >&2
   exit 2
 fi
 if [[ $ref == connect ]]; then
@@ -31,85 +33,79 @@ if [[ ! -S $XDG_RUNTIME_DIR/bus ]]; then
   exit 1
 fi
 if [[ -z $ref ]]; then
-  if [[ $json == true ]]; then
-    # A socket pathname alone does not establish that the user manager answers.
-    systemctl --user show -p Version >/dev/null
-  fi
+  # A socket pathname alone does not establish that the user manager answers.
+  systemctl --user show -p Version >/dev/null
+  owner=$(id -un)
   records=()
   # Durable state identifies retained instances; systemd supplies their live state.
   state=$(systemd-path user-state-private)
-  instances=("$state"/drv.run/*)
-  if [[ $json == true ]]; then
-    # A missing state tree is empty; an unsearchable ancestor is a failure.
-    parent="$state/drv.run"
-    while [[ ! -e $parent && ! -L $parent ]]; do
-      parent=$(dirname -- "$parent")
-    done
-    if [[ ! -d $parent || ! -x $parent ]]; then
-      printf 'Error: cannot search inventory directory: %s\n' "$parent" >&2
+  # A missing state tree is empty; an unsearchable ancestor is a failure.
+  parent="$state/drv.run"
+  while [[ ! -e $parent && ! -L $parent ]]; do
+    parent=$(dirname -- "$parent")
+  done
+  if [[ ! -d $parent || ! -x $parent ]]; then
+    printf 'Error: cannot search inventory directory: %s\n' "$parent" >&2
+    exit 1
+  fi
+  instances=()
+  if [[ -e $state/drv.run || -L $state/drv.run ]]; then
+    if [[ ! -O $state/drv.run || ! -r $state/drv.run ]]; then
+      printf 'Error: cannot enumerate owner inventory: %s\n' "$state/drv.run" >&2
       exit 1
     fi
-    instances=()
-    if [[ -e $state/drv.run || -L $state/drv.run ]]; then
-      if [[ ! -O $state/drv.run || ! -r $state/drv.run ]]; then
-        printf 'Error: cannot enumerate owner inventory: %s\n' "$state/drv.run" >&2
-        exit 1
-      fi
-      # Unlike shell globbing, find reports directory enumeration failures.
-      # Filter basenames before newline delimiting; IDs contain only ASCII alphanumerics.
-      ids=$(find -H "$state/drv.run" -mindepth 1 -maxdepth 1 ! -name '*[^a-zA-Z0-9]*' -printf '%f\n')
-      while IFS= read -r id; do
-        [[ -z $id ]] || instances+=("$state/drv.run/$id")
-      done <<<"$ids"
-    fi
+    # Unlike shell globbing, find reports directory enumeration failures.
+    # Filter basenames before newline delimiting; IDs contain only ASCII alphanumerics.
+    ids=$(LC_ALL=C find -H "$state/drv.run" -mindepth 1 -maxdepth 1 ! -name '*[^a-zA-Z0-9]*' -printf '%f\n')
+    while IFS= read -r id; do
+      [[ -z $id ]] || instances+=("$state/drv.run/$id")
+    done <<<"$ids"
   fi
   for instance in "${instances[@]}"; do
     id=${instance##*/}
-    if [[ $json == true && (! -d $instance || ! -O $instance || ! -x $instance) ]]; then
+    if [[ ! -d $instance || ! -O $instance || ! -x $instance ]]; then
       printf 'Error: cannot search owner instance: %s\n' "$instance" >&2
       exit 1
     fi
-    if [[ $json == true && ! -f $instance/reference ]]; then
+    if [[ ! -f $instance/reference ]]; then
       printf 'Error: invalid instance reference file: %s\n' "$instance/reference" >&2
       exit 1
     fi
-    if [[ $id =~ ^[[:alnum:]]+$ && -f $instance/reference ]]; then
-      if [[ $json == true && ! -O $instance/reference ]]; then
-        printf 'Error: foreign instance reference: %s\n' "$instance/reference" >&2
-        exit 1
+    if [[ ! -O $instance/reference ]]; then
+      printf 'Error: foreign instance reference: %s\n' "$instance/reference" >&2
+      exit 1
+    fi
+    IFS= read -r reference <"$instance/reference"
+    if [[ -z $reference || $reference == -* || $reference == *[[:space:]]* ]]; then
+      printf 'Error: invalid instance reference: %s\n' "$instance/reference" >&2
+      exit 1
+    fi
+    # Query exact names: stopped instances may have been unloaded by systemd.
+    unit_state=$(systemctl --user show "drv.run@$id.service" --all -p ActiveState,SubState,Result)
+    declare -A properties=()
+    while IFS='=' read -r property value; do
+      properties[$property]=$value
+    done <<<"$unit_state"
+    if [[ $json == true ]]; then
+      # post.sh publishes client.conf after acknowledgement; systemd removes
+      # the runtime directory on stop, so retained state alone is never ready.
+      ready=false
+      if [[ ${properties[ActiveState]} == active && ${properties[SubState]} == running &&
+        -f $XDG_RUNTIME_DIR/drv.run.$id/client.conf ]]; then
+        ready=true
       fi
-      IFS= read -r reference <"$instance/reference"
-      if [[ $json == true && (-z $reference || $reference == -* || $reference == *[[:space:]]*) ]]; then
-        printf 'Error: invalid instance reference: %s\n' "$instance/reference" >&2
-        exit 1
+      records+=("$(jq --null-input --compact-output \
+        --arg owner "$owner" --arg id "$id" --arg reference "$reference" --argjson ready "$ready" \
+        --arg activeState "${properties[ActiveState]}" \
+        --arg subState "${properties[SubState]}" --arg result "${properties[Result]}" \
+        '{user: $owner, id: $id, reference: $reference, host: ("drv.run." + $id), ready: $ready,
+          activeState: $activeState, subState: $subState, result: $result}')")
+    else
+      printf 'drv.run.%s %s: %s' "$id" "$reference" "${properties[SubState]}"
+      if [[ ${properties[ActiveState]} == failed ]]; then
+        printf ' (%s)' "${properties[Result]}"
       fi
-      # Query exact names: stopped instances may have been unloaded by systemd.
-      unit_state=$(systemctl --user show "drv.run@$id.service" --all -p ActiveState,SubState,Result)
-      declare -A properties=()
-      while IFS='=' read -r property value; do
-        properties[$property]=$value
-      done <<<"$unit_state"
-      if [[ $json == true ]]; then
-        # post.sh publishes client.conf after acknowledgement; systemd removes
-        # the runtime directory on stop, so retained state alone is never ready.
-        ready=false
-        if [[ ${properties[ActiveState]} == active && ${properties[SubState]} == running &&
-          -f $XDG_RUNTIME_DIR/drv.run.$id/client.conf ]]; then
-          ready=true
-        fi
-        records+=("$(jq --null-input --compact-output \
-          --arg id "$id" --arg reference "$reference" --argjson ready "$ready" \
-          --arg activeState "${properties[ActiveState]}" \
-          --arg subState "${properties[SubState]}" --arg result "${properties[Result]}" \
-          '{id: $id, reference: $reference, host: ("drv.run." + $id), ready: $ready,
-            activeState: $activeState, subState: $subState, result: $result}')")
-      else
-        printf 'drv.run.%s %s: %s' "$id" "$reference" "${properties[SubState]}"
-        if [[ ${properties[ActiveState]} == failed ]]; then
-          printf ' (%s)' "${properties[Result]}"
-        fi
-        printf '\n'
-      fi
+      printf '\n'
     fi
   done
   if [[ $json == true ]]; then
