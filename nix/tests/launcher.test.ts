@@ -201,8 +201,8 @@ test("owner inventory uses systemd readiness independently of SSH configuration"
       "fixture:retained",
       `ActiveState=${activeState}\nSubState=${subState}\nResult=success\n`,
     );
-    if (published) writeFileSync(join(runtime, "client.conf"), "private connection details");
-    else rmSync(join(runtime, "client.conf"), { force: true });
+    if (published) writeFileSync(join(runtime, "ssh_config"), "private connection details");
+    else rmSync(join(runtime, "ssh_config"), { force: true });
     const result = fixture.run();
     assert.equal(result.status, 0);
     assert.deepEqual(JSON.parse(result.stdout), {

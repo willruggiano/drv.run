@@ -388,7 +388,7 @@ in {
               state = "/var/lib/image-worker/beta"
               second.succeed(f"mv {state}/{resource} {state}/saved")
               second.fail("systemctl start image-worker@beta.service")
-              second.fail(f"test -e {state}/{resource} || test -e /run/drv.run/beta/client.conf")
+              second.fail(f"test -e {state}/{resource} || test -e /run/drv.run/beta/ssh_config")
               second.succeed(f"mv {state}/saved {state}/{resource}; systemctl reset-failed image-worker@beta.service")
           second.succeed("systemctl start image-worker@beta.service; systemctl stop image-worker@beta.service")
 
@@ -397,7 +397,7 @@ in {
           second.succeed("mkdir -p /var/lib/image-worker/interrupted/creating; touch /var/lib/image-worker/interrupted/state.img")
           second.fail("systemctl start image-worker@interrupted.service")
           second.succeed("test ! -s /var/lib/image-worker/interrupted/state.img; test -d /var/lib/image-worker/interrupted/creating")
-          second.fail("test -e /var/lib/image-worker/interrupted/ready || test -e /run/drv.run/interrupted/client.conf")
+          second.fail("test -e /var/lib/image-worker/interrupted/ready || test -e /run/drv.run/interrupted/ssh_config")
 
       with subtest("failed image realization cannot mark resources prepared"):
           second.succeed(f"cp {environment} /root/mismatch-env; nix-store --add /root/mismatch-env > /root/mismatch-path")
@@ -405,7 +405,7 @@ in {
           prepare_instance("failed", mismatched)
           second.fail("systemctl start image-worker@failed.service")
           second.succeed("test -d /var/lib/image-worker/failed/creating")
-          second.fail("test -e /var/lib/image-worker/failed/ready || test -e /run/drv.run/failed/client.conf")
+          second.fail("test -e /var/lib/image-worker/failed/ready || test -e /run/drv.run/failed/ssh_config")
     '';
   };
 }

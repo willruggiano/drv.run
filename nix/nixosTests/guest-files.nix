@@ -17,7 +17,7 @@
       if [[ ! -f $STATE_DIRECTORY/host-key ]]; then
         ssh-keygen -q -t ed25519 -N "" -f "$STATE_DIRECTORY/host-key"
       fi
-      ssh-keygen -q -t ed25519 -N "" -f "$runtime/client-key"
+      ssh-keygen -q -t ed25519 -N "" -f "$runtime/id_ed25519"
       ln -sfn ${environment} "$STATE_DIRECTORY/environment"
       printf 'fixture:%s\n' "''${STATE_DIRECTORY##*/}" > "$STATE_DIRECTORY/reference"
       mkdir -p "$STATE_DIRECTORY/ready"
@@ -192,7 +192,7 @@ in
                   assert int(machine.succeed("stat -c %u /mnt/seed/rootfs/" + path)) == 0
                   assert int(machine.succeed("stat -c %g /mnt/seed/rootfs/" + path)) == 0
                   assert int(machine.succeed("stat -c %a /mnt/seed/rootfs/" + path), 8) == 0o600
-              machine.fail("test -e /mnt/seed/rootfs/client-key || test -e /mnt/seed/rootfs/root/.config/fixture/stale")
+              machine.fail("test -e /mnt/seed/rootfs/id_ed25519 || test -e /mnt/seed/rootfs/root/.config/fixture/stale")
               machine.succeed("cmp /mnt/seed/environment " + "<(printf '%s\\n' ${environment})")
               return json.loads(machine.succeed("cat /mnt/seed/rootfs/root/.config/fixture/value.json"))
           finally:

@@ -89,7 +89,7 @@
       install -d -m 0755 "$RUNTIME_DIRECTORY/etc" "$RUNTIME_DIRECTORY/etc/ssh"
       install -d -m 0700 "$RUNTIME_DIRECTORY/root" "$RUNTIME_DIRECTORY/root/.ssh"
       install -m 0600 "$STATE_DIRECTORY/host-key" "$RUNTIME_DIRECTORY/etc/ssh/ssh_host_ed25519_key"
-      install -m 0600 "$1/client-key.pub" "$RUNTIME_DIRECTORY/root/.ssh/authorized_keys"
+      install -m 0600 "$1/id_ed25519.pub" "$RUNTIME_DIRECTORY/root/.ssh/authorized_keys"
       case $(id -u) in
         ${lib.concatMapStringsSep "\n" (user: let
         keys = pkgs.writeText "drv-run-ssh-${user.name}-keys" (lib.concatStringsSep "\n" (
@@ -350,6 +350,7 @@ in {
       description = "drv.run instance %i";
       requires = ["drv.run-image@%i.service"];
       after = ["drv.run-image@%i.service"];
+      # Preparation manages this directory's lifetime; the instance only uses it.
       environment.RUNTIME_DIRECTORY = "%t/drv.run/%i";
       serviceConfig = {
         StateDirectory = "drv.run/%i";

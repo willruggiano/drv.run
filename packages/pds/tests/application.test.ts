@@ -119,7 +119,7 @@ await test("environment discovery exposes only complete drv.run SSH connection f
   await mkdir(ready, { recursive: true });
   await mkdir(join(directory, "drv.run", "starting"));
   await Promise.all(
-    ["client.conf", "client-key", "known_hosts"].map((name) => writeFile(join(ready, name), "")),
+    ["ssh_config", "id_ed25519", "known_hosts"].map((name) => writeFile(join(ready, name), "")),
   );
   const environments = await discoverEnvironments(directory);
   assert.deepEqual(
@@ -130,7 +130,7 @@ await test("environment discovery exposes only complete drv.run SSH connection f
     host: "drv.run.ready",
     user: "root",
     hostKeyAlias: "drv.run.ready",
-    identityFile: join(ready, "client-key"),
+    identityFile: join(ready, "id_ed25519"),
     knownHostsFile: join(ready, "known_hosts"),
     configFile: "/etc/ssh/ssh_config",
   });

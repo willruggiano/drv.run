@@ -77,14 +77,14 @@ test -f "$STATE_DIRECTORY/environment-image/store.erofs"
 ln -s "$STATE_DIRECTORY/environment-image/store.erofs" "$RUNTIME_DIRECTORY/environment.erofs"
 ln -s "$STATE_DIRECTORY/state.img" "$RUNTIME_DIRECTORY/state.img"
 ln -s image/seed.img "$RUNTIME_DIRECTORY/seed.img"
-ssh-keygen -q -t ed25519 -N '' -f "$RUNTIME_DIRECTORY/client-key"
-chmod 0600 "$RUNTIME_DIRECTORY/client-key"
+ssh-keygen -q -t ed25519 -N '' -f "$RUNTIME_DIRECTORY/id_ed25519"
+chmod 0600 "$RUNTIME_DIRECTORY/id_ed25519"
 printf '%s %s\n' "$name" "$(ssh-keygen -y -f "$STATE_DIRECTORY/host-key")" \
   >"$RUNTIME_DIRECTORY/known_hosts"
-cat >"$RUNTIME_DIRECTORY/.client.conf" <<EOF
+cat >"$RUNTIME_DIRECTORY/.ssh_config" <<EOF
 Host $name
     ProxyCommand @proxy@ vsock-mux$RUNTIME_DIRECTORY/notify.vsock %p
-    IdentityFile $RUNTIME_DIRECTORY/client-key
+    IdentityFile $RUNTIME_DIRECTORY/id_ed25519
     UserKnownHostsFile $RUNTIME_DIRECTORY/known_hosts
 EOF
-mv "$RUNTIME_DIRECTORY/.client.conf" "$RUNTIME_DIRECTORY/client.conf"
+mv "$RUNTIME_DIRECTORY/.ssh_config" "$RUNTIME_DIRECTORY/ssh_config"

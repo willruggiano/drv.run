@@ -40,7 +40,7 @@ process.stdout.write(Object.entries(state).map(([key, value]) => key + "=" + val
     if (configured) {
       const runtime = join(runtimeDirectory, "drv.run", id);
       await mkdir(runtime, { recursive: true });
-      await writeFile(join(runtime, "client.conf"), "");
+      await writeFile(join(runtime, "ssh_config"), "");
     }
   }
   await instance("test1", "path:/test");

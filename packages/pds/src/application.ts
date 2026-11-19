@@ -54,14 +54,14 @@ export async function discoverEnvironments(directory: string): Promise<Environme
     const target = {
       host,
       user: "root",
-      identityFile: join(path, "client-key"),
+      identityFile: join(path, "id_ed25519"),
       knownHostsFile: join(path, "known_hosts"),
       configFile: "/etc/ssh/ssh_config",
       hostKeyAlias: host,
     };
     try {
       await Promise.all(
-        [target.identityFile, target.knownHostsFile, join(path, "client.conf")].map((file) =>
+        [target.identityFile, target.knownHostsFile, join(path, "ssh_config")].map((file) =>
           access(file),
         ),
       );

@@ -114,7 +114,7 @@ class SSHFixture:
                 for name in ["host", "guest"]
             )
         )
-        self.config = self.root / "client.conf"
+        self.config = self.root / "ssh_config"
         ssh = shutil.which("ssh")
         assert ssh is not None
         _ = self.config.write_text(
@@ -224,17 +224,17 @@ class SSHTransport(unittest.TestCase):
         runtime = fixture.root / "runtime" / "0123456789abcdef"
         runtime.mkdir(parents=True)
         (runtime / "notify.vsock").symlink_to(fixture.root / "guest.sock")
-        (runtime / "client-key").symlink_to(fixture.root / "client")
+        (runtime / "id_ed25519").symlink_to(fixture.root / "client")
         target = "drv.run." + runtime.name
         known = runtime / "known_hosts"
         _ = known.write_text(f"{target} {(fixture.root / 'guest.pub').read_text()}")
         # Exercise the production Include/glob and ordinary OpenSSH key lookup.
         # The pinned systemd proxy passes the real connected descriptor to SSH.
-        connection = runtime / "client.conf"
+        connection = runtime / "ssh_config"
         _ = connection.write_text(
             f"Host {target}\n"
             + f" ProxyCommand {os.environ['SSH_PROXY']} vsock-mux{runtime}/notify.vsock %p\n"
-            + f" IdentityFile {runtime}/client-key\n"
+            + f" IdentityFile {runtime}/id_ed25519\n"
             + f" UserKnownHostsFile {known}\n"
         )
         original = connection.read_bytes()
@@ -248,7 +248,7 @@ class SSHTransport(unittest.TestCase):
         # Another included Host block must neither supply identities nor alter routing.
         other = runtime.parent / "fedcba9876543210"
         other.mkdir()
-        _ = (other / "client.conf").write_text(
+        _ = (other / "ssh_config").write_text(
             "Host drv.run.fedcba9876543210\n ProxyCommand false\n"
             + f" IdentityFile {fixture.root}/wrong\n"
         )

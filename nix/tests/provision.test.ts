@@ -34,7 +34,7 @@ for (const status of [0, 1, 255]) {
     const environment = join(directory, "fixture-env");
     writeFileSync(environment, "{}");
     symlinkSync(environment, join(state, "environment"));
-    writeFileSync(join(runtime, "client.conf"), "Host fixture\n");
+    writeFileSync(join(runtime, "ssh_config"), "Host fixture\n");
     writeFileSync(join(directory, "ssh-status"), String(status));
     // The SSH boundary exposes control operations, never a closure transport.
     writeFileSync(
@@ -71,7 +71,7 @@ printf '%s\\n' '{"phase":"profile-ready","monotonic_s":1}'
     });
     assert.ifError(result.error);
     assert.equal(result.status, status);
-    assert.equal(existsSync(join(runtime, "client.conf")), true);
+    assert.equal(existsSync(join(runtime, "ssh_config")), true);
     assert.equal(existsSync(join(directory, "nix-invoked")), false);
     assert.equal(readFileSync(join(directory, "requested-environment"), "utf8"), environment);
     if (accepted) {

@@ -21,7 +21,7 @@ export class DrvRunEnv extends RemoteExecutionEnv {
       user: "root",
       ssh: options.ssh ?? "ssh",
       configFile: "/etc/ssh/ssh_config",
-      identityFile: join(runtime, "client-key"),
+      identityFile: join(runtime, "id_ed25519"),
       knownHostsFile: join(runtime, "known_hosts"),
       hostKeyAlias: host,
     });

@@ -40,10 +40,6 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = builtins.match "[A-Za-z0-9_.-]+" cfg.clientId != null;
-        message = "mitm-proxy requires a GitHub App clientId.";
-      }
-      {
         assertion = lib.hasInfix "-----BEGIN CERTIFICATE-----" cfg.caCertificate && !(lib.hasInfix "PRIVATE KEY" cfg.caCertificate);
         message = "mitm-proxy requires a public PEM caCertificate, without a private key.";
       }
@@ -55,7 +51,7 @@ in {
 
     systemd.user.services = {
       "drv.run-mitm-files@" = {
-        description = "Snapshot the owner's guest GitHub capability";
+        description = "Prepare guest files for mitm-proxy";
         requires = ["drv.run-prepare@%i.service"];
         after = ["drv.run-prepare@%i.service"];
         partOf = ["drv.run@%i.service"];

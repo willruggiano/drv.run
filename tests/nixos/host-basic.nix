@@ -80,7 +80,7 @@ in {
         after = ["network-addresses-lo.service"];
       };
       environment.systemPackages = [pkgs.curl];
-      environment.etc."ssh/client-key" = {
+      environment.etc."ssh/id_ecdsa" = {
         source = keys.snakeOilPrivateKey;
         mode = "0600";
       };
@@ -88,7 +88,7 @@ in {
         extraConfig = ''
           Host host
             User operator
-            IdentityFile /etc/ssh/client-key
+            IdentityFile /etc/ssh/id_ecdsa
             IdentitiesOnly yes
             BatchMode yes
             StrictHostKeyChecking yes
@@ -335,7 +335,7 @@ in {
         operator(f'test "$(stat -c %u /proc/$(systemctl --user show -p MainPID --value {unit}))" -eq 1000')
         for path in [state, runtime]:
             host.succeed(f'test "$(stat -c %u {path})" -eq 1000 && test "$(stat -c %a {path})" -eq 700')
-        for path in [f"{state}/host-key", f"{runtime}/client-key", f"{runtime}/client.conf"]:
+        for path in [f"{state}/host-key", f"{runtime}/id_ed25519", f"{runtime}/ssh_config"]:
             host.succeed(f'test "$(stat -c %u {path})" -eq 1000 && test "$(stat -c %a {path})" -eq 600')
         host.succeed(f'test "$(stat -c %u {state}/state.img)" -eq 1000')
         host.succeed(f'test -S {runtime}/notify.vsock && test "$(stat -c %u {runtime}/notify.vsock)" -eq 1000')
@@ -557,11 +557,11 @@ in {
             guest("test -f /workspace/created")
 
     with subtest("other users cannot access the owner's Instance"):
-        for path in [f"{runtime}/client.conf", f"{runtime}/client-key", f"{runtime}/seed.img", f"{state}/host-key", f"{state}/state.img"]:
+        for path in [f"{runtime}/ssh_config", f"{runtime}/id_ed25519", f"{runtime}/seed.img", f"{state}/host-key", f"{state}/state.img"]:
             host.fail(as_user("other", f"test -r {path}"))
         host.fail(as_user("other", f"ssh {target} </dev/null"))
         # Supplying the owner's configuration explicitly must not bypass isolation.
-        host.fail(as_user("other", f"ssh -F {runtime}/client.conf {target} </dev/null"))
+        host.fail(as_user("other", f"ssh -F {runtime}/ssh_config {target} </dev/null"))
         host.fail(as_user("operator", "ssh drv.run.nonexistent </dev/null"))
         probe = "import errno,socket; s=socket.socket(socket.AF_UNIX); "
         probe += f"\ntry: s.connect('{runtime}/notify.vsock')\nexcept OSError as e: assert e.errno == errno.EACCES\nelse: raise AssertionError('foreign socket access')"
@@ -659,12 +659,12 @@ in {
     with subtest("wrong host and client keys fail closed"):
         operator(f"ssh-keygen -q -t ed25519 -N \"\" -f {runtime}/unrelated-key")
         operator(f"printf '{target} %s\\n' \"$(ssh-keygen -y -f {runtime}/unrelated-key)\" > {runtime}/wrong-known-hosts")
-        host.fail(as_user("operator", service_ssh(f"{runtime}/client-key", f"{runtime}/wrong-known-hosts")))
+        host.fail(as_user("operator", service_ssh(f"{runtime}/id_ed25519", f"{runtime}/wrong-known-hosts")))
         host.fail(as_user("operator", service_ssh(f"{runtime}/unrelated-key", f"{runtime}/known_hosts")))
-        operator(service_ssh(f"{runtime}/client-key", f"{runtime}/known_hosts"))
+        operator(service_ssh(f"{runtime}/id_ed25519", f"{runtime}/known_hosts"))
 
     with subtest("declared state survives a fresh Guest boot"):
-        operator(f"cp {runtime}/client-key {state}/old-client-key")
+        operator(f"cp {runtime}/id_ed25519 {state}/old-id_ed25519")
         operator(f"cp {state}/host-key {state}/old-host-key")
         client.succeed(f"ssh root@host drv.run stop -u operator {target}")
         operator(f"${pkgs.e2fsprogs}/bin/e2fsck -fn {state}/state.img")
@@ -698,9 +698,9 @@ in {
         operator("mv /home/operator/saved-flake /home/operator/flake")
         egress()
         operator(f"cmp {state}/host-key {state}/old-host-key")
-        host.fail(as_user("operator", service_ssh(f"{state}/old-client-key", f"{runtime}/known_hosts")))
-        operator(service_ssh(f"{runtime}/client-key", f"{runtime}/known_hosts"))
-        operator(f"rm {state}/old-client-key {state}/old-host-key")
+        host.fail(as_user("operator", service_ssh(f"{state}/old-id_ed25519", f"{runtime}/known_hosts")))
+        operator(service_ssh(f"{runtime}/id_ed25519", f"{runtime}/known_hosts"))
+        operator(f"rm {state}/old-id_ed25519 {state}/old-host-key")
         host.succeed("drv.run stop -u operator --all")
         host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
         operator(f"${pkgs.e2fsprogs}/bin/e2fsck -fn {state}/state.img")

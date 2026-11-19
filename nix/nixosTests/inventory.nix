@@ -11,7 +11,7 @@
     fi
     mkdir -p "$STATE_DIRECTORY/ready"
     ln -sfn ${environment} "$STATE_DIRECTORY/environment"
-    printf 'private connection configuration\n' > "$RUNTIME_DIRECTORY/client.conf"
+    printf 'private connection configuration\n' > "$RUNTIME_DIRECTORY/ssh_config"
   '';
   # The outbound SSH boundary blocks acknowledgement, not systemd's lifecycle.
   ssh = pkgs.writeShellScriptBin "ssh" ''
@@ -134,7 +134,7 @@ in
           machine.wait_until_succeeds(f"test -f {state}/provisioning")
           assert inventory("alice") == [record("alice", "zeta", "activating", "start-post", False)]
           assert inventory("bob") == []
-          machine.succeed(f"test -f {runtime}/client.conf")
+          machine.succeed(f"test -f {runtime}/ssh_config")
           run("alice", f"touch {state}/release")
           machine.wait_until_succeeds(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
           assert inventory("alice") == [record("alice", "zeta", "active", "running", True)]
@@ -150,7 +150,7 @@ in
           run("alice", f"rm {state}/release {state}/provisioning; systemctl --user start --no-block {unit}")
           machine.wait_until_succeeds(f"test -f {state}/provisioning")
           machine.succeed(f"test -d {state}/ready")
-          machine.succeed(f"test -f {runtime}/client.conf")
+          machine.succeed(f"test -f {runtime}/ssh_config")
           assert inventory("alice") == [record("alice", "zeta", "activating", "start-post", False)]
           run("alice", f"touch {state}/release")
           machine.wait_until_succeeds(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
@@ -163,7 +163,7 @@ in
           for _ in range(2):
               assert inventory("alice") == [record("alice", "zeta", "failed", "failed", False, "exit-code")]
               run("alice", f"systemctl --user is-failed --quiet {unit}")
-          machine.fail(f"test -e {runtime}/client.conf")
+          machine.fail(f"test -e {runtime}/ssh_config")
 
       with subtest("two real owners have separate inventories and cannot select each other"):
           run("bob", "mkdir -p ~/.local/state/drv.run/beta; touch ~/.local/state/drv.run/beta/release; systemctl --user start drv.run@beta.service")

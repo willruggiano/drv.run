@@ -25,7 +25,7 @@ Host: launcher (user UID) -> user's systemd manager
                                    nix develop -- /nix/var/nix/profiles/project
 
 Client: ssh <user>@drv.run -> Host: list that user's durable Instance SSH targets
-Host:   ssh drv.run.ID     -> Include /run/user/<UID>/drv.run/*/client.conf
+Host:   ssh drv.run.ID     -> Include /run/user/<UID>/drv.run/*/ssh_config
                            -> private Unix socket -> VSOCK -> Guest sshd
                            -> Guest: reconnect as root
 
@@ -93,7 +93,7 @@ StateDirectory: drv.run/ID [owner-only]
                                                      (/nix, /workspace, ...)
 
 Owner-private runtime directories [removed on stop/failure/cancellation]:
-  %t/drv.run/ID/                 control files, sockets, client.conf
+  %t/drv.run/ID/                 control files, sockets, ssh_config
   %t/drv.run/ID/inputs/           core + integration canonical trees
                        |
                     assembly

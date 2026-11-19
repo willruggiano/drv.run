@@ -124,7 +124,7 @@ in
       import yaml
 
       def ssh(command):
-          return machine.succeed("ssh -F /dev/null -o BatchMode=yes -o IdentityAgent=none -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o HostKeyAlias=fixture -o UserKnownHostsFile=${keys}/known_hosts -o GlobalKnownHostsFile=/dev/null -i /root/client-key root@localhost " + shlex.quote(command))
+          return machine.succeed("ssh -F /dev/null -o BatchMode=yes -o IdentityAgent=none -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o HostKeyAlias=fixture -o UserKnownHostsFile=${keys}/known_hosts -o GlobalKnownHostsFile=/dev/null -i /root/id_ed25519 root@localhost " + shlex.quote(command))
 
       def verify():
           machine.wait_for_unit("multi-user.target")
@@ -139,7 +139,7 @@ in
               assert int(machine.succeed("stat -c %u " + path)) == 0
               assert int(machine.succeed("stat -c %g " + path)) == 0
               assert int(machine.succeed("stat -c %a " + path), 8) == 0o600
-          machine.succeed("install -m 0600 ${keys}/client /root/client-key")
+          machine.succeed("install -m 0600 ${keys}/client /root/id_ed25519")
           ssh("guest-file-environment /workspace/activated")
           machine.succeed("test -f /workspace/activated; test /nix/var/nix/profiles/project -ef ${environment}")
           assert yaml.safe_load(machine.succeed("cat /root/.config/gh/hosts.yml")) == {"github.com": {"oauth_token": "fake-capability", "git_protocol": "https"}}
