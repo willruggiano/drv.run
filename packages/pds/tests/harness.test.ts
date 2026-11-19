@@ -71,7 +71,7 @@ const sshTarget = {
   user: "root",
   port: 22,
   configFile: "/etc/ssh/ssh_config",
-  identityFile: "/run/user/1000/drv.run.test1/client-key",
+  identityFile: "/run/user/1000/drv.run.test1/id_ed25519",
   knownHostsFile: "/run/user/1000/drv.run.test1/known_hosts",
   hostKeyAlias: "drv.run.test1",
 };

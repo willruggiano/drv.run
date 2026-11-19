@@ -14,33 +14,31 @@ import { remoteFixture } from "./drv-run-testing.ts";
 
 const context = BACKGROUND_CONTEXT;
 
-await test("inventory excludes invalid and incomplete instances; readiness requires active service and client config", async (t) => {
+await test("inventory readiness uses active/running, not SSH configuration", async (t) => {
   const f = await remoteFixture(t);
   await f.instance("stopped", "path:/stopped");
-  await f.instance("unready", "path:/unready", false);
+  await f.instance("noconfig", "path:/noconfig", false);
+  await f.instance("preparing", "path:/preparing");
+  await f.instance("exited", "path:/exited");
   await f.instance("incomplete", undefined);
   await f.instance("bad-name", "path:/invalid");
-  await writeFile(f.states, JSON.stringify({ test1: "active", unready: "active" }));
+  await writeFile(
+    f.states,
+    JSON.stringify({
+      test1: { ActiveState: "active", SubState: "running" },
+      noconfig: { ActiveState: "active", SubState: "running" },
+      preparing: { ActiveState: "activating", SubState: "start-post" },
+      exited: { ActiveState: "active", SubState: "exited" },
+    }),
+  );
   assert.deepEqual(await listInstances(f.options), [
+    { id: "exited", reference: "path:/exited", running: false },
+    { id: "noconfig", reference: "path:/noconfig", running: true },
+    { id: "preparing", reference: "path:/preparing", running: false },
     { id: "stopped", reference: "path:/stopped", running: false },
     { id: "test1", reference: "path:/test", running: true },
-    { id: "unready", reference: "path:/unready", running: false },
   ]);
-  const calls: string[][] = (await readFile(f.calls, "utf8"))
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  assert.deepEqual(
-    calls.sort((a, b) => a[2].localeCompare(b[2])),
-    ["stopped", "test1", "unready"].map((id) => [
-      "--user",
-      "show",
-      `drv.run@${id}.service`,
-      "--property=ActiveState",
-      "--value",
-    ]),
-  );
-  assert.equal((await f.targets()).filter((target) => target.available).length, 1);
+  assert.equal((await f.targets()).filter((target) => target.available).length, 2);
   assert.deepEqual(
     await listInstances({
       ...f.options,
@@ -119,7 +117,7 @@ await test("faux turns use the daemon for read/write/edit; instance removal pres
 await test("stopping an instance blocks existing sessions without opening another connection", async (t) => {
   const f = await remoteFixture(t);
   const session = await f.sessions.create(randomUUID(), f.binding, model);
-  await rm(join(f.options.runtimeDirectory, "drv.run.test1", "client.conf"));
+  await writeFile(f.states, "{}");
   await assert.rejects(runtime.environment(session), code("unavailable"));
   session.harness.resume();
   assert.equal(f.connections.length, 0);

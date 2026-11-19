@@ -97,8 +97,8 @@ await test("DrvRunEnv owns its route and connection; cleanup leaves other enviro
     user: "root",
     ssh: "ssh",
     configFile: "/etc/ssh/ssh_config",
-    identityFile: "/run/user/1000/drv.run.test1/client-key",
-    knownHostsFile: "/run/user/1000/drv.run.test1/known_hosts",
+    identityFile: "/run/user/1000/drv.run/test1/id_ed25519",
+    knownHostsFile: "/run/user/1000/drv.run/test1/known_hosts",
     hostKeyAlias: "drv.run.test1",
   });
   const close = t.mock.method(a.connection, "close");

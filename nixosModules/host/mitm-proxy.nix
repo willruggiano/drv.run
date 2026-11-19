@@ -6,21 +6,14 @@
   ...
 }: let
   cfg = config.services.drv-run.mitm-proxy;
-  enabled = cfg.owners != {};
   package = pkgs.callPackage ../../packages/mitm-proxy {};
   settings = pkgs.writeText "mitm-proxy.json" (builtins.toJSON {
     inherit (cfg) port clientId caCertificate caPrivateKeyFile;
-    owners =
-      lib.mapAttrs (name: owner: {
-        inherit (owner) githubUserId;
-        gid = config.users.groups.${config.users.users.${name}.group}.gid;
-      })
-      cfg.owners;
   });
-  commandArgs = operation: ["${package}/bin/mitm-proxy" operation "--config" (toString settings)];
-  command = operation: utils.escapeSystemdExecArgs (commandArgs operation);
+  command = operation: utils.escapeSystemdExecArgs ["${package}/bin/mitm-proxy" operation "--config" (toString settings)];
 in {
   options.services.drv-run.mitm-proxy = {
+    enable = lib.mkEnableOption "the guest credential proxy (access through the mitm-proxy-access group)";
     port = lib.mkOption {
       type = lib.types.port;
       default = 3128;
@@ -40,88 +33,84 @@ in {
     caPrivateKeyFile = lib.mkOption {
       type = lib.types.str;
       default = "";
-      description = "Absolute runtime path to the CA private key. Provision it before the mitm-proxy activation script; never put the key in the Nix store.";
-    };
-    owners = lib.mkOption {
-      default = {};
-      description = "Host owners granted proxy access. Instances of an owner share a credential capability.";
-      type = lib.types.attrsOf (lib.types.submodule {
-        options.githubUserId = lib.mkOption {
-          type = lib.types.ints.positive;
-          description = "Expected numeric GitHub user ID, verified during device authorization.";
-        };
-      });
+      description = "Absolute runtime path to the CA private key. Provision it before starting mitm-proxy; never put the key in the Nix store.";
     };
   };
 
-  config = lib.mkIf enabled {
-    assertions =
-      lib.mapAttrsToList (name: _: {
-        assertion = let
-          user = config.users.users.${name} or null;
-          group = config.users.groups.${user.group or ""} or null;
-        in
-          user
-          != null
-          && user.enable
-          && user.isNormalUser
-          && user.uid != null
-          && user.uid > 0
-          && group != null
-          && group.gid != null
-          && group.gid > 0
-          && builtins.match "[A-Za-z_][A-Za-z0-9_.-]*" name != null;
-        message = "mitm-proxy owners must be enabled normal Host users.";
-      })
-      cfg.owners
-      ++ [
-        {
-          assertion = builtins.match "[A-Za-z0-9_.-]+" cfg.clientId != null;
-          message = "mitm-proxy requires a GitHub App clientId.";
-        }
-        {
-          assertion = lib.hasInfix "-----BEGIN CERTIFICATE-----" cfg.caCertificate && !(lib.hasInfix "PRIVATE KEY" cfg.caCertificate);
-          message = "mitm-proxy requires a public PEM caCertificate, without a private key.";
-        }
-        {
-          assertion = lib.hasPrefix "/" cfg.caPrivateKeyFile && !(lib.hasPrefix "/nix/store/" cfg.caPrivateKeyFile);
-          message = "mitm-proxy requires a runtime caPrivateKeyFile outside the Nix store.";
-        }
-      ];
+  config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = lib.hasInfix "-----BEGIN CERTIFICATE-----" cfg.caCertificate && !(lib.hasInfix "PRIVATE KEY" cfg.caCertificate);
+        message = "mitm-proxy requires a public PEM caCertificate, without a private key.";
+      }
+      {
+        assertion = lib.hasPrefix "/" cfg.caPrivateKeyFile && !(lib.hasPrefix "/nix/store/" cfg.caPrivateKeyFile);
+        message = "mitm-proxy requires a runtime caPrivateKeyFile outside the Nix store.";
+      }
+    ];
+
+    systemd.user.services = {
+      "drv.run-mitm-files@" = {
+        description = "Prepare guest files for mitm-proxy";
+        requires = ["drv.run-prepare@%i.service"];
+        after = ["drv.run-prepare@%i.service"];
+        partOf = ["drv.run@%i.service"];
+        unitConfig = {
+          StopWhenUnneeded = true;
+          ConditionGroup = "mitm-proxy-access";
+        };
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          # Budget includes cold socket activation, not only the HTTP response.
+          TimeoutStartSec = "3min";
+          RuntimeDirectory = "drv.run/%i/inputs/mitm";
+          RuntimeDirectoryMode = "0700";
+          UMask = "0077";
+          ExecStart = lib.getExe (pkgs.writeShellApplication {
+            name = "drv-run-mitm-files";
+            runtimeInputs = [pkgs.coreutils pkgs.curl];
+            text = ''
+              install -d -m 0700 "$RUNTIME_DIRECTORY/root" "$RUNTIME_DIRECTORY/root/.config" "$RUNTIME_DIRECTORY/root/.config/gh"
+              # Socket activation starts the independent shared service if needed.
+              # Peer credentials select the owner; no request field selects one.
+              curl --fail --silent --show-error \
+                --unix-socket /run/mitm-proxy-auth/control.sock \
+                http://localhost/hosts.yml \
+                --output "$RUNTIME_DIRECTORY/root/.config/gh/hosts.yml"
+            '';
+          });
+        };
+      };
+      "drv.run-image@" = {
+        requires = ["drv.run-mitm-files@%i.service"];
+        after = ["drv.run-mitm-files@%i.service"];
+      };
+    };
 
     environment.systemPackages = [package];
     environment.etc."mitm-proxy.json".source = settings;
-
     users.users.mitm-proxy = {
       isSystemUser = true;
       group = "mitm-proxy";
     };
-    users.groups.mitm-proxy = {};
-    # switch-to-configuration restarts user services before starting new system
-    # services. Publish guest seed files before those user-service restarts.
-    system.activationScripts.mitm-proxy = {
-      deps = ["users" "groups"];
-      text = ''
-        (
-          umask 0077
-          ${lib.escapeShellArgs (commandArgs "prepare")}
-        )
-      '';
+    users.groups = {
+      mitm-proxy = {};
+      # This group can use the service, not read its upstream credentials or CA key.
+      mitm-proxy-access = {};
     };
-    systemd.sockets = lib.mapAttrs' (name: _:
-      lib.nameValuePair "mitm-proxy-auth-${name}" {
-        wantedBy = ["sockets.target"];
-        socketConfig = {
-          ListenStream = "/run/mitm-proxy-auth/${name}.sock";
-          SocketUser = name;
-          SocketMode = "0600";
-          DirectoryMode = "0755";
-          FileDescriptorName = name;
-          Service = "mitm-proxy.service";
-          RemoveOnStop = true;
-        };
-      })
-    cfg.owners;
+    systemd.sockets.mitm-proxy-auth = {
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenStream = "/run/mitm-proxy-auth/control.sock";
+        SocketGroup = "mitm-proxy-access";
+        SocketMode = "0660";
+        DirectoryMode = "0755";
+        FileDescriptorName = "control";
+        Service = "mitm-proxy.service";
+        RemoveOnStop = true;
+      };
+    };
     systemd.services.mitm-proxy = {
       description = "drv.run credential proxy";
       wantedBy = ["multi-user.target"];
@@ -134,14 +123,13 @@ in {
       };
       serviceConfig = {
         Type = "exec";
-        Sockets = map (name: "mitm-proxy-auth-${name}.socket") (builtins.attrNames cfg.owners);
+        Sockets = ["mitm-proxy-auth.socket"];
         User = "mitm-proxy";
         Group = "mitm-proxy";
-        # Root publishes each capability to its owner's private group. The
-        # long-running proxy has neither root privileges nor group membership.
+        # Only CA preparation needs privilege. It never consumes service-owned state.
         ExecStartPre = "+${command "prepare"}";
         ExecStart = command "serve";
-        StateDirectory = "mitm-proxy-auth";
+        StateDirectory = ["mitm-proxy" "mitm-proxy-auth"];
         StateDirectoryMode = "0700";
         Restart = "on-failure";
         RestartSec = 2;
@@ -158,13 +146,8 @@ in {
         RestrictAddressFamilies = ["AF_UNIX" "AF_INET" "AF_INET6"];
       };
     };
-    # StateDirectory= would chown these files to the service user before every
-    # Exec command. Privileged preparation must only consume root-owned state.
     systemd.tmpfiles.rules = [
-      "d /var/lib/mitm-proxy 0750 root mitm-proxy -"
-      "d /run/mitm-proxy 0755 root root -"
       "d /run/mitm-proxy-ca 0750 root mitm-proxy -"
-      "d /var/lib/mitm-proxy-auth 0700 mitm-proxy mitm-proxy -"
     ];
     services.drv-run.guest.extraModules = [
       (import ../guest/mitm-proxy.nix {inherit (cfg) port;})

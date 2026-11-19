@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { DrvRunEnv } from "harness";
@@ -46,19 +46,19 @@ export async function listInstances(options: Options, signal?: AbortSignal): Pro
           }
           const { stdout } = await exec(
             options.systemctl ?? "systemctl",
-            ["--user", "show", `drv.run@${id}.service`, "--property=ActiveState", "--value"],
+            ["--user", "show", `drv.run@${id}.service`, "--property=ActiveState,SubState"],
             { timeout: 10_000, signal },
           );
-          let ready = false;
-          try {
-            ready = (
-              await stat(join(options.runtimeDirectory, `drv.run.${id}`, "client.conf"))
-            ).isFile();
-          } catch (error) {
-            if (!isMissing(error)) throw error;
+          let activeState: string | undefined;
+          let subState: string | undefined;
+          for (const line of stdout.split("\n")) {
+            const [key, value] = line.split("=");
+            if (key === "ActiveState") activeState = value;
+            if (key === "SubState") subState = value;
           }
+          assert(activeState && subState, "Missing systemd service state.");
           signal?.throwIfAborted();
-          return { id, reference, running: stdout.trim() === "active" && ready };
+          return { id, reference, running: activeState === "active" && subState === "running" };
         }),
     )
   )

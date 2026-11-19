@@ -22,39 +22,30 @@ const bash = (process.env.PATH ?? "")
   .find(existsSync);
 assert.ok(bash, "Bash is required for the provisioning fixture");
 
-for (const accepted of [true, false]) {
-  test(`provisioning ${accepted ? "publishes only after acknowledgement and master close" : "fails closed"}`, (t) => {
+for (const status of [0, 1, 255]) {
+  const accepted = status === 0;
+  test(`provisioning completes with SSH status ${status} without changing configuration`, (t) => {
     const directory = mkdtempSync(join(tmpdir(), "image-provision-"));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
-    const runtime = join(directory, "drv.run.fixture");
+    const runtime = join(directory, "fixture");
     const state = join(directory, "state");
     const bin = join(directory, "bin");
     for (const path of [runtime, state, bin]) mkdirSync(path);
     const environment = join(directory, "fixture-env");
     writeFileSync(environment, "{}");
     symlinkSync(environment, join(state, "environment"));
-    writeFileSync(join(runtime, "service-connection.conf"), "Host fixture\n");
-    writeFileSync(join(directory, "accepted"), JSON.stringify(accepted));
+    writeFileSync(join(runtime, "ssh_config"), "Host fixture\n");
+    writeFileSync(join(directory, "ssh-status"), String(status));
     // The SSH boundary exposes control operations, never a closure transport.
     writeFileSync(
       join(bin, "ssh"),
       `#!${bash}
 set -euo pipefail
-case "$*" in
-  *-fMN*) touch "$FIXTURE/master" ;;
-  *'read -r expected'*)
-    IFS= read -r environment
-    printf '%s' "$environment" > "$FIXTURE/requested-environment"
-    test "$(cat "$FIXTURE/accepted")" = true
-    ;;
-  *'cat /run/drv-run-environment/timings.jsonl') printf '%s\\n' '{"phase":"profile-ready","monotonic_s":1}' ;;
-  *'-O exit'*)
-    test ! -e "$RUNTIME_DIRECTORY/client.conf"
-    rm "$FIXTURE/master"
-    touch "$FIXTURE/master-closed"
-    ;;
-  *) exit 2 ;;
-esac
+IFS= read -r environment
+printf '%s' "$environment" > "$FIXTURE/requested-environment"
+status=$(cat "$FIXTURE/ssh-status")
+if ((status != 0)); then exit "$status"; fi
+printf '%s\\n' '{"phase":"profile-ready","monotonic_s":1}'
 `,
       { mode: 0o755 },
     );
@@ -73,21 +64,17 @@ esac
         FIXTURE: directory,
         RUNTIME_DIRECTORY: runtime,
         STATE_DIRECTORY: state,
+        MAINPID: String(process.pid),
       },
       stdio: "ignore",
+      timeout: 2000,
     });
     assert.ifError(result.error);
-    assert.equal(result.status, accepted ? 0 : 1);
-    assert.equal(existsSync(join(runtime, "client.conf")), accepted);
-    assert.equal(existsSync(join(directory, "master-closed")), accepted);
+    assert.equal(result.status, status);
+    assert.equal(existsSync(join(runtime, "ssh_config")), true);
     assert.equal(existsSync(join(directory, "nix-invoked")), false);
     assert.equal(readFileSync(join(directory, "requested-environment"), "utf8"), environment);
     if (accepted) {
-      assert.deepEqual(
-        readFileSync(join(runtime, "client.conf")),
-        readFileSync(join(runtime, "service-connection.conf")),
-      );
-      assert.equal(existsSync(join(directory, "master")), false);
       assert.deepEqual(JSON.parse(readFileSync(join(runtime, "guest-timings.jsonl"), "utf8")), {
         phase: "profile-ready",
         monotonic_s: 1,

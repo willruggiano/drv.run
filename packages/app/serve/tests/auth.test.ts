@@ -44,6 +44,8 @@ await test("authorization client exposes only public state and validates device 
     error: null,
     device: null,
   });
+  f.reply({ state: "authorizing", user_id: null, device: null, error: null });
+  assert.equal((await f.authorization.status()).userId, null);
   await f.authorization.change("logout");
   assert.equal((await f.authorization.status()).state, "not-enrolled");
   for (const value of [

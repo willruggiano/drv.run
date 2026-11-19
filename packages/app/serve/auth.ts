@@ -2,7 +2,6 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { FormError } from "./forms.ts";
 import { request } from "node:http";
-import { userInfo } from "node:os";
 
 const states = [
   "not-enrolled",
@@ -45,6 +44,7 @@ function status(value: unknown, provider: AuthorizationProvider): AuthorizationS
   const data = object(value);
   if (
     provider === "github" &&
+    data.user_id !== null &&
     (typeof data.user_id !== "number" || !Number.isSafeInteger(data.user_id) || data.user_id <= 0)
   )
     throw new Error("Invalid GitHub identity.");
@@ -90,7 +90,7 @@ function status(value: unknown, provider: AuthorizationProvider): AuthorizationS
 
 export class ProxyAuthorization {
   readonly socketPath: string;
-  constructor(socketPath = `/run/mitm-proxy-auth/${userInfo().username}.sock`) {
+  constructor(socketPath = "/run/mitm-proxy-auth/control.sock") {
     this.socketPath = socketPath;
   }
 

@@ -172,12 +172,14 @@ and model-credential contracts have one specification owner:
     source, so that other selectable environments remain usable.
 56. As an operator, I want SSH connection and trust settings resolved by
     OpenSSH, so that applications need only an SSH host name.
-57. As an operator, I want generic owner-scoped seed-file inputs, so that core
-    drv.run copies data without knowing component-specific formats.
-58. As an operator, I want missing seed inputs to stop startup, so that a guest
-    cannot start with silently incomplete security configuration.
-59. As an operator, I want seed snapshots applied on explicit guest restart, so
-    that editing an input cannot unexpectedly mutate a running guest.
+57. As an operator, I want owner-scoped systemd integration units to supply
+    files at canonical guest paths, so that core need not understand their
+    formats.
+58. As an operator, I want required preparation and assembly failures to stop
+    startup, so that a guest cannot start with incomplete security
+    configuration.
+59. As an operator, I want fresh guest-file snapshots on explicit restart, so
+    that changing producer state cannot unexpectedly mutate a running guest.
 60. As a maintainer, I want unused www removed independently of live acceptance,
     so that dead experiments do not prolong the app replacement.
 61. As a maintainer, I want surviving durable assets owned by PDS, so that a
@@ -458,16 +460,34 @@ and model-credential contracts have one specification owner:
   configuration. Provision server keys and authorized keys in the locations
   chosen by that configuration with appropriate ownership and permissions.
 
-### Seed inputs and service modules
+### Guest files and service modules
 
-- Core accepts owner-scoped mappings from host input files to relative guest
-  seed destinations. It copies bytes without interpreting them. Reject invalid,
-  escaping, or conflicting destinations; inputs cannot overwrite core-managed
-  seed material. Do not follow a destination symlink outside the staging tree.
-- Missing or unreadable configured inputs fail startup. Deployment prepares
-  inputs before instance start; component generators do not become arbitrary
-  executable core hooks. Snapshot inputs on every start. Source changes take
-  effect only after an explicit restart, not in a running seed.
+- Apply the revised guest-file resolution in
+  [[tasks/050-infrastructure-contract.md]]. Integrations are per-instance
+  oneshot units in the host owner's user manager, composed through native
+  NixOS/systemd configuration rather than a core hook dispatcher or mapping DSL.
+- Each producer's sole `RuntimeDirectory`, `drv.run/%i/inputs/<integration>`, is
+  a guest-relative filesystem tree. For example, `root/.config/gh/hosts.yml`
+  becomes `/root/.config/gh/hosts.yml`. Core enumerates immediate child
+  directories of `%t/drv.run/%i/inputs`; it neither interprets component formats
+  nor discovers arbitrary units.
+- Require successful preparation before assembly and successful assembly before
+  guest startup. Use requirement and ordering dependencies together; directory
+  presence is not readiness. Missing or unreadable mandatory inputs must fail
+  their producer, not silently skip required preparation.
+- Merge shared directories; reject competing files, file/directory conflicts,
+  and attempts to overwrite core-managed material. Do not follow links outside
+  input trees. Keep host-only keys, sockets, and control files out of all
+  producer output roots.
+- Start each activation with fresh inputs. Preserve outputs until consumption
+  completes and clean up after stop, failure, and cancellation. Failed-start
+  retry and restart must not reuse stale outputs. Published snapshots must not
+  change with producer state; normal guest persistence and identity remain
+  unchanged.
+- Core supplies guest ownership and canonical-path delivery. Image format and
+  transport are implementation details, not integration inputs. The per-instance
+  mitm producer is distinct from the shared proxy service; a guest's lifecycle
+  must not stop that shared service or expose upstream tokens/private CA keys.
 - Packages export `passthru.services.host` and, where needed,
   `passthru.services.guest`. Keep modules package-local, inline unless a sibling
   module is warranted, using lexical dependencies and `finalAttrs.finalPackage`.
@@ -483,9 +503,10 @@ and model-credential contracts have one specification owner:
   NixOS class. Use ordinary module-class and option checks, not scope-prefixed
   export names or an adapter that hides different import scopes.
 - Rock5b selects packages, users, secrets, state/runtime access, inventory
-  consumers, seed mappings, endpoint exposure, and dependencies between units.
-  Central infrastructure modules do not import functional application modules.
-  Extract shared composition only when there is an actual second consumer.
+  consumers, guest-file producer units, endpoint exposure, and unit
+  dependencies. Central infrastructure modules do not import functional
+  application modules. Extract shared composition only when there is an actual
+  second consumer.
 
 ### HTTP composition
 
@@ -532,23 +553,25 @@ and model-credential contracts have one specification owner:
 
 ## Testing Decisions
 
-The user confirmed these seams before specification publication. Test external
-interfaces, resulting state, and event/lifecycle ordering. Assign each behavior
-once at the highest practical public boundary; use narrower tests only where
-that boundary cannot establish the contract. Do not expose production internals
-solely for tests or assert log/serialized-text matches.
+The original test seams remain confirmed. The revised guest-file contract's
+assembler and lifecycle/guest-consumption seams in implementation ticket 03 are
+also approved. Test external interfaces, resulting state, and event/lifecycle
+ordering. Assign each behavior once at the highest practical public boundary;
+use narrower tests only where that boundary cannot establish the contract. Do
+not expose production internals solely for tests or assert log/serialized-text
+matches.
 
 ### Offline component evidence
 
-| Seam                                                            | Required evidence                                                                                                                                     | Prior art                                                                                                                                                                  |
-| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PDS HTTP, HTML, Datastar                                        | Real Harnesses, temporary SQLite, faux model; multi-store isolation, command semantics, bounded observation, errors, environment configuration        | [PDS fixtures](packages/pds/tests/fixtures.ts), [application tests](packages/pds/tests/application.test.ts), [watch tests](packages/pds/tests/watch.test.ts)               |
-| PDS shared credential file                                      | Cross-process writes and locks, external login/logout visibility, persistence before use, storage failures and cancellation boundaries                | Pi 1.5.2 credential backend; detailed cases in [[packages/pds/SPEC.md]]                                                                                                    |
-| Accounts management and Unix credential endpoint                | Deterministic OAuth server; both grants, HTTP-200 errors, refresh races/uncertainty, restart, replacement, disconnect, secret exclusion               | [Credential failure scenarios](packages/mitm-proxy/tests/auth_test.py)                                                                                                     |
-| Mitm client to controlled TLS upstream                          | Declarative placement, owner binding, opaque passthrough, failed substitution, git/gh protocol outcomes                                               | [Transport fixture](packages/mitm-proxy/tests/transport_test.py), [proxy policy cases](packages/mitm-proxy/tests/proxy_test.py)                                            |
-| Public D-Bus through collection to controlled Web Push receiver | Local acceptance, input validation, owner binding, replacement, dropping/no replay, single send attempts, persistent subscriptions, safe endpoints    | [Private D-Bus fixture](packages/app/serve/tests/notification-guest.test.ts), [push safety tests](packages/app/serve/tests/push.test.ts)                                   |
-| Real browser                                                    | Drafts, DOM/Datastar behavior, model-login interactions, independent management, prefix-correct assets and service-worker scope                       | [PDS Chromium suite](packages/pds/tests/flow.chromium.ts), [registration browser tests](packages/app/serve/tests/notifications.chromium.ts)                                |
-| CLI, OpenSSH, Nix modules and closures                          | Parsed inventory, missing versus failed discovery, native connection/trust, generic seeds, import scopes, independence and retired-dependency absence | [CLI](nixosModules/host/cli.sh), [preparation](nixosModules/host/pre.sh), [focused proxy VM](tests/nixos/mitm-proxy.nix), [notification VM](tests/nixos/notifications.nix) |
+| Seam                                                            | Required evidence                                                                                                                                                 | Prior art                                                                                                                                                                  |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PDS HTTP, HTML, Datastar                                        | Real Harnesses, temporary SQLite, faux model; multi-store isolation, command semantics, bounded observation, errors, environment configuration                    | [PDS fixtures](packages/pds/tests/fixtures.ts), [application tests](packages/pds/tests/application.test.ts), [watch tests](packages/pds/tests/watch.test.ts)               |
+| PDS shared credential file                                      | Cross-process writes and locks, external login/logout visibility, persistence before use, storage failures and cancellation boundaries                            | Pi 1.5.2 credential backend; detailed cases in [[packages/pds/SPEC.md]]                                                                                                    |
+| Accounts management and Unix credential endpoint                | Deterministic OAuth server; both grants, HTTP-200 errors, refresh races/uncertainty, restart, replacement, disconnect, secret exclusion                           | [Credential failure scenarios](packages/mitm-proxy/tests/auth_test.py)                                                                                                     |
+| Mitm client to controlled TLS upstream                          | Declarative placement, owner binding, opaque passthrough, failed substitution, git/gh protocol outcomes                                                           | [Transport fixture](packages/mitm-proxy/tests/transport_test.py), [proxy policy cases](packages/mitm-proxy/tests/proxy_test.py)                                            |
+| Public D-Bus through collection to controlled Web Push receiver | Local acceptance, input validation, owner binding, replacement, dropping/no replay, single send attempts, persistent subscriptions, safe endpoints                | [Private D-Bus fixture](packages/app/serve/tests/notification-guest.test.ts), [push safety tests](packages/app/serve/tests/push.test.ts)                                   |
+| Real browser                                                    | Drafts, DOM/Datastar behavior, model-login interactions, independent management, prefix-correct assets and service-worker scope                                   | [PDS Chromium suite](packages/pds/tests/flow.chromium.ts), [registration browser tests](packages/app/serve/tests/notifications.chromium.ts)                                |
+| CLI, OpenSSH, Nix modules and closures                          | Parsed inventory, missing versus failed discovery, native connection/trust, unit-produced guest files, import scopes, independence and retired-dependency absence | [CLI](nixosModules/host/cli.sh), [preparation](nixosModules/host/pre.sh), [focused proxy VM](tests/nixos/mitm-proxy.nix), [notification VM](tests/nixos/notifications.nix) |
 
 - Existing tests are evidence, not mandates to preserve discarded behavior.
   Replace identity-pinning, request-spanning lease, notification replay, inbox,
@@ -564,8 +587,9 @@ solely for tests or assert log/serialized-text matches.
   inventory is a parsed public protocol, not human-output matching.
 - Verify actual two-Unix-owner denial and shared mitm authorization. Reserve
   focused NixOS tests for OS permissions, user/system service lifetimes, D-Bus
-  ownership, guest seed/restart boundaries, and integration that cannot be
-  established through cheaper public interfaces. Do not run `nixos-host-basic`.
+  ownership, guest-file activation/restart boundaries, and integration that
+  cannot be established through cheaper public interfaces. Do not run
+  `nixos-host-basic`.
 - Every Nix-defined package runs its unit tests in `checkPhase`. Expose
   applicable focused VM tests through package test passthru and `nixos-` flake
   checks. Benchmarks remain outside flake checks. Keep authoritative Nix
@@ -609,8 +633,10 @@ completion does require separately authorized evidence for:
   to newer ChatGPT token sharing, profile lookup, or upstream identity pinning.
 - Durable notifications, retries, delivery receipts, host-native sending,
   arbitrary guest-user sending, inboxes, actions, or direct agent notifications.
-- Guest lifecycle control from PDS discovery, a new inventory daemon, general
-  executable hooks, plugin frameworks, or speculative notification backends.
+- Guest lifecycle control from PDS discovery, a new inventory daemon, a core
+  executable-hook dispatcher, plugin frameworks, or speculative notification
+  backends. Native systemd integration units are the selected composition
+  mechanism, not such a framework.
 - Separate telemetry deployment, Knip adoption, or 100% coverage gates copied
   from the old durable API specification.
 
@@ -655,8 +681,10 @@ completion does require separately authorized evidence for:
   phase.
 - Push library selection and storage layout are implementation details subject
   to the specified public contracts and offline checks, not new user workflows.
-- The test seams are confirmed; runtime acceptance remains pending. Markdown
-  validation does not establish any replacement component or deployment gate.
+- The guest-file scope and both revised test seams are approved; other test
+  seams remain confirmed. The new lifecycle graph and production guest
+  consumption require runtime verification. Markdown validation establishes no
+  replacement component or deployment gate.
 
 [pi-ssh]:
   /nix/store/66k268i56xwl405b3hnz6l84mgb4fl8c-pds-0.1.0/lib/pds/node_modules/@earendil-works/pi-env/dist/ssh.js

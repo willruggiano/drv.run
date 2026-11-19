@@ -406,7 +406,6 @@
 
         # Configure our homegrown pi-based frontend application and serve it over
         # tailscale dns. Access it on your phone from anywhere!
-        services.drv-run.notifications.enable = true;
         services.pi = {
           enable = true;
           notifications = {
@@ -508,7 +507,7 @@
             -----END CERTIFICATE-----
           '';
 
-          owners.me.githubUserId = 11872440;
+          enable = true;
         };
       };
 
@@ -639,6 +638,7 @@
               isNormalUser = true;
               uid = 1000;
               group = "me";
+              extraGroups = ["mitm-proxy-access"];
               hashedPassword = "!";
               openssh.authorizedKeys.keys = [
                 "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWXJHDkOTwqq+3W5JgBxGWyDNlhxVcQB/2lwBRwg8/f me@local"

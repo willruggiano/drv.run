@@ -87,11 +87,9 @@ if [[ -z $ref ]]; then
       properties[$property]=$value
     done <<<"$unit_state"
     if [[ $json == true ]]; then
-      # post.sh publishes client.conf after acknowledgement; systemd removes
-      # the runtime directory on stop, so retained state alone is never ready.
+      # ExecStartPost verifies the environment before systemd enters running.
       ready=false
-      if [[ ${properties[ActiveState]} == active && ${properties[SubState]} == running &&
-        -f $XDG_RUNTIME_DIR/drv.run.$id/client.conf ]]; then
+      if [[ ${properties[ActiveState]} == active && ${properties[SubState]} == running ]]; then
         ready=true
       fi
       records+=("$(jq --null-input --compact-output \
@@ -120,13 +118,13 @@ fi
 
 umask 077
 state=$(systemd-path user-state-private)
-mkdir -p "$state/drv.run"
+mkdir -p "$state/drv.run" "$XDG_RUNTIME_DIR/drv.run"
 while :; do
   # Canonical lowercase IDs work as SSH names without case-dependent identity.
   id=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
   instance="$state/drv.run/$id"
   if mkdir "$instance"; then
-    runtime="$XDG_RUNTIME_DIR/drv.run.$id"
+    runtime="$XDG_RUNTIME_DIR/drv.run/$id"
     if mkdir "$runtime"; then
       break
     fi
@@ -136,7 +134,7 @@ while :; do
     exit 1
   fi
 done
-unit="drv.run@${runtime##*.}.service"
+unit="drv.run@$id.service"
 submitted=false
 cleanup() {
   if [[ $submitted == false ]]; then
@@ -161,5 +159,5 @@ if ((status != 0)); then
   printf 'Full log: journalctl --user -u %s --no-pager\n' "$unit" >&2
   exit "$status"
 fi
-printf '%s\n' "${runtime##*/}" >&2
-exec ssh -- "${runtime##*/}" "$command"
+printf 'drv.run.%s\n' "$id" >&2
+exec ssh -- "drv.run.$id" "$command"

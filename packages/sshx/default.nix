@@ -35,7 +35,10 @@ in
       timeout 30 ./connect.test
       cp ${../../nixosModules/host/command.sh} tests/launcher.sh
       cp ${../../nixosModules/guest/shell.sh} tests/shell.sh
+      cp ${../../nixosModules/host/post.sh} tests/post.sh
+      cp ${../../nixosModules/host/ssh.conf} tests/ssh.conf
       export NSS_WRAPPER_LIBRARY=${nss_wrapper}/lib/libnss_wrapper.so
+      export SSH_PROXY=${systemd}/lib/systemd/systemd-ssh-proxy
       export SFTP_SERVER=${openssh}/libexec/sftp-server
       timeout 120 python3 -m unittest discover -s tests -p '*_test.py' -v
       runHook postCheck

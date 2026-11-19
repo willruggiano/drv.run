@@ -51,7 +51,7 @@
   };
   # Exercise the real preparation/lifecycle worker without a nested hypervisor.
   # Only its runner and image-factory boundaries are fixtures; Nix realization,
-  # profiles, GC roots, state/seed disks and systemd cleanup are real.
+  # profiles, GC roots, the state disk and systemd cleanup are real.
   runner = pkgs.writeShellScriptBin "microvm-run" "exit 0";
   imageExpression = pkgs.writeText "fixture-image-expression.nix" ''
     { environment }:
@@ -77,7 +77,7 @@
     ];
     text =
       lib.replaceStrings
-      ["@runner@" "@image-expression@" "@proxy@" "@create-volumes@" "@mitm-proxy-seed@" "@timing@" "@notification-seed@" "@owner-keys@"]
+      ["@runner@" "@image-expression@" "@proxy@" "@create-volumes@" "@timing@"]
       [
         (toString runner)
         (toString imageExpression)
@@ -86,10 +86,7 @@
           truncate -s 32M state.img
           mke2fs -q -t ext4 -L drv-run-state state.img
         ''
-        ""
         (builtins.readFile ../../nixosModules/timing.sh)
-        ""
-        ""
       ]
       (builtins.readFile ../../nixosModules/host/pre.sh);
   };
@@ -220,6 +217,11 @@ in {
         neededForBoot = true;
         noCheck = true;
       };
+      # Expose the test driver during slow TCG startup; assertions wait for units.
+      systemd.services.backdoor = {
+        unitConfig.DefaultDependencies = false;
+        after = ["local-fs.target"];
+      };
       # The test driver uses a unit instead of microvm's stage-2 registration.
       systemd.services.drv-run-environment = {
         after = ["register-nix-paths.service"];
@@ -246,7 +248,7 @@ in {
       second = {
         systemd.services."image-worker@".serviceConfig = {
           StateDirectory = "image-worker/%i";
-          RuntimeDirectory = "drv.run.%i";
+          RuntimeDirectory = "drv.run/%i";
           ExecStartPre = lib.getExe worker;
           ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
           KillMode = "control-group";
@@ -361,7 +363,7 @@ in {
       second.succeed("test -e /dev/kvm || touch /dev/kvm")
 
       def prepare_instance(name, reference=environment):
-          second.succeed(f"mkdir -p /run/drv.run.{name}; printf '%s\\n' {shlex.quote(reference)} > /run/drv.run.{name}/reference")
+          second.succeed(f"mkdir -p /run/drv.run/{name}; printf '%s\\n' {shlex.quote(reference)} > /run/drv.run/{name}/reference")
 
       with subtest("two prepared instances retain shared artifacts with independent state"):
           for name in ["alpha", "beta"]:
@@ -369,7 +371,7 @@ in {
               second.succeed(f"systemctl start image-worker@{name}.service")
               state = f"/var/lib/image-worker/{name}"
               second.succeed(f"test -d {state}/ready; test {state}/environment -ef {environment}; test {state}/environment-image -ef ${image}")
-              second.succeed(f"test /run/drv.run.{name}/environment.erofs -ef ${image}/store.erofs")
+              second.succeed(f"test /run/drv.run/{name}/environment.erofs -ef ${image}/store.erofs")
           second.succeed("test ! /var/lib/image-worker/alpha/state.img -ef /var/lib/image-worker/beta/state.img")
           second.succeed("systemctl stop image-worker@alpha.service; nix-store --gc")
           second.succeed("cp /var/lib/image-worker/alpha/state.img /root/saved-state.img")
@@ -386,7 +388,7 @@ in {
               state = "/var/lib/image-worker/beta"
               second.succeed(f"mv {state}/{resource} {state}/saved")
               second.fail("systemctl start image-worker@beta.service")
-              second.fail(f"test -e {state}/{resource} || test -e /run/drv.run.beta/client.conf")
+              second.fail(f"test -e {state}/{resource} || test -e /run/drv.run/beta/ssh_config")
               second.succeed(f"mv {state}/saved {state}/{resource}; systemctl reset-failed image-worker@beta.service")
           second.succeed("systemctl start image-worker@beta.service; systemctl stop image-worker@beta.service")
 
@@ -395,7 +397,7 @@ in {
           second.succeed("mkdir -p /var/lib/image-worker/interrupted/creating; touch /var/lib/image-worker/interrupted/state.img")
           second.fail("systemctl start image-worker@interrupted.service")
           second.succeed("test ! -s /var/lib/image-worker/interrupted/state.img; test -d /var/lib/image-worker/interrupted/creating")
-          second.fail("test -e /var/lib/image-worker/interrupted/ready || test -e /run/drv.run.interrupted/client.conf")
+          second.fail("test -e /var/lib/image-worker/interrupted/ready || test -e /run/drv.run/interrupted/ssh_config")
 
       with subtest("failed image realization cannot mark resources prepared"):
           second.succeed(f"cp {environment} /root/mismatch-env; nix-store --add /root/mismatch-env > /root/mismatch-path")
@@ -403,7 +405,7 @@ in {
           prepare_instance("failed", mismatched)
           second.fail("systemctl start image-worker@failed.service")
           second.succeed("test -d /var/lib/image-worker/failed/creating")
-          second.fail("test -e /var/lib/image-worker/failed/ready || test -e /run/drv.run.failed/client.conf")
+          second.fail("test -e /var/lib/image-worker/failed/ready || test -e /run/drv.run/failed/ssh_config")
     '';
   };
 }

@@ -1,7 +1,6 @@
 import asyncio
 import base64
-import json
-import os
+import pwd
 import stat
 import tempfile
 import unittest
@@ -9,7 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext
 from itertools import product
 from pathlib import Path
-from typing import cast, override
+from typing import override
 from unittest.mock import patch
 
 from auth import Account, Authorization
@@ -18,13 +17,12 @@ from cryptography.hazmat.primitives import serialization
 from main import (
     API_HOST,
     HOST,
+    Capabilities,
     CertificateAuthority,
-    Owner,
     Policy,
     create_master,
     prepare,
     public_address,
-    read_credentials,
     resolve_upstream,
 )
 from mitmproxy import connection, http
@@ -88,8 +86,8 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
 
     @override
     async def asyncSetUp(self) -> None:
-        for name, user in [("alice", 1), ("bob", 2)]:
-            await enroll(self.authorization, self.oauth, Account(name, user))
+        for name in ["alice", "bob"]:
+            await enroll(self.authorization, self.oauth, Account(name))
 
     async def test_credentials_are_owner_scoped_and_only_password_is_replaced(
         self,
@@ -97,7 +95,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
         for placeholder, token in [(ALICE, "ghu_token1"), (BOB, "ghu_token2")]:
             with self.subTest(placeholder=placeholder):
                 policy = policy_fixture(
-                    {ALICE: Account("alice", 1), BOB: Account("bob", 2)},
+                    {ALICE: Account("alice"), BOB: Account("bob")},
                     self.authorization,
                 )
                 request = flow("/alice/project.git/git-receive-pack")
@@ -133,7 +131,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
             ]:
                 with self.subTest(scheme=scheme, method=method, path=path):
                     policy = policy_fixture(
-                        {ALICE: Account("alice", 1), BOB: Account("bob", 2)},
+                        {ALICE: Account("alice"), BOB: Account("bob")},
                         self.authorization,
                     )
                     request = flow(path, API_HOST)
@@ -171,9 +169,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
             ),
         ]:
             with self.subTest(headers=headers, method=method):
-                policy = policy_fixture(
-                    {ALICE: Account("alice", 1)}, self.authorization
-                )
+                policy = policy_fixture({ALICE: Account("alice")}, self.authorization)
                 request = flow("/user", API_HOST)
                 connect(policy, request)
                 request.request.method = method
@@ -188,7 +184,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_tunnel_cannot_switch_between_git_and_api(self) -> None:
         for tunnel_host, request_host in [(HOST, API_HOST), (API_HOST, HOST)]:
-            policy = policy_fixture({ALICE: Account("alice", 1)}, self.authorization)
+            policy = policy_fixture({ALICE: Account("alice")}, self.authorization)
             request = flow("/graphql", tunnel_host)
             connect(policy, request)
             # Even consistent inner Host/SNI/authority cannot change CONNECT's origin.
@@ -214,9 +210,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
             ([("Authorization", basic(ALICE)), ("Authorization", basic(BOB))], 403),
         ]:
             with self.subTest(headers=headers):
-                policy = policy_fixture(
-                    {ALICE: Account("alice", 1)}, self.authorization
-                )
+                policy = policy_fixture({ALICE: Account("alice")}, self.authorization)
                 request = flow()
                 connect(policy, request)
                 for key, value in headers:
@@ -273,9 +267,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.subTest(host=host, authorization=authorization):
-                policy = policy_fixture(
-                    {ALICE: Account("alice", 1)}, self.authorization
-                )
+                policy = policy_fixture({ALICE: Account("alice")}, self.authorization)
                 request = flow(host=host)
                 connect(policy, request)
                 if authorization is not None:
@@ -290,7 +282,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
     async def test_unconfigured_api_methods_do_not_receive_host_credentials(
         self,
     ) -> None:
-        policy = policy_fixture({ALICE: Account("alice", 1)}, self.authorization)
+        policy = policy_fixture({ALICE: Account("alice")}, self.authorization)
         request = flow("/user", API_HOST)
         request.request.method = "TRACE"
         request.request.headers["Authorization"] = "token " + ALICE
@@ -313,9 +305,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
             ("GET", "/login", False),
         ]:
             with self.subTest(method=method, path=path):
-                policy = policy_fixture(
-                    {ALICE: Account("alice", 1)}, self.authorization
-                )
+                policy = policy_fixture({ALICE: Account("alice")}, self.authorization)
                 request = flow(path)
                 request.request.method = method
                 request.request.headers["Authorization"] = basic(ALICE)
@@ -344,9 +334,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
             ],
         ):
             with self.subTest(host=host, change=change):
-                policy = policy_fixture(
-                    {ALICE: Account("alice", 1)}, self.authorization
-                )
+                policy = policy_fixture({ALICE: Account("alice")}, self.authorization)
                 request = flow(host=host)
                 if change != "no-connect":
                     connect(policy, request)
@@ -373,7 +361,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_401_responses_release_leases_before_rejection(
         self,
     ) -> None:
-        account = Account("alice", 1)
+        account = Account("alice")
         policy = policy_fixture({ALICE: account}, self.authorization)
         requests = [flow(), flow()]
         async with asyncio.timeout(2):
@@ -393,7 +381,7 @@ class PolicyTest(unittest.IsolatedAsyncioTestCase):
             await self.authorization.logout(account)
 
     async def test_exception_after_mutation_kills_flow(self) -> None:
-        policy = policy_fixture({ALICE: Account("alice", 1)}, self.authorization)
+        policy = policy_fixture({ALICE: Account("alice")}, self.authorization)
         request = flow()
         connect(policy, request)
         request.request.headers["Authorization"] = basic(ALICE)
@@ -528,52 +516,41 @@ class ConnectionTest(unittest.IsolatedAsyncioTestCase):
 
 
 class CredentialTest(unittest.TestCase):
-    def test_publication_modes_override_restrictive_umask(self) -> None:
+    def test_capabilities_are_private_stable_and_check_runtime_membership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            state, public = root / "state", root / "public"
-            owners = [Owner("alice", 1000, 1), Owner("bob", 1001, 2)]
-            ca = certificate_authority(root / "ca-source")
-            previous_umask = os.umask(0o077)
-            try:
-                # Only ownership changes need privilege; exercise real file modes.
-                with patch("main.os.chown"):
-                    for _ in range(2):
-                        prepare(state, public, owners, 999, ca, root / "runtime-ca")
-                        for owner in owners:
-                            publication = public / owner.name
-                            self.assertEqual(
-                                stat.S_IMODE(publication.stat().st_mode), 0o750
-                            )
-                            for name in ["config.yml", "hosts.yml"]:
-                                self.assertEqual(
-                                    stat.S_IMODE((publication / name).stat().st_mode),
-                                    0o640,
-                                )
-                            self.assertEqual(
-                                cast(
-                                    object,
-                                    json.loads((publication / "hosts.yml").read_text()),
-                                ),
-                                {
-                                    "github.com": {
-                                        "oauth_token": (
-                                            state / ("placeholder-" + owner.name)
-                                        ).read_text(),
-                                        "git_protocol": "https",
-                                    }
-                                },
-                            )
-                            self.assertFalse((publication / "placeholder").exists())
-                            self.assertFalse((publication / "ca.pem").exists())
-                            # Restart must repair directories from the broken version.
-                            publication.chmod(0o700)
-                        self.assertEqual(stat.S_IMODE(public.stat().st_mode), 0o755)
-                        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o750)
-                        for entry in state.iterdir():
-                            self.assertEqual(stat.S_IMODE(entry.stat().st_mode), 0o640)
-            finally:
-                _ = os.umask(previous_umask)
+            original = root / "placeholder-alice"
+            _ = original.write_text(ALICE)
+            capabilities = Capabilities(root)
+            # Previously published capabilities remain valid; no state disposal.
+            self.assertEqual(
+                capabilities.hosts(Account("alice"))["github.com"]["oauth_token"], ALICE
+            )
+            bob = capabilities.hosts(Account("bob"))["github.com"]["oauth_token"]
+            self.assertNotEqual(bob, ALICE)
+            self.assertEqual(
+                stat.S_IMODE((root / "placeholder-bob").stat().st_mode), 0o600
+            )
+            restarted = Capabilities(root)
+            self.assertEqual(
+                restarted.hosts(Account("bob")), capabilities.hosts(Account("bob"))
+            )
+            with (
+                patch(
+                    "main.pwd.getpwnam",
+                    return_value=pwd.struct_passwd(
+                        ("alice", "x", 1000, 1000, "", "/home/alice", "/bin/sh")
+                    ),
+                ),
+                patch("main.owner", return_value=Account("alice")),
+            ):
+                self.assertEqual(restarted[ALICE], Account("alice"))
+            with (
+                patch("main.pwd.getpwnam"),
+                patch("main.owner", side_effect=PermissionError),
+            ):
+                self.assertIsNone(restarted.get(ALICE))
+            self.assertEqual(original.read_text(), ALICE)
 
     def test_ca_is_provisioned_only_in_runtime_store_and_matches_guest_trust(
         self,
@@ -581,13 +558,9 @@ class CredentialTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ca = certificate_authority(root / "ca-source")
-            state, public, runtime = (
-                root / "state",
-                root / "public",
-                root / "runtime-ca",
-            )
+            runtime = root / "runtime-ca"
             with patch("main.os.chown"):
-                prepare(state, public, [], 999, ca, runtime)
+                prepare(999, ca, runtime)
             store = CertStore.from_files(
                 runtime / "mitmproxy-ca.pem", runtime / "mitmproxy-dhparam.pem"
             )
@@ -605,8 +578,6 @@ class CredentialTest(unittest.TestCase):
                     serialization.PublicFormat.SubjectPublicKeyInfo,
                 ),
             )
-            self.assertEqual(list(state.iterdir()), [])
-            self.assertEqual(list(public.iterdir()), [])
             self.assertEqual(stat.S_IMODE(runtime.stat().st_mode), 0o750)
             for entry in runtime.iterdir():
                 self.assertEqual(stat.S_IMODE(entry.stat().st_mode), 0o640)
@@ -616,22 +587,15 @@ class CredentialTest(unittest.TestCase):
             root = Path(directory)
             ca = certificate_authority(root / "ca-source")
             other = certificate_authority(root / "other-ca")
-            state, public, runtime = (
-                root / "state",
-                root / "public",
-                root / "runtime-ca",
-            )
+            runtime = root / "runtime-ca"
             with patch("main.os.chown"):
-                prepare(state, public, [], 999, ca, runtime)
+                prepare(999, ca, runtime)
                 for key_file, error in [
                     (root / "missing", OSError),
                     (other.private_key_file, ValueError),
                 ]:
                     with self.subTest(key_file=key_file), self.assertRaises(error):
                         prepare(
-                            state,
-                            public,
-                            [],
                             999,
                             CertificateAuthority(ca.certificate, key_file),
                             runtime,
@@ -642,16 +606,6 @@ class CredentialTest(unittest.TestCase):
             self.assertEqual(
                 x509.load_pem_x509_certificate(store.default_ca.to_pem()),
                 x509.load_pem_x509_certificate(ca.certificate.encode()),
-            )
-
-    def test_only_configured_placeholders_are_loaded(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            _ = (root / "placeholder-alice").write_text(ALICE)
-            _ = (root / "placeholder-bob").write_text(BOB)
-            self.assertEqual(
-                read_credentials(root, [Owner("alice", 1000, 1)]),
-                {ALICE: Account("alice", 1)},
             )
 
 

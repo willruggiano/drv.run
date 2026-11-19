@@ -115,18 +115,25 @@ await test("attachments retain image bytes and UTF-8 text; unsupported input doe
 
 await test("environment discovery exposes only complete drv.run SSH connection files", async (t) => {
   const { directory } = await fixture(t);
-  const ready = join(directory, "drv.run.ready");
-  await mkdir(ready);
-  await mkdir(join(directory, "drv.run.starting"));
+  const ready = join(directory, "drv.run", "ready");
+  await mkdir(ready, { recursive: true });
+  await mkdir(join(directory, "drv.run", "starting"));
   await Promise.all(
-    ["client.conf", "client-key", "known_hosts"].map((name) => writeFile(join(ready, name), "")),
+    ["ssh_config", "id_ed25519", "known_hosts"].map((name) => writeFile(join(ready, name), "")),
   );
   const environments = await discoverEnvironments(directory);
   assert.deepEqual(
     environments.map((item) => item.id),
     ["local", "drv.run.ready"],
   );
-  assert.equal(environments[1]?.target?.configFile, join(ready, "client.conf"));
+  assert.deepEqual(environments[1]?.target, {
+    host: "drv.run.ready",
+    user: "root",
+    hostKeyAlias: "drv.run.ready",
+    identityFile: join(ready, "id_ed25519"),
+    knownHostsFile: join(ready, "known_hosts"),
+    configFile: "/etc/ssh/ssh_config",
+  });
 });
 
 await test("HTTP rejects foreign writes and accepts native forms at the configured public origin", async (t) => {

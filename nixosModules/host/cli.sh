@@ -85,7 +85,7 @@ for owner in "${owners[@]}"; do
   fi
   if [[ $action == stop && $target == --all ]]; then
     # Include units still starting, even before they have written durable state.
-    systemctl --user --machine="$owner@.host" stop 'drv.run@*.service'
+    systemctl --user --machine="$owner@.host" stop 'drv.run@*.service' 'drv.run-prepare@*.service'
     continue
   fi
   # Read user-owned inventory without root privileges. Do not interpret an
@@ -104,12 +104,15 @@ for owner in "${owners[@]}"; do
     elif [[ $target == --all || $instance == "drv.run.$target" ]]; then
       unit="drv.run@${instance#drv.run.}.service"
       if [[ $action == clean ]]; then
-        # Use exact names: stopped instances may be unloaded by systemd.
+        # clean guards only its named unit. Preparation can still be stopping
+        # after a cancelled start; do not delete state under its remaining work.
+        preparation=$(systemctl --user --machine="$owner@.host" show "drv.run-prepare@${instance#drv.run.}.service" -p ActiveState --value)
+        [[ $preparation == inactive || $preparation == failed ]] || fail "preparation has not stopped: $instance"
         systemctl --user --machine="$owner@.host" clean --what=state "$unit"
       elif [[ $action == grow ]]; then
         read -r -p "New total size for $owner/$instance (e.g. 64G): " size </dev/tty
         bytes=$(numfmt --from=iec "$size")
-        systemctl --user --machine="$owner@.host" stop "$unit"
+        systemctl --user --machine="$owner@.host" stop "$unit" "drv.run-prepare@${instance#drv.run.}.service"
         # shellcheck disable=SC2016
         runuser --user "$owner" -- env -u XDG_STATE_HOME PATH="$PATH" "$BASH" -euc '
           disk="$(systemd-path user-state-private)/drv.run/$1/state.img"
@@ -125,7 +128,7 @@ for owner in "${owners[@]}"; do
       elif [[ $action == reset ]]; then
         systemctl --user --machine="$owner@.host" reset-failed "$unit"
       else
-        systemctl --user --machine="$owner@.host" stop "$unit"
+        systemctl --user --machine="$owner@.host" stop "$unit" "drv.run-prepare@${instance#drv.run.}.service"
       fi
       found=true
     fi

@@ -12,7 +12,7 @@
       BatchMode yes
       IdentitiesOnly yes
       IdentityAgent none
-      IdentityFile /run/user/1000/drv.run.fixture/client-key
+      IdentityFile /run/user/1000/drv.run.fixture/id_ed25519
       UserKnownHostsFile /run/user/1000/drv.run.fixture/known_hosts
       GlobalKnownHostsFile /dev/null
       StrictHostKeyChecking yes
@@ -77,8 +77,8 @@ in
       machine.succeed("cat /proc/sys/kernel/random/uuid > /run/drv-run-seed/notification-incarnation")
       machine.succeed("install -d -m 0700 -o alice -g alice /run/user/1000/drv.run.fixture")
       machine.succeed("cp /run/drv-run-seed/notification-incarnation /run/user/1000/drv.run.fixture/")
-      machine.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /run/user/1000/drv.run.fixture/client-key")
-      machine.succeed("cp /run/user/1000/drv.run.fixture/client-key.pub /run/notification-test-authorized-keys")
+      machine.succeed("ssh-keygen -q -t ed25519 -N \"\" -f /run/user/1000/drv.run.fixture/id_ed25519")
+      machine.succeed("cp /run/user/1000/drv.run.fixture/id_ed25519.pub /run/notification-test-authorized-keys")
       machine.succeed("printf 'drv.run.fixture ' > /run/user/1000/drv.run.fixture/known_hosts; cat /etc/ssh/ssh_host_ed25519_key.pub >> /run/user/1000/drv.run.fixture/known_hosts")
       machine.succeed("chown -R alice:alice /run/user/1000/drv.run.fixture")
       machine.succeed(root_bus + "systemctl --user start drv-run-notifications.service")

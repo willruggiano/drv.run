@@ -94,7 +94,7 @@ in
   assert valid host;
   assert !(guest.services.openssh.settings.DisableForwarding or false);
   assert !(guest.services.openssh.settings ? ForceCommand);
-  assert builtins.elem "/run/drv-run-ssh/%u/authorized_keys" guest.services.openssh.authorizedKeysFiles;
+  assert builtins.elem "%h/.ssh/authorized_keys" guest.services.openssh.authorizedKeysFiles;
   assert builtins.elem "/etc/ssh/authorized_keys.d/%u" guest.services.openssh.authorizedKeysFiles;
   assert guest.users.users.root.shell.shellPath == "/bin/drv-run-shell";
   assert deployment.users.users.root.shell.shellPath == pkgs.bashInteractive.shellPath;

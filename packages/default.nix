@@ -4,6 +4,7 @@ in {
   inherit push-policy;
   app = pkgs.callPackage ./app {inherit push-policy;};
   bench = pkgs.callPackage ./bench {};
+  guest-files = pkgs.callPackage ./guest-files {};
   pds = pkgs.callPackage ./pds {};
   # cloud-hypervisor = pkgs.callPackage ./cloud-hypervisor {}; # remove after: https://github.com/NixOS/nixpkgs/pull/574147
   mitm-proxy = pkgs.callPackage ./mitm-proxy {};

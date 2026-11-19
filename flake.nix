@@ -62,7 +62,7 @@
         # Keeping the above intact so I don't have to refactor a bunch of shit,
         # but I think this is what we should do from now on:
         drvr = with self.packages.${prev.stdenv.hostPlatform.system}; {
-          inherit sshx tap;
+          inherit guest-files sshx tap;
           mitm = mitm-proxy;
         };
       };
@@ -81,10 +81,19 @@
     in {
       app-tests = pkgs.app;
       bench-tests = pkgs.bench;
+      guest-files-tests = pkgs.drvr.guest-files;
       pds-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.pds;
       pds-visual-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.pds.tests.visual;
       environment-image-tests = environmentImage.artifact;
       environment-image-nixos = environmentImage.integration;
+      nixos-guest-files-boot = import ./nix/nixosTests/guest-files-boot.nix {
+        inherit pkgs;
+        inherit (inputs) impermanence;
+      };
+      nixos-guest-files = import ./nix/nixosTests/guest-files.nix {
+        inherit pkgs;
+        inherit (self) nixosModules;
+      };
       nixos-owner-inventory = import ./nix/nixosTests/inventory.nix {
         inherit pkgs;
         inherit (self) nixosModules;
@@ -240,6 +249,7 @@
           elmPackages.elm
           elmPackages.elm-format
           elmPackages.elm-test
+          erofs-utils
           eza
           fd
           file

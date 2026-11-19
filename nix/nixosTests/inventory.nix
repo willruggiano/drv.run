@@ -11,25 +11,17 @@
     fi
     mkdir -p "$STATE_DIRECTORY/ready"
     ln -sfn ${environment} "$STATE_DIRECTORY/environment"
-    printf 'private connection configuration\n' > "$RUNTIME_DIRECTORY/service-connection.conf"
+    printf 'private connection configuration\n' > "$RUNTIME_DIRECTORY/ssh_config"
   '';
   # The outbound SSH boundary blocks acknowledgement, not systemd's lifecycle.
   ssh = pkgs.writeShellScriptBin "ssh" ''
     set -euo pipefail
-    case "$*" in
-      *-fMN*)
-        touch "$STATE_DIRECTORY/provisioning"
-        until [[ -e $STATE_DIRECTORY/release ]]; do sleep 0.1; done
-        ;;
-      *'read -r expected'*)
-        read -r expected
-        test "$expected" = ${environment}
-        test ! -e "$STATE_DIRECTORY/fail"
-        ;;
-      *'cat /run/drv-run-environment/timings.jsonl') printf '%s\n' '{}' ;;
-      *'-O exit'*) ;;
-      *) exit 2 ;;
-    esac
+    touch "$STATE_DIRECTORY/provisioning"
+    until [[ -e $STATE_DIRECTORY/release ]]; do sleep 0.1; done
+    read -r expected
+    test "$expected" = ${environment}
+    test ! -e "$STATE_DIRECTORY/fail"
+    printf '%s\n' '{}'
   '';
   provision = pkgs.writeShellApplication {
     name = "inventory-provision";
@@ -46,6 +38,19 @@ in
       # Inventory needs no network policy or nsresourced/BTF-enabled systemd build.
       disabledModules = [../../nixosModules/host/network.nix];
       nix.settings.experimental-features = ["nix-command" "flakes"];
+      boot.kernelParams = ["systemd.tty.term.console=dumb"];
+      # These lifecycle fixtures need no RSA keys; generation is costly under TCG.
+      services.openssh.hostKeys = lib.mkForce [
+        {
+          type = "ed25519";
+          path = "/etc/ssh/ssh_host_ed25519_key";
+        }
+      ];
+      # Keep the driver reachable during slow TCG boot; assertions wait for units.
+      systemd.services.backdoor = {
+        unitConfig.DefaultDependencies = false;
+        after = ["local-fs.target"];
+      };
       virtualisation = {
         memorySize = 768;
         cores = 2;
@@ -73,12 +78,19 @@ in
       };
       # Keep production StateDirectory, runtime cleanup, and stop-post behavior.
       # No guest, image build, or nested hypervisor is needed to test inventory.
-      systemd.user.services."drv.run@".serviceConfig = {
-        Type = lib.mkForce "simple";
-        ExecStartPre = lib.mkForce prepare;
-        ExecStart = lib.mkForce "${pkgs.coreutils}/bin/sleep infinity";
-        ExecStartPost = lib.mkForce (lib.getExe provision);
-        ExecStop = lib.mkForce [];
+      systemd.user.services = {
+        "drv.run-prepare@".serviceConfig.ExecStart = lib.mkForce (toString prepare);
+        "drv.run-image@" = {
+          requires = lib.mkForce ["drv.run-prepare@%i.service"];
+          after = lib.mkForce ["drv.run-prepare@%i.service"];
+          serviceConfig.ExecStart = lib.mkForce "${pkgs.coreutils}/bin/true";
+        };
+        "drv.run@".serviceConfig = {
+          Type = lib.mkForce "simple";
+          ExecStart = lib.mkForce "${pkgs.coreutils}/bin/sleep infinity";
+          ExecStartPost = lib.mkForce (lib.getExe provision);
+          ExecStop = lib.mkForce [];
+        };
       };
     };
     testScript = ''
@@ -114,7 +126,7 @@ in
       assert inventory(None, "list --json -u alice") == []
 
       state = "/home/alice/.local/state/drv.run/zeta"
-      runtime = "/run/user/1000/drv.run.zeta"
+      runtime = "/run/user/1000/drv.run/zeta"
       unit = "drv.run@zeta.service"
 
       with subtest("provisioning, running, stopped, and restart keep one stable identity"):
@@ -122,7 +134,7 @@ in
           machine.wait_until_succeeds(f"test -f {state}/provisioning")
           assert inventory("alice") == [record("alice", "zeta", "activating", "start-post", False)]
           assert inventory("bob") == []
-          machine.fail(f"test -e {runtime}/client.conf")
+          machine.succeed(f"test -f {runtime}/ssh_config")
           run("alice", f"touch {state}/release")
           machine.wait_until_succeeds(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
           assert inventory("alice") == [record("alice", "zeta", "active", "running", True)]
@@ -131,14 +143,14 @@ in
               assert inventory("alice") == [record("alice", "zeta", "active", "running", True)]
               assert UUID(run("alice", f"systemctl --user show {unit} -p InvocationID --value").strip()) == invocation
           run("alice", f"systemctl --user stop {unit}")
-          machine.fail(f"test -e {runtime}")
+          machine.wait_until_fails(f"test -e {runtime}")
           # Exact-name queries must include retained units after systemd unloads them.
           machine.wait_until_fails(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager GetUnit s {unit}"))
           assert inventory("alice") == [record("alice", "zeta", "inactive", "dead", False)]
           run("alice", f"rm {state}/release {state}/provisioning; systemctl --user start --no-block {unit}")
           machine.wait_until_succeeds(f"test -f {state}/provisioning")
           machine.succeed(f"test -d {state}/ready")
-          machine.fail(f"test -e {runtime}/client.conf")
+          machine.succeed(f"test -f {runtime}/ssh_config")
           assert inventory("alice") == [record("alice", "zeta", "activating", "start-post", False)]
           run("alice", f"touch {state}/release")
           machine.wait_until_succeeds(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {unit}"))
@@ -151,7 +163,7 @@ in
           for _ in range(2):
               assert inventory("alice") == [record("alice", "zeta", "failed", "failed", False, "exit-code")]
               run("alice", f"systemctl --user is-failed --quiet {unit}")
-          machine.fail(f"test -e {runtime}/client.conf")
+          machine.fail(f"test -e {runtime}/ssh_config")
 
       with subtest("two real owners have separate inventories and cannot select each other"):
           run("bob", "mkdir -p ~/.local/state/drv.run/beta; touch ~/.local/state/drv.run/beta/release; systemctl --user start drv.run@beta.service")
@@ -208,5 +220,15 @@ in
           assert inventory(None, "list --json -u alice") == inventory("alice")
           machine.succeed("chmod 600 /home/bob/.local/state/drv.run/beta/reference")
           assert inventory(None) == [record("bob", "beta", "active", "running", True), record("alice", "zeta", "failed", "failed", False, "exit-code"), record("bob", "zeta", "active", "running", True)]
+
+      with subtest("clean targets the main unit without touching a running or foreign instance"):
+          machine.fail("drv.run clean -u bob beta")
+          assert inventory("bob") == [record("bob", "beta", "active", "running", True), record("bob", "zeta", "active", "running", True)]
+          machine.succeed("drv.run stop -u alice zeta")
+          machine.wait_until_fails(f"test -e {runtime}")
+          machine.succeed("drv.run clean -u alice zeta")
+          machine.fail(f"test -e {state}")
+          assert inventory("alice") == []
+          assert inventory("bob") == [record("bob", "beta", "active", "running", True), record("bob", "zeta", "active", "running", True)]
     '';
   }

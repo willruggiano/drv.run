@@ -160,39 +160,70 @@ def invocation(properties: dict[str, Json]) -> str:
     require(len(data) == 16, "invalid InvocationID length")
     values = [integer(value) for value in data]
     require(
-        all(0 <= value <= 255 for value in values) and any(values),
+        all(0 <= value <= 255 for value in values),
         "invalid InvocationID",
     )
     return bytes(values).hex()
 
 
-def timings(unit: Json, service: Json, name: str) -> dict[str, Json]:
+def active_service(
+    unit: Json, service: Json, name: str, substate: str
+) -> tuple[dict[str, Json], dict[str, Json]]:
     u = obj(reply(unit, "a{sv}"))
     s = obj(reply(service, "a{sv}"))
     require(prop(u, "Id", "s") == name, "unit identity changed")
-    identity = invocation(u)
     result = text(prop(s, "Result", "s"))
     if (prop(u, "ActiveState", "s"), prop(u, "SubState", "s"), result) != (
         "active",
-        "running",
+        substate,
         "success",
     ):
         raise ActivationError(f"{name}: activation unsuccessful ({result})")
-    end = integer(prop(u, "ActiveEnterTimestampMonotonic", "t"))
-    pre, main, post = (
-        execution(s, field) for field in ("ExecStartPre", "ExecStart", "ExecStartPost")
+    return u, s
+
+
+def timings(snapshots: dict[str, Json], name: str) -> dict[str, Json]:
+    u, s = active_service(snapshots["Unit"], snapshots["Service"], name, "running")
+    _, preparation = active_service(
+        snapshots["PrepareUnit"],
+        snapshots["PrepareService"],
+        name.replace("drv.run@", "drv.run-prepare@"),
+        "exited",
     )
-    # systemd 261.2 spawns ExecStartPre before recording InactiveExitTimestamp.
-    # Measure from the first execution, not the later unit-state transition.
+    image_unit, image_service = active_service(
+        snapshots["ImageUnit"],
+        snapshots["ImageService"],
+        name.replace("drv.run@", "drv.run-image@"),
+        "exited",
+    )
+    identity = invocation(u)
+    require(identity != "0" * 32, "active instance has no InvocationID")
+    result = text(prop(s, "Result", "s"))
+    end = integer(prop(u, "ActiveEnterTimestampMonotonic", "t"))
+    pre = execution(preparation, "ExecStart")
+    image = execution(image_service, "ExecStart")
+    main, post = (execution(s, field) for field in ("ExecStart", "ExecStartPost"))
+    # Include producer execution and dependency waits, not only the resource worker.
+    # ActiveEnter includes any image-unit ExecStartPost readiness barrier.
     start = pre.start
+    prepared = integer(prop(image_unit, "ActiveEnterTimestampMonotonic", "t"))
     require(
-        0 < start <= pre.end <= main.start <= post.start <= post.end <= end,
+        0
+        < start
+        <= pre.end
+        <= image.start
+        <= image.end
+        <= prepared
+        <= main.start
+        <= post.start
+        <= post.end
+        <= end,
         "zero or unordered activation timestamps",
     )
     require(
         all(
             record.code == os.CLD_EXITED and record.status == 0
-            for record in (pre, post)
+            for record in (pre, image, post)
         ),
         "unsuccessful startup execution",
     )
@@ -201,7 +232,7 @@ def timings(unit: Json, service: Json, name: str) -> dict[str, Json]:
         "main PID mismatch",
     )
     worker, boot, provision = (
-        pre.end - pre.start,
+        prepared - start,
         post.start - main.start,
         post.end - post.start,
     )
@@ -256,6 +287,11 @@ class Manager:
                 units[name] = text(row[6])
         return units
 
+    def unit(self, name: str) -> str:
+        return text(
+            reply(self.call(BUS_PATH, BUS + ".Manager", "GetUnit", "s", name), "o")
+        )
+
     def properties(self, path: str, interface: str) -> Json:
         return self.call(
             path,
@@ -284,7 +320,8 @@ class Manager:
         require(UNIT.fullmatch(unit) is not None, "invalid cleanup unit")
         if unit not in self.units() and not state.exists() and not runtime.exists():
             return
-        _ = self.run(["systemctl", "--user", "stop", unit])
+        preparation = unit.replace("drv.run@", "drv.run-prepare@")
+        _ = self.run(["systemctl", "--user", "stop", unit, preparation])
         _ = self.run(["systemctl", "--user", "clean", "--what=state", unit])
         remaining = self.units()
         if unit in remaining:
@@ -310,7 +347,7 @@ def instance_paths(name: str, manifest: dict[str, Json]) -> tuple[Path, Path]:
     identity = match[1]
     return (
         Path(text(manifest["state_base"])) / "drv.run" / identity,
-        Path(text(manifest["runtime_base"])) / f"drv.run.{identity}",
+        Path(text(manifest["runtime_base"])) / "drv.run" / identity,
     )
 
 
@@ -352,12 +389,21 @@ def collect(
         service = manager.properties(path, "Service")
         save(trial / "service.json", obj(service))
         u, s = obj(reply(unit, "a{sv}")), obj(reply(service, "a{sv}"))
-        phase["invocation_id"] = invocation(u)
         phase["systemd_result"] = text(prop(s, "Result", "s"))
-        measured = timings(unit, service, name)
+        # Capture even a never-started unit's zero ID: a subsequent activation
+        # must revoke this collector's authority to stop or clean the instance.
+        phase["invocation_id"] = invocation(u)
+        _ = active_service(unit, service, name, "running")
+        snapshots = {"Unit": unit, "Service": service}
+        for stage in ("prepare", "image"):
+            stage_path = manager.unit(name.replace("drv.run@", f"drv.run-{stage}@"))
+            for interface in ("Unit", "Service"):
+                snapshot = manager.properties(stage_path, interface)
+                save(trial / f"{stage}-{interface.lower()}.json", obj(snapshot))
+                snapshots[stage.title() + interface] = snapshot
+        measured = timings(snapshots, name)
         same_boot(text(manifest["boot_id"]), boot_id())
         state, runtime = instance_paths(name, manifest)
-        require((runtime / "client.conf").is_file(), "client.conf not published")
         os.kill(integer(measured["main_pid"]), 0)
         for field in ("environment", "runner", "environment-image"):
             link = state / field

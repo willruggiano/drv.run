@@ -56,12 +56,39 @@ def fixture(name: str = NAME) -> dict[str, b.Json]:
                 "ActiveEnterTimestampMonotonic": variant("t", 1000),
             }
         ),
+        "PrepareUnit": envelope(
+            {
+                "Id": variant("s", name.replace("drv.run@", "drv.run-prepare@")),
+                "ActiveState": variant("s", "active"),
+                "SubState": variant("s", "exited"),
+            }
+        ),
+        "PrepareService": envelope(
+            {
+                "Result": variant("s", "success"),
+                "ExecStart": execution(110, 140, 98),
+            }
+        ),
+        "ImageUnit": envelope(
+            {
+                "Id": variant("s", name.replace("drv.run@", "drv.run-image@")),
+                "ActiveState": variant("s", "active"),
+                "SubState": variant("s", "exited"),
+                "ActiveEnterTimestampMonotonic": variant("t", 210),
+            }
+        ),
+        "ImageService": envelope(
+            {
+                "Result": variant("s", "success"),
+                "ExecStart": execution(190, 205, 99),
+            }
+        ),
         "Service": envelope(
             {
                 "Result": variant("s", "success"),
                 "ControlGroup": variant("s", "/test"),
                 "MainPID": variant("u", os.getpid()),
-                "ExecStartPre": execution(110, 210, 99),
+                "ExecStartPre": variant("a(sasbttttuii)", []),
                 "ExecStart": execution(220, 0, os.getpid()),
                 "ExecStartPost": execution(800, 990, 101),
             }
@@ -72,7 +99,7 @@ def fixture(name: str = NAME) -> dict[str, b.Json]:
 def phase(index: int = 0, batch: str = "measured") -> dict[str, b.Json]:
     raw = fixture()
     return dict(
-        b.timings(raw["Unit"], raw["Service"], NAME),
+        b.timings(raw, NAME),
         schema_version=1,
         batch=batch,
         index=index,
@@ -98,9 +125,9 @@ class TimingsTest(unittest.TestCase):
 
     def test_worker_starts_before_unit_leaves_inactive(self) -> None:
         raw = fixture()
-        # systemd records the activating transition after spawning ExecStartPre.
-        properties(raw["Unit"])["InactiveExitTimestampMonotonic"] = variant("t", 120)
-        result = b.timings(raw["Unit"], raw["Service"], NAME)
+        # Main-unit activation starts after the preparation units have finished.
+        properties(raw["Unit"])["InactiveExitTimestampMonotonic"] = variant("t", 220)
+        result = b.timings(raw, NAME)
         self.assertEqual(
             [result[field] for field in b.METRICS], [890, 100, 580, 190, 20]
         )
@@ -113,7 +140,8 @@ class TimingsTest(unittest.TestCase):
             ("Unit", "InvocationID", variant("ay", list[b.Json]([256] * 16))),
             ("Unit", "InvocationID", variant("ay", [1])),
             ("Unit", "Id", variant("s", PEER)),
-            ("Service", "ExecStartPre", variant("a(sasbttttuii)", [])),
+            ("PrepareService", "ExecStart", variant("a(sasbttttuii)", [])),
+            ("ImageUnit", "ActiveEnterTimestampMonotonic", variant("t", 230)),
             ("Service", "MainPID", variant("u", 0)),
             ("Service", "Result", None),
         ]
@@ -122,38 +150,39 @@ class TimingsTest(unittest.TestCase):
                 raw = fixture()
                 properties(raw[interface])[field] = value
                 with self.assertRaises(b.BenchmarkError):
-                    _ = b.timings(raw["Unit"], raw["Service"], NAME)
+                    _ = b.timings(raw, NAME)
 
     def test_execution_validation(self) -> None:
-        for field, index, value in [
-            ("ExecStartPre", 4, 0),
-            ("ExecStartPre", 6, 90),
-            ("ExecStartPost", 9, 7),
-            ("ExecStartPost", 8, os.CLD_KILLED),
+        for interface, field, index, value in [
+            ("PrepareService", "ExecStart", 4, 0),
+            ("PrepareService", "ExecStart", 6, 90),
+            ("ImageService", "ExecStart", 9, 7),
+            ("Service", "ExecStartPost", 9, 7),
+            ("Service", "ExecStartPost", 8, os.CLD_KILLED),
         ]:
             raw = fixture()
             record = b.array(
-                b.array(b.prop(properties(raw["Service"]), field, "a(sasbttttuii)"))[0]
+                b.array(b.prop(properties(raw[interface]), field, "a(sasbttttuii)"))[0]
             )
             record[index] = value
             with (
                 self.subTest(field=field, index=index),
                 self.assertRaises(b.BenchmarkError),
             ):
-                _ = b.timings(raw["Unit"], raw["Service"], NAME)
+                _ = b.timings(raw, NAME)
         raw = fixture()
         records = b.array(
-            b.prop(properties(raw["Service"]), "ExecStartPre", "a(sasbttttuii)")
+            b.prop(properties(raw["PrepareService"]), "ExecStart", "a(sasbttttuii)")
         )
         records.append(deepcopy(records[0]))
         with self.assertRaises(b.BenchmarkError):
-            _ = b.timings(raw["Unit"], raw["Service"], NAME)
+            _ = b.timings(raw, NAME)
 
     def test_activation_failure(self) -> None:
         raw = fixture()
         properties(raw["Service"])["Result"] = variant("s", "exit-code")
         with self.assertRaises(b.ActivationError):
-            _ = b.timings(raw["Unit"], raw["Service"], NAME)
+            _ = b.timings(raw, NAME)
 
     def test_boot_identity(self) -> None:
         b.same_boot("boot-a", "boot-a")
@@ -270,7 +299,6 @@ class FakeSystemd:
         state, runtime = b.instance_paths(name, self.manifest)
         state.mkdir(parents=True)
         runtime.mkdir(parents=True)
-        (runtime / "client.conf").touch()
         _ = (runtime / "timings.jsonl").write_text(
             json.dumps({"phase": "client-ready", "monotonic_s": 10}) + "\n"
         )
@@ -314,12 +342,28 @@ class FakeSystemd:
                     for name in self.units
                 ]
                 return json.dumps({"type": "a(ssssssouso)", "data": [rows]})
-            name = next(name for name in self.units if self.path(name) == argv[5])
-            return json.dumps(self.units[name][argv[9].rsplit(".", 1)[1]])
+            if argv[7] == "GetUnit":
+                for name in self.units:
+                    for stage in ("Prepare", "Image"):
+                        if argv[-1] == name.replace(
+                            "drv.run@", f"drv.run-{stage.lower()}@"
+                        ):
+                            return json.dumps(
+                                {"type": "o", "data": [self.path(name) + "/" + stage]}
+                            )
+                raise b.BenchmarkError("missing fixture unit")
+            interface = argv[9].rsplit(".", 1)[1]
+            for name, snapshots in self.units.items():
+                if self.path(name) == argv[5]:
+                    return json.dumps(snapshots[interface])
+                for stage in ("Prepare", "Image"):
+                    if self.path(name) + "/" + stage == argv[5]:
+                        return json.dumps(snapshots[stage + interface])
+            raise b.BenchmarkError("missing fixture properties")
         if argv[0] == "journalctl":
             return ""
         if argv[0] == "systemctl":
-            name = argv[-1]
+            name = argv[-1].replace("drv.run-prepare@", "drv.run@")
             self.actions.append(tuple(argv[2:]))
             if argv[2] == "stop":
                 properties(self.units[name]["Unit"])["ActiveState"] = variant(
@@ -371,7 +415,11 @@ class LifecycleTest(unittest.TestCase):
         b.conclude(self.output, self.manager, recovery=True)
         self.assertEqual(self.fake.units, {PEER: original})
         self.assertEqual(
-            self.fake.actions, [("stop", NAME), ("clean", "--what=state", NAME)]
+            self.fake.actions,
+            [
+                ("stop", NAME, NAME.replace("drv.run@", "drv.run-prepare@")),
+                ("clean", "--what=state", NAME),
+            ],
         )
         self.assertFalse((self.output / "pending.json").exists())
         self.assertEqual(b.read_json(self.trial() / "phase.json")["outcome"], "success")
@@ -455,6 +503,43 @@ class LifecycleTest(unittest.TestCase):
         self.assertIsNone(phase["activation_us"])
         self.assertTrue((self.trial() / "service.json").is_file())
         self.assertEqual(self.fake.units, {})
+
+    def failed_activation_restart(self, *, started: bool) -> None:
+        b.prepare(self.output, "measured", self.manager)
+        self.fake.add(NAME)
+        properties(self.fake.units[NAME]["Unit"])["ActiveState"] = variant(
+            "s", "failed" if started else "inactive"
+        )
+        if not started:
+            properties(self.fake.units[NAME]["Unit"])["InvocationID"] = variant(
+                "ay", list[b.Json]([0] * 16)
+            )
+
+        def run(argv: list[str]) -> str:
+            result = self.fake.run(argv)
+            if argv[0] == "journalctl":
+                properties(self.fake.units[NAME]["Unit"])["InvocationID"] = variant(
+                    "ay", list(range(1, 17))
+                )
+                properties(self.fake.units[NAME]["Unit"])["ActiveState"] = variant(
+                    "s", "active"
+                )
+            return result
+
+        with self.assertRaises(b.BenchmarkError):
+            b.conclude(self.output, b.Manager(run))
+        self.assertTrue((self.output / "pending.json").exists())
+        for path in b.instance_paths(NAME, self.manifest):
+            self.assertTrue(path.exists())
+        phase = b.read_json(self.trial() / "phase.json")
+        self.assertEqual(phase["outcome"], "activation_failure")
+        self.assertEqual(phase["cleanup"], "failed")
+
+    def test_failed_dependency_cannot_clean_a_later_invocation(self) -> None:
+        self.failed_activation_restart(started=False)
+
+    def test_failed_guest_cannot_clean_a_later_invocation(self) -> None:
+        self.failed_activation_restart(started=True)
 
     def test_invalid_snapshot_still_cleans_the_identified_instance(self) -> None:
         b.prepare(self.output, "measured", self.manager)

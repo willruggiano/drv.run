@@ -15,7 +15,7 @@
     impermanence.nixosModules.impermanence
     ./cloud-hypervisor.nix
     ./environment.nix
-    ./notifications.nix
+    ./files.nix
     ../nix.nix
   ];
 
@@ -34,15 +34,7 @@
     tmp.useTmpfs = false;
   };
   systemd.managerEnvironment.SYSTEMD_DEFAULT_MOUNT_RATE_LIMIT_BURST = "64";
-  fileSystems = {
-    "/" = {
-      device = "rootfs";
-      fsType = "tmpfs";
-      neededForBoot = true;
-      options = ["size=50%" "mode=0755"];
-    };
-    "/persist".neededForBoot = true;
-  };
+  fileSystems."/persist".neededForBoot = true;
   # Bound coldplug concurrency to the Guest CPUs without skipping device events.
   environment.etc."udev/udev.conf.d/10-drv-run.conf".text = ''
     children_max=${toString (2 * config.microvm.vcpu)}

@@ -18,8 +18,8 @@ from tornado.simple_httpclient import SimpleAsyncHTTPClient
 from .fixture import Fixture, certificate
 from .oauth import Clock, OAuth, enroll, github
 
-ALICE = Account("alice", 1)
-BOB = Account("bob", 2)
+ALICE = Account("alice")
+BOB = Account("bob")
 
 
 class AuthorizationTest(unittest.IsolatedAsyncioTestCase):
@@ -91,6 +91,19 @@ class AuthorizationTest(unittest.IsolatedAsyncioTestCase):
                 self.fail("logged out credentials admitted")
         self.assertEqual((await self.authorization.status(ALICE)).state, "not-enrolled")
 
+    async def test_unix_owner_can_replace_the_enrolled_github_account(self) -> None:
+        account = Account("alice")
+        for identity in (1, 2):
+            self.oauth.identity = identity
+            await self.authorization.login(account, lambda _: None)
+            restarted = self.reopen()
+            self.assertEqual((await restarted.status(account)).user_id, identity)
+            async with restarted.lease(account) as token:
+                self.assertEqual(self.oauth.access[token][0], identity)
+        self.assertEqual(
+            (await self.authorization.status(Account("bob"))).state, "not-enrolled"
+        )
+
     async def test_polling_obeys_pending_and_slowdown(self) -> None:
         self.oauth.poll_errors.extend(["authorization_pending", "slow_down"])
         await enroll(self.authorization, self.oauth, ALICE)
@@ -108,13 +121,6 @@ class AuthorizationTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(AuthError):
                 await enroll(self.authorization, self.oauth, ALICE)
             self.assertEqual(await self.authorization.status(ALICE), before)
-        self.oauth.identity = 2
-        with self.assertRaises(AuthError):
-            await self.authorization.login(ALICE, lambda _: None)
-        self.assertEqual(await self.authorization.status(ALICE), before)
-        with self.assertRaises(AuthError):
-            async with self.authorization.lease(Account("alice", 2)):
-                self.fail("different GitHub identity admitted")
         other_app = Authorization(
             self.directory,
             GitHub("other-app", self.oauth.fetch, self.clock, self.clock.sleep),
@@ -367,7 +373,7 @@ async def no_network(request):
 async def main():
     authorization = Authorization(Path(sys.argv[1]), GitHub("test-app", no_network))
     Path(sys.argv[2]).touch()
-    await authorization.logout(Account("alice", 1))
+    await authorization.logout(Account("alice"))
     Path(sys.argv[3]).touch()
 
 asyncio.run(main())

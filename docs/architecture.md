@@ -12,22 +12,34 @@ Client: ssh -t <user>@drv.run <reference>
 Host: sshd authenticates an enabled isNormalUser account
   |
   v
-Host: launcher (user UID) -> user's systemd manager: drv.run@ID.service
-  |                           +-- ExecStartPre:  initialize; prepare read-only seed
-  |                           +-- ExecStart:     allocate TAP; exec pinned CH runner
-  |                           `-- ExecStartPost: provision; publish client.conf
+Host: launcher (user UID) -> user's systemd manager
+  |   start drv.run@ID.service; Requires= + After= order activation:
+  |     drv.run-prepare@ID.service: initialize; write SSH configuration
+  |       -> drv.run-core@ID.service + integration producers: canonical trees
+  |       -> drv.run-image@ID.service: publish read-only guest-file snapshot
+  |       -> drv.run@ID.service
+  |            +-- ExecStart:     allocate TAP; exec pinned CH runner
+  |            `-- ExecStartPost: verify environment; finish activation
   |
   `-- exec ssh drv.run.ID -> Guest: /workspace
-                                   nix develop -- /run/environment
+                                   nix develop -- /nix/var/nix/profiles/project
 
 Client: ssh <user>@drv.run -> Host: list that user's durable Instance SSH targets
-Host:   ssh drv.run.ID     -> /run/user/<UID>/drv.run.ID/client.conf
+Host:   ssh drv.run.ID     -> Include /run/user/<UID>/drv.run/*/ssh_config
                            -> private Unix socket -> VSOCK -> Guest sshd
                            -> Guest: reconnect as root
 
 Host: enabled isNormalUser accounts -> lingering + kvm group + SSH launcher
       system accounts               -> existing SSH policy
 ```
+
+Sources: [[nixosModules/host/default.nix]], [[nixosModules/host/post.sh]],
+[[nixosModules/host/command.sh]], [[nixosModules/host/ssh.conf]],
+[[nixosModules/guest/shell.sh]].
+
+SSH configuration is not readiness. Inventory reports `active/running` only when
+the single authenticated environment verification succeeds. Direct SSH can
+connect earlier; normal creation waits for `systemctl start` to complete.
 
 ## Egress
 
@@ -43,42 +55,81 @@ Guest NIC -> CH -> TAP -> Host nftables -> routing / NAT -> configured uplink
 stop / crash -> systemd cgroup cleanup -> last TAP FD closes -> TAP disappears
 ```
 
+## Credential proxy
+
+```text
+mitm-proxy-access member -> shared activated control socket
+                        -> SO_PEERCRED UID + current NSS membership
+                        -> owner's credentials / private capability
+                                           |
+producer -> inputs/mitm/root/.config/gh/hosts.yml -> guest gh
+```
+
+Group membership authorizes proxy credential use, not instance ownership.
+Enrollment selects the GitHub account; its numeric ID is stored metadata, not a
+configured identity restriction. Existing credentials and `placeholder-USER`
+capabilities remain in private service state.
+
+Control requests and capability use recheck membership. New group membership
+requires refreshed sessions/user managers: socket access and `ConditionGroup`
+use their existing credentials. Native gh environment-token precedence applies.
+
+Sources: [[nixosModules/host/mitm-proxy.nix]], [[packages/mitm-proxy/main.py]],
+[[packages/mitm-proxy/auth.py]], [[nixosModules/guest/mitm-proxy.nix]].
+
 ## State lifetime
 
 ```text
-Host: authenticated Unix account                  Guest
+Host: authenticated Unix account                         Guest
 StateDirectory: drv.run/ID [owner-only]
-  +-- Flake closure (GC root) --- SSH copy ----> /run/environment
-  +-- runner (GC root) ---------- block image -> read-only store
-  +-- SSH host key -------------- seed disk ---> sshd@ identity
-  `-- state.img ----------------- block disk --> /persist
-                                                     |
-                                                impermanence
-                                                     |
-                                                declared retained paths
-                                                (/nix, /workspace, ...)
+  +-- environment + image (GC roots) -- block image --> environment store lower
+  +-- runner (GC root) ---------------- block image --> base store lower
+  +-- SSH host key -> core producer -> snapshot ------> /etc/ssh/ssh_host_ed25519_key
+  `-- state.img ---------------------- block disk ---> /persist
+                                                          |
+                                                     impermanence
+                                                          |
+                                                     retained paths
+                                                     (/nix, /workspace, ...)
 
-RuntimeDirectory: drv.run.ID [owner-only]       tmpfs /
-  bootstrap credentials, sockets, client.conf   undeclared files
-  [removed on stop]                             [lost on fresh boot]
+Owner-private runtime directories [removed on stop/failure/cancellation]:
+  %t/drv.run/ID/                 control files, sockets, ssh_config
+  %t/drv.run/ID/inputs/           core + integration canonical trees
+                       |
+                    assembly
+                       |
+  %t/drv.run/ID/image/seed.img -> EROFS root lower + fresh tmpfs upper -> /
+                                snapshot unchanged; upper lost on fresh boot
 ```
+
+Sources: [[nixosModules/host/pre.sh]], [[nixosModules/host/default.nix]],
+[[nixosModules/guest/files.nix]], [[nixosModules/guest/environment.nix]].
 
 ## Lifecycle
 
 ```text
-first creation -> capture Flake closure; pin runner; create disk and host key
-               -> start and provision Guest
+first creation -> capture Flake closure and image; pin runner; create disk and host key
+               -> produce guest-file snapshot; boot and verify Guest environment
 
 SSH disconnect -> Guest keeps running
 stop           -> CH power-button request (bounded stop timeout)
                -> remove runtime state; retain durable state
 start          -> reuse disk, host key, runner and captured Flake closure
-               -> fresh runtime state; boot and provision Guest
+               -> fresh inputs and snapshot; boot and verify Guest environment
 Host reboot    -> retain durable state; explicit start required
 
 incomplete creation / missing established disk -> startup fails
 
-clean --what=state (stopped Instance)
+systemctl --user stop drv.run@ID.service drv.run-prepare@ID.service
+systemctl --user clean --what=state drv.run@ID.service
   -> delete disk, keys, metadata and GC-root links
   -> Host GC may collect unreferenced closures
 ```
+
+Sources: [[nixosModules/host/pre.sh]], [[nixosModules/host/cli.sh]],
+[[nixosModules/host/default.nix]].
+
+The CLI refuses cleanup while preparation is activating, active, or
+deactivating. Systemd guards only the named unit, not every unit sharing its
+state directory. Stop both units before cleanup; do not race cleanup with a new
+preparation start.
