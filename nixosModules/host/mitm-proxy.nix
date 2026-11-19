@@ -89,6 +89,41 @@ in {
         }
       ];
 
+    systemd.user.services = {
+      "drv.run-mitm-files@" = {
+        description = "Snapshot the owner's guest GitHub capability";
+        requires = ["drv.run-prepare@%i.service"];
+        after = ["drv.run-prepare@%i.service"];
+        partOf = ["drv.run@%i.service"];
+        unitConfig = {
+          StopWhenUnneeded = true;
+          # Applicability only: configured owners must successfully copy the
+          # mandatory publication. Missing or unreadable files never skip work.
+          ConditionUser = map (name: "|${toString config.users.users.${name}.uid}") (builtins.attrNames cfg.owners);
+        };
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          RuntimeDirectory = "drv.run/%i/inputs/mitm";
+          RuntimeDirectoryMode = "0700";
+          UMask = "0077";
+          ExecStart = lib.getExe (pkgs.writeShellApplication {
+            name = "drv-run-mitm-files";
+            runtimeInputs = [pkgs.coreutils];
+            text = ''
+              owner=$(id -un)
+              install -d -m 0700 "$RUNTIME_DIRECTORY/root" "$RUNTIME_DIRECTORY/root/.config" "$RUNTIME_DIRECTORY/root/.config/gh"
+              install -m 0600 "/run/mitm-proxy/$owner/hosts.yml" "$RUNTIME_DIRECTORY/root/.config/gh/hosts.yml"
+            '';
+          });
+        };
+      };
+      "drv.run-image@" = {
+        requires = ["drv.run-mitm-files@%i.service"];
+        after = ["drv.run-mitm-files@%i.service"];
+      };
+    };
+
     environment.systemPackages = [package];
     environment.etc."mitm-proxy.json".source = settings;
 

@@ -46,6 +46,7 @@ in
       # Inventory needs no network policy or nsresourced/BTF-enabled systemd build.
       disabledModules = [../../nixosModules/host/network.nix];
       nix.settings.experimental-features = ["nix-command" "flakes"];
+      boot.kernelParams = ["systemd.tty.term.console=dumb"];
       virtualisation = {
         memorySize = 768;
         cores = 2;
@@ -73,12 +74,19 @@ in
       };
       # Keep production StateDirectory, runtime cleanup, and stop-post behavior.
       # No guest, image build, or nested hypervisor is needed to test inventory.
-      systemd.user.services."drv.run@".serviceConfig = {
-        Type = lib.mkForce "simple";
-        ExecStartPre = lib.mkForce prepare;
-        ExecStart = lib.mkForce "${pkgs.coreutils}/bin/sleep infinity";
-        ExecStartPost = lib.mkForce (lib.getExe provision);
-        ExecStop = lib.mkForce [];
+      systemd.user.services = {
+        "drv.run-prepare@".serviceConfig.ExecStart = lib.mkForce "${pkgs.coreutils}/bin/env RUNTIME_DIRECTORY=%t/drv.run.%i ${prepare}";
+        "drv.run-image@" = {
+          requires = lib.mkForce ["drv.run-prepare@%i.service"];
+          after = lib.mkForce ["drv.run-prepare@%i.service"];
+          serviceConfig.ExecStart = lib.mkForce "${pkgs.coreutils}/bin/true";
+        };
+        "drv.run@".serviceConfig = {
+          Type = lib.mkForce "simple";
+          ExecStart = lib.mkForce "${pkgs.coreutils}/bin/sleep infinity";
+          ExecStartPost = lib.mkForce (lib.getExe provision);
+          ExecStop = lib.mkForce [];
+        };
       };
     };
     testScript = ''
@@ -131,7 +139,7 @@ in
               assert inventory("alice") == [record("alice", "zeta", "active", "running", True)]
               assert UUID(run("alice", f"systemctl --user show {unit} -p InvocationID --value").strip()) == invocation
           run("alice", f"systemctl --user stop {unit}")
-          machine.fail(f"test -e {runtime}")
+          machine.wait_until_fails(f"test -e {runtime}")
           # Exact-name queries must include retained units after systemd unloads them.
           machine.wait_until_fails(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager GetUnit s {unit}"))
           assert inventory("alice") == [record("alice", "zeta", "inactive", "dead", False)]
@@ -208,5 +216,15 @@ in
           assert inventory(None, "list --json -u alice") == inventory("alice")
           machine.succeed("chmod 600 /home/bob/.local/state/drv.run/beta/reference")
           assert inventory(None) == [record("bob", "beta", "active", "running", True), record("alice", "zeta", "failed", "failed", False, "exit-code"), record("bob", "zeta", "active", "running", True)]
+
+      with subtest("clean uses preparation ownership without touching a running or foreign instance"):
+          machine.fail("drv.run clean -u bob beta")
+          assert inventory("bob") == [record("bob", "beta", "active", "running", True), record("bob", "zeta", "active", "running", True)]
+          machine.succeed("drv.run stop -u alice zeta")
+          machine.wait_until_fails(f"test -e {runtime}")
+          machine.succeed("drv.run clean -u alice zeta")
+          machine.fail(f"test -e {state}")
+          assert inventory("alice") == []
+          assert inventory("bob") == [record("bob", "beta", "active", "running", True), record("bob", "zeta", "active", "running", True)]
     '';
   }

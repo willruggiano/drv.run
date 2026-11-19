@@ -59,9 +59,9 @@ implementation.
   ([[tasks/040-notification-contract.md]]).
 - **What infrastructure interfaces should components consume?**: native OpenSSH
   configuration, optional read-only PDS discovery through owner-scoped CLI
-  inventory, generic seed-file inputs, package-owned `services.host`/`guest`
-  exports in their native import scopes, and explicit public HTTP base URLs
-  ([[tasks/050-infrastructure-contract.md]]).
+  inventory, canonical guest-file trees produced by owner-scoped systemd units,
+  package-owned `services.host`/`guest` exports in their native import scopes,
+  and explicit public HTTP base URLs ([[tasks/050-infrastructure-contract.md]]).
 - **What must be true before legacy packages can retire?**: only app needs live
   retirement planning; www is initial cleanup, durable follows extraction of its
   surviving assets into PDS. Separate repository verification from authorized
@@ -89,13 +89,15 @@ findings are not an unresolved ticket or proof of compatibility.
 - All decision tickets remain closed. The implementation specification is
   published locally at [[SPEC.md]], with the adapted PDS product contract at
   [[packages/pds/SPEC.md]] under [[tasks/070-pds-http-contract.md]]. The user
-  confirmed the proposed test seams before publication.
+  confirmed the original test seams before publication. The guest-file
+  integration resolution has since been explicitly revised with the user;
+  implementation ticket 03's amended scope and two test seams are approved.
 - The specification selects a Go OAuth dependency and specifies native-OpenSSH
   integration with pi-env. Source review is not runtime verification; the
   specification records remaining interoperability and acceptance obligations.
   Recheck the working tree and pinned dependencies before implementation.
-- Planning is complete, not product verification or deployment acceptance. The
-  repository and authorized rock5b acceptance gates remain in
+- The decision map is closed, not product verification or deployment acceptance.
+  The repository and authorized rock5b acceptance gates remain in
   [[tasks/060-retirement-gates.md]]. `ready-for-agent` classifies the new
   specification, not the closed decisions, and does not authorize
   implementation, code or state deletion, migration, or deployment.

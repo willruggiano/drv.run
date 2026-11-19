@@ -406,7 +406,6 @@
 
         # Configure our homegrown pi-based frontend application and serve it over
         # tailscale dns. Access it on your phone from anywhere!
-        services.drv-run.notifications.enable = true;
         services.pi = {
           enable = true;
           notifications = {

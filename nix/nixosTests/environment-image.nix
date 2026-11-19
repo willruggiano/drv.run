@@ -51,7 +51,7 @@
   };
   # Exercise the real preparation/lifecycle worker without a nested hypervisor.
   # Only its runner and image-factory boundaries are fixtures; Nix realization,
-  # profiles, GC roots, state/seed disks and systemd cleanup are real.
+  # profiles, GC roots, the state disk and systemd cleanup are real.
   runner = pkgs.writeShellScriptBin "microvm-run" "exit 0";
   imageExpression = pkgs.writeText "fixture-image-expression.nix" ''
     { environment }:
@@ -77,7 +77,7 @@
     ];
     text =
       lib.replaceStrings
-      ["@runner@" "@image-expression@" "@proxy@" "@create-volumes@" "@mitm-proxy-seed@" "@timing@" "@notification-seed@" "@owner-keys@"]
+      ["@runner@" "@image-expression@" "@proxy@" "@create-volumes@" "@timing@"]
       [
         (toString runner)
         (toString imageExpression)
@@ -86,10 +86,7 @@
           truncate -s 32M state.img
           mke2fs -q -t ext4 -L drv-run-state state.img
         ''
-        ""
         (builtins.readFile ../../nixosModules/timing.sh)
-        ""
-        ""
       ]
       (builtins.readFile ../../nixosModules/host/pre.sh);
   };

@@ -73,7 +73,45 @@ in {
       default = [];
     };
     config = {
-      virtualisation.memorySize = 768;
+      virtualisation = {
+        memorySize = 768;
+        cores = 2;
+        graphics = false;
+        useNixStoreImage = true;
+        mountHostNixStore = false;
+        writableStore = true;
+        writableStoreUseTmpfs = false;
+      };
+      boot.kernelParams = ["systemd.tty.term.console=dumb"];
+      systemd.user.services = {
+        # Environment realization and the guest are doubles; the integration's
+        # producer, owner scope, and shared proxy service are production units.
+        "drv.run-prepare@" = {
+          partOf = ["drv.run@%i.service"];
+          unitConfig.StopWhenUnneeded = true;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            RuntimeDirectory = "drv.run/%i";
+            RuntimeDirectoryMode = "0700";
+            ExecStart = "${pkgs.coreutils}/bin/true";
+          };
+        };
+        "drv.run-image@" = {
+          partOf = ["drv.run@%i.service"];
+          unitConfig.StopWhenUnneeded = true;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${pkgs.coreutils}/bin/true";
+          };
+        };
+        "drv.run@" = {
+          requires = ["drv.run-image@%i.service"];
+          after = ["drv.run-image@%i.service"];
+          serviceConfig.ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
+        };
+      };
       networking.hosts."93.184.216.34" = ["github.com" "api.github.com" "example.test"];
       # The proxy and guest clients share this test VM, rather than a gateway.
       networking.proxy.httpsProxy = lib.mkForce "http://127.0.0.1:3128";
@@ -92,12 +130,14 @@ in {
       ];
       users.users.alice = {
         isNormalUser = true;
+        linger = true;
         uid = 1000;
         group = "alice";
       };
       users.groups.alice.gid = 1000;
       users.users.bob = {
         isNormalUser = true;
+        linger = true;
         uid = 1001;
         group = "bob";
       };
@@ -157,9 +197,40 @@ in {
         machine.fail(as_alice("mitm-proxy logout --user alice"))
         machine.fail("su -s /bin/sh mitm-proxy -c 'test -w /run/mitm-proxy-ca/mitmproxy-ca.pem'")
 
-    # Publish the same seed paths and permissions used by the guest module.
-    machine.succeed("install -d -m 0750 -g alice /run/drv-run-seed/mitm-proxy/gh; "
-                    "cp -p /run/mitm-proxy/alice/{config,hosts}.yml /run/drv-run-seed/mitm-proxy/gh/")
+    with subtest("per-instance producer gates readiness and leaves the shared proxy independent"):
+        machine.wait_for_unit("user@1000.service")
+        machine.wait_for_unit("user@1001.service")
+        def ctl(owner, command):
+            return "systemctl --user --machine=" + owner + "@.host " + command
+        main = "drv.run@fixture.service"
+        tree = "/run/user/1000/drv.run/fixture/inputs/mitm"
+        capability = tree + "/root/.config/gh/hosts.yml"
+        proxy_pid = int(machine.succeed("systemctl show mitm-proxy.service -p MainPID --value"))
+        machine.succeed("mv /run/mitm-proxy/alice/hosts.yml /run/pending-hosts.yml")
+        machine.fail(ctl("alice", "start " + main))
+        machine.fail(ctl("alice", "is-active --quiet " + main))
+        machine.succeed("mv /run/pending-hosts.yml /run/mitm-proxy/alice/hosts.yml")
+        machine.succeed(ctl("alice", "start " + main))
+        machine.succeed(ctl("alice", "stop " + main + " drv.run-prepare@fixture.service"))
+        machine.succeed("chmod 0000 /run/mitm-proxy/alice/hosts.yml")
+        machine.fail(ctl("alice", "start " + main))
+        machine.fail(ctl("alice", "is-active --quiet " + main))
+        machine.succeed("chmod 0640 /run/mitm-proxy/alice/hosts.yml")
+        machine.succeed(ctl("alice", "start " + main))
+        machine.succeed("cmp /run/mitm-proxy/alice/hosts.yml " + capability)
+        assert int(machine.succeed("stat -c %a " + capability), 8) == 0o600
+        machine.fail("su -s /bin/sh bob -c " + shlex.quote("test -r " + capability))
+        machine.succeed(ctl("bob", "start " + main))
+        machine.fail("test -e /run/user/1001/drv.run/fixture/inputs/mitm")
+        # This transport fixture runs clients as alice rather than guest root.
+        # Both use the native configuration path relative to their own HOME.
+        machine.succeed("install -d -m 0700 -o alice -g alice /home/alice/.config/gh; "
+                        "install -m 0600 -o alice -g alice " + capability + " /home/alice/.config/gh/hosts.yml")
+        for owner in ["alice", "bob"]:
+            machine.succeed(ctl(owner, "stop " + main + " drv.run-prepare@fixture.service"))
+        machine.fail("test -e " + tree)
+        assert int(machine.succeed("systemctl show mitm-proxy.service -p MainPID --value")) == proxy_pid
+        machine.succeed("systemctl is-active --quiet mitm-proxy.service")
     git = as_alice("GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/alice/repo.git")
     machine.fail(git)
 
@@ -179,15 +250,15 @@ in {
         machine.fail(as_alice("test -r /var/lib/mitm-proxy-auth/alice.json"))
 
     with subtest("ordinary gh inherits the system-wide HTTPS proxy"):
-        gh = "env GH_CONFIG_DIR=/run/drv-run-seed/mitm-proxy/gh gh"
-        machine.succeed(gh + " api user")
-        machine.succeed(gh + " pr list --repo alice/repo")
+        gh = as_alice("gh api user")
+        machine.succeed(gh)
+        machine.succeed(as_alice("gh pr list --repo alice/repo"))
         requests = json.loads(machine.succeed("cat /srv/git/api-requests.json"))
         assert requests[-2:] == [
             {"method": "GET", "url": "https://api.github.com/user"},
             {"method": "POST", "url": "https://api.github.com/graphql"},
         ]
-        machine.succeed("systemd-run --wait --pipe --setenv=GH_CONFIG_DIR=/run/drv-run-seed/mitm-proxy/gh gh api user")
+        machine.succeed("systemd-run --wait --pipe --uid=alice gh api user")
         # No GitHub credential rule applies to device login or unrelated origins.
         machine.succeed("curl --fail https://github.com/login/device/code "
                         "--data 'client_id=test-app&scope=offline_access'")
@@ -206,7 +277,7 @@ in {
     with subtest("logout denies new Git requests without restarting guests or service"):
         machine.succeed(as_alice("python3 ${control} logout"))
         machine.fail(git)
-        machine.fail(gh + " api user")
+        machine.fail(gh)
         machine.succeed("test ! -e /var/lib/mitm-proxy-auth/alice.json")
 
     with subtest("the app owner can enroll but another host user cannot control that account"):

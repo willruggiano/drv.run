@@ -467,17 +467,12 @@ def prepare(
         hosts = json.dumps(
             {"github.com": {"oauth_token": placeholder, "git_protocol": "https"}}
         ).encode()
-        for name, content in [
-            # Without a schema version gh attempts an online account migration.
-            ("config.yml", b"version: 1\n"),
-            ("hosts.yml", hosts),
-        ]:
-            temporary = directory / ("." + name)
-            _ = temporary.write_bytes(content)
-            os.chown(temporary, 0, owner.gid)
-            temporary.chmod(0o640)
-            _ = temporary.replace(directory / name)
-        for obsolete in ["placeholder", "ca.pem"]:
+        temporary = directory / ".hosts.yml"
+        _ = temporary.write_bytes(hosts)
+        os.chown(temporary, 0, owner.gid)
+        temporary.chmod(0o640)
+        _ = temporary.replace(directory / "hosts.yml")
+        for obsolete in ["placeholder", "ca.pem", "config.yml"]:
             (directory / obsolete).unlink(missing_ok=True)
     # The proxy can read, but cannot alter state consumed by privileged prepare.
     for entry in state.iterdir():

@@ -80,7 +80,7 @@ in {
         sshConfigFile = mkOption {
           type = str;
           default = "";
-          description = "Private management SSH configuration supplied by services.drv-run.notifications.";
+          description = "Private owner-scoped SSH configuration for legacy guest notification collection.";
         };
         scanIntervalMs = mkOption {
           type = ints.between 100 60000;

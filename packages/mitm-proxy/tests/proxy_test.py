@@ -545,11 +545,16 @@ class CredentialTest(unittest.TestCase):
                             self.assertEqual(
                                 stat.S_IMODE(publication.stat().st_mode), 0o750
                             )
-                            for name in ["config.yml", "hosts.yml"]:
-                                self.assertEqual(
-                                    stat.S_IMODE((publication / name).stat().st_mode),
-                                    0o640,
-                                )
+                            self.assertEqual(
+                                {path.name for path in publication.iterdir()},
+                                {"hosts.yml"},
+                            )
+                            self.assertEqual(
+                                stat.S_IMODE(
+                                    (publication / "hosts.yml").stat().st_mode
+                                ),
+                                0o640,
+                            )
                             self.assertEqual(
                                 cast(
                                     object,

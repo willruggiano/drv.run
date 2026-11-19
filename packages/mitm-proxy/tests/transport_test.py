@@ -563,9 +563,6 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertFalse((root / "readonly/repo.git/refs/heads/main").exists())
                 (root / "unknown").mkdir()
-                _ = (root / "unknown/config.yml").write_bytes(
-                    (root / "public/alice/config.yml").read_bytes()
-                )
                 _ = (root / "unknown/hosts.yml").write_text(
                     json.dumps({"github.com": {"oauth_token": "unknown"}})
                 )

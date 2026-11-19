@@ -104,12 +104,13 @@ for owner in "${owners[@]}"; do
     elif [[ $target == --all || $instance == "drv.run.$target" ]]; then
       unit="drv.run@${instance#drv.run.}.service"
       if [[ $action == clean ]]; then
-        # Use exact names: stopped instances may be unloaded by systemd.
-        systemctl --user --machine="$owner@.host" clean --what=state "$unit"
+        # Preparation retains the state while startup or teardown is in flight.
+        # Exact names also work when a stopped instance has been unloaded.
+        systemctl --user --machine="$owner@.host" clean --what=state "drv.run-prepare@${instance#drv.run.}.service"
       elif [[ $action == grow ]]; then
         read -r -p "New total size for $owner/$instance (e.g. 64G): " size </dev/tty
         bytes=$(numfmt --from=iec "$size")
-        systemctl --user --machine="$owner@.host" stop "$unit"
+        systemctl --user --machine="$owner@.host" stop "$unit" "drv.run-prepare@${instance#drv.run.}.service"
         # shellcheck disable=SC2016
         runuser --user "$owner" -- env -u XDG_STATE_HOME PATH="$PATH" "$BASH" -euc '
           disk="$(systemd-path user-state-private)/drv.run/$1/state.img"

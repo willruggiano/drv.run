@@ -74,40 +74,76 @@
     ];
     text =
       lib.replaceStrings
-      ["@proxy@" "@runner@" "@create-volumes@" "@mitm-proxy-seed@" "@image-expression@" "@timing@" "@notification-seed@" "@owner-keys@"]
+      ["@proxy@" "@runner@" "@create-volumes@" "@image-expression@" "@timing@"]
       [
         "${config.systemd.package}/lib/systemd/systemd-ssh-proxy"
         (toString guest.config.microvm.declaredRunner)
         createVolumes
-        (lib.optionalString (config.services.drv-run.mitm-proxy.owners != {}) ''
-          case $(id -un) in
-            ${lib.concatStringsSep "|" (builtins.attrNames config.services.drv-run.mitm-proxy.owners)})
-              install -d -m 0700 "$staging/mitm-proxy" "$staging/mitm-proxy/gh"
-              install -m 0600 "/run/mitm-proxy/$(id -un)/"{config,hosts}.yml "$staging/mitm-proxy/gh/"
-              ;;
-          esac
-        '')
         (toString imageExpression)
         (builtins.readFile ../timing.sh)
-        (lib.optionalString config.services.drv-run.notifications.enable ''
-          if [[ $(id -un) == ${lib.escapeShellArg config.services.pi.user} ]]; then
-            cat /proc/sys/kernel/random/uuid > "$RUNTIME_DIRECTORY/notification-incarnation"
-            cp "$RUNTIME_DIRECTORY/notification-incarnation" "$staging/notification-incarnation"
-          fi
-        '')
-        ''
-          case $(id -u) in
-            ${lib.concatMapStringsSep "\n" (user: let
-            keys = pkgs.writeText "drv-run-ssh-${user.name}-keys" (lib.concatStringsSep "\n" (
-                user.openssh.authorizedKeys.keys ++ map builtins.readFile user.openssh.authorizedKeys.keyFiles
-              )
-              + "\n");
-          in "${toString user.uid}) cat ${keys} >> \"$RUNTIME_DIRECTORY/authorized-keys\" ;;")
-          normalUsers}
-          esac
-        ''
       ]
       (builtins.readFile ./pre.sh);
+  };
+  coreFiles = pkgs.writeShellApplication {
+    name = "drv-run-core-files";
+    runtimeInputs = [pkgs.coreutils];
+    text = ''
+      install -d -m 0755 "$RUNTIME_DIRECTORY/etc" "$RUNTIME_DIRECTORY/etc/ssh"
+      install -d -m 0700 "$RUNTIME_DIRECTORY/root" "$RUNTIME_DIRECTORY/root/.ssh"
+      install -m 0600 "$STATE_DIRECTORY/host-key" "$RUNTIME_DIRECTORY/etc/ssh/ssh_host_ed25519_key"
+      install -m 0600 "$1/client-key.pub" "$RUNTIME_DIRECTORY/root/.ssh/authorized_keys"
+      case $(id -u) in
+        ${lib.concatMapStringsSep "\n" (user: let
+        keys = pkgs.writeText "drv-run-ssh-${user.name}-keys" (lib.concatStringsSep "\n" (
+            user.openssh.authorizedKeys.keys ++ map builtins.readFile user.openssh.authorizedKeys.keyFiles
+          )
+          + "\n");
+      in "${toString user.uid}) cat ${keys} >> \"$RUNTIME_DIRECTORY/root/.ssh/authorized_keys\" ;;")
+      normalUsers}
+      esac
+    '';
+  };
+  # These destinations are not part of the writable root overlay: mounts hide
+  # them, or NixOS owns their contents. Do not silently discard producer files.
+  reservedPaths = lib.unique (
+    [
+      "/bin"
+      "/boot"
+      "/dev"
+      "/lib"
+      "/lib64"
+      "/nix"
+      "/proc"
+      "/run"
+      "/sbin"
+      "/sys"
+      "/tmp"
+      "/usr"
+      "/etc/passwd"
+      "/etc/shadow"
+      "/etc/group"
+      "/etc/gshadow"
+      "/etc/subuid"
+      "/etc/subgid"
+      "/etc/static"
+      "/etc/.clean"
+    ]
+    ++ lib.filter (path: path != "/") (builtins.attrNames guest.config.fileSystems)
+    ++ map (entry: "/etc/${entry.target}") (lib.filter (entry: entry.enable) (lib.attrValues guest.config.environment.etc))
+    ++ map (mount: mount.where) guest.config.systemd.mounts
+    ++ map (mount: mount.where) guest.config.systemd.automounts
+  );
+  assemble = pkgs.writeShellApplication {
+    name = "drv-run-image";
+    runtimeInputs = [pkgs.coreutils pkgs.jq pkgs.drvr.guest-files];
+    text = ''
+      timing_directory=$1
+      ${builtins.readFile ../timing.sh}
+      phase assembly-start
+      drv-run-guest-files --inputs "$2" --environment "$STATE_DIRECTORY/environment" \
+        --output "$RUNTIME_DIRECTORY/seed.img" ${lib.escapeShellArgs (lib.concatMap (path: ["--reserved-path" path]) reservedPaths)}
+      phase preparation-ready
+    '';
   };
   provision = pkgs.writeShellApplication {
     name = "provision";
@@ -131,8 +167,6 @@
 in {
   imports = [../nix.nix ./network.nix ./mitm-proxy.nix self.nixosModules.pi];
 
-  options.services.drv-run.notifications.enable = lib.mkEnableOption "instance-bound guest D-Bus notifications for services.pi.user";
-
   options.services.drv-run.guest.extraModules = lib.mkOption {
     type = lib.types.listOf lib.types.deferredModule;
     default = [];
@@ -153,25 +187,7 @@ in {
   };
 
   config = {
-    services.drv-run.guest.extraModules = lib.mkIf config.services.drv-run.notifications.enable [
-      {
-        services.drv-run.notifications.enable = true;
-        services.drv-run.notifications.active = lib.mkDefault config.services.pi.notifications.limits.records;
-      }
-    ];
-    services.pi.notifications.guests = lib.mkIf config.services.drv-run.notifications.enable {
-      enable = true;
-      sshConfigFile = toString serviceSSH;
-    };
     assertions = [
-      {
-        assertion = !config.services.drv-run.notifications.enable || (config.services.pi.enable && config.services.pi.notifications.enable);
-        message = "Guest notifications require services.pi.enable and services.pi.notifications.enable; services.pi.user selects their owner.";
-      }
-      {
-        assertion = !config.services.drv-run.notifications.enable || (guest.config.services.drv-run.notifications.enable && guest.config.services.drv-run.notifications.active <= config.services.pi.notifications.limits.records);
-        message = "Guest notifications must be enabled in the guest closure and fit the host's active-record quota.";
-      }
       {
         # systemd 261.2 create_tap() calls userns_get_base_uid(..., &uid, NULL).
         # NULL omits the separate GID output and makes the helper reject unequal
@@ -285,12 +301,68 @@ in {
       '';
     };
 
+    # Preparation owns the private control directory and the input/image parent.
+    # Ordered dependencies stop consumers before these runtime directories vanish.
+    systemd.user.services."drv.run-prepare@" = {
+      description = "Prepare drv.run instance %i";
+      partOf = ["drv.run@%i.service"];
+      unitConfig.StopWhenUnneeded = true;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "drv.run/%i";
+        StateDirectoryMode = "0700";
+        RuntimeDirectory = ["drv.run.%i" "drv.run/%i"];
+        RuntimeDirectoryMode = "0700";
+        RuntimeDirectoryPreserve = "no";
+        UMask = "0077";
+        TimeoutStartSec = "infinity";
+        ExecStart = "${pkgs.coreutils}/bin/env RUNTIME_DIRECTORY=%t/drv.run.%i ${lib.getExe worker}";
+      };
+    };
+    systemd.user.services."drv.run-core@" = {
+      description = "Prepare core guest files for drv.run instance %i";
+      requires = ["drv.run-prepare@%i.service"];
+      after = ["drv.run-prepare@%i.service"];
+      partOf = ["drv.run@%i.service"];
+      unitConfig.StopWhenUnneeded = true;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "drv.run/%i";
+        StateDirectoryMode = "0700";
+        RuntimeDirectory = "drv.run/%i/inputs/core";
+        RuntimeDirectoryMode = "0700";
+        UMask = "0077";
+        ExecStart = "${lib.getExe coreFiles} %t/drv.run.%i";
+      };
+    };
+    systemd.user.services."drv.run-image@" = {
+      description = "Assemble guest files for drv.run instance %i";
+      requires = ["drv.run-core@%i.service"];
+      after = ["drv.run-core@%i.service"];
+      partOf = ["drv.run@%i.service"];
+      unitConfig.StopWhenUnneeded = true;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        StateDirectory = "drv.run/%i";
+        StateDirectoryMode = "0700";
+        RuntimeDirectory = "drv.run/%i/image";
+        RuntimeDirectoryMode = "0700";
+        UMask = "0077";
+        TimeoutStartSec = "infinity";
+        ExecStart = "${lib.getExe assemble} %t/drv.run.%i %t/drv.run/%i/inputs";
+      };
+    };
     systemd.user.services."drv.run@" = {
       description = "drv.run instance %i";
+      requires = ["drv.run-image@%i.service"];
+      after = ["drv.run-image@%i.service"];
+      environment.RUNTIME_DIRECTORY = "%t/drv.run.%i";
       serviceConfig = {
         StateDirectory = "drv.run/%i";
         StateDirectoryMode = "0700";
-        ExecStartPre = lib.getExe worker;
         ExecStart = "${lib.getExe pkgs.drvr.tap} %S/drv.run/%i/runner/bin/microvm-run";
         ExecStartPost = lib.getExe provision;
         ExecStop = "%S/drv.run/%i/runner/bin/microvm-shutdown";
@@ -299,9 +371,6 @@ in {
         CPUAccounting = true;
         IOAccounting = true;
         Restart = "no";
-        RuntimeDirectory = "drv.run.%i";
-        RuntimeDirectoryMode = "0700";
-        RuntimeDirectoryPreserve = "no";
         StandardError = "journal";
         StandardOutput = "journal";
         TimeoutStartSec = "infinity";

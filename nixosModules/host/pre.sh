@@ -34,7 +34,7 @@ if [[ ! -d $STATE_DIRECTORY/ready ]]; then
   mkdir "$STATE_DIRECTORY/creating"
   printf '%s\n' "$ref" >"$STATE_DIRECTORY/reference"
   # Evaluate the Flake closure while creating independent Instance resources.
-  # systemd owns all ExecStartPre children, including on failure or interruption.
+  # The preparation unit owns all children, including on failure or interruption.
   (
     phase environment-start
     nix print-dev-env --option accept-flake-config false --print-build-logs --json \
@@ -74,33 +74,16 @@ test -x "$STATE_DIRECTORY/runner/bin/microvm-run"
 test -e "$STATE_DIRECTORY/environment"
 test -L "$STATE_DIRECTORY/environment-image"
 test -f "$STATE_DIRECTORY/environment-image/store.erofs"
-environment=$(readlink -e "$STATE_DIRECTORY/environment")
 ln -s "$STATE_DIRECTORY/environment-image/store.erofs" "$RUNTIME_DIRECTORY/environment.erofs"
 ln -s "$STATE_DIRECTORY/state.img" "$RUNTIME_DIRECTORY/state.img"
-ln -s "$STATE_DIRECTORY/host-key" "$RUNTIME_DIRECTORY/host-key"
+ln -s "$(dirname "$RUNTIME_DIRECTORY")/drv.run/$id/image/seed.img" "$RUNTIME_DIRECTORY/seed.img"
 ssh-keygen -q -t ed25519 -N '' -f "$RUNTIME_DIRECTORY/client-key"
 chmod 0600 "$RUNTIME_DIRECTORY/client-key"
-cp "$RUNTIME_DIRECTORY/client-key.pub" "$RUNTIME_DIRECTORY/authorized-keys"
-@owner-keys@
 printf '%s %s\n' "$name" "$(ssh-keygen -y -f "$STATE_DIRECTORY/host-key")" \
   >"$RUNTIME_DIRECTORY/known_hosts"
-staging=$(mktemp -d "$RUNTIME_DIRECTORY/seed.XXXXXXXX")
-trap 'rm -rf "$staging"' EXIT
-mkdir -m 0700 "$staging/root"
-cp "$RUNTIME_DIRECTORY/authorized-keys" "$staging/root/authorized_keys"
-cp "$STATE_DIRECTORY/host-key" "$staging/host-key"
-printf '%s\n' "$environment" >"$staging/environment"
-chmod 0600 "$staging/host-key" "$staging/environment" "$staging/root/authorized_keys"
-@mitm-proxy-seed@
-@notification-seed@
-truncate -s 8M "$RUNTIME_DIRECTORY/seed.img"
-mke2fs -q -t ext4 -L drv-run-seed -E root_owner=0:0,root_perms=0700 \
-  -d "$staging" "$RUNTIME_DIRECTORY/seed.img"
-e2fsck -fn "$RUNTIME_DIRECTORY/seed.img"
 cat >"$RUNTIME_DIRECTORY/service-connection.conf" <<EOF
 ProxyCommand @proxy@ vsock-mux$RUNTIME_DIRECTORY/notify.vsock %p
 ProxyUseFdpass yes
 IdentityFile $RUNTIME_DIRECTORY/client-key
 UserKnownHostsFile $RUNTIME_DIRECTORY/known_hosts
 EOF
-phase preparation-ready
