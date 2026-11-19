@@ -9,7 +9,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol, cast
 from urllib.parse import urlencode
@@ -85,6 +85,7 @@ class Tokens:
     expires_at: float
     refresh_expires_at: float | None = None
     account_id: str | None = None
+    user_id: int | None = None
 
     @staticmethod
     def response(data: Mapping[str, object], now: float) -> "Tokens":
@@ -110,7 +111,7 @@ class OAuthProvider(Protocol):
     clock: Callable[[], float]
 
     async def device(self) -> Device: ...
-    async def authorize(self, device: Device, user_id: int | None) -> Tokens: ...
+    async def authorize(self, device: Device) -> Tokens: ...
     async def refresh(self, token: str) -> Tokens: ...
     def validate(self, tokens: Tokens) -> None: ...
 
@@ -181,7 +182,7 @@ class GitHub:
         except (ValueError, TypeError, KeyError):
             raise AuthError("temporarily-unavailable") from None
 
-    async def authorize(self, device: Device, user_id: int | None) -> Tokens:
+    async def authorize(self, device: Device) -> Tokens:
         interval = device.interval
         while self.clock() + interval < device.expires_at:
             await self.sleep(interval)
@@ -211,9 +212,7 @@ class GitHub:
                 identity = await self.request(
                     "https://api.github.com/user", token=tokens.access_token
                 )
-                if integer(identity, "id") != user_id:
-                    raise AuthError("reauthorization-required")
-                return tokens
+                return replace(tokens, user_id=integer(identity, "id"))
             except (ValueError, TypeError, KeyError):
                 raise AuthError("temporarily-unavailable") from None
         raise AuthError("reauthorization-required")
@@ -247,12 +246,9 @@ class GitHub:
 @dataclass(frozen=True)
 class Account:
     name: str
-    user_id: int | None = None
 
     def __post_init__(self) -> None:
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", self.name) or (
-            self.user_id is not None and self.user_id <= 0
-        ):
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", self.name):
             raise ValueError("invalid account")
 
 
@@ -323,12 +319,6 @@ class Authorization:
             if (
                 integer(data, "version") != 1
                 or data.get("client_id") != self.provider.client_id
-                or (
-                    integer(data, "user_id")
-                    if account.user_id is not None
-                    else data["user_id"]
-                )
-                != account.user_id
                 or data.get("refreshing") is True
             ):
                 raise AuthError("reauthorization-required")
@@ -342,6 +332,7 @@ class Authorization:
                 text(data, "account_id")
                 if data.get("account_id") is not None
                 else None,
+                integer(data, "user_id") if data.get("user_id") is not None else None,
             )
             self.provider.validate(tokens)
             return tokens
@@ -357,7 +348,6 @@ class Authorization:
             **asdict(tokens),
             "version": 1,
             "client_id": self.provider.client_id,
-            "user_id": account.user_id,
             "refreshing": refreshing,
         }
         fd, name = tempfile.mkstemp(dir=self.directory, prefix=".token-")
@@ -396,7 +386,7 @@ class Authorization:
         async with self.locked(account):
             device = await self.provider.device()
             show(device)
-            tokens = await self.provider.authorize(device, account.user_id)
+            tokens = await self.provider.authorize(device)
             self.provider.validate(tokens)
             self.save(account, tokens)
 
@@ -419,15 +409,15 @@ class Authorization:
                     state = "temporarily-unavailable"
                 return AccountStatus(
                     state,
-                    account.user_id,
+                    tokens.user_id,
                     tokens.expires_at,
                     tokens.refresh_expires_at,
                     tokens.account_id,
                 )
         except AuthError as error:
-            return AccountStatus(error.state, account.user_id)
+            return AccountStatus(error.state, None)
         except OSError:
-            return AccountStatus("temporarily-unavailable", account.user_id)
+            return AccountStatus("temporarily-unavailable", None)
 
     @asynccontextmanager
     async def lease(self, account: Account) -> AsyncGenerator[str]:
@@ -463,7 +453,7 @@ class Authorization:
                     self.provider.validate(renewed)
                     if renewed.account_id != tokens.account_id:
                         raise AuthError("reauthorization-required")
-                    self.save(account, renewed)
+                    self.save(account, replace(renewed, user_id=tokens.user_id))
 
 
 def http_client() -> AsyncHTTPClient:

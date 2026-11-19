@@ -15,7 +15,7 @@ export class DrvRunEnv extends RemoteExecutionEnv {
     if (!isAbsolute(options.cwd) || !isAbsolute(options.runtimeDirectory))
       throw new TypeError("Expected absolute guest and runtime directories.");
     const host = `drv.run.${options.instance}`;
-    const runtime = join(options.runtimeDirectory, host);
+    const runtime = join(options.runtimeDirectory, "drv.run", options.instance);
     const { connection } = (options.connect ?? sshConnection)({
       host,
       user: "root",

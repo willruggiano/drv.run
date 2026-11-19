@@ -10,10 +10,11 @@ import unittest
 from collections import deque
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 from urllib.parse import parse_qs
 
 from auth import Account, AuthError, Authorization, Device, object_value
-from main import Control, control_server
+from main import Capabilities, Control, Controls, control_server
 from openai import AUTH_BASE, CLIENT_ID, VERIFICATION_URI, OpenAI
 from tornado.httpclient import HTTPRequest, HTTPResponse
 from tornado.netutil import bind_unix_socket
@@ -259,7 +260,7 @@ class OpenAITest(unittest.IsolatedAsyncioTestCase):
         root = self.directory.parent
         oauth = OAuth(self.clock)
         github_auth = Authorization(root / "github", github(oauth, self.clock))
-        github_control = Control(github_auth, Account("alice", 1))
+        github_control = Control(github_auth, Account("alice"))
         refreshing = asyncio.Event()
         resume = asyncio.Event()
         resume.set()
@@ -277,7 +278,13 @@ class OpenAITest(unittest.IsolatedAsyncioTestCase):
             ALICE,
         )
         listener = bind_unix_socket(str(root / "alice.sock"), mode=0o600)
-        server = control_server(github_control, listener, openai_control)
+        controls = Controls(
+            {"github": github_auth, "openai": openai_control.authorization}
+        )
+        controls.entries[(ALICE, "github")] = github_control
+        controls.entries[(ALICE, "openai")] = openai_control
+        _ = self.enterContext(patch("main.owner", return_value=ALICE))
+        server = control_server(controls, listener, Capabilities(root / "capabilities"))
         self.addAsyncCleanup(server.close_all_connections)
         self.addAsyncCleanup(openai_control.close)
         self.addAsyncCleanup(github_control.close)
@@ -341,7 +348,7 @@ class OpenAITest(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(
-            (await github_auth.status(Account("alice", 1))).state, "not-enrolled"
+            (await github_auth.status(Account("alice"))).state, "not-enrolled"
         )
         for method, path, headers, body, expected in [
             ("GET", "/openai/token", None, None, 405),

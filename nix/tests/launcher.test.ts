@@ -151,7 +151,7 @@ test("owner inventory reports sorted retained instances without changing their s
         id: "alpha",
         reference: 'path:/project#"shell"',
         host: "drv.run.alpha",
-        ready: false,
+        ready: true,
         activeState: "active",
         subState: "running",
         result: "success",
@@ -181,14 +181,14 @@ test("owner inventory reports sorted retained instances without changing their s
   assert.deepEqual(readdirSync(fixture.directory, { recursive: true }), before);
 });
 
-test("owner inventory requires published provisioning and a running instance for readiness", async (t) => {
+test("owner inventory uses systemd readiness independently of SSH configuration", async (t) => {
   const fixture = await inventoryFixture(t);
   fixture.retain("alpha", "fixture:retained", "");
   mkdirSync(join(fixture.directory, "state/drv.run/alpha/ready"));
-  const runtime = join(fixture.directory, "runtime/drv.run.alpha");
-  mkdirSync(runtime);
+  const runtime = join(fixture.directory, "runtime/drv.run/alpha");
+  mkdirSync(runtime, { recursive: true });
   for (const [activeState, subState, published, ready] of [
-    ["active", "running", false, false],
+    ["active", "running", false, true],
     ["active", "running", true, true],
     ["inactive", "dead", true, false],
     ["activating", "start-post", false, false],
@@ -220,6 +220,51 @@ test("owner inventory requires published provisioning and a running instance for
         },
       ],
     });
+  }
+});
+
+test("clean targets the instance only after preparation stops", async (t) => {
+  const fixture = await inventoryFixture(t);
+  fixture.retain(
+    "alpha",
+    "fixture:retained",
+    "ActiveState=inactive\nSubState=dead\nResult=success\n",
+  );
+  const cli = join(fixture.directory, "drv.run");
+  // Double root eligibility and the manager boundary; native tests use actual UIDs.
+  writeFileSync(cli, readFileSync(cli, "utf8").replace("if ((EUID != 0)); then", "if false; then"));
+  const systemctl = join(fixture.directory, "bin/systemctl");
+  const original = readFileSync(systemctl, "utf8");
+  writeFileSync(
+    systemctl,
+    original.replace(
+      "test ! -e",
+      `
+if [[ \${2:-} == --machine=* ]]; then
+  test "$2" = "--machine=$FIXTURE_OWNER@.host"
+  case "$3" in
+    show)
+      test "$4" = drv.run-prepare@alpha.service
+      cat "$FIXTURE/preparation"
+      ;;
+    clean)
+      test "$4" = --what=state
+      test "$5" = drv.run@alpha.service
+      touch "$FIXTURE/cleaned"
+      ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+test ! -e`,
+    ),
+  );
+  for (const preparation of ["activating", "active", "deactivating", "inactive", "failed"]) {
+    writeFileSync(join(fixture.directory, "preparation"), preparation + "\n");
+    rmSync(join(fixture.directory, "cleaned"), { force: true });
+    const stopped = preparation === "inactive" || preparation === "failed";
+    assert.equal(fixture.run(["clean", "-u", owner, "alpha"]).status, stopped ? 0 : 1);
+    assert.equal(existsSync(join(fixture.directory, "cleaned")), stopped);
   }
 });
 
@@ -401,11 +446,11 @@ for (const collision of ["none", "durable", "runtime"]) {
     const retained = join(
       directory,
       collision === "runtime"
-        ? "runtime/drv.run.000000000000002a"
+        ? "runtime/drv.run/000000000000002a"
         : "state/drv.run/000000000000002a",
     );
     if (collision !== "none") {
-      mkdirSync(retained);
+      mkdirSync(retained, { recursive: true });
       writeFileSync(join(retained, "reference"), "retained");
     }
     const commands = {
@@ -442,7 +487,7 @@ for (const collision of ["none", "durable", "runtime"]) {
     const id = collision === "none" ? "000000000000002a" : "000000000000002b";
     assert.deepEqual(readdirSync(join(directory, "started")), [`drv.run@${id}.service`]);
     assert.deepEqual(readdirSync(join(directory, "attached")), [`drv.run.${id}`]);
-    const runtime = join(directory, `runtime/drv.run.${id}`);
+    const runtime = join(directory, `runtime/drv.run/${id}`);
     const state = join(directory, "state/drv.run", id);
     assert.equal(statSync(runtime).mode & 0o777, 0o700);
     assert.equal(statSync(state).mode & 0o777, 0o700);

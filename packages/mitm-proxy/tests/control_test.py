@@ -1,20 +1,24 @@
 import asyncio
+import grp
 import http.client
 import json
+import os
+import pwd
 import socket
 import tempfile
 import unittest
 from pathlib import Path
 from typing import cast, override
+from unittest.mock import patch
 
 from auth import Account, Authorization, GitHub, object_value
-from main import Control, control_server
+from main import Capabilities, Control, Controls, control_listener, control_server
 from tornado.netutil import bind_unix_socket
 
 from .oauth import Clock, OAuth
 
-ALICE = Account("alice", 1)
-BOB = Account("bob", 2)
+ALICE = Account("alice")
+BOB = Account("bob")
 
 
 class ControlTest(unittest.IsolatedAsyncioTestCase):
@@ -37,14 +41,46 @@ class ControlTest(unittest.IsolatedAsyncioTestCase):
         self.authorization: Authorization = Authorization(
             root / "state", GitHub("test-app", self.oauth.fetch, self.clock, sleep)
         )
-        self.control: Control = Control(self.authorization, ALICE)
+        self.controls: Controls = Controls({"github": self.authorization})
+        self.control: Control = self.controls.get(ALICE, "github")
+        self.capabilities: Capabilities = Capabilities(root / "capabilities")
+        self.allowed: set[str] = {"alice"}
 
     @override
     async def asyncSetUp(self) -> None:
+        user = pwd.struct_passwd(
+            (
+                "alice",
+                "x",
+                os.getuid(),
+                os.getgid(),
+                "",
+                str(self.path.parent),
+                "/bin/sh",
+            )
+        )
+
+        def lookup(uid: int) -> pwd.struct_passwd:
+            self.assertEqual(uid, os.getuid())
+            return user
+
+        def groups(name: str, gid: int) -> list[int]:
+            return [gid] + ([4242] if name in self.allowed else [])
+
+        _ = self.enterContext(patch("main.pwd.getpwuid", new=lookup))
+        _ = self.enterContext(patch("main.pwd.getpwnam", return_value=user))
+        _ = self.enterContext(
+            patch(
+                "main.grp.getgrnam",
+                return_value=grp.struct_group(("mitm-proxy-access", "x", 4242, [])),
+            )
+        )
+        _ = self.enterContext(patch("main.os.getgrouplist", new=groups))
+
         listener = bind_unix_socket(str(self.path), mode=0o600)
         # systemd defaults to blocking descriptors, unlike Tornado's bind helper.
         listener.setblocking(True)
-        server = control_server(self.control, listener)
+        server = control_server(self.controls, listener, self.capabilities)
         self.addAsyncCleanup(server.close_all_connections)
         self.addAsyncCleanup(self.control.close)
         self.addCleanup(server.stop)
@@ -88,7 +124,7 @@ class ControlTest(unittest.IsolatedAsyncioTestCase):
             state,
             {
                 "state": "authorizing",
-                "user_id": 1,
+                "user_id": None,
                 "error": None,
                 "device": {
                     "user_code": "ABCD-EFGH",
@@ -105,6 +141,25 @@ class ControlTest(unittest.IsolatedAsyncioTestCase):
             while (state := await self.status())["state"] == "authorizing":
                 await asyncio.sleep(0)
         return state
+
+    def test_activation_rejects_wrong_process_count_or_name(self) -> None:
+        valid = {
+            "LISTEN_PID": str(os.getpid()),
+            "LISTEN_FDS": "1",
+            "LISTEN_FDNAMES": "control",
+        }
+        for field, value in [
+            ("LISTEN_PID", "0"),
+            ("LISTEN_FDS", "0"),
+            ("LISTEN_FDS", "2"),
+            ("LISTEN_FDNAMES", "alice"),
+        ]:
+            with (
+                self.subTest(field=field, value=value),
+                patch.dict(os.environ, {**valid, field: value}),
+                self.assertRaises(ValueError),
+            ):
+                _ = control_listener()
 
     async def test_enrollment_outlives_request_and_never_exports_tokens(self) -> None:
         pending = await self.begin()
@@ -129,13 +184,29 @@ class ControlTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.authorization.status(BOB)).state, "not-enrolled")
 
         # A failed replacement must preserve working credentials.
-        self.oauth.identity = 2
+        self.oauth.poll_errors.append("access_denied")
         _ = await self.begin()
         self.assertEqual(
             await self.approve(), {**approved, "error": "reauthorization-required"}
         )
         async with self.authorization.lease(ALICE) as original:
             self.assertEqual(original, token)
+
+    async def test_group_membership_and_peer_identity_select_private_capabilities(
+        self,
+    ) -> None:
+        status, hosts = await self.call(
+            "GET", "/hosts.yml", headers={"X-Forwarded-For": "1001", "X-User": "bob"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(hosts, self.capabilities.hosts(ALICE))
+        self.assertNotIn(BOB, self.capabilities.by_owner)
+        self.assertEqual(await self.call("GET", "/hosts.yml?user=bob"), (400, None))
+        self.allowed.clear()
+        self.assertEqual(await self.call(), (403, None))
+        self.assertEqual(await self.call("GET", "/hosts.yml"), (403, None))
+        self.allowed.add("alice")
+        self.assertEqual((await self.call("GET", "/hosts.yml"))[1], hosts)
 
     async def test_removal_cancels_pending_authorization_and_releases_lease(
         self,
@@ -170,4 +241,4 @@ class ControlTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.authorization.status(ALICE)).state, "not-enrolled")
         self.assertEqual((await self.authorization.status(BOB)).state, "not-enrolled")
         with socket.socket() as listener, self.assertRaises(ValueError):
-            _ = control_server(self.control, listener)
+            _ = control_server(self.controls, listener, self.capabilities)

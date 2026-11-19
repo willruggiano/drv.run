@@ -13,9 +13,7 @@
     config = {
       credential."https://github.com".helper = [
         ""
-        # Use gh's canonical configuration. Environment tokens must not override
-        # the owner capability.
-        "!${lib.getExe' pkgs.coreutils "env"} -u GH_TOKEN -u GITHUB_TOKEN ${lib.getExe pkgs.gh} auth git-credential"
+        "!${lib.getExe pkgs.gh} auth git-credential"
       ];
     };
   };

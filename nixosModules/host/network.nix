@@ -6,7 +6,7 @@
 }: let
   cfg = config.services.drv-run.network;
   proxy = config.services.drv-run.mitm-proxy;
-  proxyInput = lib.optionalString (proxy.owners != {}) ''iifname "ns-*" tcp dport ${toString proxy.port} accept'';
+  proxyInput = lib.optionalString proxy.enable ''iifname "ns-*" tcp dport ${toString proxy.port} accept'';
   ipv4 = address: let
     parts = lib.splitString "." address;
   in
@@ -132,7 +132,7 @@ in {
               iifname "ns-*" udp sport 68 udp dport 67 accept
               iifname "ns-*" ct state { established, related } accept
               ${proxyInput}
-              ${lib.optionalString (proxy.owners != {}) ''iifname != "lo" tcp dport ${toString proxy.port} counter drop''}
+              ${lib.optionalString proxy.enable ''iifname != "lo" tcp dport ${toString proxy.port} counter drop''}
               iifname "ns-*" counter drop
             }
             chain forward {

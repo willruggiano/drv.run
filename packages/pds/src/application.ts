@@ -41,30 +41,36 @@ export type Environment = {
 
 export async function discoverEnvironments(directory: string): Promise<Environment[]> {
   const result: Environment[] = [{ id: "local", label: "Local (server)" }];
-  const entries = await readdir(directory, { withFileTypes: true }).catch((error: unknown) => {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-    throw error;
-  });
+  const entries = await readdir(join(directory, "drv.run"), { withFileTypes: true }).catch(
+    (error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    },
+  );
   for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith("drv.run.")) continue;
-    const path = join(directory, entry.name);
+    if (!entry.isDirectory() || !/^[A-Za-z0-9]+$/.test(entry.name)) continue;
+    const path = join(directory, "drv.run", entry.name);
+    const host = `drv.run.${entry.name}`;
     const target = {
-      host: entry.name,
+      host,
       user: "root",
       identityFile: join(path, "client-key"),
       knownHostsFile: join(path, "known_hosts"),
-      configFile: join(path, "client.conf"),
-      hostKeyAlias: entry.name,
+      configFile: "/etc/ssh/ssh_config",
+      hostKeyAlias: host,
     };
     try {
       await Promise.all(
-        [target.identityFile, target.knownHostsFile, target.configFile].map((file) => access(file)),
+        [target.identityFile, target.knownHostsFile, join(path, "client.conf")].map((file) =>
+          access(file),
+        ),
       );
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
       throw error;
     }
-    result.push({ id: entry.name, label: entry.name, target });
+    // Configuration permits a connection attempt; it does not certify activation.
+    result.push({ id: host, label: host, target });
   }
   return result;
 }

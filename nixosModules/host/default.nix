@@ -11,13 +11,11 @@
 }: let
   normalUsers = lib.filter (user: user.enable && user.isNormalUser) (lib.attrValues config.users.users);
   connector = pkgs.drvr.sshx.override {systemd = config.systemd.package;};
-  # Management traffic has its own credentials and connection policy. Human
-  # sessions use ordinary SSH options, including PTYs and forwarding.
+  # Share connection data with ordinary SSH, but do not inherit interactive policy.
   serviceSSH = pkgs.writeText "drv.run-service-ssh.conf" ''
+    Include ${./ssh.conf}
     Host drv.run.*
-        Include /run/user/%i/%n/service-connection.conf
-        ProxyCommand false
-        ControlPath /run/user/%i/%n/provision-ssh
+        ControlPath none
         User root
         IdentityAgent none
         IdentitiesOnly yes
@@ -281,14 +279,7 @@ in {
       drvrun
     ];
 
-    programs.ssh.extraConfig = lib.mkBefore ''
-      Host drv.run.*
-          Include /run/user/%i/%n/client.conf
-          ProxyCommand false
-          User root
-          StrictHostKeyChecking yes
-      Host *
-    '';
+    programs.ssh.extraConfig = lib.mkBefore (builtins.readFile ./ssh.conf);
 
     services.openssh = {
       enable = true;
@@ -301,8 +292,8 @@ in {
       '';
     };
 
-    # Preparation owns the private control directory and the input/image parent.
-    # Ordered dependencies stop consumers before these runtime directories vanish.
+    # Preparation owns one private runtime parent; assembly sees only inputs/.
+    # Ordered dependencies stop consumers before the parent disappears.
     systemd.user.services."drv.run-prepare@" = {
       description = "Prepare drv.run instance %i";
       partOf = ["drv.run@%i.service"];
@@ -312,12 +303,12 @@ in {
         RemainAfterExit = true;
         StateDirectory = "drv.run/%i";
         StateDirectoryMode = "0700";
-        RuntimeDirectory = ["drv.run.%i" "drv.run/%i"];
+        RuntimeDirectory = "drv.run/%i";
         RuntimeDirectoryMode = "0700";
         RuntimeDirectoryPreserve = "no";
         UMask = "0077";
         TimeoutStartSec = "infinity";
-        ExecStart = "${pkgs.coreutils}/bin/env RUNTIME_DIRECTORY=%t/drv.run.%i ${lib.getExe worker}";
+        ExecStart = lib.getExe worker;
       };
     };
     systemd.user.services."drv.run-core@" = {
@@ -334,7 +325,7 @@ in {
         RuntimeDirectory = "drv.run/%i/inputs/core";
         RuntimeDirectoryMode = "0700";
         UMask = "0077";
-        ExecStart = "${lib.getExe coreFiles} %t/drv.run.%i";
+        ExecStart = "${lib.getExe coreFiles} %t/drv.run/%i";
       };
     };
     systemd.user.services."drv.run-image@" = {
@@ -352,21 +343,20 @@ in {
         RuntimeDirectoryMode = "0700";
         UMask = "0077";
         TimeoutStartSec = "infinity";
-        ExecStart = "${lib.getExe assemble} %t/drv.run.%i %t/drv.run/%i/inputs";
+        ExecStart = "${lib.getExe assemble} %t/drv.run/%i %t/drv.run/%i/inputs";
       };
     };
     systemd.user.services."drv.run@" = {
       description = "drv.run instance %i";
       requires = ["drv.run-image@%i.service"];
       after = ["drv.run-image@%i.service"];
-      environment.RUNTIME_DIRECTORY = "%t/drv.run.%i";
+      environment.RUNTIME_DIRECTORY = "%t/drv.run/%i";
       serviceConfig = {
         StateDirectory = "drv.run/%i";
         StateDirectoryMode = "0700";
         ExecStart = "${lib.getExe pkgs.drvr.tap} %S/drv.run/%i/runner/bin/microvm-run";
         ExecStartPost = lib.getExe provision;
         ExecStop = "%S/drv.run/%i/runner/bin/microvm-shutdown";
-        ExecStopPost = "${lib.getExe' pkgs.coreutils "rm"} -f %t/drv.run.%i/client.conf";
         KillMode = "control-group";
         CPUAccounting = true;
         IOAccounting = true;
@@ -378,7 +368,7 @@ in {
         Type = "notify";
         NotifyAccess = "all";
         UMask = "0077";
-        WorkingDirectory = "%t/drv.run.%i";
+        WorkingDirectory = "%t/drv.run/%i";
       };
     };
   };

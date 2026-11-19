@@ -21,7 +21,9 @@
         result = subprocess.run(
             ["mitm-proxy", "login", "--user", "alice"],
             stdin=slave, stdout=slave, stderr=slave, preexec_fn=terminal,
-            timeout=30,
+            # Includes CLI imports: the preceding operator check takes over
+            # 60 seconds under TCG, before any device-flow request.
+            timeout=180,
         )
         assert result.returncode == 0
     finally:
@@ -38,7 +40,7 @@
     def request(operation):
         connection = http.client.HTTPConnection("localhost", timeout=35)
         connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.sock.connect("/run/mitm-proxy-auth/alice.sock")
+        connection.sock.connect("/run/mitm-proxy-auth/control.sock")
         try:
             connection.request("GET" if operation == "status" else "POST", "/" + operation)
             response = connection.getresponse()
@@ -53,7 +55,7 @@
     deadline = time.monotonic() + 30
     while True:
         state = request("status")
-        assert state["user_id"] == 1
+        assert state["user_id"] == (1 if state["state"] == "usable" else None)
         if state["state"] == expected:
             break
         assert state["state"] == "authorizing" and time.monotonic() < deadline
@@ -122,6 +124,11 @@ in {
         }
       ];
       networking.nftables.enable = true;
+      # Keep the driver reachable during slow TCG boot; assertions wait for units.
+      systemd.services.backdoor = {
+        unitConfig.DefaultDependencies = false;
+        after = ["local-fs.target"];
+      };
       environment.systemPackages = [
         pkgs.git
         pkgs.gh
@@ -133,6 +140,7 @@ in {
         linger = true;
         uid = 1000;
         group = "alice";
+        extraGroups = ["mitm-proxy-access"];
       };
       users.groups.alice.gid = 1000;
       users.users.bob = {
@@ -144,7 +152,7 @@ in {
       users.groups.bob.gid = 1001;
       services.drv-run.mitm-proxy = {
         clientId = "test-app";
-        owners.alice.githubUserId = 1;
+        enable = true;
         inherit caCertificate;
         caPrivateKeyFile = "/run/test-ca-key";
       };
@@ -152,7 +160,6 @@ in {
       system.activationScripts.test-ca = lib.stringAfter ["specialfs"] ''
         install -m 0400 ${testCA + "/ca.key.pem"} /run/test-ca-key
       '';
-      system.activationScripts.mitm-proxy.deps = ["test-ca"];
       systemd.services.fixture = {
         wantedBy = ["multi-user.target"];
         after = ["network-addresses-lo.service"];
@@ -189,8 +196,8 @@ in {
         return "su -s /bin/sh alice -c " + shlex.quote(command)
 
     with subtest("service starts without enrollment; only the capability is published"):
-        machine.succeed(as_alice("test -r /run/mitm-proxy/alice/hosts.yml; test ! -e /run/mitm-proxy/alice/ca.pem"))
-        machine.fail("su -s /bin/sh bob -c 'test -r /run/mitm-proxy/alice/hosts.yml'")
+        machine.succeed(as_alice("curl --fail --unix-socket /run/mitm-proxy-auth/control.sock http://localhost/hosts.yml > /home/alice/hosts.yml"))
+        machine.fail("su -s /bin/sh bob -c 'curl --fail --unix-socket /run/mitm-proxy-auth/control.sock http://localhost/hosts.yml'")
         machine.fail(as_alice("test -r /run/mitm-proxy-ca/mitmproxy-ca.pem"))
         machine.fail(as_alice("test -r /run/test-ca-key"))
         machine.fail(as_alice("test -r /var/lib/mitm-proxy-auth"))
@@ -205,19 +212,19 @@ in {
         main = "drv.run@fixture.service"
         tree = "/run/user/1000/drv.run/fixture/inputs/mitm"
         capability = tree + "/root/.config/gh/hosts.yml"
-        proxy_pid = int(machine.succeed("systemctl show mitm-proxy.service -p MainPID --value"))
-        machine.succeed("mv /run/mitm-proxy/alice/hosts.yml /run/pending-hosts.yml")
+        machine.succeed("systemctl stop mitm-proxy-auth.socket mitm-proxy.service")
         machine.fail(ctl("alice", "start " + main))
         machine.fail(ctl("alice", "is-active --quiet " + main))
-        machine.succeed("mv /run/pending-hosts.yml /run/mitm-proxy/alice/hosts.yml")
+        machine.succeed("systemctl start mitm-proxy-auth.socket")
         machine.succeed(ctl("alice", "start " + main))
         machine.succeed(ctl("alice", "stop " + main + " drv.run-prepare@fixture.service"))
-        machine.succeed("chmod 0000 /run/mitm-proxy/alice/hosts.yml")
+        machine.succeed("chmod 0000 /run/mitm-proxy-auth/control.sock")
         machine.fail(ctl("alice", "start " + main))
         machine.fail(ctl("alice", "is-active --quiet " + main))
-        machine.succeed("chmod 0640 /run/mitm-proxy/alice/hosts.yml")
+        machine.succeed("chmod 0660 /run/mitm-proxy-auth/control.sock")
         machine.succeed(ctl("alice", "start " + main))
-        machine.succeed("cmp /run/mitm-proxy/alice/hosts.yml " + capability)
+        machine.succeed("cmp /home/alice/hosts.yml " + capability)
+        proxy_pid = int(machine.succeed("systemctl show mitm-proxy.service -p MainPID --value"))
         assert int(machine.succeed("stat -c %a " + capability), 8) == 0o600
         machine.fail("su -s /bin/sh bob -c " + shlex.quote("test -r " + capability))
         machine.succeed(ctl("bob", "start " + main))
@@ -237,6 +244,7 @@ in {
     with subtest("device enrollment grants personal and organization Git access"):
         machine.succeed("SSL_CERT_FILE=/srv/git/tls/upstream-ca-cert.pem python3 ${login}")
         machine.succeed(git)
+        machine.fail(as_alice("GH_TOKEN=ghu_invalid GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/alice/repo.git"))
         machine.succeed(as_alice("git clone https://github.com/alice/repo.git /home/alice/repo; "
                                 "git -C /home/alice/repo config user.name Test; "
                                 "git -C /home/alice/repo config user.email test@example.test; "
@@ -266,12 +274,27 @@ in {
                         "--cacert /srv/git/tls/upstream-ca-cert.pem --data unchanged")
 
     with subtest("service restart preserves authorization and the guest capability"):
-        machine.succeed("cp /run/mitm-proxy/alice/hosts.yml /run/saved-hosts.yml; "
+        machine.succeed("cp /home/alice/hosts.yml /run/saved-hosts.yml; "
                         "cp /run/mitm-proxy-ca/mitmproxy-ca.pem /run/saved-ca; "
                         "systemctl restart mitm-proxy.service")
         machine.wait_for_open_port(3128)
-        machine.succeed("cmp /run/saved-hosts.yml /run/mitm-proxy/alice/hosts.yml; "
+        machine.succeed(as_alice("curl --fail --unix-socket /run/mitm-proxy-auth/control.sock http://localhost/hosts.yml > /home/alice/hosts.yml"))
+        machine.succeed("cmp /run/saved-hosts.yml /home/alice/hosts.yml; "
                         "cmp /run/saved-ca /run/mitm-proxy-ca/mitmproxy-ca.pem")
+        machine.succeed(git)
+
+    with subtest("runtime membership admits another owner without sharing credentials"):
+        machine.succeed("gpasswd -a bob mitm-proxy-access")
+        bob = json.loads(machine.succeed("runuser -u bob -- curl --fail --silent --unix-socket /run/mitm-proxy-auth/control.sock http://localhost/hosts.yml"))
+        alice = json.loads(machine.succeed("cat /home/alice/hosts.yml"))
+        assert bob != alice
+        status = json.loads(machine.succeed("runuser -u bob -- curl --fail --silent --unix-socket /run/mitm-proxy-auth/control.sock http://localhost/status"))
+        assert status["state"] == "not-enrolled"
+        machine.succeed("runuser -u bob -- curl --fail --unix-socket /run/mitm-proxy-auth/control.sock --request POST http://localhost/logout")
+        machine.succeed(git)
+        machine.succeed("gpasswd -d alice mitm-proxy-access")
+        machine.fail(git)
+        machine.succeed("gpasswd -a alice mitm-proxy-access; gpasswd -d bob mitm-proxy-access")
         machine.succeed(git)
 
     with subtest("logout denies new Git requests without restarting guests or service"):

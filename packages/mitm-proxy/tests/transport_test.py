@@ -12,7 +12,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs
 
 from auth import Account, Authorization, GitHub, object_value
-from main import API_HOST, HOST, Owner, Policy, create_master, prepare
+from main import API_HOST, HOST, Capabilities, Policy, create_master, prepare
 from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.tools.dump import DumpMaster
 from tornado.httpclient import HTTPRequest, HTTPResponse
@@ -41,12 +41,16 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
             _ = (root / "state" / ("placeholder-" + name)).write_text(placeholder)
         with patch("main.os.chown"):
             prepare(
-                root / "state",
-                root / "public",
-                [Owner("alice", 1000, 1), Owner("bob", 1001, 2)],
                 999,
                 ca,
                 root / "proxy",
+            )
+        capabilities = Capabilities(root / "state")
+        for name in ["alice", "bob"]:
+            configuration = root / "home" / name / ".config" / "gh"
+            configuration.mkdir(parents=True, exist_ok=True)
+            _ = (configuration / "hosts.yml").write_text(
+                json.dumps(capabilities.hosts(Account(name)))
             )
         upstream = await asyncio.start_server(
             fixture.handle, "127.0.0.1", 0, ssl=certificate(root / "tls")
@@ -55,7 +59,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
         master = create_master(
             root / "proxy",
             0,
-            {ALICE: Account("alice", 1), BOB: Account("bob", 2)},
+            {ALICE: Account("alice"), BOB: Account("bob")},
             authorization,
         )
         master.options.set(
@@ -140,7 +144,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
             clock = Clock()
             oauth = OAuth(clock)
             authorization = Authorization(root / "auth", github(oauth, clock))
-            await enroll(authorization, oauth, Account("alice", 1))
+            await enroll(authorization, oauth, Account("alice"))
             fixture = Fixture(root, oauth)
             async with self.proxy(root, authorization, fixture) as (_, port):
                 async with self.upload(root, port, 2) as (first_reader, first_writer):
@@ -160,7 +164,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                         await asyncio.sleep(31)
                         async with asyncio.timeout(5):
                             self.assertEqual(
-                                (await authorization.status(Account("alice", 1))).state,
+                                (await authorization.status(Account("alice"))).state,
                                 "usable",
                             )
                         self.assertIsNone(fixture.streamed)
@@ -178,7 +182,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(fixture.streamed, b"cd")
                 self.assertEqual(len(fixture.requests), 2)
                 self.assertEqual(fixture.errors, [])
-                await asyncio.wait_for(authorization.logout(Account("alice", 1)), 5)
+                await asyncio.wait_for(authorization.logout(Account("alice")), 5)
 
     async def test_stalled_refresh_backpressures_upload(self) -> None:
         await self.stalled_refresh("success")
@@ -211,7 +215,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
             authorization = Authorization(
                 root / "auth", GitHub("test-app", fetch, clock, clock.sleep)
             )
-            await enroll(authorization, oauth, Account("alice", 1))
+            await enroll(authorization, oauth, Account("alice"))
             clock.now += 28800
             fixture = Fixture(root, oauth)
             size = 16 * 1024 * 1024
@@ -253,7 +257,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                 # Failure/cancellation cannot strand the account or socket
                 # gate. A fresh enrollment and upload must still work.
                 await asyncio.wait_for(
-                    enroll(authorization, oauth, Account("alice", 1)), 5
+                    enroll(authorization, oauth, Account("alice")), 5
                 )
                 async with self.upload(root, port, 2) as (reader, writer):
                     writer.write(b"ok")
@@ -333,15 +337,14 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
             root = Path(temporary)
             clock = Clock()
             oauth = OAuth(clock)
-            account = Account("alice", 1)
+            account = Account("alice")
             authorization = Authorization(root / "auth", github(oauth, clock))
             await enroll(authorization, oauth, account)
             fixture = Fixture(root, oauth)
             async with self.proxy(root, authorization, fixture) as (_, port):
                 environment = {
                     **os.environ,
-                    "HOME": str(root),
-                    "GH_CONFIG_DIR": str(root / "public/alice"),
+                    "HOME": str(root / "home/alice"),
                     "GH_TELEMETRY": "false",
                     "GH_NO_UPDATE_NOTIFIER": "1",
                     "HTTPS_PROXY": f"http://127.0.0.1:{port}",
@@ -350,6 +353,8 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                     "no_proxy": "",
                 }
                 for key in (
+                    "GH_CONFIG_DIR",
+                    "XDG_CONFIG_HOME",
                     "GH_TOKEN",
                     "GITHUB_TOKEN",
                     "GH_HOST",
@@ -429,16 +434,13 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
             clock = Clock()
             oauth = OAuth(clock)
             authorization = Authorization(root / "auth", github(oauth, clock))
-            for account in [Account("alice", 1), Account("bob", 2)]:
+            for account in [Account("alice"), Account("bob")]:
                 await enroll(authorization, oauth, account)
             fixture = Fixture(root, oauth)
             async with self.proxy(root, authorization, fixture) as (master, port):
                 environment = {
                     **os.environ,
-                    "HOME": str(root / "home"),
-                    "GH_CONFIG_DIR": str(root / "public/alice"),
-                    "GH_TOKEN": "must-not-override-seeded-config",
-                    "GITHUB_TOKEN": "must-not-override-seeded-config",
+                    "HOME": str(root / "home/alice"),
                     "GH_TELEMETRY": "false",
                     "GH_NO_UPDATE_NOTIFIER": "1",
                     "HTTPS_PROXY": f"http://127.0.0.1:{port}",
@@ -453,13 +455,19 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                     "GIT_COMMITTER_NAME": "Test",
                     "GIT_COMMITTER_EMAIL": "test@example.test",
                 }
-                (root / "home").mkdir()
+                for key in [
+                    "GH_CONFIG_DIR",
+                    "XDG_CONFIG_HOME",
+                    "GH_TOKEN",
+                    "GITHUB_TOKEN",
+                ]:
+                    _ = environment.pop(key, None)
                 _ = (root / "gitconfig").write_text(
                     '[http "https://github.com/"]\n'
                     + f"proxy = http://127.0.0.1:{port}\n"
                     + f"sslCAInfo = {root}/ca-source/fixture-ca-cert.pem\n"
                     + '[credential "https://github.com"]\n'
-                    + "helper = !env -u GH_TOKEN -u GITHUB_TOKEN gh auth git-credential\n"
+                    + "helper = !gh auth git-credential\n"
                 )
 
                 async def git(*arguments: str, succeeds: bool = True) -> None:
@@ -487,6 +495,12 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                     )
                 work = root / "work"
                 await git("clone", "https://github.com/alice/repo.git", str(work))
+                environment["GH_TOKEN"] = "ghu_invalid"
+                await git(
+                    "ls-remote", "https://github.com/alice/repo.git", succeeds=False
+                )
+                del environment["GH_TOKEN"]
+                await git("ls-remote", "https://github.com/alice/repo.git")
                 _ = (work / "value").write_text("initial")
                 (work / ".github/workflows").mkdir(parents=True)
                 _ = (work / ".github/workflows/check.yml").write_text(
@@ -550,7 +564,7 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                 await git(
                     "ls-remote", "https://github.com/bob/repo.git", succeeds=False
                 )
-                environment["GH_CONFIG_DIR"] = str(root / "public/bob")
+                environment["HOME"] = str(root / "home/bob")
                 await git("ls-remote", "https://github.com/bob/repo.git")
                 await git("ls-remote", "https://github.com/readonly/repo.git")
                 await git(
@@ -572,7 +586,8 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                     "ls-remote", "https://github.com/alice/repo.git", succeeds=False
                 )
                 self.assertEqual(len(fixture.requests), count)
-                environment["GH_CONFIG_DIR"] = str(root / "public/alice")
+                _ = environment.pop("GH_CONFIG_DIR")
+                environment["HOME"] = str(root / "home/alice")
                 await git(
                     "ls-remote",
                     "https://github.com/alice/redirect.git",
@@ -609,15 +624,15 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
                 with suppress(ConnectionResetError):
                     await writer.wait_closed()
                 self.assertEqual(fixture.streamed, b"ab")
-                await authorization.logout(Account("alice", 1))
+                await authorization.logout(Account("alice"))
                 await git(
                     "ls-remote", "https://github.com/alice/repo.git", succeeds=False
                 )
-                await enroll(authorization, oauth, Account("alice", 1))
+                await enroll(authorization, oauth, Account("alice"))
                 await git("ls-remote", "https://github.com/alice/repo.git")
                 oauth.revoke(1)
                 await git("-C", str(work), "push", "origin", "main", succeeds=False)
-                await enroll(authorization, oauth, Account("alice", 1))
+                await enroll(authorization, oauth, Account("alice"))
                 self.assertEqual(fixture.errors, [])
 
                 # Do not trust an unrelated upstream CA.

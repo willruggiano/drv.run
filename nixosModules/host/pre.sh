@@ -13,8 +13,8 @@ if [[ $STATE_DIRECTORY == *:* ]]; then
   echo 'Error: exactly one StateDirectory per Instance is required' >&2
   exit 1
 fi
-name=${RUNTIME_DIRECTORY##*/}
-id=${name#drv.run.}
+id=${RUNTIME_DIRECTORY##*/}
+name=drv.run.$id
 if [[ ! $id =~ ^[[:alnum:]]+$ || ${STATE_DIRECTORY##*/} != "$id" ]]; then
   echo 'Error: invalid Instance identity' >&2
   exit 2
@@ -76,14 +76,15 @@ test -L "$STATE_DIRECTORY/environment-image"
 test -f "$STATE_DIRECTORY/environment-image/store.erofs"
 ln -s "$STATE_DIRECTORY/environment-image/store.erofs" "$RUNTIME_DIRECTORY/environment.erofs"
 ln -s "$STATE_DIRECTORY/state.img" "$RUNTIME_DIRECTORY/state.img"
-ln -s "$(dirname "$RUNTIME_DIRECTORY")/drv.run/$id/image/seed.img" "$RUNTIME_DIRECTORY/seed.img"
+ln -s image/seed.img "$RUNTIME_DIRECTORY/seed.img"
 ssh-keygen -q -t ed25519 -N '' -f "$RUNTIME_DIRECTORY/client-key"
 chmod 0600 "$RUNTIME_DIRECTORY/client-key"
 printf '%s %s\n' "$name" "$(ssh-keygen -y -f "$STATE_DIRECTORY/host-key")" \
   >"$RUNTIME_DIRECTORY/known_hosts"
-cat >"$RUNTIME_DIRECTORY/service-connection.conf" <<EOF
-ProxyCommand @proxy@ vsock-mux$RUNTIME_DIRECTORY/notify.vsock %p
-ProxyUseFdpass yes
-IdentityFile $RUNTIME_DIRECTORY/client-key
-UserKnownHostsFile $RUNTIME_DIRECTORY/known_hosts
+cat >"$RUNTIME_DIRECTORY/.client.conf" <<EOF
+Host $name
+    ProxyCommand @proxy@ vsock-mux$RUNTIME_DIRECTORY/notify.vsock %p
+    IdentityFile $RUNTIME_DIRECTORY/client-key
+    UserKnownHostsFile $RUNTIME_DIRECTORY/known_hosts
 EOF
+mv "$RUNTIME_DIRECTORY/.client.conf" "$RUNTIME_DIRECTORY/client.conf"

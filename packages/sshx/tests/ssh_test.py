@@ -219,6 +219,95 @@ class SSHFixture:
 
 
 class SSHTransport(unittest.TestCase):
+    def test_included_connections_are_independent_of_readiness(self) -> None:
+        fixture = SSHFixture(self)
+        runtime = fixture.root / "runtime" / "0123456789abcdef"
+        runtime.mkdir(parents=True)
+        (runtime / "notify.vsock").symlink_to(fixture.root / "guest.sock")
+        (runtime / "client-key").symlink_to(fixture.root / "client")
+        target = "drv.run." + runtime.name
+        known = runtime / "known_hosts"
+        _ = known.write_text(f"{target} {(fixture.root / 'guest.pub').read_text()}")
+        # Exercise the production Include/glob and ordinary OpenSSH key lookup.
+        # The pinned systemd proxy passes the real connected descriptor to SSH.
+        connection = runtime / "client.conf"
+        _ = connection.write_text(
+            f"Host {target}\n"
+            + f" ProxyCommand {os.environ['SSH_PROXY']} vsock-mux{runtime}/notify.vsock %p\n"
+            + f" IdentityFile {runtime}/client-key\n"
+            + f" UserKnownHostsFile {known}\n"
+        )
+        original = connection.read_bytes()
+        config = fixture.root / "included.conf"
+        _ = config.write_text(
+            "Host *\n User fixture\n BatchMode yes\n IdentitiesOnly yes\n IdentityAgent none\n"
+            + Path("tests/ssh.conf")
+            .read_text()
+            .replace("/run/user/%i/drv.run", str(runtime.parent))
+        )
+        # Another included Host block must neither supply identities nor alter routing.
+        other = runtime.parent / "fedcba9876543210"
+        other.mkdir()
+        _ = (other / "client.conf").write_text(
+            "Host drv.run.fedcba9876543210\n ProxyCommand false\n"
+            + f" IdentityFile {fixture.root}/wrong\n"
+        )
+        connected = fixture.root / "connected"
+        fixture.run_command("ssh", "-F", str(config), target, f"touch {connected}")
+        self.assertTrue(connected.is_file())
+        fixture.run_command(
+            "ssh", "-F", str(config), "drv.run.fedcba9876543210", "true", expected=255
+        )
+        # The real post-start command validates the environment and retrieves timing
+        # data, but never creates, replaces, or removes SSH configuration.
+        timings = fixture.root / "timings.jsonl"
+        _ = timings.write_text('{"phase":"profile-ready"}\n')
+        _ = (fixture.root / "ready").write_text(
+            str(fixture.root / "environment") + "\n"
+        )
+        post = fixture.root / "post.sh"
+        _ = post.write_text(
+            Path("tests/post.sh")
+            .read_text()
+            .replace("@service-ssh@", str(config))
+            .replace("@timing@", "phase() { :; }")
+            .replace("/run/drv-run-environment/ready", str(fixture.root / "ready"))
+            .replace("/nix/var/nix/profiles/project", str(fixture.root / "profile"))
+            .replace("/run/drv-run-environment/timings.jsonl", str(timings))
+        )
+        environment = dict(
+            os.environ,
+            RUNTIME_DIRECTORY=str(runtime),
+            STATE_DIRECTORY=str(fixture.root),
+            MAINPID=str(os.getpid()),
+        )
+        result = subprocess.run(
+            ["bash", str(post)], env=environment, timeout=20, check=False
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            (runtime / "guest-timings.jsonl").read_bytes(), timings.read_bytes()
+        )
+        self.assertEqual(connection.read_bytes(), original)
+        # Authentication failures also fail activation; never hide them in retries.
+        _ = known.write_text(f"{target} {(fixture.root / 'host.pub').read_text()}")
+        result = subprocess.run(
+            ["bash", str(post)], env=environment, timeout=5, check=False
+        )
+        self.assertEqual(result.returncode, 255)
+        self.assertEqual(connection.read_bytes(), original)
+        _ = known.write_text(f"{target} {(fixture.root / 'guest.pub').read_text()}")
+        # A connected guest with the wrong environment fails without a retry loop.
+        _ = (fixture.root / "ready").write_text("/nix/store/wrong-env\n")
+        result = subprocess.run(
+            ["bash", str(post)], env=environment, timeout=5, check=False
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(connection.read_bytes(), original)
+        # Missing fragments do not fall back to DNS or another instance's keys.
+        connection.unlink()
+        fixture.run_command("ssh", "-F", str(config), target, "true", expected=255)
+
     def test_commands_transfers_and_channels(self) -> None:
         fixture = SSHFixture(self)
         fixture.ssh("guest", "exit 37", expected=37)

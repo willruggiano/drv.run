@@ -85,7 +85,7 @@ for owner in "${owners[@]}"; do
   fi
   if [[ $action == stop && $target == --all ]]; then
     # Include units still starting, even before they have written durable state.
-    systemctl --user --machine="$owner@.host" stop 'drv.run@*.service'
+    systemctl --user --machine="$owner@.host" stop 'drv.run@*.service' 'drv.run-prepare@*.service'
     continue
   fi
   # Read user-owned inventory without root privileges. Do not interpret an
@@ -104,9 +104,11 @@ for owner in "${owners[@]}"; do
     elif [[ $target == --all || $instance == "drv.run.$target" ]]; then
       unit="drv.run@${instance#drv.run.}.service"
       if [[ $action == clean ]]; then
-        # Preparation retains the state while startup or teardown is in flight.
-        # Exact names also work when a stopped instance has been unloaded.
-        systemctl --user --machine="$owner@.host" clean --what=state "drv.run-prepare@${instance#drv.run.}.service"
+        # clean guards only its named unit. Preparation can still be stopping
+        # after a cancelled start; do not delete state under its remaining work.
+        preparation=$(systemctl --user --machine="$owner@.host" show "drv.run-prepare@${instance#drv.run.}.service" -p ActiveState --value)
+        [[ $preparation == inactive || $preparation == failed ]] || fail "preparation has not stopped: $instance"
+        systemctl --user --machine="$owner@.host" clean --what=state "$unit"
       elif [[ $action == grow ]]; then
         read -r -p "New total size for $owner/$instance (e.g. 64G): " size </dev/tty
         bytes=$(numfmt --from=iec "$size")
@@ -126,7 +128,7 @@ for owner in "${owners[@]}"; do
       elif [[ $action == reset ]]; then
         systemctl --user --machine="$owner@.host" reset-failed "$unit"
       else
-        systemctl --user --machine="$owner@.host" stop "$unit"
+        systemctl --user --machine="$owner@.host" stop "$unit" "drv.run-prepare@${instance#drv.run.}.service"
       fi
       found=true
     fi

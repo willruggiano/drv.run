@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import base64
 import binascii
+import grp
 import ipaddress
 import json
 import logging
@@ -9,11 +10,13 @@ import os
 import pwd
 import re
 import secrets
-import shutil
 import signal
 import socket
+import stat
+import struct
 import sys
-from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
+import tempfile
+from collections.abc import Awaitable, Callable, Generator, Iterator, Mapping
 from contextlib import (
     AbstractAsyncContextManager,
     AbstractContextManager,
@@ -52,9 +55,11 @@ from mitmproxy.proxy.mode_servers import ProxyConnectionHandler
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
 from mitmproxy.tools.dump import DumpMaster
 from openai import OpenAI
+from tornado.http1connection import HTTP1Connection
 from tornado.httpclient import HTTPRequest, HTTPResponse
 from tornado.httpserver import HTTPServer
 from tornado.httputil import HTTPServerRequest
+from tornado.iostream import IOStream
 from tornado.web import Application, HTTPError, RequestHandler
 
 # Only these origins need TLS interception for credential substitution.
@@ -159,7 +164,7 @@ class Policy:
         *,
         pause: Callable[[http.HTTPFlow], AbstractContextManager[None]],
     ) -> None:
-        self.credentials: dict[str, Account] = dict(credentials)
+        self.credentials: Mapping[str, Account] = credentials
         self.authorization: Authorization = authorization
         self.leases: dict[
             str, tuple[Account, str, AbstractAsyncContextManager[str]]
@@ -367,11 +372,76 @@ class Policy:
         await self.release(flow)
 
 
-@dataclass(frozen=True)
-class Owner:
-    name: str
-    gid: int
-    user_id: int
+ACCESS_GROUP = "mitm-proxy-access"
+
+
+def owner(uid: int) -> Account:
+    user = pwd.getpwuid(uid)
+    group = grp.getgrnam(ACCESS_GROUP)
+    if group.gr_gid not in os.getgrouplist(user.pw_name, user.pw_gid):
+        raise PermissionError("proxy access requires group membership")
+    return Account(user.pw_name)
+
+
+class Capabilities(Mapping[str, Account]):
+    def __init__(self, state: Path) -> None:
+        self.state: Path = state
+        self.credentials: dict[str, Account] = {}
+        self.by_owner: dict[Account, str] = {}
+        state.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for marker in state.glob("placeholder-*"):
+            account = Account(marker.name.removeprefix("placeholder-"))
+            fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd) as file:
+                info = os.fstat(file.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size != 72:
+                    raise ValueError("invalid persisted capability")
+                capability = file.read()
+            if not PLACEHOLDER.fullmatch(capability) or capability in self.credentials:
+                raise ValueError("invalid persisted capability")
+            self.credentials[capability] = account
+            self.by_owner[account] = capability
+
+    @override
+    def __getitem__(self, capability: str) -> Account:
+        account = self.credentials[capability]
+        try:
+            current = owner(pwd.getpwnam(account.name).pw_uid)
+        except PermissionError:
+            raise KeyError(capability) from None
+        assert current == account
+        return account
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.credentials)
+
+    @override
+    def __len__(self) -> int:
+        return len(self.credentials)
+
+    def hosts(self, account: Account) -> dict[str, dict[str, str]]:
+        capability = self.by_owner.get(account)
+        if capability is None:
+            capability = "drv_run_" + secrets.token_hex(32)
+            fd, name = tempfile.mkstemp(dir=self.state, prefix=".capability-")
+            temporary = Path(name)
+            try:
+                with os.fdopen(fd, "w") as file:
+                    _ = file.write(capability)
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.link(temporary, self.state / ("placeholder-" + account.name))
+                directory = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                temporary.unlink(missing_ok=True)
+            self.credentials[capability] = account
+            self.by_owner[account] = capability
+        return {"github.com": {"oauth_token": capability, "git_protocol": "https"}}
 
 
 @dataclass(frozen=True)
@@ -381,9 +451,6 @@ class CertificateAuthority:
 
 
 def prepare(
-    state: Path,
-    public: Path,
-    owners: Sequence[Owner],
     gid: int,
     ca: CertificateAuthority,
     ca_store: Path,
@@ -441,56 +508,6 @@ def prepare(
     os.chown(ca_store, 0, gid)
     ca_store.chmod(0o750)
 
-    state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for obsolete in state.glob("mitmproxy-*"):
-        obsolete.unlink()
-    public.mkdir(mode=0o755, parents=True, exist_ok=True)
-    public.chmod(0o755)
-    # Remove publications for owners whose access was removed.
-    for entry in public.iterdir():
-        if entry.name not in {owner.name for owner in owners}:
-            shutil.rmtree(entry)
-    for owner in owners:
-        marker = state / ("placeholder-" + owner.name)
-        if not marker.exists():
-            with marker.open("x") as file:
-                _ = file.write("drv_run_" + secrets.token_hex(32))
-        placeholder = marker.read_text()
-        if not PLACEHOLDER.fullmatch(placeholder):
-            raise ValueError("invalid persisted mitm-proxy placeholder")
-        directory = public / owner.name
-        directory.mkdir(mode=0o750, exist_ok=True)
-        os.chown(directory, 0, owner.gid)
-        # mkdir's mode is masked by the service's UMask=0077.
-        directory.chmod(0o750)
-        # JSON is also YAML; gh reads this without an online login or token export.
-        hosts = json.dumps(
-            {"github.com": {"oauth_token": placeholder, "git_protocol": "https"}}
-        ).encode()
-        temporary = directory / ".hosts.yml"
-        _ = temporary.write_bytes(hosts)
-        os.chown(temporary, 0, owner.gid)
-        temporary.chmod(0o640)
-        _ = temporary.replace(directory / "hosts.yml")
-        for obsolete in ["placeholder", "ca.pem", "config.yml"]:
-            (directory / obsolete).unlink(missing_ok=True)
-    # The proxy can read, but cannot alter state consumed by privileged prepare.
-    for entry in state.iterdir():
-        os.chown(entry, 0, gid)
-        entry.chmod(0o640)
-    os.chown(state, 0, gid)
-    state.chmod(0o750)
-
-
-def read_credentials(state: Path, owners: Sequence[Owner]) -> dict[str, Account]:
-    credentials: dict[str, Account] = {}
-    for owner in owners:
-        placeholder = (state / ("placeholder-" + owner.name)).read_text()
-        if not PLACEHOLDER.fullmatch(placeholder) or placeholder in credentials:
-            raise ValueError("invalid mitm-proxy placeholder")
-        credentials[placeholder] = Account(owner.name, owner.user_id)
-    return credentials
-
 
 def create_master(
     state: Path,
@@ -536,7 +553,7 @@ def create_master(
 
 
 class Control:
-    """One owner's authorization, exposed only on that owner's Unix socket."""
+    """One Unix owner's enrollment and credential operations."""
 
     def __init__(self, authorization: Authorization, account: Account) -> None:
         self.authorization: Authorization = authorization
@@ -549,7 +566,7 @@ class Control:
     async def status(self) -> dict[str, object]:
         async with self.lock:
             state: dict[str, object] = (
-                {"state": "authorizing", "user_id": self.account.user_id}
+                {"state": "authorizing", "user_id": None}
                 if self.task is not None and not self.task.done()
                 else asdict(await self.authorization.status(self.account))
             )
@@ -605,22 +622,59 @@ class Control:
             await self.cancel()
 
 
+class Controls:
+    def __init__(self, providers: Mapping[str, Authorization]) -> None:
+        self.providers: Mapping[str, Authorization] = providers
+        self.entries: dict[tuple[Account, str], Control] = {}
+
+    def get(self, account: Account, provider: str) -> Control:
+        key = (account, provider)
+        if key not in self.entries:
+            self.entries[key] = Control(self.providers[provider], account)
+        return self.entries[key]
+
+    async def close(self) -> None:
+        for control in self.entries.values():
+            await control.close()
+
+
 class ControlHandler(RequestHandler):
     def __init__(
         self,
         application: Application,
         request: HTTPServerRequest,
         *,
-        control: Control,
-        export_access: bool = False,
+        controls: Controls,
+        capabilities: Capabilities,
+        provider: str = "github",
     ) -> None:
-        self.control: Control = control
-        self.export_access: bool = export_access
+        self.controls: Controls = controls
+        self.capabilities: Capabilities = capabilities
+        self.provider: str = provider
+        self.account: Account | None = None
         super().__init__(application, request)
+
+    @property
+    def control(self) -> Control:
+        assert self.account is not None
+        return self.controls.get(self.account, self.provider)
 
     @override
     def prepare(self) -> None:
         self.set_header("Cache-Control", "no-store")
+        connection = self.request.connection
+        assert isinstance(connection, HTTP1Connection)
+        stream = connection.stream
+        assert isinstance(stream, IOStream)
+        assert stream.socket is not None and stream.socket.family == socket.AF_UNIX
+        peer = stream.socket.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII")
+        )
+        _, uid, _ = cast(tuple[int, int, int], struct.unpack("iII", peer))
+        try:
+            self.account = owner(uid)
+        except (KeyError, PermissionError):
+            raise HTTPError(403) from None
         if self.request.query or self.request.body:
             raise HTTPError(400)
         if self.request.headers.get("Origin"):
@@ -628,6 +682,13 @@ class ControlHandler(RequestHandler):
 
     @override
     async def get(self, operation: str) -> None:
+        if operation == "hosts.yml":
+            assert self.account is not None
+            self.set_header("Content-Type", "application/json")
+            cast(Callable[[str], None], self.write)(
+                json.dumps(self.capabilities.hosts(self.account))
+            )
+            return
         if operation != "status":
             raise HTTPError(405)
         self.set_header("Content-Type", "application/json")
@@ -641,8 +702,8 @@ class ControlHandler(RequestHandler):
                 await self.control.login()
             elif operation == "logout":
                 await self.control.logout()
-            elif operation == "token" and self.export_access:
-                # Only the owner's Unix socket exposes this endpoint. Never route
+            elif operation == "token" and self.provider == "openai":
+                # Only the authenticated owner can access this endpoint. Never route
                 # it through the web UI or the guest-facing HTTP proxy.
                 async with self.control.authorization.lease(
                     self.control.account
@@ -671,30 +732,40 @@ class ControlHandler(RequestHandler):
 
 
 def control_server(
-    control: Control, listener: socket.socket, openai: Control | None = None
+    controls: Controls, listener: socket.socket, capabilities: Capabilities
 ) -> HTTPServer:
     if listener.family != socket.AF_UNIX:
         raise ValueError("authorization control requires a Unix socket")
     listener.setblocking(False)
     listener.set_inheritable(False)
-    # HTTPServer inherits Configurable.__new__, whose return type is Any.
     server = cast(
         HTTPServer,
         HTTPServer(
             Application(
-                [(r"/(status|login|logout)", ControlHandler, {"control": control})]
+                [
+                    (
+                        r"/(status|login|logout|hosts\.yml)",
+                        ControlHandler,
+                        {"controls": controls, "capabilities": capabilities},
+                    )
+                ]
                 + (
                     [
                         (
                             r"/openai/(status|login|logout|token)",
                             ControlHandler,
-                            {"control": openai, "export_access": True},
+                            {
+                                "controls": controls,
+                                "capabilities": capabilities,
+                                "provider": "openai",
+                            },
                         )
                     ]
-                    if openai is not None
+                    if "openai" in controls.providers
                     else []
                 )
             ),
+            xheaders=False,
             max_body_size=1024,
             max_header_size=4096,
             body_timeout=5,
@@ -705,55 +776,38 @@ def control_server(
     return server
 
 
-def control_listeners(owners: Sequence[Owner]) -> dict[str, socket.socket]:
-    # systemd creates owner-only sockets before dropping service privileges.
-    # Descriptor names bind each listener to configuration, never to client input.
-    names = os.environ.pop("LISTEN_FDNAMES", "").split(":")
+def control_listener() -> socket.socket:
+    # One group-restricted listener. SO_PEERCRED, not request data, selects the owner.
+    name = os.environ.pop("LISTEN_FDNAMES", "")
     count = int(os.environ.pop("LISTEN_FDS", "0"))
     pid = int(os.environ.pop("LISTEN_PID", "0"))
-    if (
-        pid != os.getpid()
-        or count != len(owners)
-        or len(names) != count
-        or set(names) != {owner.name for owner in owners}
-    ):
+    if pid != os.getpid() or count != 1 or name != "control":
         raise ValueError("invalid authorization socket activation")
-    return {name: socket.socket(fileno=fd) for fd, name in enumerate(names, 3)}
+    return socket.socket(fileno=3)
 
 
 async def serve(
     state: Path,
     port: int,
-    credentials: Mapping[str, Account],
+    capabilities: Capabilities,
     authorization: Authorization,
-    owners: Sequence[Owner],
     openai: Authorization,
 ) -> None:
-    master = create_master(state, port, credentials, authorization)
+    master = create_master(state, port, capabilities, authorization)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, master.shutdown)
-    controls: list[Control] = []
-    servers: list[HTTPServer] = []
-    listeners = control_listeners(owners)
+    controls = Controls({"github": authorization, "openai": openai})
+    listener = control_listener()
+    server = control_server(controls, listener, capabilities)
     try:
-        for owner in owners:
-            control = Control(authorization, Account(owner.name, owner.user_id))
-            openai_control = Control(openai, Account(owner.name))
-            controls.extend([control, openai_control])
-            servers.append(
-                control_server(control, listeners[owner.name], openai_control)
-            )
         await master.run()
     finally:
-        for server in servers:
-            server.stop()
-        for control in controls:
-            await control.close()
-        for server in servers:
-            await server.close_all_connections()
-        for listener in listeners.values():
-            listener.close()
+        server.stop()
+        # Drain requests before iterating the controls they create lazily.
+        await server.close_all_connections()
+        await controls.close()
+        listener.close()
 
 
 class Arguments(argparse.Namespace):
@@ -763,7 +817,7 @@ class Arguments(argparse.Namespace):
     provider: str = "github"
 
 
-def configuration(path: Path) -> tuple[str, int, list[Owner], CertificateAuthority]:
+def configuration(path: Path) -> tuple[str, int, CertificateAuthority]:
     data = object_value(cast(object, json.loads(path.read_text())))
     client_id = text(data, "clientId")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", client_id):
@@ -771,28 +825,19 @@ def configuration(path: Path) -> tuple[str, int, list[Owner], CertificateAuthori
     port = integer(data, "port")
     if port > 65535:
         raise ValueError("invalid port")
-    owners: list[Owner] = []
-    for name, value in object_value(data["owners"]).items():
-        owner = object_value(value)
-        account = Account(name, integer(owner, "githubUserId"))
-        assert account.user_id is not None
-        owners.append(Owner(account.name, integer(owner, "gid"), account.user_id))
     ca = CertificateAuthority(
         text(data, "caCertificate"), Path(text(data, "caPrivateKeyFile"))
     )
-    return client_id, port, owners, ca
+    return client_id, port, ca
 
 
 async def run(
     args: Arguments, state: Path, tokens: Path, show: Callable[[Device], None]
 ) -> None:
-    client_id, port, owners, ca = configuration(Path(args.config))
+    client_id, port, ca = configuration(Path(args.config))
     ca_store = Path("/run/mitm-proxy-ca")
     if args.operation == "prepare":
         prepare(
-            state,
-            Path("/run/mitm-proxy"),
-            owners,
             pwd.getpwnam("mitm-proxy").pw_gid,
             ca,
             ca_store,
@@ -810,18 +855,14 @@ async def run(
             await serve(
                 ca_store,
                 port,
-                read_credentials(state, owners),
+                Capabilities(state),
                 authorization,
-                owners,
                 openai,
             )
             return
-        owner = next((owner for owner in owners if owner.name == args.user), None)
-        if owner is None:
-            raise ValueError("select a configured host user with --user")
-        account = Account(
-            owner.name, owner.user_id if args.provider == "github" else None
-        )
+        if args.user is None:
+            raise ValueError("select a host user with --user")
+        account = Account(pwd.getpwnam(args.user).pw_name)
         if args.provider == "openai":
             authorization = openai
         if args.operation == "login":

@@ -327,7 +327,7 @@ in {
         state = instances[0]
         instance_id = state.rsplit("/", 1)[1]
         target = "drv.run." + instance_id
-        runtime = "/run/user/1000/" + target
+        runtime = "/run/user/1000/drv.run/" + instance_id
         unit = "drv.run@" + instance_id + ".service"
         profile = "/nix/var/nix/profiles/project"
         environment = operator(f"readlink -e {state}/environment").strip()
@@ -525,7 +525,7 @@ in {
         operator(f"systemctl --user is-failed --quiet {failed_unit}")
         operator(f"test -d {failed_state}/creating; test ! -e {failed_state}/ready")
         operator(f'test "$(systemctl --user show -p MainPID --value {failed_unit})" -eq 0')
-        host.wait_until_fails("test -e /run/user/1000/drv.run." + failed_id)
+        host.wait_until_fails("test -e /run/user/1000/drv.run/" + failed_id)
         t.assertEqual(links(), prior_links)
         # Listing a failed creation must neither retry it nor clear its failure.
         client.succeed("ssh operator@host </dev/null")
@@ -541,7 +541,7 @@ in {
         with subtest(f"failed {collision} creation cannot publish prepared Instance state"):
             failed_unit = f"drv.run@{failed_id}.service"
             failed_state = f"/home/operator/.local/state/drv.run/{failed_id}"
-            failed_runtime = f"/run/user/1000/drv.run.{failed_id}"
+            failed_runtime = f"/run/user/1000/drv.run/{failed_id}"
             prior_links = links()
             # A colliding object must fail creation, never be overwritten.
             operator(f"mkdir -p {failed_state}/{collision} {failed_runtime}")
@@ -711,9 +711,9 @@ in {
         host.wait_until_succeeds("test -z \"$(find /run/systemd/nsresource/registry -maxdepth 1 -name 'n1000-*.userns')\"")
         egress("other", other_target)
 
-    with subtest("failed provisioning closes its master and releases its TAP"):
+    with subtest("failed verification releases its TAP"):
         # The pinned image must reject a host expectation that names a different
-        # store path, without publishing client readiness.
+        # store path, without completing activation.
         operator(f"mv {state}/environment {state}/saved-environment")
         operator(f"ln -s ${pkgs.bash} {state}/environment")
         host.fail(as_user("operator", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start {unit}"))

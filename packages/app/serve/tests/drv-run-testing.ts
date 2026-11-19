@@ -17,26 +17,28 @@ export async function remoteFixture(t: TestContext) {
   models.setProvider(faux.provider);
   const f = { directory, workspace };
   const runtimeDirectory = join(f.directory, "runtime");
-  const calls = join(f.directory, "systemctl-calls.jsonl");
   const states = join(f.directory, "states.json");
   const systemctl = join(f.directory, "systemctl");
-  await writeFile(states, JSON.stringify({ test1: "active" }));
+  await writeFile(
+    states,
+    JSON.stringify({ test1: { ActiveState: "active", SubState: "running" } }),
+  );
   await writeFile(
     systemctl,
     `#!${process.execPath}
-import { appendFileSync, readFileSync } from "node:fs";
-appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+import { readFileSync } from "node:fs";
 const id = process.argv[4].slice("drv.run@".length, -".service".length);
-process.stdout.write(JSON.parse(readFileSync(${JSON.stringify(states)}, "utf8"))[id] ?? "inactive");
+const state = JSON.parse(readFileSync(${JSON.stringify(states)}, "utf8"))[id] ?? { ActiveState: "inactive", SubState: "dead" };
+process.stdout.write(Object.entries(state).map(([key, value]) => key + "=" + value).join("\\n") + "\\n");
 `,
     { mode: 0o700 },
   );
-  async function instance(id: string, reference: string | undefined, ready = true) {
+  async function instance(id: string, reference: string | undefined, configured = true) {
     const path = join(f.directory, "drv.run", id);
     await mkdir(path, { recursive: true });
     if (reference !== undefined) await writeFile(join(path, "reference"), reference);
-    if (ready) {
-      const runtime = join(runtimeDirectory, `drv.run.${id}`);
+    if (configured) {
+      const runtime = join(runtimeDirectory, "drv.run", id);
       await mkdir(runtime, { recursive: true });
       await writeFile(join(runtime, "client.conf"), "");
     }
@@ -73,7 +75,6 @@ process.stdout.write(JSON.parse(readFileSync(${JSON.stringify(states)}, "utf8"))
     binding: { provider: "drv.run", target: "test1", cwd: "/workspace" },
     options,
     instance,
-    calls,
     states,
     connections,
     sshOptions,

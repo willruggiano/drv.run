@@ -111,8 +111,7 @@ class OAuth:
 
 
 async def enroll(authorization: Authorization, oauth: OAuth, account: Account) -> None:
-    assert account.user_id is not None
-    oauth.identity = account.user_id
+    oauth.identity = {"alice": 1, "bob": 2}[account.name]
 
     def show(device: Device) -> None:
         assert device.verification_uri == "https://github.com/login/device"

@@ -220,12 +220,11 @@ int main(int argc, char **argv) {
     // No inherited descriptors or environment variables select an owner/socket.
     if (close_range(3, UINT_MAX, 0) < 0 || signal(SIGPIPE, SIG_IGN) == SIG_ERR)
         return EXIT_FAILURE;
-    char directory[128], ready[160], address[160];
-    snprintf(directory, sizeof(directory), "/run/user/%ju/%s", (uintmax_t) getuid(), argv[1]);
-    snprintf(ready, sizeof(ready), "%s/client.conf", directory);
+    char directory[128], address[160];
+    snprintf(directory, sizeof(directory), "/run/user/%ju/drv.run/%s", (uintmax_t) getuid(), argv[1] + strlen("drv.run."));
     struct stat st;
-    if (lstat(directory, &st) < 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid() || access(ready, R_OK) < 0) {
-        fputs("Guest is not ready for this owner\n", stderr);
+    if (lstat(directory, &st) < 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) {
+        fputs("Guest runtime is not available for this owner\n", stderr);
         return EXIT_FAILURE;
     }
     snprintf(address, sizeof(address), "vsock-mux%s/notify.vsock", directory);

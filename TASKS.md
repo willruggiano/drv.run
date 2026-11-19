@@ -92,6 +92,10 @@ findings are not an unresolved ticket or proof of compatibility.
   confirmed the original test seams before publication. The guest-file
   integration resolution has since been explicitly revised with the user;
   implementation ticket 03's amended scope and two test seams are approved.
+- Ticket 23 includes a review of guest profile and shell-activation conventions.
+  Ticket 03 retains the existing Nix-managed development profile; no rename or
+  conversion to a global package profile is required. See
+  [[nixosModules/host/pre.sh]] and [[nixosModules/guest/shell.sh]].
 - The specification selects a Go OAuth dependency and specifies native-OpenSSH
   integration with pi-env. Source review is not runtime verification; the
   specification records remaining interoperability and acceptance obligations.

@@ -322,7 +322,7 @@ class Manager:
             return
         preparation = unit.replace("drv.run@", "drv.run-prepare@")
         _ = self.run(["systemctl", "--user", "stop", unit, preparation])
-        _ = self.run(["systemctl", "--user", "clean", "--what=state", preparation])
+        _ = self.run(["systemctl", "--user", "clean", "--what=state", unit])
         remaining = self.units()
         if unit in remaining:
             properties = obj(reply(self.properties(remaining[unit], "Unit"), "a{sv}"))
@@ -347,7 +347,7 @@ def instance_paths(name: str, manifest: dict[str, Json]) -> tuple[Path, Path]:
     identity = match[1]
     return (
         Path(text(manifest["state_base"])) / "drv.run" / identity,
-        Path(text(manifest["runtime_base"])) / f"drv.run.{identity}",
+        Path(text(manifest["runtime_base"])) / "drv.run" / identity,
     )
 
 
@@ -404,7 +404,6 @@ def collect(
         measured = timings(snapshots, name)
         same_boot(text(manifest["boot_id"]), boot_id())
         state, runtime = instance_paths(name, manifest)
-        require((runtime / "client.conf").is_file(), "client.conf not published")
         os.kill(integer(measured["main_pid"]), 0)
         for field in ("environment", "runner", "environment-image"):
             link = state / field

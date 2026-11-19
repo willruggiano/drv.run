@@ -15,13 +15,13 @@ Host: hyperfine
   |     |       -> drv.run-image@ID.service: guest-file snapshot ready
   |     |       -> drv.run@ID.service
   |     |            +-- ExecStart: TAP -> runner -> CH -> Guest READY=1
-  |     |            +-- ExecStartPost: verify environment; publish client.conf
+  |     |            +-- ExecStartPost: verify environment; collect guest timings
   |     |            `-- active
   |     `-- exec ssh -T drv.run.ID exit
   |           `-- Guest login shell -> nix develop project profile -> bash -c exit
   `-- conclude hook [outside timing]
         collect instance/prepare/image properties
-          -> stop instance + preparation -> clean preparation state
+          -> stop instance + preparation -> clean instance state
 ```
 
 Current `worker_us` runs from the start of preparation `ExecStart` to the image

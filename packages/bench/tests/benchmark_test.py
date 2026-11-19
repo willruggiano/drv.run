@@ -299,7 +299,6 @@ class FakeSystemd:
         state, runtime = b.instance_paths(name, self.manifest)
         state.mkdir(parents=True)
         runtime.mkdir(parents=True)
-        (runtime / "client.conf").touch()
         _ = (runtime / "timings.jsonl").write_text(
             json.dumps({"phase": "client-ready", "monotonic_s": 10}) + "\n"
         )
@@ -419,7 +418,7 @@ class LifecycleTest(unittest.TestCase):
             self.fake.actions,
             [
                 ("stop", NAME, NAME.replace("drv.run@", "drv.run-prepare@")),
-                ("clean", "--what=state", NAME.replace("drv.run@", "drv.run-prepare@")),
+                ("clean", "--what=state", NAME),
             ],
         )
         self.assertFalse((self.output / "pending.json").exists())

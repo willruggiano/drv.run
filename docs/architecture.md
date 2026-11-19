@@ -14,18 +14,18 @@ Host: sshd authenticates an enabled isNormalUser account
   v
 Host: launcher (user UID) -> user's systemd manager
   |   start drv.run@ID.service; Requires= + After= order activation:
-  |     drv.run-prepare@ID.service: initialize; prepare control files
+  |     drv.run-prepare@ID.service: initialize; write SSH configuration
   |       -> drv.run-core@ID.service + integration producers: canonical trees
   |       -> drv.run-image@ID.service: publish read-only guest-file snapshot
   |       -> drv.run@ID.service
   |            +-- ExecStart:     allocate TAP; exec pinned CH runner
-  |            `-- ExecStartPost: verify environment; publish client.conf
+  |            `-- ExecStartPost: verify environment; finish activation
   |
   `-- exec ssh drv.run.ID -> Guest: /workspace
                                    nix develop -- /nix/var/nix/profiles/project
 
 Client: ssh <user>@drv.run -> Host: list that user's durable Instance SSH targets
-Host:   ssh drv.run.ID     -> /run/user/<UID>/drv.run.ID/client.conf
+Host:   ssh drv.run.ID     -> Include /run/user/<UID>/drv.run/*/client.conf
                            -> private Unix socket -> VSOCK -> Guest sshd
                            -> Guest: reconnect as root
 
@@ -34,7 +34,12 @@ Host: enabled isNormalUser accounts -> lingering + kvm group + SSH launcher
 ```
 
 Sources: [[nixosModules/host/default.nix]], [[nixosModules/host/post.sh]],
-[[nixosModules/host/command.sh]], [[nixosModules/guest/shell.sh]].
+[[nixosModules/host/command.sh]], [[nixosModules/host/ssh.conf]],
+[[nixosModules/guest/shell.sh]].
+
+SSH configuration is not readiness. Inventory reports `active/running` only when
+the single authenticated environment verification succeeds. Direct SSH can
+connect earlier; normal creation waits for `systemctl start` to complete.
 
 ## Egress
 
@@ -49,6 +54,28 @@ Guest NIC -> CH -> TAP -> Host nftables -> routing / NAT -> configured uplink
 
 stop / crash -> systemd cgroup cleanup -> last TAP FD closes -> TAP disappears
 ```
+
+## Credential proxy
+
+```text
+mitm-proxy-access member -> shared activated control socket
+                        -> SO_PEERCRED UID + current NSS membership
+                        -> owner's credentials / private capability
+                                           |
+producer -> inputs/mitm/root/.config/gh/hosts.yml -> guest gh
+```
+
+Group membership authorizes proxy credential use, not instance ownership.
+Enrollment selects the GitHub account; its numeric ID is stored metadata, not a
+configured identity restriction. Existing credentials and `placeholder-USER`
+capabilities remain in private service state.
+
+Control requests and capability use recheck membership. New group membership
+requires refreshed sessions/user managers: socket access and `ConditionGroup`
+use their existing credentials. Native gh environment-token precedence applies.
+
+Sources: [[nixosModules/host/mitm-proxy.nix]], [[packages/mitm-proxy/main.py]],
+[[packages/mitm-proxy/auth.py]], [[nixosModules/guest/mitm-proxy.nix]].
 
 ## State lifetime
 
@@ -66,7 +93,7 @@ StateDirectory: drv.run/ID [owner-only]
                                                      (/nix, /workspace, ...)
 
 Owner-private runtime directories [removed on stop/failure/cancellation]:
-  %t/drv.run.ID/                  control files, sockets, client.conf
+  %t/drv.run/ID/                 control files, sockets, client.conf
   %t/drv.run/ID/inputs/           core + integration canonical trees
                        |
                     assembly
@@ -93,10 +120,16 @@ Host reboot    -> retain durable state; explicit start required
 
 incomplete creation / missing established disk -> startup fails
 
-systemctl --user clean --what=state drv.run-prepare@ID.service (stopped Instance)
+systemctl --user stop drv.run@ID.service drv.run-prepare@ID.service
+systemctl --user clean --what=state drv.run@ID.service
   -> delete disk, keys, metadata and GC-root links
   -> Host GC may collect unreferenced closures
 ```
 
 Sources: [[nixosModules/host/pre.sh]], [[nixosModules/host/cli.sh]],
 [[nixosModules/host/default.nix]].
+
+The CLI refuses cleanup while preparation is activating, active, or
+deactivating. Systemd guards only the named unit, not every unit sharing its
+state directory. Stop both units before cleanup; do not race cleanup with a new
+preparation start.

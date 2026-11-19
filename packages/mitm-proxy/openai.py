@@ -111,9 +111,7 @@ class OpenAI:
         except (ValueError, TypeError, KeyError):
             raise AuthError("temporarily-unavailable") from None
 
-    async def authorize(self, device: Device, user_id: int | None) -> Tokens:
-        if user_id is not None:
-            raise AuthError("reauthorization-required")
+    async def authorize(self, device: Device) -> Tokens:
         interval = device.interval
         while self.clock() + interval < device.expires_at:
             await self.sleep(interval)

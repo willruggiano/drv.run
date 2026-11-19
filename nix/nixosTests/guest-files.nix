@@ -48,6 +48,18 @@ in
       nix.settings.experimental-features = ["nix-command" "flakes"];
       boot.supportedFilesystems = ["erofs"];
       boot.kernelParams = ["systemd.tty.term.console=dumb"];
+      # These lifecycle fixtures need no RSA keys; generation is costly under TCG.
+      services.openssh.hostKeys = lib.mkForce [
+        {
+          type = "ed25519";
+          path = "/etc/ssh/ssh_host_ed25519_key";
+        }
+      ];
+      # Keep the driver reachable during slow TCG boot; assertions wait for units.
+      systemd.services.backdoor = {
+        unitConfig.DefaultDependencies = false;
+        after = ["local-fs.target"];
+      };
       environment.systemPackages = [pkgs.python3];
       virtualisation = {
         memorySize = 768;
@@ -77,7 +89,14 @@ in
       systemd.user.services = {
         # Only environment realization and the guest process are doubles. Core
         # SSH preparation, assembly, dependencies and runtime ownership are real.
-        "drv.run-prepare@".serviceConfig.ExecStart = lib.mkForce "${lib.getExe prepare} %t/drv.run.%i";
+        "drv.run-prepare@".serviceConfig = {
+          ExecStart = lib.mkForce "${lib.getExe prepare} %t/drv.run/%i";
+          ExecStopPost = lib.getExe (pkgs.writeShellApplication {
+            name = "fixture-preparation-stop";
+            runtimeInputs = [pkgs.coreutils];
+            text = gate "preparation-stop";
+          });
+        };
         "fixture-files@" = {
           requires = ["drv.run-prepare@%i.service"];
           after = ["drv.run-prepare@%i.service"];
@@ -104,11 +123,34 @@ in
           });
         };
         "drv.run@".serviceConfig = {
-          Type = lib.mkForce "simple";
           ExecStartPre = lib.mkForce [];
-          ExecStart = lib.mkForce "${pkgs.coreutils}/bin/sleep infinity";
-          ExecStartPost = lib.mkForce [];
+          ExecStart = lib.mkForce (lib.getExe (pkgs.writeShellApplication {
+            name = "fixture-guest";
+            runtimeInputs = [pkgs.coreutils pkgs.systemd];
+            text = ''
+              systemd-notify --ready
+              exec sleep infinity
+            '';
+          }));
+          ExecStartPost = lib.mkForce (lib.getExe (pkgs.writeShellApplication {
+            name = "fixture-acknowledgement";
+            runtimeInputs = [pkgs.coreutils];
+            # Model an SSH acknowledgement whose transport ends with the guest.
+            text = ''
+              touch "$STATE_DIRECTORY/entered-post"
+              while test -e "$STATE_DIRECTORY/wait-post"; do
+                kill -0 "''${MAINPID:?}"
+                sleep 0.1
+              done
+              test ! -e "$STATE_DIRECTORY/fail-post"
+            '';
+          }));
           ExecStop = lib.mkForce [];
+          ExecStopPost = lib.getExe (pkgs.writeShellApplication {
+            name = "fixture-stop-barrier";
+            runtimeInputs = [pkgs.coreutils];
+            text = gate "stop";
+          });
         };
       };
     };
@@ -158,7 +200,6 @@ in
 
       def cleaned(owner):
           machine.wait_until_fails("test -e " + root(owner), timeout=30)
-          machine.fail("test -e /run/user/" + str(uids[owner]) + "/drv.run." + instance)
 
       machine.start()
       machine.wait_for_unit("multi-user.target")
@@ -171,6 +212,7 @@ in
               expected = value(owner, 1)
               ctl(owner, "start drv.run@" + instance + ".service")
               assert snapshot(owner) == expected
+              machine.fail(command(owner, "systemctl --user clean --what=state drv.run@" + instance + ".service"))
               invocation = UUID(ctl(owner, "show drv.run@" + instance + ".service -p InvocationID --value").strip())
               assert invocation.int != 0
               run(owner, "touch " + root(owner) + "/inputs/fixture/root/.config/fixture/stale")
@@ -206,7 +248,7 @@ in
               ctl("alice", "stop drv.run@" + instance + ".service")
               cleaned("alice")
 
-      for phase in ["prepare", "producer", "image"]:
+      for phase in ["prepare", "producer", "image", "post"]:
           instance = "failed" + phase
           with subtest("failed " + phase + " removes partial outputs and retries"):
               run("alice", "mkdir -p " + state("alice"))
@@ -214,6 +256,8 @@ in
               run("alice", "touch " + state("alice") + "/fail-" + phase)
               machine.fail(command("alice", "systemctl --user start drv.run@" + instance + ".service"))
               machine.fail(command("alice", "systemctl --user is-active --quiet drv.run@" + instance + ".service"))
+              if phase == "post":
+                  cleaned("alice")
               machine.fail("test -f " + root("alice") + "/image/seed.img")
               run("alice", "rm " + state("alice") + "/fail-" + phase)
               ctl("alice", "start drv.run@" + instance + ".service")
@@ -229,7 +273,17 @@ in
               ctl("alice", "start --no-block drv.run@" + instance + ".service")
               machine.wait_until_succeeds("test -f " + state("alice") + "/entered-" + phase)
               machine.fail(command("alice", "systemctl --user is-active --quiet drv.run@" + instance + ".service"))
-              ctl("alice", "stop drv.run@" + instance + ".service")
+              machine.fail(command("alice", "systemctl --user clean --what=state drv.run@" + instance + ".service"))
+              run("alice", "touch " + state("alice") + "/wait-preparation-stop")
+              ctl("alice", "stop --no-block drv.run@" + instance + ".service")
+              machine.wait_until_succeeds("test -f " + state("alice") + "/entered-preparation-stop")
+              inventory = json.loads(machine.succeed("drv.run list --json -u alice"))
+              entry = next(entry for entry in inventory["instances"] if entry["id"] == instance)
+              assert entry["activeState"] in ["inactive", "failed"]
+              machine.fail("drv.run clean -u alice " + instance)
+              machine.succeed("test -f " + state("alice") + "/host-key")
+              run("alice", "rm " + state("alice") + "/wait-preparation-stop")
+              machine.succeed("drv.run stop -u alice " + instance)
               cleaned("alice")
               run("alice", "rm " + state("alice") + "/wait-" + phase)
               expected = value("alice", 6)
@@ -237,5 +291,30 @@ in
               assert snapshot("alice") == expected
               ctl("alice", "stop drv.run@" + instance + ".service")
               cleaned("alice")
+      instance = "mainexit"
+      with subtest("main process exit during acknowledgement fails activation"):
+          run("alice", "mkdir -p " + state("alice"))
+          value("alice", 7)
+          run("alice", "touch " + state("alice") + "/wait-post")
+          ctl("alice", "start --no-block drv.run@" + instance + ".service")
+          machine.wait_until_succeeds("test -f " + state("alice") + "/entered-post")
+          ctl("alice", "kill --kill-whom=main --signal=KILL drv.run@" + instance + ".service")
+          machine.wait_until_succeeds(command("alice", "systemctl --user is-failed --quiet drv.run@" + instance + ".service"))
+          cleaned("alice")
+
+      instance = "teardown"
+      with subtest("main-unit clean refuses teardown and removes stopped state"):
+          run("alice", "mkdir -p " + state("alice"))
+          value("alice", 7)
+          ctl("alice", "start drv.run@" + instance + ".service")
+          run("alice", "touch " + state("alice") + "/wait-stop")
+          ctl("alice", "stop --no-block drv.run@" + instance + ".service")
+          machine.wait_until_succeeds("test -f " + state("alice") + "/entered-stop")
+          machine.fail(command("alice", "systemctl --user clean --what=state drv.run@" + instance + ".service"))
+          run("alice", "rm " + state("alice") + "/wait-stop")
+          ctl("alice", "stop drv.run@" + instance + ".service")
+          cleaned("alice")
+          ctl("alice", "clean --what=state drv.run@" + instance + ".service")
+          machine.fail("test -e " + state("alice"))
     '';
   }
