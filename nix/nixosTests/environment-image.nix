@@ -45,6 +45,7 @@
       ../../nixosModules/guest/shell.sh
       ../../nixosModules/host/post.sh
       ../../nixosModules/host/command.sh
+      ../../nixosModules/host/cli.sh
       ../../nixosModules/timing.sh
     ];
   };

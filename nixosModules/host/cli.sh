@@ -1,19 +1,21 @@
 # shellcheck shell=bash
 set -euo pipefail
 
+# JSON inventory always stays caller-scoped, including when called by root.
 # Preserve local, unprivileged launcher use; SSH calls the launcher directly.
-if ((EUID != 0)); then
+if ((EUID != 0)) || [[ ${1:-} == list && ${2:-} == --json ]]; then
   exec @launcher@ "$@"
 fi
 
 usage() {
   printf '%s\n' \
-    'Usage: drv.run list [-u <user>]' \
+    'Usage: drv.run list --json' \
+    '       drv.run list [-u <user>]' \
     '       drv.run stop [-u <user>] --all|<instance>' \
     '       drv.run reset [-u <user>] --all|<instance>' \
     '       drv.run clean [-u <user>] --all|<instance>' \
     '       drv.run grow <instance>' \
-    'Without -u, target all configured instance owners.' \
+    'Administrative commands without -u target all configured instance owners.' \
     'stop stops instances via systemd and retains their state.' \
     'reset clears the failed state of instances via systemd.' \
     'clean removes instance state via systemd; instances must be stopped.'
