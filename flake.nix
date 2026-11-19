@@ -55,7 +55,6 @@
           (self.packages.${prev.stdenv.hostPlatform.system})
           app
           bench
-          durable-harness
           mitm-proxy
           subtrace
           systemd-with-vmlinux-btf
@@ -82,11 +81,8 @@
     in {
       app-tests = pkgs.app;
       bench-tests = pkgs.bench;
-      www-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.www;
       pds-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.pds;
       pds-visual-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.pds.tests.visual;
-      durable-api-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.durable-api;
-      durable-harness-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.durable-harness;
       environment-image-tests = environmentImage.artifact;
       environment-image-nixos = environmentImage.integration;
       llms-tests = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;

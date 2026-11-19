@@ -1,7 +1,6 @@
 {
   chromium,
   dejavu_fonts,
-  durable-harness,
   fetchurl,
   importNpmLock,
   lib,
@@ -14,7 +13,6 @@
   typescript,
 }: let
   manifest = lib.importJSON ./package.json;
-  harnessManifest = lib.importJSON ../durable/harness/package.json;
   datastar = fetchurl {
     url = "https://raw.githubusercontent.com/starfederation/datastar/v1.0.5/bundles/datastar.js";
     hash = "sha256-c4DgNEt/k32ArXDt7aHChXgXMVfuR0i+GFCZFJHZEf0=";
@@ -24,110 +22,102 @@
     hash = "sha256-F9oOIW08aoGVJvW3KmpE2E00vNm+tBkaxq+JwVCO8I8=";
   };
 in
-  assert lib.all (name: manifest.dependencies.${name} == harnessManifest.dependencies.${name}) [
-    "@earendil-works/chord"
-    "@earendil-works/pi-ai"
-    "@earendil-works/pi-durable"
-  ];
-    stdenvNoCC.mkDerivation (finalAttrs: {
-      pname = manifest.name;
-      inherit (manifest) version;
-      src = lib.fileset.toSource {
-        root = ./.;
-        fileset = lib.fileset.unions [
-          ./package.json
-          ./package-lock.json
-          ./.npmrc
-          ./tsconfig.json
-          ./tsconfig.build.json
-          ./src
-          ./tests
-          ./assets/style.css
-        ];
+  stdenvNoCC.mkDerivation (finalAttrs: {
+    pname = manifest.name;
+    inherit (manifest) version;
+    src = lib.fileset.toSource {
+      root = ./.;
+      fileset = lib.fileset.unions [
+        ./package.json
+        ./package-lock.json
+        ./.npmrc
+        ./tsconfig.json
+        ./tsconfig.build.json
+        ./src
+        ./tests
+        ./assets/style.css
+      ];
+    };
+    npmDeps = importNpmLock {npmRoot = ./.;};
+    npmRebuildFlags = ["--ignore-scripts"];
+    nativeBuildInputs = [importNpmLock.npmConfigHook makeWrapper nodejs typescript];
+    preBuild = ''
+      cp ${datastar} assets/datastar.js
+      patch --batch --forward --fuzz=0 \
+        -d node_modules/@earendil-works/pi-durable -p1 \
+        < ${./pi-durable-conversation-context.patch}
+    '';
+    buildPhase = ''
+      runHook preBuild
+      npm run build
+      runHook postBuild
+    '';
+    doCheck = true;
+    checkPhase = ''
+      runHook preCheck
+      export HOME="$(mktemp -d)"
+      npm run check
+      npm test
+      runHook postCheck
+    '';
+    preInstall = ''
+      cp package.json package.runtime.json
+      cp "$npmDeps"/package{,-lock}.json .
+      npm prune --omit=dev --omit=peer --ignore-scripts --offline
+      mv package.runtime.json package.json
+      rm node_modules/.package-lock.json
+    '';
+    installPhase = ''
+      runHook preInstall
+      mkdir -p "$out/lib/pds" "$out/bin"
+      cp -R package.json dist assets node_modules "$out/lib/pds/"
+      cp ${datastarLicense} "$out/lib/pds/assets/datastar.LICENSE"
+      makeWrapper ${nodejs}/bin/node "$out/bin/pds" \
+        --add-flags "$out/lib/pds/dist/index.js" \
+        --prefix PATH : ${lib.makeBinPath [openssh]}
+      runHook postInstall
+    '';
+    passthru = {
+      bench = writeShellApplication {
+        name = "pds-bench";
+        runtimeInputs = [nodejs];
+        text = ''
+          exec node ${finalAttrs.finalPackage}/lib/pds/dist/bench.js "$@"
+        '';
       };
-      npmDeps = importNpmLock {
-        npmRoot = ./.;
-        packageSourceOverrides."node_modules/durable-harness" = "${durable-harness}/lib/durable-harness";
-      };
-      npmRebuildFlags = ["--ignore-scripts"];
-      nativeBuildInputs = [importNpmLock.npmConfigHook makeWrapper nodejs typescript];
-      preBuild = ''
-        cp ${datastar} assets/datastar.js
-        patch --batch --forward --fuzz=0 \
-          -d node_modules/@earendil-works/pi-durable -p1 \
-          < ${../durable/pi-durable-conversation-context.patch}
-      '';
-      buildPhase = ''
-        runHook preBuild
-        npm run build
-        runHook postBuild
-      '';
-      doCheck = true;
-      checkPhase = ''
-        runHook preCheck
-        export HOME="$(mktemp -d)"
-        npm run check
-        npm test
-        runHook postCheck
-      '';
-      preInstall = ''
-        cp package.json package.runtime.json
-        cp "$npmDeps"/package{,-lock}.json .
-        npm prune --omit=dev --omit=peer --ignore-scripts --offline
-        mv package.runtime.json package.json
-        rm node_modules/.package-lock.json
-      '';
-      installPhase = ''
-        runHook preInstall
-        mkdir -p "$out/lib/pds" "$out/bin"
-        cp -R package.json dist assets node_modules "$out/lib/pds/"
-        cp ${datastarLicense} "$out/lib/pds/assets/datastar.LICENSE"
-        makeWrapper ${nodejs}/bin/node "$out/bin/pds" \
-          --add-flags "$out/lib/pds/dist/index.js" \
-          --prefix PATH : ${lib.makeBinPath [openssh]}
-        runHook postInstall
-      '';
-      passthru = {
-        bench = writeShellApplication {
-          name = "pds-bench";
-          runtimeInputs = [nodejs];
-          text = ''
-            exec node ${finalAttrs.finalPackage}/lib/pds/dist/bench.js "$@"
-          '';
+      tests.visual = stdenvNoCC.mkDerivation {
+        pname = "pds-visual-tests";
+        inherit (manifest) version;
+        inherit (finalAttrs) src npmDeps npmRebuildFlags;
+        nativeBuildInputs = [importNpmLock.npmConfigHook nodejs];
+        nativeCheckInputs = [chromium];
+        CHROMIUM_BINARY = lib.getExe chromium;
+        FONTCONFIG_FILE = makeFontsConf {
+          fontDirectories = [dejavu_fonts];
+          impureFontDirectories = [];
+          includes = [];
         };
-        tests.visual = stdenvNoCC.mkDerivation {
-          pname = "pds-visual-tests";
-          inherit (manifest) version;
-          inherit (finalAttrs) src npmDeps npmRebuildFlags;
-          nativeBuildInputs = [importNpmLock.npmConfigHook nodejs];
-          nativeCheckInputs = [chromium];
-          CHROMIUM_BINARY = lib.getExe chromium;
-          FONTCONFIG_FILE = makeFontsConf {
-            fontDirectories = [dejavu_fonts];
-            impureFontDirectories = [];
-            includes = [];
-          };
-          buildPhase = ''
-            runHook preBuild
-            patch --batch --forward --fuzz=0 \
-              -d node_modules/@earendil-works/pi-durable -p1 \
-              < ${../durable/pi-durable-conversation-context.patch}
-            cp -R ${finalAttrs.finalPackage}/lib/pds/{dist,assets} .
-            runHook postBuild
-          '';
-          doCheck = true;
-          checkPhase = ''
-            runHook preCheck
-            export HOME="$(mktemp -d)"
-            node --test tests/*.chromium.ts
-            runHook postCheck
-          '';
-          installPhase = ''
-            runHook preInstall
-            touch "$out"
-            runHook postInstall
-          '';
-        };
+        buildPhase = ''
+          runHook preBuild
+          patch --batch --forward --fuzz=0 \
+            -d node_modules/@earendil-works/pi-durable -p1 \
+            < ${./pi-durable-conversation-context.patch}
+          cp -R ${finalAttrs.finalPackage}/lib/pds/{dist,assets} .
+          runHook postBuild
+        '';
+        doCheck = true;
+        checkPhase = ''
+          runHook preCheck
+          export HOME="$(mktemp -d)"
+          node --test tests/*.chromium.ts
+          runHook postCheck
+        '';
+        installPhase = ''
+          runHook preInstall
+          touch "$out"
+          runHook postInstall
+        '';
       };
-      meta.mainProgram = "pds";
-    })
+    };
+    meta.mainProgram = "pds";
+  })

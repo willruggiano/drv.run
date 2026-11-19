@@ -18,7 +18,7 @@ import {
   type UserInput,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { Env, openHarness, SshExecutionEnv } from "durable-harness";
+import { Env, openHarness, SshExecutionEnv } from "./harness/index.ts";
 
 export class InvalidForm extends Error {}
 

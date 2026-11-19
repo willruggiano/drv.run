@@ -32,8 +32,8 @@ import {
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { createConversationExtension } from "../src/conversations.ts";
-import { openHarness } from "../src/index.ts";
+import { createConversationExtension } from "../src/harness/conversations.ts";
+import { openHarness } from "../src/harness/index.ts";
 
 const context = BACKGROUND_CONTEXT;
 const call = (name: string, args: JsonObject) =>

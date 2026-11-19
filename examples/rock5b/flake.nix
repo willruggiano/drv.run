@@ -427,26 +427,6 @@
           };
           user = "me";
         };
-        systemd.user.services.www = {
-          description = "drv.run www";
-          wantedBy = ["default.target"];
-          unitConfig.ConditionUser = "me";
-          environment = {
-            HOST = "0.0.0.0";
-            PORT = "8081";
-            OPENAI_AUTH_SOCKET = config.systemd.sockets.mitm-proxy-auth-me.socketConfig.ListenStream;
-            PARALLEL_API_KEY_FILE = config.sops.secrets.parallel-api-key.path;
-          };
-          serviceConfig = {
-            Type = "exec";
-            ExecStart = "${drv-run.packages.${pkgs.stdenv.hostPlatform.system}.durable-api}/bin/durable-api";
-            WorkingDirectory = "%h";
-            UMask = "0077";
-            TimeoutStopSec = 20;
-            Restart = "on-failure";
-            RestartSec = 5;
-          };
-        };
         systemd.user.services.pds = {
           description = "drv.run pds";
           wantedBy = ["default.target"];
