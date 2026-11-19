@@ -85,6 +85,10 @@
       pds-visual-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.pds.tests.visual;
       environment-image-tests = environmentImage.artifact;
       environment-image-nixos = environmentImage.integration;
+      nixos-owner-inventory = import ./nix/nixosTests/inventory.nix {
+        inherit pkgs;
+        inherit (self) nixosModules;
+      };
       llms-tests = self.devShells.${pkgs.stdenv.hostPlatform.system}.toolchain.llms;
       mitm-tests = pkgs.drvr.mitm;
       mitm-nixos = pkgs.drvr.mitm.tests;

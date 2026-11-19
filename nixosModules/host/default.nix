@@ -122,7 +122,7 @@
   };
   launcher = pkgs.writeShellApplication {
     name = "drv.run";
-    runtimeInputs = with pkgs; [coreutils jq openssh systemd];
+    runtimeInputs = with pkgs; [coreutils findutils jq openssh config.systemd.package];
     text = lib.replaceStrings ["@timing@" "@connect@"] [
       (builtins.readFile ../timing.sh)
       (lib.getExe connector)
@@ -250,6 +250,7 @@ in {
           config.systemd.package
           coreutils
           e2fsprogs
+          jq
           util-linux
         ];
         text =

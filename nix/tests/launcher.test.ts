@@ -6,14 +6,16 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 const command = readFileSync(
   new URL("../../nixosModules/host/command.sh", import.meta.url),
@@ -25,6 +27,361 @@ const bash = (process.env.PATH ?? "")
   .map((directory) => join(directory, "bash"))
   .find(existsSync);
 assert.ok(bash);
+const { username: owner, uid } = userInfo();
+
+async function inventoryFixture(t: TestContext) {
+  const directory = mkdtempSync(join(tmpdir(), "drv-inventory-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const path of ["bin", "runtime", "state", "properties"]) {
+    mkdirSync(join(directory, path));
+  }
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(join(directory, "runtime/bus"), resolve);
+  });
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const commands = {
+    "systemd-path": 'printf "%s/state\\n" "$FIXTURE"',
+    // All Node fixture state belongs to the caller. Real cross-owner execution
+    // and root's multi-owner aggregation are exercised by the NixOS test.
+    runuser: `
+      test "$1" = --user
+      test "$2" = "$FIXTURE_OWNER"
+      test "$3" = --
+      shift 3
+      exec "$@"`,
+    systemctl: `
+      test ! -e "$FIXTURE/unavailable"
+      test "$1" = --user
+      test "$2" = show
+      if [[ \${3:-} == drv.run@*.service ]]; then
+        cat "$FIXTURE/properties/$3"
+      else
+        printf 'Version=262\\n'
+      fi`,
+  };
+  for (const [name, body] of Object.entries(commands)) {
+    writeFileSync(join(directory, "bin", name), `#!${bash}\nset -euo pipefail\n${body}\n`, {
+      mode: 0o755,
+    });
+  }
+  const launcher = join(directory, "launcher");
+  writeFileSync(
+    launcher,
+    `#!${bash}\n` +
+      command
+        .replace(
+          'export XDG_RUNTIME_DIR="/run/user/$EUID"',
+          'export XDG_RUNTIME_DIR="$FIXTURE/runtime"',
+        )
+        .replace("@timing@", timing)
+        .replace("@connect@", "false"),
+    { mode: 0o755 },
+  );
+  const cli = join(directory, "drv.run");
+  writeFileSync(
+    cli,
+    readFileSync(new URL("../../nixosModules/host/cli.sh", import.meta.url), "utf8")
+      .replaceAll("@launcher@", launcher)
+      .replace("@owners@", `'${owner.replaceAll("'", "'\\''")}'`),
+  );
+  return {
+    directory,
+    retain(id: string, reference: string, properties: string) {
+      const state = join(directory, "state/drv.run", id);
+      mkdirSync(state, { recursive: true });
+      writeFileSync(join(state, "reference"), `${reference}\n`);
+      writeFileSync(join(directory, "properties", `drv.run@${id}.service`), properties);
+    },
+    run(args = ["list", "--json"]) {
+      const result = spawnSync("bash", [cli, ...args], {
+        env: {
+          ...process.env,
+          PATH: `${join(directory, "bin")}:${process.env.PATH ?? ""}`,
+          FIXTURE: directory,
+          FIXTURE_OWNER: owner,
+          USER: "not-the-calling-owner",
+          SSH_ORIGINAL_COMMAND: "fixture:must-not-launch",
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "inherit"],
+        timeout: 5000,
+      });
+      assert.ifError(result.error);
+      return result;
+    },
+  };
+}
+
+test("owner inventory returns an empty versioned document without creating state", async (t) => {
+  const fixture = await inventoryFixture(t);
+  const result = fixture.run();
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(result.stdout), { version: 1, instances: [] });
+  assert.deepEqual(readdirSync(join(fixture.directory, "state")), []);
+  assert.deepEqual(readdirSync(join(fixture.directory, "runtime")), ["bus"]);
+});
+
+test("owner inventory reports sorted retained instances without changing their state", async (t) => {
+  const fixture = await inventoryFixture(t);
+  fixture.retain(
+    "zeta",
+    "fixture:stopped",
+    "ActiveState=inactive\nSubState=dead\nResult=success\n",
+  );
+  fixture.retain(
+    "beta",
+    "fixture:failed",
+    "ActiveState=failed\nSubState=failed\nResult=exit-code\n",
+  );
+  fixture.retain(
+    "alpha",
+    'path:/project#"shell"',
+    "ActiveState=active\nSubState=running\nResult=success\n",
+  );
+  const before = readdirSync(fixture.directory, { recursive: true });
+  const result = fixture.run();
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: 1,
+    instances: [
+      {
+        user: owner,
+        id: "alpha",
+        reference: 'path:/project#"shell"',
+        host: "drv.run.alpha",
+        ready: false,
+        activeState: "active",
+        subState: "running",
+        result: "success",
+      },
+      {
+        user: owner,
+        id: "beta",
+        reference: "fixture:failed",
+        host: "drv.run.beta",
+        ready: false,
+        activeState: "failed",
+        subState: "failed",
+        result: "exit-code",
+      },
+      {
+        user: owner,
+        id: "zeta",
+        reference: "fixture:stopped",
+        host: "drv.run.zeta",
+        ready: false,
+        activeState: "inactive",
+        subState: "dead",
+        result: "success",
+      },
+    ],
+  });
+  assert.deepEqual(readdirSync(fixture.directory, { recursive: true }), before);
+});
+
+test("owner inventory requires published provisioning and a running instance for readiness", async (t) => {
+  const fixture = await inventoryFixture(t);
+  fixture.retain("alpha", "fixture:retained", "");
+  mkdirSync(join(fixture.directory, "state/drv.run/alpha/ready"));
+  const runtime = join(fixture.directory, "runtime/drv.run.alpha");
+  mkdirSync(runtime);
+  for (const [activeState, subState, published, ready] of [
+    ["active", "running", false, false],
+    ["active", "running", true, true],
+    ["inactive", "dead", true, false],
+    ["activating", "start-post", false, false],
+    ["activating", "start-post", true, false],
+    ["active", "exited", true, false],
+    ["failed", "failed", true, false],
+  ] as const) {
+    fixture.retain(
+      "alpha",
+      "fixture:retained",
+      `ActiveState=${activeState}\nSubState=${subState}\nResult=success\n`,
+    );
+    if (published) writeFileSync(join(runtime, "client.conf"), "private connection details");
+    else rmSync(join(runtime, "client.conf"), { force: true });
+    const result = fixture.run();
+    assert.equal(result.status, 0);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      version: 1,
+      instances: [
+        {
+          user: owner,
+          id: "alpha",
+          reference: "fixture:retained",
+          host: "drv.run.alpha",
+          ready,
+          activeState,
+          subState,
+          result: "success",
+        },
+      ],
+    });
+  }
+});
+
+test("owner inventory fails discovery rather than returning an empty or partial document", async (t) => {
+  const fixture = await inventoryFixture(t);
+  writeFileSync(join(fixture.directory, "unavailable"), "");
+  let result = fixture.run();
+  assert.notEqual(result.status, 0);
+  assert.throws(() => JSON.parse(result.stdout), SyntaxError);
+  rmSync(join(fixture.directory, "unavailable"));
+
+  fixture.retain(
+    "alpha",
+    "fixture:healthy",
+    "ActiveState=active\nSubState=running\nResult=success\n",
+  );
+  fixture.retain(
+    "beta",
+    "fixture:unavailable",
+    "ActiveState=inactive\nSubState=dead\nResult=success\n",
+  );
+  for (const broken of ["properties/drv.run@beta.service", "state/drv.run/beta/reference"]) {
+    const path = join(fixture.directory, broken);
+    const original = readFileSync(path);
+    rmSync(path);
+    if (broken.endsWith("reference")) writeFileSync(path, "");
+    result = fixture.run();
+    assert.notEqual(result.status, 0);
+    assert.throws(() => JSON.parse(result.stdout), SyntaxError);
+    writeFileSync(path, original);
+  }
+});
+
+test("owner inventory distinguishes missing state from invalid state paths", async (t) => {
+  const fixture = await inventoryFixture(t);
+  for (const path of ["state/drv.run", "state"]) {
+    const target = join(fixture.directory, path);
+    rmSync(target, { recursive: true, force: true });
+    writeFileSync(target, "not a directory");
+    for (const args of [["list"], ["list", "--json"]]) {
+      const result = fixture.run(args);
+      assert.notEqual(result.status, 0);
+      if (args.includes("--json")) assert.throws(() => JSON.parse(result.stdout), SyntaxError);
+    }
+    rmSync(target);
+  }
+  const result = fixture.run();
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(result.stdout), { version: 1, instances: [] });
+});
+
+test("owner inventory follows owner state-directory links without treating invalid names as IDs", async (t) => {
+  const fixture = await inventoryFixture(t);
+  fixture.retain(
+    "alpha",
+    "fixture:retained",
+    "ActiveState=inactive\nSubState=dead\nResult=success\n",
+  );
+  fixture.retain("alpha\nbeta", "fixture:not-an-id", "");
+  const state = join(fixture.directory, "state/drv.run");
+  const target = join(fixture.directory, "retained");
+  renameSync(state, target);
+  symlinkSync(target, state);
+  const result = fixture.run();
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    version: 1,
+    instances: [
+      {
+        user: owner,
+        id: "alpha",
+        reference: "fixture:retained",
+        host: "drv.run.alpha",
+        ready: false,
+        activeState: "inactive",
+        subState: "dead",
+        result: "success",
+      },
+    ],
+  });
+});
+
+test("list formats preserve authorized owner selection without changing instance state", async (t) => {
+  const fixture = await inventoryFixture(t);
+  fixture.retain(
+    "alpha",
+    "fixture:retained",
+    "ActiveState=inactive\nSubState=dead\nResult=success\n",
+  );
+  const before = readdirSync(fixture.directory, { recursive: true });
+  const argumentsList = [["list"], ["list", "--json"]];
+  if (uid === 0) {
+    argumentsList.push(
+      ["list", "--json", "-u", owner],
+      ["list", "-u", owner, "--json"],
+      ["list", "-u", owner],
+    );
+  }
+  for (const args of argumentsList) {
+    const result = fixture.run(args);
+    assert.equal(result.status, 0);
+    if (args.includes("--json")) {
+      assert.deepEqual(JSON.parse(result.stdout), {
+        version: 1,
+        instances: [
+          {
+            user: owner,
+            id: "alpha",
+            reference: "fixture:retained",
+            host: "drv.run.alpha",
+            ready: false,
+            activeState: "inactive",
+            subState: "dead",
+            result: "success",
+          },
+        ],
+      });
+    }
+  }
+  assert.deepEqual(readdirSync(fixture.directory, { recursive: true }), before);
+});
+
+test("inventory rejects unauthorized owner selectors and extra arguments without creating instances", async (t) => {
+  const fixture = await inventoryFixture(t);
+  for (const args of [
+    ["list", "--json", "-u", "other"],
+    ["list", "-u", "other", "--json"],
+    ["list", "--json", "extra"],
+    ["list", "--json", "--json"],
+    ["list", "-u", "other"],
+  ]) {
+    const result = fixture.run(args);
+    assert.notEqual(result.status, 0);
+    if (args.includes("--json")) assert.throws(() => JSON.parse(result.stdout), SyntaxError);
+  }
+  assert.deepEqual(readdirSync(join(fixture.directory, "state")), []);
+  assert.deepEqual(readdirSync(join(fixture.directory, "runtime")), ["bus"]);
+});
+
+test("owner inventory fails on corrupt retained references instead of omitting the instance", async (t) => {
+  const fixture = await inventoryFixture(t);
+  fixture.retain(
+    "alpha",
+    "fixture:healthy",
+    "ActiveState=active\nSubState=running\nResult=success\n",
+  );
+  fixture.retain(
+    "beta",
+    "fixture:retained",
+    "ActiveState=inactive\nSubState=dead\nResult=success\n",
+  );
+  const path = join(fixture.directory, "state/drv.run/beta/reference");
+  for (const corruption of ["directory", "dangling", "missing", "", "-option", "not a reference"]) {
+    rmSync(path, { recursive: true, force: true });
+    if (corruption === "directory") mkdirSync(path);
+    else if (corruption === "dangling") symlinkSync(join(fixture.directory, "missing"), path);
+    else if (corruption !== "missing") writeFileSync(path, `${corruption}\n`);
+    const result = fixture.run();
+    assert.notEqual(result.status, 0);
+    assert.throws(() => JSON.parse(result.stdout), SyntaxError);
+  }
+});
 
 for (const collision of ["none", "durable", "runtime"]) {
   test(`launcher reserves canonical IDs without replacing ${collision} state`, async (t) => {
