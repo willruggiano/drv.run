@@ -1,10 +1,7 @@
 .direnv/
 .envrc
 .scratch/
+elm-stuff/
 node_modules/
-packages/app/*/dist/
-packages/pds/dist/
 result
 result-*
-
-elm-stuff/
