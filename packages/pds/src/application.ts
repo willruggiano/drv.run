@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { readdir, access, mkdir, lstat, open } from "node:fs/promises";
+import { readdir, mkdir, lstat, open } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { promisify } from "node:util";
+import { Type } from "typebox";
 import * as Value from "typebox/value";
 import type * as C from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -33,28 +36,31 @@ export const ConversationMetadata = defineDoc<{ title: string; createdAt: number
   checkpointWhen: () => true,
 });
 
-export async function discoverEnvironments(directory: string): Promise<EnvTarget[]> {
-  const result: EnvTarget[] = [{ type: "local" }];
-  const entries = await readdir(join(directory, "drv.run"), { withFileTypes: true }).catch(
-    (error: unknown) => {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-      throw error;
-    },
+export async function discoverEnvironments(command?: string): Promise<EnvTarget[]> {
+  if (!command) return [];
+  const { stdout } = await promisify(execFile)(command, ["list", "--json"], { encoding: "utf8" });
+  const inventory: unknown = JSON.parse(stdout);
+  Value.Assert(Type.Object({ version: Type.Number() }), inventory);
+  assert.equal(inventory.version, 1, "Unsupported drv.run inventory version.");
+  Value.Assert(
+    Type.Object({
+      instances: Type.Array(
+        Type.Object({
+          id: Type.String(),
+          reference: Type.String(),
+          host: Type.String(),
+          ready: Type.Boolean(),
+          activeState: Type.String(),
+          subState: Type.String(),
+          result: Type.String(),
+        }),
+      ),
+    }),
+    inventory,
   );
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !/^[A-Za-z0-9]+$/.test(entry.name)) continue;
-    const path = join(directory, "drv.run", entry.name);
-    const host = `drv.run.${entry.name}`;
-    try {
-      await access(join(path, "ssh_config"));
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
-      throw error;
-    }
-    // Configuration permits a connection attempt; it does not certify activation.
-    result.push({ type: "ssh", host });
-  }
-  return result;
+  return inventory.instances
+    .filter((instance) => instance.ready)
+    .map(({ host }) => ({ type: "ssh", host }));
 }
 
 async function openSession(options: {

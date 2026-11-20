@@ -16,8 +16,8 @@ import {
   SshError,
 } from "@earendil-works/pi-env";
 import { Env, SshExecutionEnv } from "../src/harness/index.ts";
-import { context } from "../src/application.ts";
-import { sessionsFixture, form } from "./fixtures.ts";
+import { context, discoverEnvironments } from "../src/application.ts";
+import { sessionsFixture, inventoryFixture, form } from "./fixtures.ts";
 
 const execute = promisify(execFile);
 
@@ -254,6 +254,78 @@ Host *
         await session.send(conversation, form({ message: "/cd ~/nested directory" }));
         assert.equal((await conversation.agent(context)).cwd, join(remote, "nested directory"));
         assert.equal((await conversation.context(context)).entries.length, 0);
+      },
+    );
+
+    await t.test(
+      "inventory changes do not control saved or manual local and SSH execution",
+      async (subtest) => {
+        const inventory = await inventoryFixture(subtest);
+        const ready = { ...inventory.instance, host: "global-trust" };
+        const { sessions, faux, selection, open } = await sessionsFixture(subtest, () =>
+          discoverEnvironments(inventory.command),
+        );
+        let application = sessions;
+        const { sessionId, conversation } = await application.compose(
+          form({ ...selection, env: "ssh:global-trust", cwd: "." }),
+        );
+        const states = {
+          ready: [ready],
+          stopped: [{ ...ready, ready: false, activeState: "inactive", subState: "dead" }],
+          restarted: [ready],
+          missing: [],
+          remapped: [{ ...ready, host: "unknown" }],
+          failed: null,
+        };
+        for (const [name, instances] of Object.entries(states)) {
+          await inventory.respond(JSON.stringify({ version: 1, instances }), instances ? 0 : 7);
+          if (instances) await application.environments();
+          else await assert.rejects(application.environments(), { code: 7 });
+          await rm(inventory.invoked);
+          await application.close();
+          application = await open();
+          const session = await application.get(sessionId);
+          assert(session);
+          const current = await session.conversation(conversation.id);
+          assert(current);
+          assert.deepEqual(await session.harness.snapshot(Env, current.id, context), {
+            env: { type: "ssh", host: "global-trust" },
+          });
+          for (const env of ["ssh:global-trust", "local"]) {
+            await session.configure(current, form({ env }));
+            const local = env === "local";
+            const marker = `inventory-${name}-${local ? "local" : "ssh"}`;
+            faux.setResponses([
+              fauxAssistantMessage(fauxToolCall("bash", { command: `touch ~/${marker}` }), {
+                stopReason: "toolUse",
+              }),
+              fauxAssistantMessage("Done"),
+            ]);
+            await session.send(current, form({ message: "Run the command" }));
+            await current.waitForIdle(context);
+            assert.deepEqual(
+              await readFile(join(local ? client : remote, marker)),
+              Buffer.alloc(0),
+            );
+            await assert.rejects(readFile(join(local ? remote : client, marker)), {
+              code: "ENOENT",
+            });
+            await assert.rejects(readFile(inventory.invoked), { code: "ENOENT" });
+          }
+          await session.configure(current, form({ env: "ssh:global-trust" }));
+        }
+        const session = await application.get(sessionId);
+        assert(session);
+        const current = await session.conversation(conversation.id);
+        assert(current);
+        await session.configure(current, form({ env: "ssh:unknown" }));
+        await assert.rejects(session.send(current, form({ message: "/cd ." })), RemoteError);
+        assert.deepEqual(await session.harness.snapshot(Env, current.id, context), {
+          env: { type: "ssh", host: "unknown" },
+        });
+        assert.equal((await current.agent(context)).cwd, ".");
+        await assert.rejects(readFile(inventory.invoked), { code: "ENOENT" });
+        await application.close();
       },
     );
 

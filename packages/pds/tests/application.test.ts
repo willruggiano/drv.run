@@ -3,12 +3,13 @@ import { once } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import * as Value from "typebox/value";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { AgentDoc, CompactionEntry, LiveDoc } from "@earendil-works/pi-durable";
 import { Env } from "../src/harness/index.ts";
 import { attachments, context, discoverEnvironments } from "../src/application.ts";
 import { ConversationId, SessionId, decode } from "../src/identity.ts";
-import { fixture, sessionsFixture, form } from "./fixtures.ts";
+import { fixture, sessionsFixture, inventoryFixture, form } from "./fixtures.ts";
 
 await test("sessions persist configuration, attachments, messages, compaction, and /new isolation", async (t) => {
   const { app, faux, selection, open } = await fixture(t);
@@ -113,14 +114,96 @@ await test("attachments retain image bytes and UTF-8 text; unsupported input doe
   assert.equal((await conversation.context(context)).entries.length, 0);
 });
 
-await test("environment discovery exposes prepared drv.run host names without connection paths", async (t) => {
-  const { directory } = await fixture(t);
-  const ready = join(directory, "drv.run", "ready");
-  await mkdir(ready, { recursive: true });
-  await mkdir(join(directory, "drv.run", "starting"));
-  await writeFile(join(ready, "ssh_config"), "");
-  const environments = await discoverEnvironments(directory);
-  assert.deepEqual(environments, [{ type: "local" }, { type: "ssh", host: "drv.run.ready" }]);
+await test("environment discovery uses inventory readiness and preserves opaque host aliases", async (t) => {
+  const inventory = await inventoryFixture(t);
+  const starting = join(inventory.directory, "drv.run", "starting");
+  await mkdir(starting, { recursive: true });
+  await writeFile(join(starting, "ssh_config"), "");
+  const runtime = process.env.XDG_RUNTIME_DIR;
+  process.env.XDG_RUNTIME_DIR = inventory.directory;
+  t.after(() => {
+    if (runtime === undefined) delete process.env.XDG_RUNTIME_DIR;
+    else process.env.XDG_RUNTIME_DIR = runtime;
+  });
+  const record = inventory.instance;
+  await inventory.respond(
+    JSON.stringify({
+      version: 1,
+      instances: [
+        { ...record, activeState: "uninterpreted", subState: "uninterpreted", user: "owner" },
+        { ...record, id: "starting", host: "other-alias", ready: false },
+      ],
+    }),
+  );
+  assert.deepEqual(await discoverEnvironments(inventory.command), [
+    { type: "ssh", host: "Mixed.Case-Alias" },
+  ]);
+});
+
+await test("environment discovery rejects unsupported inventory versions", async (t) => {
+  const inventory = await inventoryFixture(t);
+  await inventory.respond(JSON.stringify({ version: 2, instances: [] }));
+  await assert.rejects(discoverEnvironments(inventory.command), {
+    code: "ERR_ASSERTION",
+    actual: 2,
+    expected: 1,
+  });
+});
+
+await test("environment discovery validates the entire inventory before returning any hosts", async (t) => {
+  const inventory = await inventoryFixture(t);
+  const record = inventory.instance;
+  for (const value of [
+    null,
+    [],
+    {},
+    { version: "1", instances: [] },
+    { version: 1 },
+    { version: 1, instances: {} },
+  ]) {
+    await inventory.respond(JSON.stringify(value));
+    await assert.rejects(discoverEnvironments(inventory.command), Value.AssertError);
+  }
+  for (const [field, initial] of Object.entries(record)) {
+    for (const value of [undefined, null, typeof initial === "boolean" ? "true" : 42]) {
+      await inventory.respond(
+        JSON.stringify({ version: 1, instances: [record, { ...record, [field]: value }] }),
+      );
+      await assert.rejects(discoverEnvironments(inventory.command), Value.AssertError);
+    }
+  }
+});
+
+await test("environment discovery is disabled when no CLI is configured", async (t) => {
+  const { readFile } = await import("node:fs/promises");
+  const inventory = await inventoryFixture(t);
+  await inventory.respond(JSON.stringify({ version: 1, instances: [] }));
+  const path = process.env.PATH;
+  process.env.PATH = join(inventory.directory, "bin");
+  t.after(() => {
+    if (path === undefined) delete process.env.PATH;
+    else process.env.PATH = path;
+  });
+  assert.deepEqual(await discoverEnvironments(undefined), []);
+  assert.deepEqual(await discoverEnvironments(""), []);
+  await assert.rejects(readFile(inventory.invoked), { code: "ENOENT" });
+});
+
+await test("environment discovery distinguishes empty inventory from CLI and JSON failures", async (t) => {
+  const inventory = await inventoryFixture(t);
+  await inventory.respond(JSON.stringify({ version: 1, instances: [] }));
+  assert.deepEqual(await discoverEnvironments(inventory.command), []);
+  await assert.rejects(discoverEnvironments(join(inventory.directory, "missing")), {
+    code: "ENOENT",
+  });
+  for (const output of ["", "not JSON", '{"version":1,"instances":[]} {}']) {
+    await inventory.respond(output);
+    await assert.rejects(discoverEnvironments(inventory.command), SyntaxError);
+  }
+  for (const instances of [[], [inventory.instance]]) {
+    await inventory.respond(JSON.stringify({ version: 1, instances }), 7);
+    await assert.rejects(discoverEnvironments(inventory.command), { code: 7 });
+  }
 });
 
 await test("HTTP rejects foreign writes and accepts native forms at the configured public origin", async (t) => {

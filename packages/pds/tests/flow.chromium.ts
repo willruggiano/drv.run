@@ -11,10 +11,10 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { AgentDoc, LiveDoc } from "@earendil-works/pi-durable";
-import { context, type Application } from "../src/application.ts";
+import { context, discoverEnvironments, type Application } from "../src/application.ts";
 import { ConversationId, SessionId, decode } from "../src/identity.ts";
 import { serve } from "../src/server.ts";
-import { fixture, sessionsFixture, form, servePrefixed } from "./fixtures.ts";
+import { fixture, sessionsFixture, inventoryFixture, form, servePrefixed } from "./fixtures.ts";
 
 const conversationRoute = new URLPattern({ pathname: "*/api/s/:session/c/:conversation" });
 async function selected(sessions: Application, url: string) {
@@ -753,11 +753,13 @@ await test(
   "configuration labels are target identifiers and discovery does not own selections or drafts",
   { timeout: 30_000 },
   async (t) => {
-    let failed = false;
-    const { app, sessions, auth, selection } = await fixture(t, async () => {
-      if (failed) throw new Error("private discovery failure");
-      return [{ type: "local" }, { type: "ssh", host: "test-guest" }];
-    });
+    const inventory = await inventoryFixture(t);
+    await inventory.respond(
+      JSON.stringify({ version: 1, instances: [{ ...inventory.instance, host: "test-guest" }] }),
+    );
+    const { app, sessions, auth, selection } = await fixture(t, () =>
+      discoverEnvironments(inventory.command),
+    );
     const conversation = await app.createConversation(form(selection));
     const server = await serve(sessions, { auth, port: 0 });
     t.after(() => server.close());
@@ -812,13 +814,23 @@ await test(
     );
     assert.equal((await conversation.agent(context)).cwd, undefined);
     await app.configure(conversation, form({ env: "ssh:test-guest" }));
-    failed = true;
+    await inventory.respond(JSON.stringify({ version: 1, instances: [] }), 7);
     await page.reload();
     await idle(page);
     assert.equal(await page.locator("#environment").inputValue(), "ssh:test-guest");
     assert.equal(await page.locator("#environment").getAttribute("title"), "test-guest");
     assert.equal(await page.locator("#environment-discovery").isVisible(), true);
     assert.equal(await page.locator("#environment-options option").count(), 1);
+    await inventory.respond(JSON.stringify({ version: 1, instances: [] }));
+    await page.reload();
+    await idle(page);
+    assert.equal(await page.locator("#environment-discovery").isVisible(), false);
+    assert.equal(await page.locator("#environment-options option").count(), 1);
+    assert.equal(await page.locator("#environment").inputValue(), "ssh:test-guest");
+    await inventory.respond("not JSON");
+    await page.reload();
+    await idle(page);
+    assert.equal(await page.locator("#environment-discovery").isVisible(), true);
     await page.locator("#environment").fill("local");
     await page.locator("#environment").press("Enter");
     await page.waitForFunction(
