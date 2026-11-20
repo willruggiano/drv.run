@@ -34,12 +34,13 @@ await test(`elm: settings push controls reflect subscription state without a glo
     new GlobalSettingsStore({ model }),
   );
   await b.page.addInitScript((publicKey) => {
-    const key = Uint8Array.from(atob(publicKey.replace(/-/g, "+").replace(/_/g, "/")), (c) =>
-      c.charCodeAt(0),
+    const applicationKey = Uint8Array.from(
+      atob(publicKey.replace(/-/g, "+").replace(/_/g, "/")),
+      (c) => c.charCodeAt(0),
     ).buffer;
     const subscription = {
       endpoint: "https://push.example/device",
-      options: { applicationServerKey: key },
+      options: { applicationServerKey: applicationKey },
       toJSON: () => ({
         endpoint: "https://push.example/device",
         keys: { auth: "auth", p256dh: "key" },

@@ -5,7 +5,7 @@ import type { ServerResponse } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
-import type { AddressInfo, Socket } from "node:net";
+import type { Socket } from "node:net";
 import { availableParallelism, cpus, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,18 @@ saving per-phase .cpuprofile and .trace.json files with paths in the JSON report
 Traces include style invalidations and paint; profiled timings are not benchmark samples.
 Mobile layout emulation is not phone hardware emulation.`;
 
+const number = (value: string, name: string, max: number, integer = true) => {
+  const result = Number(value);
+  assert(
+    Number.isFinite(result) &&
+      result >= 1 &&
+      result <= max &&
+      (!integer || Number.isInteger(result)),
+    `${name} must be ${integer ? "an integer" : "a number"} between 1 and ${max}`,
+  );
+  return result;
+};
+
 export function benchmarkOptions(args: string[]) {
   const { values } = parseArgs({
     args,
@@ -68,17 +80,7 @@ export function benchmarkOptions(args: string[]) {
     },
   });
   assert(values.profile || values["profile-dir"] === undefined, "--profile-dir requires --profile");
-  const number = (value: string, name: string, max: number, integer = true) => {
-    const result = Number(value);
-    assert(
-      Number.isFinite(result) &&
-        result >= 1 &&
-        result <= max &&
-        (!integer || Number.isInteger(result)),
-      `${name} must be ${integer ? "an integer" : "a number"} between 1 and ${max}`,
-    );
-    return result;
-  };
+
   assert(
     values.entries === undefined || values.turns === undefined,
     "Use --entries or --turns, not both",
@@ -182,11 +184,11 @@ export function benchmarkFixture(
 
 declare global {
   interface Window {
-    __piBenchmarkCommit(live: LiveState): Promise<void>;
-    __piBenchmarkDisconnect(): Promise<void>;
-    __piBenchmarkObserve(expected: { text?: string; busy?: boolean }): Promise<number>;
-    __piBenchmarkComplete: Promise<number>;
-    __piBenchmarkStreamReady: number | undefined;
+    piBenchmarkCommit(live: LiveState): Promise<void>;
+    piBenchmarkDisconnect(): Promise<void>;
+    piBenchmarkObserve(expected: { text?: string; busy?: boolean }): Promise<number>;
+    piBenchmarkComplete: Promise<number>;
+    piBenchmarkStreamReady: number | undefined;
   }
 }
 
@@ -220,17 +222,17 @@ async function profilePhase<T>(
     streamFormat: "json",
     streamCompression: "none",
   });
-  await page.evaluate((phase) => performance.mark(`pi-bench:${phase}:start`), phase);
+  await page.evaluate((phaseName) => performance.mark(`pi-bench:${phaseName}:start`), phase);
   const value = await action();
   // Diagnostic traces include the resulting paint, unlike the synchronous
   // benchmark timer. These waits and profiler overhead never enter runs[].
   await page.evaluate(
     () =>
-      new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      new Promise<void>((fulfill) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => fulfill())),
       ),
   );
-  await page.evaluate((phase) => performance.mark(`pi-bench:${phase}:end`), phase);
+  await page.evaluate((phaseName) => performance.mark(`pi-bench:${phaseName}:end`), phase);
   const { profile } = await cdp.send("Profiler.stop");
   const completed = Promise.withResolvers<{ stream?: string; dataLossOccurred: boolean }>();
   const onComplete = (event: { stream?: string; dataLossOccurred: boolean }) =>
@@ -301,8 +303,8 @@ async function pageWorkload(
     for (const { kind, model } of benchmarkFixture(Math.ceil(entries / 3), entries).view.entries)
       await tx.appendEntry(session.root.id, { kind, model });
   }, context);
-  await page.exposeFunction("__piBenchmarkDisconnect", disconnect);
-  await page.exposeFunction("__piBenchmarkCommit", (value: LiveState) =>
+  await page.exposeFunction("piBenchmarkDisconnect", disconnect);
+  await page.exposeFunction("piBenchmarkCommit", (value: LiveState) =>
     session.root.commit(async (tx) => {
       const live = await tx.doc(LiveDoc, session.root.id);
       delete live.run;
@@ -311,17 +313,17 @@ async function pageWorkload(
     }, context),
   );
   await page.addInitScript(
-    ({ entries }) => {
-      window.__piBenchmarkObserve = (expected) =>
-        new Promise<number>((resolve, reject) => {
+    ({ entries: listedEntries }) => {
+      window.piBenchmarkObserve = (expected) =>
+        new Promise<number>((fulfill, reject) => {
           const start = expected.busy === undefined ? 0 : performance.now();
           const check = () => {
             const transcript = document.querySelector("#transcript");
             if (!transcript) return;
             if (expected.busy === undefined) {
               if (
-                transcript.querySelectorAll("article").length !== entries ||
-                transcript.querySelectorAll(".tool-call").length !== Math.floor(entries / 3)
+                transcript.querySelectorAll("article").length !== listedEntries ||
+                transcript.querySelectorAll(".tool-call").length !== Math.floor(listedEntries / 3)
               )
                 return;
             } else {
@@ -338,7 +340,7 @@ async function pageWorkload(
             transcript.getBoundingClientRect();
             observer.disconnect();
             clearTimeout(timeout);
-            resolve(performance.now() - start);
+            fulfill(performance.now() - start);
           };
           const observer = new MutationObserver(check);
           const timeout = setTimeout(() => {
@@ -364,12 +366,12 @@ async function pageWorkload(
           });
           check();
         });
-      window.__piBenchmarkComplete = window.__piBenchmarkObserve({});
-      window.__piBenchmarkStreamReady = undefined;
+      window.piBenchmarkComplete = window.piBenchmarkObserve({});
+      window.piBenchmarkStreamReady = undefined;
       document.addEventListener(
         "elm:rendered",
         () => {
-          window.__piBenchmarkStreamReady = performance.now();
+          window.piBenchmarkStreamReady = performance.now();
         },
         { once: true },
       );
@@ -379,18 +381,18 @@ async function pageWorkload(
   const initialBefore = bytesWritten();
   const initialMs = await stage("initial", async () => {
     await page.goto(base + conversationURL(session));
-    await page.waitForFunction(() => window.__piBenchmarkStreamReady !== undefined);
-    const elapsed = await page.evaluate(() => window.__piBenchmarkComplete);
+    await page.waitForFunction(() => window.piBenchmarkStreamReady !== undefined);
+    const elapsed = await page.evaluate(() => window.piBenchmarkComplete);
     // Drain the initial event handler and resulting layout before token timing.
     await page.evaluate(
       () =>
-        new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        new Promise<void>((fulfill) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => fulfill())),
         ),
     );
     return elapsed;
   });
-  const firstUpdateMs = await page.evaluate(() => window.__piBenchmarkStreamReady);
+  const firstUpdateMs = await page.evaluate(() => window.piBenchmarkStreamReady);
   assert(firstUpdateMs !== undefined);
   const initialBytes = bytesWritten() - initialBefore;
   const initialDomElements = await page.locator("#transcript *").count();
@@ -409,10 +411,10 @@ async function pageWorkload(
   const measure = async (live: LiveState, text?: string) => {
     const before = bytesWritten();
     const ms = await page.evaluate(
-      async ({ data, text }) => {
-        const live = JSON.parse(data) as LiveState;
-        const completed = window.__piBenchmarkObserve({ busy: !!live.run, text });
-        await window.__piBenchmarkCommit(live);
+      async ({ data, text: contentText }) => {
+        const liveState = JSON.parse(data) as LiveState;
+        const completed = window.piBenchmarkObserve({ busy: !!liveState.run, text: contentText });
+        await window.piBenchmarkCommit(liveState);
         return completed;
       },
       { data: JSON.stringify(live), text },
@@ -424,48 +426,53 @@ async function pageWorkload(
     async () => {
       const live: LiveState = { run, generation: { attempt: 1, message: partial } };
       const start = await measure(live);
-      const streamingMs: number[] = [],
-        streamingBytes: number[] = [];
+      const observedStreamingMs: number[] = [],
+        observedStreamingBytes: number[] = [];
       for (let update = 1; update <= streamUpdates; update++) {
         partial.content[0].text = "An incremental update. ".repeat(update);
         const sample = await measure(live, partial.content[0].text);
-        streamingMs.push(sample.ms);
-        streamingBytes.push(sample.bytes);
+        observedStreamingMs.push(sample.ms);
+        observedStreamingBytes.push(sample.bytes);
       }
-      return { startMs: start.ms, startBytes: start.bytes, streamingMs, streamingBytes };
+      return {
+        startMs: start.ms,
+        startBytes: start.bytes,
+        streamingMs: observedStreamingMs,
+        streamingBytes: observedStreamingBytes,
+      };
     },
   );
   const { transitionsMs, transitionsBytes } = await stage("transitions", async () => {
-    const transitionsMs: number[] = [],
-      transitionsBytes: number[] = [];
+    const observedTransitionsMs: number[] = [],
+      observedTransitionsBytes: number[] = [];
     for (let transition = 0; transition < transitions; transition++) {
       const sample = await measure(transition % 2 ? { run } : {});
-      transitionsMs.push(sample.ms);
-      transitionsBytes.push(sample.bytes);
+      observedTransitionsMs.push(sample.ms);
+      observedTransitionsBytes.push(sample.bytes);
     }
-    return { transitionsMs, transitionsBytes };
+    return { transitionsMs: observedTransitionsMs, transitionsBytes: observedTransitionsBytes };
   });
   // Drain adapter notifications from the final transition before measuring a new subscription.
   await page.evaluate(
     () =>
-      new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      new Promise<void>((fulfill) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => fulfill())),
       ),
   );
   const reconnectBefore = bytesWritten();
   const reconnectMs = await page.evaluate(async () => {
     const start = performance.now();
-    const completed = new Promise<number>((resolve) => {
+    const completed = new Promise<number>((fulfill) => {
       document.addEventListener(
         "elm:rendered",
         () => {
           document.getElementById("transcript")!.getBoundingClientRect();
-          resolve(performance.now() - start);
+          fulfill(performance.now() - start);
         },
         { once: true },
       );
     });
-    await window.__piBenchmarkDisconnect();
+    await window.piBenchmarkDisconnect();
     return completed;
   });
   const reconnectBytes = bytesWritten() - reconnectBefore;
@@ -505,6 +512,8 @@ async function pageWorkload(
   };
 }
 
+const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+
 export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
   const { chromium } = await import("playwright");
   assert(
@@ -533,7 +542,7 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
     const client = await readFile(join(directory, "main.js"), "utf8");
     const css = await readFile(join(directory, "styles.css"), "utf8");
     const highlighter = await readFile(join(directory, "highlight.js"), "utf8");
-    const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+
     // No provider, credentials or tools. Commit synthetic history/live documents.
     sessions = await Sessions.open({
       directory: join(directory, "state"),
@@ -550,11 +559,13 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
     const sockets: Socket[] = [];
     server.on("connection", (socket) => sockets.push(socket));
     const bytesWritten = () => sockets.reduce((sum, socket) => sum + socket.bytesWritten, 0);
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((fulfill, reject) => {
       server!.once("error", reject);
-      server!.listen(0, "127.0.0.1", resolve);
+      server!.listen(0, "127.0.0.1", fulfill);
     });
-    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const listeningAddress = server.address();
+    assert(listeningAddress && typeof listeningAddress !== "string");
+    const base = `http://127.0.0.1:${listeningAddress.port}`;
     const viewport = { width: 390, height: 844 };
     const runs: (Awaited<ReturnType<typeof pageWorkload>> & { run: number })[] = [];
     const profile = options.profile
@@ -715,8 +726,8 @@ export async function benchmark(options: ReturnType<typeof benchmarkOptions>) {
     try {
       if (server?.listening) {
         server.closeAllConnections();
-        await new Promise<void>((resolve, reject) =>
-          server!.close((error) => (error ? reject(error) : resolve())),
+        await new Promise<void>((fulfill, reject) =>
+          server!.close((error) => (error ? reject(error) : fulfill())),
         );
       }
     } finally {

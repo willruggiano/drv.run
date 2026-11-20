@@ -154,7 +154,7 @@ export class NotificationOutbox {
   }
   first(): Envelope | undefined {
     const row = this.db.prepare("SELECT * FROM queue ORDER BY operation LIMIT 1").get();
-    if (!row) return;
+    if (!row) return undefined;
     assert(typeof row.event === "string");
     return envelope(
       {
@@ -315,9 +315,9 @@ export async function serveNotifications(options: {
   try {
     await mkdir(dirname(options.socket), { recursive: true, mode: 0o700 });
     await rm(options.socket, { force: true });
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((fulfill, reject) => {
       server.once("error", reject);
-      server.listen(options.socket, resolve);
+      server.listen(options.socket, fulfill);
     });
     await chmod(options.socket, 0o600);
   } catch (error) {
@@ -333,8 +333,8 @@ export async function serveNotifications(options: {
       bus.unexport(notificationPath, iface);
       for (const socket of clients) socket.destroy();
       await Promise.all(tasks);
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
+      await new Promise<void>((fulfill, reject) =>
+        server.close((error) => (error ? reject(error) : fulfill())),
       );
       outbox.dispose();
       await rm(options.socket, { force: true });
@@ -382,9 +382,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         process.kill(process.pid, "SIGTERM");
       },
     });
-    const stopped = new Promise<void>((resolve) => {
-      process.once("SIGTERM", resolve);
-      process.once("SIGINT", resolve);
+    const stopped = new Promise<void>((fulfill) => {
+      process.once("SIGTERM", fulfill);
+      process.once("SIGINT", fulfill);
     });
     try {
       if (process.env.NOTIFY_SOCKET) await promisify(execFile)("systemd-notify", ["--ready"]);

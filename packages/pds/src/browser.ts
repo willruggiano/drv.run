@@ -56,7 +56,7 @@ if (attachments && previews) {
     previews.replaceChildren();
     Array.from(attachments.files!).forEach((file, index) => {
       const template = document.querySelector<HTMLTemplateElement>("#attachment-preview")!;
-      const fragment = template.content.cloneNode(true) as DocumentFragment;
+      const fragment = document.importNode(template.content, true);
       const button = fragment.querySelector("button")!;
       button.title = `Remove ${file.name}`;
       button.setAttribute("aria-label", `Remove ${file.name}`);

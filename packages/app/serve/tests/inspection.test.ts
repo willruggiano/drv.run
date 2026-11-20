@@ -98,18 +98,18 @@ await test("inspection preserves durable baseline, compaction, tool ordering and
   const data = await inspect(session);
   assert.deepEqual(
     data.messages.map((message) => message.source?.entry),
-    [baseline.id, summary.id, retained.id, results[1]!.id, results[0]!.id, undefined, update.id],
+    [baseline.id, summary.id, retained.id, results[1].id, results[0].id, undefined, update.id],
   );
   assert.deepEqual(
     data.roles.map(({ role }) => role),
     ["system", "user", "assistant", "toolResult"],
   );
   assert.equal(data.head, summary.id);
-  assert.equal(data.messages[1]!.source?.kind, "pi.compaction");
-  await append(root, { kind: "edit", edits: [{ target: results[1]!.id, action: "omit" }] });
+  assert.equal(data.messages[1].source?.kind, "pi.compaction");
+  await append(root, { kind: "edit", edits: [{ target: results[1].id, action: "omit" }] });
   const missing = await inspect(session);
   assert.equal(missing.messages.length, data.messages.length);
-  assert.equal(missing.messages[3]!.source, undefined);
+  assert.equal(missing.messages[3].source, undefined);
   await append(root, { kind: "edit", edits: [{ target: retained.id, action: "omit" }] });
   assert.deepEqual(
     (await inspect(session)).messages.map((message) => message.role),
@@ -119,7 +119,7 @@ await test("inspection preserves durable baseline, compaction, tool ordering and
     kind: "edit",
     edits: [
       { target: retained.id, action: "replace", messages: retained.model! },
-      { target: results[1]!.id, action: "replace", messages: results[1]!.model! },
+      { target: results[1].id, action: "replace", messages: results[1].model! },
     ],
   });
   assert.equal((await inspect(session)).tokens, data.tokens);
@@ -190,7 +190,7 @@ await test("inspection derives protocol fields without exposing content or schem
     ],
   });
   const data = await inspect(session);
-  const system = data.messages[0]!;
+  const system = data.messages[0];
   assert.deepEqual(
     system.parts.map(({ name, value }) => [name, value]),
     [
@@ -203,26 +203,26 @@ await test("inspection derives protocol fields without exposing content or schem
       ["toolsRemoved", "bash"],
     ],
   );
-  assert.deepEqual(system.parts[1]!.children, [
+  assert.deepEqual(system.parts[1].children, [
     { name: file.path, tokens: estimateTextTokens(JSON.stringify(file)) },
   ]);
-  assert.equal(system.parts[3]!.tokens, 0);
+  assert.equal(system.parts[3].tokens, 0);
   assert.deepEqual(
-    data.messages[1]!.parts.map(({ name, value }) => [name, value]),
+    data.messages[1].parts.map(({ name, value }) => [name, value]),
     [
       ["text", undefined],
       ["image", "image/png"],
     ],
   );
   assert.deepEqual(
-    data.messages[2]!.parts.map(({ name, value }) => [name, value]),
+    data.messages[2].parts.map(({ name, value }) => [name, value]),
     [
       ["thinking", undefined],
       ["text", undefined],
       ["toolCall", "read  SPEC.md"],
     ],
   );
-  assert.deepEqual(Object.keys(system).sort(), ["parts", "role", "source", "tokens"]);
+  assert.deepEqual(Object.keys(system).toSorted(), ["parts", "role", "source", "tokens"]);
   for (const malformed of [
     "not json",
     JSON.stringify({ files: [{ path: "invented" }] }),
@@ -233,7 +233,7 @@ await test("inspection derives protocol fields without exposing content or schem
       model: [{ role: "system", content: "", sections: { context: malformed }, timestamp: 1 }],
     });
     const current = await inspect(session);
-    assert.equal(current.messages.at(-1)!.parts[0]!.children, undefined);
+    assert.equal(current.messages.at(-1)!.parts[0].children, undefined);
     assert.equal(current.messages.at(-1)!.tokens, estimateTextTokens(malformed));
   }
 });
@@ -267,8 +267,8 @@ await test("inspection follows edits, fork-as-of, reset and persisted unavailabl
     edits: [{ target: first.id, action: "replace", messages: [user("replacement")] }],
   });
   const replaced = await inspect(session);
-  assert.equal(replaced.messages[0]!.tokens, estimateMessageTokens(user("replacement")));
-  assert.equal(replaced.messages[0]!.source?.entry, first.id);
+  assert.equal(replaced.messages[0].tokens, estimateMessageTokens(user("replacement")));
+  assert.equal(replaced.messages[0].source?.entry, first.id);
   assert.deepEqual(await inspect(session, branch), original);
   await append(session.root, {
     kind: "edit",

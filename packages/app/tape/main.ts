@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { buildAssets } from "serve/build";
 import { decode, digest, maxBytes, type Tape } from "./model.ts";
 import { record, scenes } from "./state.ts";
-import { replay, profiles, type Profile } from "./browser.ts";
+import { replay, profiles } from "./browser.ts";
 
 const usage = `Usage: nix run .#app.tape -- [options]
   --list                  List available scenes
@@ -24,7 +24,10 @@ export function options(args: string[]) {
     list: false,
     help: false,
     scene: "*",
-    profiles: Object.keys(profiles) as Profile[],
+    profiles: Object.keys(profiles).map((name) => {
+      assert(name === "mobile" || name === "desktop", "Unknown profile");
+      return name;
+    }),
     tape: "",
     recordOnly: false,
     output: ".scratch/showcase",
@@ -64,16 +67,19 @@ export function selected(pattern: string) {
   assert(result.length, `No scenes match: ${pattern}`);
   return result;
 }
+
+const escape = (text: string) =>
+  text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;");
 export async function run(args: string[], signal: AbortSignal) {
   signal.throwIfAborted();
   const config = options(args);
   if (config.help) {
     console.log(usage);
-    return;
+    return undefined;
   }
   if (config.list) {
     console.log(scenes.join("\n"));
-    return;
+    return undefined;
   }
   const choices = config.tape ? [] : selected(config.scene);
   let imported: Tape | undefined;
@@ -132,12 +138,11 @@ export async function run(args: string[], signal: AbortSignal) {
         }
       }
     }
-    const escape = (text: string) =>
-      text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;");
+
     const gallery = manifest.recordings
       .map(
         ({ scene, runs }) =>
-          `<section><h2>${escape(scene)}</h2>${runs.map((run) => `<h3>${run.profile}</h3><div class="captures">${run.captures.map((capture) => `<figure><a href="${scene}/${run.profile}/${capture.name}.png"><img loading="lazy" src="${scene}/${run.profile}/${capture.name}.png" alt="${escape(capture.name)}"></a><figcaption>${escape(capture.name)}</figcaption></figure>`).join("")}</div>`).join("")}</section>`,
+          `<section><h2>${escape(scene)}</h2>${runs.map((captureRun) => `<h3>${captureRun.profile}</h3><div class="captures">${captureRun.captures.map((capture) => `<figure><a href="${scene}/${captureRun.profile}/${capture.name}.png"><img loading="lazy" src="${scene}/${captureRun.profile}/${capture.name}.png" alt="${escape(capture.name)}"></a><figcaption>${escape(capture.name)}</figcaption></figure>`).join("")}</div>`).join("")}</section>`,
       )
       .join("");
     await writeFile(

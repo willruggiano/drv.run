@@ -89,11 +89,11 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
           name: "hold",
           parameters: Type.Object({}),
           description: "Wait for cancellation.",
-          async execute(_args, _api, context) {
+          async execute(_args, _api, ctx) {
             holding = true;
             held.resolve();
             try {
-              await awaitWithContext(new Promise<never>(() => {}), context);
+              await awaitWithContext(new Promise<never>(() => {}), ctx);
             } finally {
               holding = false;
               cancelled = true;
@@ -105,8 +105,8 @@ async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
           name: "barrier",
           parameters: Type.Object({}),
           description: "Wait until the leaf is running.",
-          async execute(_args, _api, context) {
-            await awaitWithContext(held.promise, context);
+          async execute(_args, _api, ctx) {
+            await awaitWithContext(held.promise, ctx);
             return {};
           },
         }),
@@ -191,7 +191,7 @@ await test("opt-in installs only the three conversation tools and disables backg
   });
   const root = await harness.root(context);
   const agent = await root.agent(context);
-  assert.deepEqual(agent.tools.map((tool) => tool.name).sort(), [
+  assert.deepEqual(agent.tools.map((tool) => tool.name).toSorted(), [
     "bash",
     "codemode",
     "edit",
@@ -200,7 +200,7 @@ await test("opt-in installs only the three conversation tools and disables backg
     "web_search",
     "write",
   ]);
-  assert.deepEqual(agent.callable.map((tool) => tool.name).sort(), [
+  assert.deepEqual(agent.callable.map((tool) => tool.name).toSorted(), [
     "bash",
     "contextEntries",
     "contextView",
@@ -265,7 +265,7 @@ await test(
     assert.equal(value.ids[0], at);
     assert.deepEqual(
       value.ids,
-      [...new Set(value.ids)].sort((a, b) => a - b),
+      [...new Set(value.ids)].toSorted((a, b) => a - b),
     );
     assert.deepEqual(
       value.bounded,
@@ -298,7 +298,7 @@ await test(
     assert.equal(results.length, 2);
     const records = (await f.harness.commit((tx) => tx.scanConversations({}, 256), context)).items;
     assert.equal(records.length, 3);
-    for (const record of records.filter((record) => record.id !== f.root.id)) {
+    for (const record of records.filter((candidateRecord) => candidateRecord.id !== f.root.id)) {
       assert.deepEqual(record.parent, { conversationId: f.root.id, at });
       assert(record.owner);
       const owner = await f.harness.getTask(record.owner.taskId, context);
@@ -428,11 +428,11 @@ await test(
     const answered = Promise.withResolvers<void>();
     let first = true;
     const f = await fixture(t, {
-      async afterTool(call, _result, _api, context) {
-        if (call.name === "forkJoin" && first) {
+      async afterTool(toolCall, _result, _api, ctx) {
+        if (toolCall.name === "forkJoin" && first) {
           first = false;
           answered.resolve();
-          await awaitWithContext(new Promise<never>(() => {}), context);
+          await awaitWithContext(new Promise<never>(() => {}), ctx);
         }
       },
     });

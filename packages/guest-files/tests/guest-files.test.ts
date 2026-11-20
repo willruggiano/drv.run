@@ -89,7 +89,7 @@ for (const contents of ["competing-file", "core-file"]) {
     assert.ifError(result.error);
     assert.notEqual(result.status, 0);
     assert.equal(existsSync(image), false);
-    assert.deepEqual(readdirSync(directory).sort(), ["environment", "inputs"]);
+    assert.deepEqual(readdirSync(directory).toSorted(), ["environment", "inputs"]);
   });
 }
 
@@ -125,7 +125,7 @@ for (const kind of ["file symlink", "directory symlink", "producer symlink", "ha
     assert.ifError(result.error);
     assert.notEqual(result.status, 0);
     assert.equal(existsSync(image), false);
-    assert.deepEqual(readdirSync(directory).sort(), ["environment", "external", "inputs"]);
+    assert.deepEqual(readdirSync(directory).toSorted(), ["environment", "external", "inputs"]);
   });
 }
 
@@ -221,7 +221,7 @@ test("publication requires a fresh output rather than replacing an existing snap
   assert.ifError(result.error);
   assert.notEqual(result.status, 0);
   assert.equal(readFileSync(image, "utf8"), "existing-snapshot");
-  assert.deepEqual(readdirSync(directory).sort(), ["environment", "inputs", "seed.img"]);
+  assert.deepEqual(readdirSync(directory).toSorted(), ["environment", "inputs", "seed.img"]);
 });
 
 for (const fileProducer of ["core", "integration"]) {
@@ -280,7 +280,7 @@ process.exit(42);
   assert.ifError(result.error);
   assert.notEqual(result.status, 0);
   assert.equal(existsSync(image), false);
-  assert.deepEqual(readdirSync(directory).sort(), ["bin", "environment", "inputs"]);
+  assert.deepEqual(readdirSync(directory).toSorted(), ["bin", "environment", "inputs"]);
 });
 
 test("special nodes fail without opening a blocking input or publishing an image", (t) => {
@@ -307,5 +307,5 @@ test("special nodes fail without opening a blocking input or publishing an image
   assert.ifError(result.error);
   assert.notEqual(result.status, 0);
   assert.equal(existsSync(image), false);
-  assert.deepEqual(readdirSync(directory).sort(), ["environment", "inputs"]);
+  assert.deepEqual(readdirSync(directory).toSorted(), ["environment", "inputs"]);
 });

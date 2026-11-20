@@ -213,9 +213,9 @@ await test("application environment ownership is lazy and closes after all harne
   let resolutions = 0,
     closes = 0;
   await f.reopen({
-    env: async (target, context) => {
+    env: async (target, ctx) => {
       resolutions++;
-      return f.options.env(target, context);
+      return f.options.env(target, ctx);
     },
     close: async () => {
       closes++;
@@ -243,9 +243,9 @@ await test("environment failure is a tool failure and a later attempt can resolv
   const f = await fixture(t);
   let available = false;
   await f.reopen({
-    env: async (target, context) => {
+    env: async (target, ctx) => {
       if (!available) throw new SessionError("unavailable", "Disconnected.");
-      return f.options.env(target, context);
+      return f.options.env(target, ctx);
     },
   });
   const session = await f.create();
@@ -663,7 +663,7 @@ await test("a submission enables eligible work in other conversations of the sam
 
 await test("choices do not open persisted sessions; explicit bootstrap attaches each session once", async (t) => {
   const f = await fixture(t);
-  const ids = [(await f.create()).id, (await f.create()).id].sort((a, b) => a.localeCompare(b));
+  const ids = [(await f.create()).id, (await f.create()).id].toSorted((a, b) => a.localeCompare(b));
   const attached: string[] = [];
   await f.reopen({
     onSession: (session) => {
@@ -678,11 +678,11 @@ await test("choices do not open persisted sessions; explicit bootstrap attaches 
   for (let i = 0; i < 2; i++) {
     const sessions = await f.sessions.openAll();
     assert.deepEqual(
-      sessions.map((session) => session.id).sort((a, b) => a.localeCompare(b)),
+      sessions.map((session) => session.id).toSorted((a, b) => a.localeCompare(b)),
       ids,
     );
     assert.deepEqual(
-      attached.sort((a, b) => a.localeCompare(b)),
+      attached.toSorted((a, b) => a.localeCompare(b)),
       ids,
     );
     for (const session of sessions)
@@ -724,16 +724,16 @@ for (const mode of ["success", "cancel-before", "cancel-after", "rollback"] as c
     const failure = new Error("Transaction rejected");
     const commit = child.commit.bind(child);
     if (mode === "cancel-before")
-      t.mock.method(child, "commit", (...[change, context]: Parameters<Conversation["commit"]>) => {
+      t.mock.method(child, "commit", (...[change, ctx]: Parameters<Conversation["commit"]>) => {
         controller.abort();
-        return commit(change, context);
+        return commit(change, ctx);
       });
     if (mode === "rollback")
-      t.mock.method(child, "commit", (...[change, context]: Parameters<Conversation["commit"]>) =>
+      t.mock.method(child, "commit", (...[change, ctx]: Parameters<Conversation["commit"]>) =>
         commit(async (tx) => {
           await change(tx);
           throw failure;
-        }, context),
+        }, ctx),
       );
     const saving = saveSessionSettings(
       f.sessions,

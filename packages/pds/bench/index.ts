@@ -41,9 +41,9 @@ function load(path: string, conversation?: number) {
     const entries = database
       .prepare("SELECT record FROM entries WHERE conversation_id = ? ORDER BY id")
       .all(selected)
-      .map((row) => {
-        assert(typeof row.record === "string");
-        const entry = JSON.parse(row.record) as D.EntryRecord;
+      .map((entryRow) => {
+        assert(typeof entryRow.record === "string");
+        const entry = JSON.parse(entryRow.record) as D.EntryRecord;
         assert.equal(entry.conversationId, selected);
         return entry;
       });
@@ -303,7 +303,7 @@ async function benchmark(path: string, conversation?: number) {
         counters = counts;
         timings.push(elapsed);
       }
-      const sorted = [...timings].sort((a, b) => a - b);
+      const sorted = timings.toSorted((a, b) => a - b);
       results.push({
         name: scenario.name,
         operations: scenario.operations,

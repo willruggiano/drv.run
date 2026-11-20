@@ -70,6 +70,8 @@ function message(value: Message): DisplayMessage {
                 : [{ kind: "text", text: "[attachment]" }];
             case "toolCall":
               return [{ kind: "tool", id: part.id }];
+            default:
+              throw new Error("Unsupported message content", { cause: part satisfies never });
           }
         });
   return {
@@ -114,14 +116,14 @@ function tool(call: Call, result: Result | undefined, live: LiveState | undefine
         ? "unavailable"
         : (slot?.status ?? (live?.run ? "pending" : "unavailable"));
   const duration = result?.message.durationMs ?? nested?.durationMs;
-  const metadata = result?.message.details ?? slot?.details;
+  const viewMetadata = result?.message.details ?? slot?.details;
   const patch =
-    metadata &&
-    typeof metadata === "object" &&
-    ("patch" in metadata && typeof metadata.patch === "string"
-      ? metadata.patch
-      : "diff" in metadata && typeof metadata.diff === "string"
-        ? metadata.diff
+    viewMetadata &&
+    typeof viewMetadata === "object" &&
+    ("patch" in viewMetadata && typeof viewMetadata.patch === "string"
+      ? viewMetadata.patch
+      : "diff" in viewMetadata && typeof viewMetadata.diff === "string"
+        ? viewMetadata.diff
         : undefined);
   return {
     id: call.id,
@@ -139,7 +141,8 @@ function tool(call: Call, result: Result | undefined, live: LiveState | undefine
       : slot?.output
         ? [{ kind: "code", text: slot.output }]
         : [],
-    details: typeof patch === "string" ? patch : metadata ? JSON.stringify(metadata, null, 2) : "",
+    details:
+      typeof patch === "string" ? patch : viewMetadata ? JSON.stringify(viewMetadata, null, 2) : "",
     patch: typeof patch === "string",
     path: typeof args.path === "string" ? args.path : "",
     written,
@@ -169,12 +172,12 @@ export class ElmProjection {
     for (const record of records) this.records.set(record.id, record);
     this.entries = undefined;
   }
-  project(view: ConversationView, metadata: Metadata, inspection?: ContextInspection) {
+  project(view: ConversationView, viewMetadata: Metadata, inspection?: ContextInspection) {
     const { calls, results } = this;
     const records: EntryRecord[] = [];
     if (view.entries !== this.entries) {
       for (const record of view.entries) this.records.set(record.id, record);
-      for (const record of [...this.records.values()].sort((a, b) => a.id - b.id)) {
+      for (const record of [...this.records.values()].toSorted((a, b) => a.id - b.id)) {
         if (this.sent.has(record.id)) continue;
         records.push(record);
         for (const item of record.model ?? []) {
@@ -266,7 +269,7 @@ export class ElmProjection {
         })),
       },
       queue,
-      metadata,
+      metadata: viewMetadata,
       ...(inspection ? { inspection } : {}),
     };
     const changed: Partial<typeof regions> = {};

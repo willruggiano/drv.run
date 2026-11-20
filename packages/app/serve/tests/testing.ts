@@ -9,7 +9,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
-import type { AddressInfo } from "node:net";
 import type { TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { SessionError, Environment, type SessionOptions, type Sessions } from "../sessions.ts";
@@ -48,14 +47,16 @@ export async function serve(
   notifications?: Notifications,
 ) {
   const server = httpServer(sessions, host, assets, settings, origin, authorization, notifications);
-  await new Promise<void>((resolve) => server.listen(0, host, resolve));
+  await new Promise<void>((fulfill) => server.listen(0, host, fulfill));
   t.after(async () => {
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
+    await new Promise<void>((fulfill, reject) =>
+      server.close((error) => (error ? reject(error) : fulfill())),
     );
   });
-  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const listeningAddress = server.address();
+  assert(listeningAddress && typeof listeningAddress !== "string");
+  return `http://127.0.0.1:${listeningAddress.port}`;
 }
 export function post(url: string, data: Record<string, string> | FormData) {
   return fetch(url, {
@@ -92,8 +93,8 @@ export async function checkCLI<T>(
     stderr += text;
   });
   const startup = new AbortController();
-  const ended = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
-    child.once("close", (code, signal) => resolve([code, signal]));
+  const ended = new Promise<[number | null, NodeJS.Signals | null]>((fulfill) => {
+    child.once("close", (code, signal) => fulfill([code, signal]));
   });
   child.once("error", (error) => startup.abort(error));
   child.once("exit", (code, signal) => {
@@ -168,9 +169,9 @@ export async function directoryFixture(t: TestContext, root?: string) {
         ...(await f.options.targets()),
       ];
     },
-    async env(target, context) {
-      const selected = await target.read.snapshot(Environment, target.conversationId, context);
-      if (selected?.provider === "local") return f.options.env(target, context);
+    async env(target, ctx) {
+      const selected = await target.read.snapshot(Environment, target.conversationId, ctx);
+      if (selected?.provider === "local") return f.options.env(target, ctx);
       assert.equal(selected?.provider, binding.provider);
       assert.equal(selected?.target, binding.target);
       return remoteEnvironment(target.cwd ?? binding.cwd);
@@ -203,15 +204,17 @@ export async function directoryFixture(t: TestContext, root?: string) {
   };
 }
 
+const empty = (provider: AuthorizationProvider) => ({
+  state: "not-enrolled",
+  user_id: provider === "github" ? 1 : null,
+  device: null,
+  error: null,
+});
+
 export async function authorizationFixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "serve-auth-"));
   const path = join(directory, "alice.sock");
-  const empty = (provider: AuthorizationProvider) => ({
-    state: "not-enrolled",
-    user_id: provider === "github" ? 1 : null,
-    device: null,
-    error: null,
-  });
+
   const snapshots: Record<AuthorizationProvider, unknown> = {
     github: empty("github"),
     openai: empty("openai"),
@@ -248,11 +251,11 @@ export async function authorizationFixture(t: TestContext) {
       else response.end(JSON.stringify(credential));
     } else response.writeHead(404).end();
   });
-  await new Promise<void>((resolve) => server.listen(path, resolve));
+  await new Promise<void>((fulfill) => server.listen(path, fulfill));
   t.after(async () => {
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
+    await new Promise<void>((fulfill, reject) =>
+      server.close((error) => (error ? reject(error) : fulfill())),
     );
     await rm(directory, { recursive: true, force: true });
   });

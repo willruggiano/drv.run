@@ -17,8 +17,8 @@ const browser: StreamRuntime = {
     const source = new EventSource(url);
     return {
       listen(message, error) {
-        source.onmessage = (event) => message(event.data);
-        source.onerror = () => error(source.readyState === EventSource.CLOSED);
+        source.addEventListener("message", (event) => message(event.data));
+        source.addEventListener("error", () => error(source.readyState === EventSource.CLOSED));
       },
       close: () => source.close(),
     };

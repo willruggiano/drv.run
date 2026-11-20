@@ -41,8 +41,8 @@ import {
 } from "./render.ts";
 
 // Datastar v1.0.5 wire format: https://data-star.dev/reference/sse_events
-export function patch(html: string, options: Omit<Patch, "html"> = {}): string {
-  return `event: datastar-patch-elements\n${options.selector ? `data: selector ${options.selector}\n` : ""}${options.mode ? `data: mode ${options.mode}\n` : ""}${html
+export function patch(markup: string, options: Omit<Patch, "html"> = {}): string {
+  return `event: datastar-patch-elements\n${options.selector ? `data: selector ${options.selector}\n` : ""}${options.mode ? `data: mode ${options.mode}\n` : ""}${markup
     .split(/\r\n|\r|\n/)
     .map((line) => `data: elements ${line}`)
     .join("\n")}\n\n`;
@@ -56,6 +56,22 @@ const assets = new Map<string, readonly [string, string]>([
   ["/assets/browser.js", ["../dist/browser.js", "text/javascript"]],
   ["/assets/style.css", ["../assets/style.css", "text/css"]],
 ] as const);
+
+function method(request: IncomingMessage, response: ServerResponse, allowed: string[]) {
+  if (!request.method || !allowed.includes(request.method)) {
+    response.setHeader("Allow", allowed.join(", "));
+    throw new HttpError(405, "Method not allowed.");
+  }
+}
+
+function navigate(request: IncomingMessage, response: ServerResponse, location: string) {
+  if (request.headers["datastar-request"] === "true") sse(response, redirect(location));
+  else response.writeHead(303, { Location: location }).end();
+}
+
+function html(response: ServerResponse, content: string) {
+  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(content);
+}
 
 export async function serve(
   sessions: Application,
@@ -129,19 +145,6 @@ export async function serve(
     inFlight.add(work);
   });
 
-  function method(request: IncomingMessage, response: ServerResponse, allowed: string[]) {
-    if (!request.method || !allowed.includes(request.method)) {
-      response.setHeader("Allow", allowed.join(", "));
-      throw new HttpError(405, "Method not allowed.");
-    }
-  }
-  function navigate(request: IncomingMessage, response: ServerResponse, location: string) {
-    if (request.headers["datastar-request"] === "true") sse(response, redirect(location));
-    else response.writeHead(303, { Location: location }).end();
-  }
-  function html(response: ServerResponse, content: string) {
-    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(content);
-  }
   async function route(request: IncomingMessage, response: ServerResponse) {
     assert(request.url);
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -365,8 +368,8 @@ export async function serve(
       const watch = await observe(app, conversation, abort.signal);
       const initial = watch.value;
       await watch.stop();
-      const html = await conversationPage(app, conversation, initial, prefix);
-      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(html);
+      const markup = await conversationPage(app, conversation, initial, prefix);
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(markup);
     } else if (request.method === "GET" && action === "watch") {
       const abort = new AbortController();
       response.once("close", () => abort.abort());
@@ -383,7 +386,7 @@ export async function serve(
         output.pipe(response);
         response.once("close", () => output.destroy());
       }
-      const write = async (data: string) => {
+      const writeChunk = async (data: string) => {
         abort.signal.throwIfAborted();
         if (!output.write(data)) await once(output, "drain", { signal: abort.signal });
       };
@@ -393,16 +396,16 @@ export async function serve(
       });
       const render = async (value: typeof watch.value, ops?: Parameters<Projection["update"]>[1]) =>
         (await projection.update(value, ops))
-          .map(({ html, ...options }) => patch(html, options))
+          .map(({ html: markup, ...patchOptions }) => patch(markup, patchOptions))
           .join("");
       try {
-        await write(
+        await writeChunk(
           patch('<div id="connection" class="sr-only" role="status">Connected</div>') +
             (await render(watch.value)),
         );
         watch.start(async (call) => {
           assert(call.kind === "value");
-          await write(await render(call.value, call.ops));
+          await writeChunk(await render(call.value, call.ops));
         });
       } catch (error) {
         await watch.stop();
@@ -438,18 +441,18 @@ export async function serve(
             throw new InvalidRequest("Invalid history request.", { cause: error });
           throw error;
         });
-      const records = [...result.items].reverse();
+      const records = result.items.toReversed();
       const view = { entries: records, docs: {} };
       const states = regions.tools(view);
-      const html = `<section id="history-${after ?? "start"}-${before}">${result.next && records[0] ? regions.history(path, records[0].id, after) : ""}${records.map((entry) => regions.entry(entry, states)).join("")}</section>`;
-      if (request.headers["datastar-request"] === "true") sse(response, patch(html));
+      const markup = `<section id="history-${after ?? "start"}-${before}">${result.next && records[0] ? regions.history(path, records[0].id, after) : ""}${records.map((entry) => regions.entry(entry, states)).join("")}</section>`;
+      if (request.headers["datastar-request"] === "true") sse(response, patch(markup));
       else
         response
           .writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
           .end(
             page(
               "Earlier messages",
-              `<main><a href="${escape(path)}">Conversation</a>${html}</main>`,
+              `<main><a href="${escape(path)}">Conversation</a>${markup}</main>`,
               "home",
               prefix,
             ),
@@ -500,7 +503,7 @@ export async function serve(
           patch(
             Object.entries(controls)
               .filter(([name]) => form.has(name) || (name === "thinking" && form.has("model")))
-              .map(([, html]) => html)
+              .map(([, markup]) => markup)
               .join(""),
           ),
       );
@@ -535,7 +538,7 @@ export async function serve(
       server.closeAllConnections();
       await options.auth.close();
       await closed;
-      await Promise.allSettled([...inFlight]);
+      await Promise.allSettled(inFlight);
     },
   };
 }

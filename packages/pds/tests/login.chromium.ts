@@ -8,7 +8,7 @@ import { authFixture, servePrefixed } from "./fixtures.ts";
 
 const state = (page: Page, expected: string) =>
   page.waitForFunction(
-    (expected) => document.getElementById("login-attempt")?.dataset.state === expected,
+    (expectedState) => document.getElementById("login-attempt")?.dataset.state === expectedState,
     expected,
   );
 
@@ -102,15 +102,12 @@ await test(
     );
     assert.equal(await page.locator("#login-device-code").textContent(), "TEST-CODE");
     assert.deepEqual(
-      await page
-        .locator("#login-events a")
-        .evaluateAll((links) =>
-          links.map((link) => ({
-            href: (link as HTMLAnchorElement).href,
-            target: (link as HTMLAnchorElement).target,
-            rel: (link as HTMLAnchorElement).rel,
-          })),
-        ),
+      await page.locator("#login-events a").evaluateAll((links) =>
+        links.map((link) => {
+          if (!(link instanceof HTMLAnchorElement)) throw new Error("Expected a provider link");
+          return { href: link.href, target: link.target, rel: link.rel };
+        }),
+      ),
       [
         { href: "https://example.test/help", target: "_blank", rel: "noopener noreferrer" },
         { href: "https://example.test/authorize", target: "_blank", rel: "noopener noreferrer" },

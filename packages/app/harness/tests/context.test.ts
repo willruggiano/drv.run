@@ -38,6 +38,11 @@ async function readHistory(conversation: Conversation): Promise<EntryRecord[]> {
   return entries;
 }
 
+const run = async (conversation: Conversation) => {
+  await conversation.submit({ type: "input", content: "Work.", requestId: randomUUID() }, context);
+  await conversation.waitForIdle(context);
+};
+
 async function configured(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "harness-context-"));
   const workspace = join(directory, "workspace");
@@ -93,14 +98,8 @@ async function configured(t: TestContext) {
       return open();
     },
   };
-  const run = async (conversation: Conversation) => {
-    await conversation.submit(
-      { type: "input", content: "Work.", requestId: randomUUID() },
-      context,
-    );
-    await conversation.waitForIdle(context);
-  };
-  return { f, home, user, system, environment, run };
+
+  return { f, home, user, system, environment };
 }
 
 await test("context extension only renders a prompt section", () => {
@@ -205,7 +204,7 @@ await test("repository context uses worktree roots, follows symlinked documents 
 });
 
 await test("all context is supplied before the first mutation", async (t) => {
-  const { f, system, user, run } = await configured(t);
+  const { f, system, user } = await configured(t);
   await writeFile(join(system, "llms.txt"), "System.");
   await writeFile(join(user, "llms.txt"), "User.");
   await writeFile(join(f.workspace, "README.md"), "Readme.");
@@ -264,7 +263,7 @@ await test("unreadable and oversized instructions fail without truncation", asyn
 });
 
 await test("context is supplied after restart, fork, compaction and reset", async (t) => {
-  const { f, run } = await configured(t);
+  const { f } = await configured(t);
   await writeFile(join(f.workspace, "CONTRIBUTING.md"), "Contribute.");
   let session = await f.create();
   f.faux.setResponses([done()]);
@@ -301,7 +300,7 @@ await test("context is supplied after restart, fork, compaction and reset", asyn
 });
 
 await test("changing base directory supplies the new project context before mutation", async (t) => {
-  const { f, run } = await configured(t);
+  const { f } = await configured(t);
   await mkdir(join(f.workspace, ".git"));
   await writeFile(join(f.workspace, "README.md"), "First.");
   await writeFile(join(f.workspace, "CONTRIBUTING.md"), "First contributions.");

@@ -135,13 +135,13 @@ if (process.env.MODE === "encrypt-failure") process.exitCode = 1;
       assert.equal(existsSync(secret), false);
     }
     assert.deepEqual(
-      readdirSync(secrets).sort(),
+      readdirSync(secrets).toSorted(),
       [
         "tailscale-auth-key",
         ...(["create", "existing", "symlink", "race"].includes(mode)
           ? ["notifications-vapid"]
           : []),
-      ].sort(),
+      ].toSorted(),
     );
   });
 }

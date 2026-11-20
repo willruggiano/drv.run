@@ -31,9 +31,9 @@ try {
     ...(process.env.ORIGIN ? { origin: process.env.ORIGIN } : {}),
   });
   console.log(`pds: ${server.origin}`);
-  await new Promise<void>((resolve) => {
-    process.once("SIGINT", () => resolve());
-    process.once("SIGTERM", () => resolve());
+  await new Promise<void>((fulfill) => {
+    process.once("SIGINT", () => fulfill());
+    process.once("SIGTERM", () => fulfill());
   });
   await server.close();
 } finally {

@@ -171,7 +171,7 @@ export async function saveGlobalSettings(
     values[item.key] = "choices" in item ? value : value === "true";
   }
   const model = (await sessions.choices(context)).models.find(
-    (model) => modelKey(model) === optional(data, "model"),
+    (candidateModel) => modelKey(candidateModel) === optional(data, "model"),
   );
   if (optional(data, "model") && !model) throw new FormError(400, "Model is unavailable.");
   await settings.update(

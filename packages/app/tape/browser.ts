@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AddressInfo } from "node:net";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { LiveState } from "@earendil-works/pi-durable";
 import { httpServer, GlobalSettingsStore } from "serve/server";
@@ -292,7 +291,9 @@ export async function replay(
           server.once("error", reject);
           server.listen(0, "127.0.0.1", resolve);
         });
-        const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+        const listeningAddress = server.address();
+        assert(listeningAddress && typeof listeningAddress !== "string");
+        const base = `http://127.0.0.1:${listeningAddress.port}`;
         const browser = await launch(join(directory, "browser"), signal);
         try {
           const page = await Page.create(browser.cdp, signal);

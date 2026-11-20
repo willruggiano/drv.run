@@ -37,14 +37,15 @@ async function enablePush(enabled: boolean, publicKey: string | null): Promise<s
   const registration = await registerWorker();
   if (!registration.active)
     await new Promise<void>((resolve, reject) => {
-      const worker = registration.installing ?? registration.waiting;
-      if (!worker) {
+      const installingWorker = registration.installing ?? registration.waiting;
+      if (!installingWorker) {
         reject(new Error("Service worker did not install."));
         return;
       }
-      worker.addEventListener("statechange", () => {
-        if (worker.state === "activated") resolve();
-        if (worker.state === "redundant") reject(new Error("Service worker installation failed."));
+      installingWorker.addEventListener("statechange", () => {
+        if (installingWorker.state === "activated") resolve();
+        if (installingWorker.state === "redundant")
+          reject(new Error("Service worker installation failed."));
       });
     });
   let subscription = await registration.pushManager.getSubscription();

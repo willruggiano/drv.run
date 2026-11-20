@@ -707,7 +707,7 @@ await test(
                   new URL(node.getAttribute("href") ?? node.getAttribute("src")!, document.baseURI)
                     .pathname,
               )
-              .sort(),
+              .toSorted(),
           ),
         [
           "/tools/pds/assets/browser.js",

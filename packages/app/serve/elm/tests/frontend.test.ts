@@ -111,28 +111,28 @@ await test("Elm command boundary enforces origins, methods, identities and durab
     content: "Accepted once",
     whenBusy: "reject",
   };
-  const post = (origin: string, body: unknown = fields) =>
+  const submit = (origin: string, body: unknown = fields) =>
     fetch(url, {
       method: "POST",
       headers: { Origin: origin, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-  assert.equal((await post("https://evil.example")).status, 403);
+  assert.equal((await submit("https://evil.example")).status, 403);
   assert.equal((await fetch(url)).status, 405);
-  assert.equal((await post(base, { ...fields, requestId: "" })).status, 400);
-  assert.equal((await post(base, { ...fields, whenBusy: "invalid" })).status, 400);
-  assert.equal((await post(base, { ...fields, content: "/not-implemented" })).status, 400);
+  assert.equal((await submit(base, { ...fields, requestId: "" })).status, 400);
+  assert.equal((await submit(base, { ...fields, whenBusy: "invalid" })).status, 400);
+  assert.equal((await submit(base, { ...fields, content: "/not-implemented" })).status, 400);
   assert.deepEqual(await readHistory(session.root), []);
   f.faux.setResponses([fauxAssistantMessage("Done")]);
-  const first = await post(base);
+  const first = await submit(base);
   assert.equal(first.status, 200);
   assert.deepEqual(await first.json(), { requestId: "input-1", revision: "draft-1" });
   await session.root.waitForIdle(BACKGROUND_CONTEXT);
   const records = await readHistory(session.root);
-  assert.equal((await post(base)).status, 200);
+  assert.equal((await submit(base)).status, 200);
   assert.deepEqual(await readHistory(session.root), records);
   assert.equal(f.faux.state.callCount, 1);
-  assert.equal((await post(base, { ...fields, command: "unknown" })).status, 400);
+  assert.equal((await submit(base, { ...fields, command: "unknown" })).status, 400);
   const catalog = await fetch(base + "/?data=1");
   const data = await catalog.json();
   assert.equal(data.sessions[0].path, `/sessions/${session.id}`);
@@ -247,11 +247,11 @@ await test("Elm rejects malformed and binary attachments without admitting input
 
 await test("Elm persists attachment entries on creation and submission without count or size limits", async (t) => {
   for (const creating of [false, true])
-    await t.test(creating ? "creation" : "conversation", async (t) => {
-      const f = await fixture(t);
+    await t.test(creating ? "creation" : "conversation", async (subtest) => {
+      const f = await fixture(subtest);
       const id = randomUUID();
       const session = creating ? undefined : await f.create();
-      const base = await serve(t, f.sessions);
+      const base = await serve(subtest, f.sessions);
       const url = creating ? base + "/" : base + conversationURL(session!) + "/command";
       const data = new FormData();
       for (const [key, value] of Object.entries(
@@ -285,7 +285,7 @@ await test("Elm persists attachment entries on creation and submission without c
       const current = session ?? (await f.sessions.get(id));
       await current.root.waitForIdle(BACKGROUND_CONTEXT);
       const records = await readHistory(current.root);
-      const entry = records.find((entry) => entry.kind === "app.attachments");
+      const entry = records.find((candidateEntry) => candidateEntry.kind === "app.attachments");
       assert(entry);
       assert.deepEqual(entry.data, {
         attachments: [
@@ -313,8 +313,8 @@ await test("Elm persists attachment entries on creation and submission without c
 
 await test("Elm releases early-disconnected watches and bounds pending entries during initialization", async (t) => {
   for (const stage of ["watch", "history"])
-    await t.test(stage, { timeout: 10000 }, async (t) => {
-      const f = await fixture(t);
+    await t.test(stage, { timeout: 10000 }, async (subtest) => {
+      const f = await fixture(subtest);
       const session = await f.create();
       const { httpServer } = await import("../../server.ts");
       const server = httpServer(f.sessions, "127.0.0.1");
@@ -325,16 +325,16 @@ await test("Elm releases early-disconnected watches and bounds pending entries d
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const address = server.address();
       assert(address && typeof address === "object");
-      t.after(async () => {
+      subtest.after(async () => {
         server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
       });
       const acquired = Promise.withResolvers<void>(),
         release = Promise.withResolvers<void>();
-      t.after(() => release.resolve());
+      subtest.after(() => release.resolve());
       const watches: Awaited<ReturnType<typeof session.root.watch>>[] = [];
       const watch = session.root.watch.bind(session.root);
-      t.mock.method(session.root, "watch", async (...args: Parameters<typeof watch>) => {
+      subtest.mock.method(session.root, "watch", async (...args: Parameters<typeof watch>) => {
         const observer = await watch(...args);
         watches.push(observer);
         if (stage === "watch") {
@@ -345,13 +345,17 @@ await test("Elm releases early-disconnected watches and bounds pending entries d
       });
       if (stage === "history") {
         const entries = session.root.entries.bind(session.root);
-        t.mock.method(session.root, "entries", async (...args: Parameters<typeof entries>) => {
-          acquired.resolve();
-          await release.promise;
-          return entries(...args);
-        });
+        subtest.mock.method(
+          session.root,
+          "entries",
+          async (...args: Parameters<typeof entries>) => {
+            acquired.resolve();
+            await release.promise;
+            return entries(...args);
+          },
+        );
       }
-      t.mock.method(session.harness, "conversation", async () => session.root);
+      subtest.mock.method(session.harness, "conversation", async () => session.root);
       const abort = new AbortController();
       const response = fetch(`http://127.0.0.1:${address.port}${conversationURL(session)}/events`, {
         signal: abort.signal,
@@ -377,32 +381,32 @@ await test("Elm session settings validate and persist form data", async (t) => {
   const base = await serve(t, f.sessions);
   const path = base + conversationURL(session);
   const catalog = await f.sessions.catalog(BACKGROUND_CONTEXT);
-  const model = catalog.models[0];
+  const candidateModel = catalog.models[0];
   const target = catalog.targets[0];
   const initial = await sessionInfo(session);
   const values = {
     name: "Edited session",
-    model: JSON.stringify([model.provider, model.modelId]),
+    model: JSON.stringify([candidateModel.provider, candidateModel.modelId]),
     target: JSON.stringify([target.provider, target.target]),
     thinkingLevel: "low",
     baseDirectory: "",
   };
-  const post = (body: typeof values, origin = base) =>
+  const submit = (body: typeof values, origin = base) =>
     fetch(path + "/settings", {
       method: "POST",
       headers: { Origin: origin },
       body: new URLSearchParams(body),
     });
-  assert.equal((await post(values, "https://evil.example")).status, 403);
+  assert.equal((await submit(values, "https://evil.example")).status, 403);
   for (const invalid of [
     { thinkingLevel: "unknown" },
     { name: "Invalid\u0001" },
     { model: "unknown" },
     { target: "unknown" },
   ])
-    assert.equal((await post({ ...values, ...invalid })).ok, false);
+    assert.equal((await submit({ ...values, ...invalid })).ok, false);
   assert.deepEqual(await sessionInfo(session), initial);
-  assert.deepEqual(await (await post(values)).json(), { saved: true });
+  assert.deepEqual(await (await submit(values)).json(), { saved: true });
   const settings = await (await fetch(path + "/panel?view=settings")).json();
   assert.equal(settings.name, values.name);
   assert.equal(settings.model, values.model);
@@ -422,8 +426,8 @@ await test("selection routes do not open unrelated sessions and share choice pro
   const attached: string[] = [];
   await f.reopen({
     ...f.execution,
-    onSession: (session) => {
-      attached.push(session.id);
+    onSession: (openedSession) => {
+      attached.push(openedSession.id);
     },
   });
   const { authorization } = await authorizationFixture(t);
@@ -565,7 +569,9 @@ await test(
       changed.value.metadata?.branches.some((branch) => branch.id === fork.id),
       true,
     );
-    const node = changed.value.metadata?.explorer?.nodes.find((node) => node.id === sibling.id);
+    const node = changed.value.metadata?.explorer?.nodes.find(
+      (element) => element.id === sibling.id,
+    );
     assert(node);
     assert.equal(node.parent, first.id);
     assert.equal(node.active, false);
@@ -586,15 +592,22 @@ await test(
     assert(!first.done);
     for (let index = 0; index < 110; index++) {
       await session.root.commit(async (tx) => {
-        const { role, api, provider, model, usage, stopReason, timestamp } =
-          fauxAssistantMessage("");
+        const {
+          role,
+          api,
+          provider,
+          model: candidateModel,
+          usage,
+          stopReason,
+          timestamp,
+        } = fauxAssistantMessage("");
         (await tx.doc(LiveDoc, session.root.id)).generation = {
           attempt: 1,
           message: {
             role,
             api,
             provider,
-            model,
+            model: candidateModel,
             usage,
             stopReason,
             timestamp,
@@ -627,14 +640,14 @@ await test(
 
 await test("conversation frame lifetime releases all observers on return, cancellation, close, overflow, and failure", async (t) => {
   for (const end of ["return", "cancel", "close", "overflow", "failure"])
-    await t.test(end, { timeout: 10000 }, async (t) => {
-      const f = await fixture(t);
+    await t.test(end, { timeout: 10000 }, async (subtest) => {
+      const f = await fixture(subtest);
       const session = await f.create();
       const settings = new GlobalSettingsStore();
       let commits = 0,
         preferences = 0;
       const subscribe = session.harness.subscribeCommits.bind(session.harness);
-      t.mock.method(
+      subtest.mock.method(
         session.harness,
         "subscribeCommits",
         (listener: Parameters<typeof subscribe>[0]) => {
@@ -647,7 +660,7 @@ await test("conversation frame lifetime releases all observers on return, cancel
         },
       );
       const observe = settings.watch.bind(settings);
-      t.mock.method(settings, "watch", (listener: () => void) => {
+      subtest.mock.method(settings, "watch", (listener: () => void) => {
         preferences++;
         const release = observe(listener);
         return () => {
@@ -657,7 +670,7 @@ await test("conversation frame lifetime releases all observers on return, cancel
       });
       const watch = session.root.watch.bind(session.root);
       const watches: Awaited<ReturnType<typeof watch>>[] = [];
-      t.mock.method(session.root, "watch", async (...args: Parameters<typeof watch>) => {
+      subtest.mock.method(session.root, "watch", async (...args: Parameters<typeof watch>) => {
         const value = await watch(...args);
         watches.push(value);
         return value;
@@ -669,7 +682,7 @@ await test("conversation frame lifetime releases all observers on return, cancel
         withAbortSignal(abort.signal, BACKGROUND_CONTEXT),
         { settings },
       );
-      t.after(async () => {
+      subtest.after(async () => {
         abort.abort();
         await frames.return();
       });
@@ -684,7 +697,7 @@ await test("conversation frame lifetime releases all observers on return, cancel
         await assert.rejects(frames.next(), Error);
       } else if (end === "failure") {
         const error = new Error("Metadata failure");
-        t.mock.method(session.root, "agent", async () => {
+        subtest.mock.method(session.root, "agent", async () => {
           throw error;
         });
         const pending = frames.next();

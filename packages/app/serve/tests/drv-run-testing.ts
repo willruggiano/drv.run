@@ -50,8 +50,8 @@ process.stdout.write(Object.entries(state).map(([key, value]) => key + "=" + val
     stateDirectory: f.directory,
     runtimeDirectory,
     systemctl,
-    connect(options: SshConnectOptions) {
-      sshOptions.push(options);
+    connect(connectionOptions: SshConnectOptions) {
+      sshOptions.push(connectionOptions);
       const connection = new Connection({ command: [localDaemon()] });
       connections.push(connection);
       return { connection, remote: () => undefined };
@@ -83,13 +83,13 @@ process.stdout.write(Object.entries(state).map(([key, value]) => key + "=" + val
       sessions = await openApplication({ ...application, ...overrides });
     },
     targets: async () =>
-      (await listInstances(options)).map((instance) => ({
+      (await listInstances(options)).map((availableInstance) => ({
         provider: "drv.run",
-        target: instance.id,
+        target: availableInstance.id,
         cwd: "/workspace",
         directoryRoot: workspace,
-        label: instance.reference,
-        available: instance.running,
+        label: availableInstance.reference,
+        available: availableInstance.running,
       })),
   };
 }

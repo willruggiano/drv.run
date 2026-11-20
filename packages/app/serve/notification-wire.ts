@@ -33,7 +33,7 @@ export function envelope(input: unknown, vm: string): Envelope {
   if (
     data.v !== 1 ||
     data.vm !== vm ||
-    Object.keys(data).sort().join(",") !== "event,operation,sequence,server,v,vm"
+    Object.keys(data).toSorted().join(",") !== "event,operation,sequence,server,v,vm"
   )
     throw new TypeError("Invalid notification envelope.");
   const event = observation(data.event);
@@ -54,7 +54,7 @@ export function envelope(input: unknown, vm: string): Envelope {
   };
 }
 /** JSON Lines, bounded before decoding. One unacknowledged operation per stream. */
-export async function* frames(stream: Duplex): AsyncGenerator<unknown> {
+export async function* frames(stream: Duplex): AsyncGenerator {
   let buffered = Buffer.alloc(0);
   for await (const chunk of stream) {
     if (!Buffer.isBuffer(chunk)) throw new TypeError("Expected bytes.");

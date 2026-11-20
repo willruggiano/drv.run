@@ -32,6 +32,11 @@ await test("the frontend uses only the shared stylesheet", async (t) => {
   assert.deepEqual(b.errors, []);
 });
 
+const appearance = (node: Element) => {
+  const style = getComputedStyle(node);
+  return { color: style.color, opacity: style.opacity, outline: style.outlineStyle };
+};
+
 await test("composer focus restores its green border without native control outlines", async (t) => {
   const f = await directoryFixture(t, "/workspace");
   const session = await f.create();
@@ -58,10 +63,7 @@ await test("composer focus restores its green border without native control outl
   await page.locator("#base-directory").focus();
   assert.equal(await box.evaluate((node) => getComputedStyle(node).borderColor), border);
   const archive = page.locator(".session-archive").first();
-  const appearance = (node: Element) => {
-    const style = getComputedStyle(node);
-    return { color: style.color, opacity: style.opacity, outline: style.outlineStyle };
-  };
+
   const unfocused = await archive.evaluate(appearance);
   await archive.focus();
   assert.deepEqual(await archive.evaluate(appearance), unfocused);
@@ -106,6 +108,8 @@ await test("composer focus restores its green border without native control outl
   assert.deepEqual(errors, []);
 });
 
+const background = (node: Element) => getComputedStyle(node).backgroundColor;
+
 await test("recent sessions use the hover background during Ctrl+J/K navigation", async (t) => {
   const f = await fixture(t);
   await f.create();
@@ -118,7 +122,7 @@ await test("recent sessions use the hover background during Ctrl+J/K navigation"
   await page.goto(b.base);
   const sessions = page.locator("#session-list .session");
   await sessions.first().waitFor();
-  const background = (node: Element) => getComputedStyle(node).backgroundColor;
+
   const idle = await sessions.first().evaluate(background);
   await sessions.first().hover();
   const hovered = await sessions.first().evaluate(background);
@@ -243,7 +247,7 @@ await test(`elm: settings toggles persist, support keyboards and use composer co
     assert.equal(await on.isChecked(), settings.read().values[field.key]);
     await off.focus();
     await off.press("Space");
-    await waitFor(async () => settings.read().values[field.key] === false);
+    await waitFor(async () => !settings.read().values[field.key]);
     assert.equal(await off.isChecked(), true);
     assert.notEqual(
       await toggle
@@ -252,7 +256,7 @@ await test(`elm: settings toggles persist, support keyboards and use composer co
       primary.background,
     );
     await off.press("ArrowRight");
-    await waitFor(async () => settings.read().values[field.key] === true);
+    await waitFor(async () => settings.read().values[field.key]);
     assert.equal(await on.isChecked(), true);
     const selected = await toggle.locator("input:checked + span").evaluate((node) => {
       const style = getComputedStyle(node);
@@ -281,9 +285,10 @@ await test(`elm: settings toggles persist, support keyboards and use composer co
       },
     );
     assert.deepEqual(
-      await page
-        .locator("#settings form[data-autosave]")
-        .evaluate((form, key) => new FormData(form as HTMLFormElement).getAll(key), field.key),
+      await page.locator("#settings form[data-autosave]").evaluate((form, key) => {
+        if (!(form instanceof HTMLFormElement)) throw new Error("Expected a form");
+        return new FormData(form).getAll(key);
+      }, field.key),
       ["true"],
     );
   }
@@ -432,6 +437,25 @@ await test("the frontend confirms context commands with two keyboard submissions
   assert.deepEqual(b.errors, []);
 });
 
+const geometry = (node: Element) => {
+  const bounds = node.getBoundingClientRect();
+  const style = getComputedStyle(node);
+  return {
+    x: bounds.x,
+    width: bounds.width,
+    height: bounds.height,
+    padding: style.padding,
+    font: {
+      family: style.fontFamily,
+      size: style.fontSize,
+      weight: style.fontWeight,
+      lineHeight: style.lineHeight,
+    },
+    background: style.backgroundColor,
+    borderRadius: style.borderRadius,
+  };
+};
+
 await test("landing composer matches conversation summaries and geometry without context statistics", async (t) => {
   const f = await directoryFixture(t);
   await mkdir(join(f.workspace, "drv.run"));
@@ -521,24 +545,6 @@ await test("landing composer matches conversation summaries and geometry without
           "#footer-model .model-name",
           "#footer-model .model-effort",
         ]) {
-          const geometry = (node: Element) => {
-            const bounds = node.getBoundingClientRect();
-            const style = getComputedStyle(node);
-            return {
-              x: bounds.x,
-              width: bounds.width,
-              height: bounds.height,
-              padding: style.padding,
-              font: {
-                family: style.fontFamily,
-                size: style.fontSize,
-                weight: style.fontWeight,
-                lineHeight: style.lineHeight,
-              },
-              background: style.backgroundColor,
-              borderRadius: style.borderRadius,
-            };
-          };
           const actual = await page
             .locator(
               selector === "#submit"
@@ -635,12 +641,14 @@ await test("landing composer matches conversation summaries and geometry without
             assert.equal(await detail.locator(":scope > .footer-dot").count(), 1);
             assert.equal(await detail.locator(".session-environment + .model-summary").count(), 1);
             const bounds = await detail.boundingBox();
-            const environment = detail.locator(".session-environment");
-            const environmentBounds = await environment.boundingBox();
+            const environmentSelect = detail.locator(".session-environment");
+            const environmentBounds = await environmentSelect.boundingBox();
             assert(bounds && environmentBounds);
             assert(environmentBounds.width <= bounds.width / 2);
             if (width <= 390)
-              assert(await environment.evaluate((node) => node.scrollWidth > node.clientWidth));
+              assert(
+                await environmentSelect.evaluate((node) => node.scrollWidth > node.clientWidth),
+              );
           }
         }
         assert.equal(await directory.evaluate((node) => getComputedStyle(node).textAlign), "right");
@@ -693,9 +701,9 @@ await test("landing composer matches conversation summaries and geometry without
         // The metadata starts at the same offset below the shared compose box.
         const offset = async (view: typeof page) =>
           view.evaluate(() => {
-            const box = document.querySelector(".compose-box")!.getBoundingClientRect();
-            const model = document.querySelector("#footer-model")!.getBoundingClientRect();
-            return model.y - box.bottom;
+            const composeBounds = document.querySelector(".compose-box")!.getBoundingClientRect();
+            const candidateModel = document.querySelector("#footer-model")!.getBoundingClientRect();
+            return candidateModel.y - composeBounds.bottom;
           });
         assert.equal(await offset(page), await offset(conversation));
         assert.equal(
@@ -799,11 +807,12 @@ await test("the landing creates, reopens and archives sessions", async (t) => {
   assert.equal(await page.locator("#session-list a").count(), 5);
   const catalog = await f.sessions.catalog();
   assert.deepEqual(
-    await page
-      .locator("#session-list a")
-      .evaluateAll((nodes) =>
-        nodes.map((node) => new URL((node as HTMLAnchorElement).href).pathname.split("/")[2]),
-      ),
+    await page.locator("#session-list a").evaluateAll((nodes) =>
+      nodes.map((node) => {
+        if (!(node instanceof HTMLAnchorElement)) throw new Error("Expected a link");
+        return new URL(node.href).pathname.split("/")[2];
+      }),
+    ),
     catalog.sessions.slice(0, 5).map((item) => item.id),
   );
   assert.equal(await page.locator("#session-filter, #picker").count(), 0);
@@ -841,7 +850,7 @@ await test("the landing creates, reopens and archives sessions", async (t) => {
   await page
     .locator('#settings form[data-autosave] input[name="hideThinkingBlock"][value="true"]')
     .check();
-  await waitFor(async () => settings.read().values.hideThinkingBlock === true);
+  await waitFor(async () => settings.read().values.hideThinkingBlock);
   await page.getByRole("link", { name: "Sessions", exact: true }).click();
   await page.locator("#landing").waitFor();
   await page.getByRole("link", { name: "Global settings", exact: true }).click();

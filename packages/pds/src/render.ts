@@ -61,7 +61,7 @@ export function thinking(
 ): string {
   const model = app.models.getModels().find((candidate) => modelKey(candidate) === key);
   const levels: A.ModelThinkingLevel[] = model ? getSupportedThinkingLevels(model) : ["off"];
-  const level = levels.find((level) => level === selected) ?? levels[0] ?? "off";
+  const level = levels.find((candidateLevel) => candidateLevel === selected) ?? levels[0] ?? "off";
   return picker(
     "thinking",
     "Thinking",
@@ -104,8 +104,8 @@ async function selections(app: Menu, prefix: string, conversation?: D.Conversati
   const model = picker(
     "model",
     "Model",
-    `<select name="model" id="model" aria-label="Model" required data-on:change="${updateLabel}; ${conversation ? "el.form.requestSubmit()" : `@post(${js(`${prefix}/thinking`)}, {contentType: 'form', retry: 'never'})`}">${selectedModel ? "" : '<option value="" selected disabled>No model</option>'}${models.map((model) => option(modelKey(model), model.id, selectedModel)).join("")}</select>`,
-    models.find((model) => modelKey(model) === selectedModel)?.id ?? "No model",
+    `<select name="model" id="model" aria-label="Model" required data-on:change="${updateLabel}; ${conversation ? "el.form.requestSubmit()" : `@post(${js(`${prefix}/thinking`)}, {contentType: 'form', retry: 'never'})`}">${selectedModel ? "" : '<option value="" selected disabled>No model</option>'}${models.map((candidateModel) => option(modelKey(candidateModel), candidateModel.id, selectedModel)).join("")}</select>`,
+    models.find((candidateModel) => modelKey(candidateModel) === selectedModel)?.id ?? "No model",
   );
   return {
     environment,
@@ -242,7 +242,7 @@ function toolStatus(state: string): string {
   return `<span class="tool-status" data-state="${state}" role="img" aria-label="${state}">${state === "running" ? "<span></span><span></span><span></span><span></span>" : state === "failed" ? "×" : state === "completed" ? "✓" : "·"}</span>`;
 }
 
-function content(message: A.Message, tools: Tools = new Map()): string {
+function content(message: A.Message, toolResults: Tools = new Map()): string {
   if (typeof message.content === "string") return markdown.render(message.content);
   return message.content
     .map((part) => {
@@ -256,7 +256,9 @@ function content(message: A.Message, tools: Tools = new Map()): string {
             ? `<img class="transcript-image" alt="Attached image" src="data:${escape(part.mimeType)};base64,${escape(part.data)}">`
             : "<p>Unsupported image format</p>";
         case "toolCall":
-          return tool(part, tools.get(part.id));
+          return tool(part, toolResults.get(part.id));
+        default:
+          throw new Error("Unsupported message content", { cause: part satisfies never });
       }
     })
     .join("");
@@ -276,18 +278,18 @@ function tools(
   view: Pick<D.ConversationView, "entries" | "docs">,
   previous = new Map<string, A.ToolCall>(),
 ): Tools {
-  const live = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
+  const liveState = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
   const result: Tools = new Map(
-    (live.tools ?? []).map((tool) => [
-      tool.callId,
+    (liveState.tools ?? []).map((toolCall) => [
+      toolCall.callId,
       {
-        state: tool.status === "done" ? "completed" : "running",
-        output: tool.output ?? "",
+        state: toolCall.status === "done" ? "completed" : "running",
+        output: toolCall.output ?? "",
       },
     ]),
   );
-  for (const entry of view.entries)
-    for (const message of entry.model ?? []) {
+  for (const candidateEntry of view.entries)
+    for (const message of candidateEntry.model ?? []) {
       if (message.role === "toolResult")
         result.set(message.toolCallId, {
           state: message.isError ? "failed" : "completed",
@@ -307,9 +309,9 @@ function calls(
   previous = new Map<string, A.ToolCall>(),
   prune = true,
 ): Map<string, A.ToolCall> {
-  const live = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
-  const active = new Set(live.tools?.map((slot) => slot.callId));
-  const result = new Map([...previous].filter(([id]) => !prune || active.has(id)));
+  const liveState = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
+  const activeCalls = new Set(liveState.tools?.map((slot) => slot.callId));
+  const result = new Map([...previous].filter(([id]) => !prune || activeCalls.has(id)));
   for (const record of view.entries)
     for (const message of record.model ?? []) {
       if (message.role !== "assistant") continue;
@@ -362,12 +364,12 @@ function live(view: D.ConversationView): string {
 }
 
 function status(view: D.ConversationView): string {
-  const live = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
-  const state = live.compactions?.length ? "compacting" : live.run ? "working" : "idle";
+  const liveState = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
+  const state = liveState.compactions?.length ? "compacting" : liveState.run ? "working" : "idle";
   return `<div id="status" class="sr-only" role="status" data-state="${state}">${state}</div>
-    <div id="activity" role="status">${live.compactions?.length ? "Compacting…" : live.generation?.retry ? `Retrying: ${escape(live.generation.retry.error)}` : ""}</div>
-    <div id="run-controls">${live.run || live.compactions?.length ? `<button id="stop" class="icon" type="submit" form="abort-command" aria-label="Stop" title="Stop">${icon("close")}</button>` : ""}</div>
-    <div id="failures">${live.runFailure ? `<p class="error" role="alert">${escape(live.runFailure.reason)}: ${escape(live.runFailure.detail ?? "")}</p>` : ""}${live.compactionFailure ? `<p class="error" role="alert">Compaction failed: ${escape(live.compactionFailure.error)}</p>` : ""}</div>`;
+    <div id="activity" role="status">${liveState.compactions?.length ? "Compacting…" : liveState.generation?.retry ? `Retrying: ${escape(liveState.generation.retry.error)}` : ""}</div>
+    <div id="run-controls">${liveState.run || liveState.compactions?.length ? `<button id="stop" class="icon" type="submit" form="abort-command" aria-label="Stop" title="Stop">${icon("close")}</button>` : ""}</div>
+    <div id="failures">${liveState.runFailure ? `<p class="error" role="alert">${escape(liveState.runFailure.reason)}: ${escape(liveState.runFailure.detail ?? "")}</p>` : ""}${liveState.compactionFailure ? `<p class="error" role="alert">Compaction failed: ${escape(liveState.compactionFailure.error)}</p>` : ""}</div>`;
 }
 
 function queue(view: D.ConversationView): string {
@@ -386,6 +388,9 @@ function toolUpdates(
 }
 
 export const regions = { baseline, entry, tools, calls, live, status, queue, toolUpdates, history };
+
+const format = (value: number) =>
+  value >= 1000 ? `${Number((value / 1000).toFixed(1))}k` : String(value);
 
 export async function metadata(
   app: Session,
@@ -406,10 +411,9 @@ export async function metadata(
     }),
     { input: 0, output: 0, read: 0, write: 0, cost: 0 },
   );
-  const format = (value: number) =>
-    value >= 1000 ? `${Number((value / 1000).toFixed(1))}k` : String(value);
+
   const last = view?.entries
-    .flatMap((entry) => entry.model ?? [])
+    .flatMap((candidateEntry) => candidateEntry.model ?? [])
     .findLast((message) => message.role === "assistant");
   const model = agent.model && app.models.getModel(agent.model.provider, agent.model.modelId);
   const window = model?.contextWindow;
@@ -425,7 +429,7 @@ export async function metadata(
 
 export function loginPage(view: LoginView, prefix: string, notice = ""): string {
   const address = `${prefix}/login`;
-  const status = `${address}/status?${new URLSearchParams({ provider: view.selected?.id ?? "" })}`;
+  const statusURL = `${address}/status?${new URLSearchParams({ provider: view.selected?.id ?? "" })}`;
   return page(
     "Model login",
     `
@@ -436,7 +440,7 @@ export function loginPage(view: LoginView, prefix: string, notice = ""): string 
       </form>
       <p>Login attempts expire after 15 minutes, or earlier when the provider expires them. Reloading or opening another tab continues the same attempt.</p>
       <p>Loopback browser callbacks run on the server, not this browser's computer. Use a device-code or manual-code option when the provider offers one.</p>
-      <div${view.selected ? ` data-on-interval__duration.1s="@get(${js(status)}, {retry: 'never'})"` : ""}>${loginPanel(view, prefix)}</div>
+      <div${view.selected ? ` data-on-interval__duration.1s="@get(${js(statusURL)}, {retry: 'never'})"` : ""}>${loginPanel(view, prefix)}</div>
     </section></main>`,
     "login",
     prefix,
@@ -453,7 +457,7 @@ export function loginPanel(view: LoginView, prefix: string): string {
     </form>`;
   const attempt = selected.attempt;
   const busy = (attempt && active(attempt)) || selected.logout === "pending";
-  const status = selected.unavailable
+  const loginStatus = selected.unavailable
     ? '<p id="login-storage" role="alert" data-state="unavailable">Credential status is unavailable. Check storage before trying again.</p>'
     : `<p id="login-storage" data-state="${selected.stored ?? "absent"}">Stored login: ${selected.stored === "oauth" ? "OAuth" : selected.stored === "api_key" ? "API key" : "None"}.</p>
        <p id="login-authorization" data-authorized="${selected.authorized}">${selected.authorized ? (selected.stored ? "Authorization is available." : "Authorization is available without a stored login (ambient configuration).") : "Authorization is not configured."}</p>`;
@@ -472,8 +476,8 @@ export function loginPanel(view: LoginView, prefix: string): string {
       ? `<select id="login-answer-${prompt.id}" name="answer" required>${prompt.request.options.map(({ id, label, description }) => option(id, description ? `${label} — ${description}` : label, "")).join("")}</select>`
       : `<input id="login-answer-${prompt.id}" name="answer" type="${prompt.request.type === "text" ? "text" : "password"}" autocomplete="off" spellcheck="false" placeholder="${escape(prompt.request.placeholder ?? "")}">`);
   return `<section id="login-panel" aria-label="${escape(selected.name)}">
-    <h2>${escape(selected.name)}</h2>${status}
-    ${form("start", `<label for="login-method">Login method</label><select id="login-method" name="method" required${busy ? " disabled" : ""}>${selected.methods.map(({ type, name }) => option(type, name, "")).join("")}</select>`, selected.stored ? "Replace login" : "Log in", "login-start", !!busy || !selected.methods.length)}
+    <h2>${escape(selected.name)}</h2>${loginStatus}
+    ${form("start", `<label for="login-method">Login method</label><select id="login-method" name="method" required${busy ? " disabled" : ""}>${selected.methods.map(({ type, name }) => option(type, name, "")).join("")}</select>`, selected.stored ? "Replace login" : "Log in", "login-start", busy || !selected.methods.length)}
     ${
       attempt
         ? `<section id="login-attempt" data-attempt="${attempt.id}" data-state="${attempt.state}">
@@ -490,17 +494,18 @@ export function loginPanel(view: LoginView, prefix: string): string {
   </section>`;
 }
 
+const link = (url: string, label: string) => {
+  try {
+    const target = new URL(url);
+    if (["http:", "https:"].includes(target.protocol) && !target.username && !target.password)
+      return `<a href="${escape(target.href)}" target="_blank" rel="noopener noreferrer">${escape(label)}</a>`;
+  } catch {
+    /* Invalid upstream links are inert. */
+  }
+  return "<span>Provider link unavailable.</span>";
+};
+
 function loginEvent(event: A.AuthEvent): string {
-  const link = (url: string, label: string) => {
-    try {
-      const target = new URL(url);
-      if (["http:", "https:"].includes(target.protocol) && !target.username && !target.password)
-        return `<a href="${escape(target.href)}" target="_blank" rel="noopener noreferrer">${escape(label)}</a>`;
-    } catch {
-      /* Invalid upstream links are inert. */
-    }
-    return "<span>Provider link unavailable.</span>";
-  };
   switch (event.type) {
     case "info":
       return `<p>${escape(event.message)}</p>${event.links?.map((item) => link(item.url, item.label ?? "Open provider page")).join(" ") ?? ""}`;
@@ -510,5 +515,7 @@ function loginEvent(event: A.AuthEvent): string {
       return `<p>Device code: <code id="login-device-code">${escape(event.userCode)}</code></p>${link(event.verificationUri, "Open device verification")}`;
     case "progress":
       return `<p role="status">${escape(event.message)}</p>`;
+    default:
+      throw new Error("Unsupported login event", { cause: event satisfies never });
   }
 }

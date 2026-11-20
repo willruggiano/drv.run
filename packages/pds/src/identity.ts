@@ -43,14 +43,15 @@ export type SessionKey = string & { readonly [sessionBrand]: "key" };
 export const SessionId = Type.Unsafe<SessionId>(
   Type.Refine(
     Type.String({ minLength: 1 }),
-    (id) =>
-      id.isWellFormed() &&
-      Buffer.byteLength(id) <= 128 &&
-      ![...id].some(
-        (character) => character.codePointAt(0)! < 32 || character.codePointAt(0) === 127,
-      ) &&
-      id !== "." &&
-      id !== "..",
+    (id) => {
+      if (!id.isWellFormed() || Buffer.byteLength(id) > 128 || id === "." || id === "..")
+        return false;
+      for (const character of id) {
+        const code = character.codePointAt(0)!;
+        if (code < 32 || code === 127) return false;
+      }
+      return true;
+    },
     () => "Session IDs must be 1–128 UTF-8 bytes without control characters or URL dot segments.",
   ),
 );

@@ -25,8 +25,8 @@ const call = (name: string, args: JsonObject) =>
 
 await test("HTTP review commands select conversations without submitting slash text to the model", async (t) => {
   for (const fork of [false, true])
-    await t.test(fork ? "branch" : "root", async (t) => {
-      const f = await fixture(t);
+    await t.test(fork ? "branch" : "root", async (subtest) => {
+      const f = await fixture(subtest);
       const session = await f.create();
       f.faux.setResponses([fauxAssistantMessage("Implemented.")]);
       await (
@@ -37,7 +37,7 @@ await test("HTTP review commands select conversations without submitting slash t
         ? await session.root.fork(at.id, { ownership: { kind: "ownerless" } }, context)
         : session.root;
       const before = await readHistory(original);
-      const base = await serve(t, f.sessions);
+      const base = await serve(subtest, f.sessions);
       const resource = `${base}/sessions/${session.id}/conversations`;
       const submit = (id: number, operation: string) => command(`${resource}/${id}`, operation);
       assert.equal((await submit(original.id, "endreview")).status, 409);
@@ -91,8 +91,8 @@ await test("HTTP review scopes compose the review input and retries preserve the
       "changes against main\nwith emphasis on cancellation",
     ],
   ]) {
-    await t.test(JSON.stringify(input), async (t) => {
-      const f = await fixture(t);
+    await t.test(JSON.stringify(input), async (subtest) => {
+      const f = await fixture(subtest);
       const session = await f.create();
       f.faux.setResponses([
         ({ messages }) => {
@@ -106,7 +106,7 @@ await test("HTTP review scopes compose the review input and retries preserve the
           return fauxAssistantMessage("No findings.");
         },
       ]);
-      const base = await serve(t, f.sessions);
+      const base = await serve(subtest, f.sessions);
       const url = base + conversationURL(session);
       const response = await command(url, "review", { argument: input });
       assert.equal(response.status, 200);
@@ -165,7 +165,9 @@ await test("review guidelines use the selected cwd and appear only in review con
 
   // Rendering uses the execution environment on every request, not a cached server-side read.
   const agent = await review.agent(context);
-  const section = agent.sections.find((section) => section.key === "review-guidelines");
+  const section = agent.sections.find(
+    (candidateSection) => candidateSection.key === "review-guidelines",
+  );
   assert(section);
   const env = await f.options.env({ conversationId: id, cwd, read: session.harness }, context);
   const input = { conversationId: id, agent, env, read: session.harness, shown: {} };
@@ -247,8 +249,8 @@ await test("review inherits current settings and environment without widening to
   ] satisfies AgentChange["tools"][]) {
     await t.test(
       Array.isArray(tools) ? "allowlist" : tools ? "denylist" : "defaults",
-      async (t) => {
-        const f = await fixture(t);
+      async (subtest) => {
+        const f = await fixture(subtest);
         const session = await f.create();
         await session.root.configure(
           {
@@ -401,8 +403,8 @@ await test("review writes and edits only REVIEW.md; ordinary conversations retai
 
 await test("explicit extension selections cannot omit the review hook or wrappers", async (t) => {
   for (const mode of ["allowlist", "remove"] as const)
-    await t.test(mode, async (t) => {
-      const f = await fixture(t);
+    await t.test(mode, async (subtest) => {
+      const f = await fixture(subtest);
       const session = await f.create();
       const extensions = (await session.root.agent(context)).extensions;
       await session.root.configure(

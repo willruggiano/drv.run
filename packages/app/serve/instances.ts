@@ -63,7 +63,7 @@ export async function listInstances(options: Options, signal?: AbortSignal): Pro
     )
   )
     .filter((item): item is Instance => item !== undefined)
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .toSorted((a, b) => a.id.localeCompare(b.id));
 }
 
 export function ownerOptions(): Options {

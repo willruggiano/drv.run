@@ -70,12 +70,12 @@ class TreeExplorer extends HTMLElement {
       this.innerHTML = `<main id="main-area"><section id="tree-view" class="pane" aria-label="Tree"><div id="tree-rows"></div><p id="tree-empty" hidden>No matches.</p></section></main><footer id="app-footer" class="composer-area"><div class="composer-shell"><div class="compose-box"><form id="tree-composer"><textarea id="prompt" rows="2" tabindex="1" autocomplete="off" aria-label="Search tree"></textarea></form><div class="actions"><a id="tree-close" class="icon" data-return aria-label="Close tree" title="Close tree"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"></path></svg></a><select id="tree-filter" class="submission-mode" aria-label="Entry filter"><option value="all">All entries</option><option value="no-tools">No tools</option><option value="user-only">User only</option></select><output id="tree-count" aria-live="polite"></output><span class="spacer"></span><button id="tree-prev" class="icon" type="button" aria-label="Previous entry">↑</button><button id="tree-next" class="icon" type="button" aria-label="Next entry">↓</button></div></div></div><a id="tree-sessions" data-command="sessions" hidden></a><p id="tree-error" role="alert" hidden>Tree unavailable. Close and reopen to retry.</p></footer>`;
       this.node("prompt").addEventListener("input", () => this.render());
       this.node("tree-filter").addEventListener("change", () => this.render());
-      this.node("tree-prev").onclick = () => this.move(-1);
-      this.node("tree-next").onclick = () => this.move(1);
-      this.node("tree-composer").onsubmit = (event) => {
+      this.node("tree-prev").addEventListener("click", () => this.move(-1));
+      this.node("tree-next").addEventListener("click", () => this.move(1));
+      this.node("tree-composer").addEventListener("submit", (event) => {
         event.preventDefault();
         event.stopPropagation();
-      };
+      });
       this.addEventListener("keydown", (event) => {
         if (event.isComposing || event.defaultPrevented) return;
         if (event.key === "Escape") {
@@ -221,7 +221,7 @@ class TreeExplorer extends HTMLElement {
         const li = element("li", "");
         const row = element("div", "branch-row");
         const link = element("a", "");
-        link.href = node.path ?? this.data!.path;
+        link.href = node.path ?? this.data.path;
         link.dataset.id = String(node.id);
         link.dataset.parent = String(parent ?? "");
         link.setAttribute("aria-current", String(node.current));
@@ -257,7 +257,7 @@ class TreeExplorer extends HTMLElement {
                 }),
           ),
         );
-        link.onfocus = () => this.select(node.id);
+        link.addEventListener("focus", () => this.select(node.id));
         row.append(link);
         li.append(row);
         list.append(li);
@@ -302,7 +302,7 @@ class TreeExplorer extends HTMLElement {
           row.append(element("span", "current-tag", "latest"));
         }
         row.title = node.text;
-        row.onclick = () => this.select(node.id);
+        row.addEventListener("click", () => this.select(node.id));
         list.append(row);
       }
       append(node.id, next, count > 1 ? [...rails, !last] : rails);

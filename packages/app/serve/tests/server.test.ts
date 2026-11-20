@@ -7,7 +7,6 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -91,7 +90,7 @@ await test("CLI harness preserves startup and assertion failures while reaping c
     "assertion",
     "shutdown",
   ] as const) {
-    await t.test(scenario, async (t) => {
+    await t.test(scenario, async (subtest) => {
       const child = spawn(
         process.execPath,
         [
@@ -124,7 +123,7 @@ await test("CLI harness preserves startup and assertion failures while reaping c
         ],
         { stdio: ["ignore", "ignore", "pipe", "ipc"] },
       );
-      t.after(() => {
+      subtest.after(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       });
       const [port] = await once(child, "message");
@@ -219,8 +218,8 @@ await test("HTTP disconnect does not abort work; reconnect includes history and 
       const selected = await conversation(...args);
       if (selected) {
         const watch = selected.watch.bind(selected);
-        t.mock.method(selected, "watch", async (context: Context) => {
-          const result = await watch(context);
+        t.mock.method(selected, "watch", async (ctx: Context) => {
+          const result = await watch(ctx);
           views.push(result);
           return result;
         });
@@ -280,10 +279,10 @@ await test("HTML HTTP validates origins, IDs, methods, malformed forms and reque
     ).status,
     403,
   );
-  const rebinding = await new Promise<number | undefined>((resolve, reject) => {
+  const rebinding = await new Promise<number | undefined>((fulfill, reject) => {
     const req = request(base + "/", { headers: { Host: "untrusted.example" } }, (response) => {
       response.resume();
-      resolve(response.statusCode);
+      fulfill(response.statusCode);
     });
     req.once("error", reject);
     req.end();
@@ -346,10 +345,10 @@ await test("wildcard binding accepts each destination but rejects spoofed hosts 
       `${address}:1`,
       `${address === "127.0.0.1" ? "127.0.0.2" : "127.0.0.1"}:${port}`,
     ]) {
-      const code = await new Promise<number | undefined>((resolve, reject) => {
+      const code = await new Promise<number | undefined>((fulfill, reject) => {
         const req = request(url, { headers: { Host: host } }, (response) => {
           response.resume();
-          resolve(response.statusCode);
+          fulfill(response.statusCode);
         });
         req.once("error", reject);
         req.end();
@@ -450,15 +449,15 @@ await test("renderer benchmark validates options and builds deterministic paired
     ["unexpected"],
   ])
     assert.throws(() => benchmarkOptions(args));
-  const fixture = benchmarkFixture(2);
-  assert.deepEqual(fixture, benchmarkFixture(2));
+  const renderFixture = benchmarkFixture(2);
+  assert.deepEqual(renderFixture, benchmarkFixture(2));
   assert.deepEqual(
-    fixture.view.entries.map((entry) => entry.id),
+    renderFixture.view.entries.map((entry) => entry.id),
     [1, 2, 3, 4, 5, 6],
   );
   for (let i = 0; i < 2; i++) {
-    const assistant = fixture.view.entries[3 * i + 1].model?.[0];
-    const result = fixture.view.entries[3 * i + 2].model?.[0];
+    const assistant = renderFixture.view.entries[3 * i + 1].model?.[0];
+    const result = renderFixture.view.entries[3 * i + 2].model?.[0];
     assert(assistant?.role === "assistant");
     assert(result?.role === "toolResult");
     const call = assistant.content.find((block) => block.type === "toolCall");
@@ -643,7 +642,7 @@ await test("external origin validates preserved Host and browser Origin without 
   const base = await serve(t, f.sessions, undefined, "127.0.0.1", undefined, origin);
   const data = { content: "Through HTTPS", requestId: randomUUID(), whenBusy: "reject" };
   const send = (headers: Record<string, string>, submit = false) =>
-    new Promise<number | undefined>((resolve, reject) => {
+    new Promise<number | undefined>((fulfill, reject) => {
       const req = request(
         base + path + (submit ? "/command" : ""),
         {
@@ -652,7 +651,7 @@ await test("external origin validates preserved Host and browser Origin without 
         },
         (response) => {
           response.resume();
-          resolve(response.statusCode);
+          fulfill(response.statusCode);
         },
       );
       req.once("error", reject);
@@ -703,10 +702,10 @@ await test("forwarded headers cannot bypass origin checks", async (t) => {
   const f = await fixture(t);
   const base = await serve(t, f.sessions);
   const status = (headers: Record<string, string>) =>
-    new Promise<number | undefined>((resolve, reject) => {
+    new Promise<number | undefined>((fulfill, reject) => {
       const req = request(base + "/", { headers }, (response) => {
         response.resume();
-        resolve(response.statusCode);
+        fulfill(response.statusCode);
       });
       req.once("error", reject);
       req.end();
@@ -738,13 +737,13 @@ await test(
     env.openDirReader = async () => ({
       ok: true,
       value: {
-        async next(_limit, context) {
-          entered.resolve(context);
-          await awaitWithContext(release.promise, context);
+        async next(_limit, ctx) {
+          entered.resolve(ctx);
+          await awaitWithContext(release.promise, ctx);
           return { ok: true, value: { entries: [], done: true } };
         },
-        async close(context) {
-          finished.resolve(context);
+        async close(ctx) {
+          finished.resolve(ctx);
         },
       },
     });
@@ -1001,7 +1000,9 @@ await test("queued compaction duration resolves its submission, including after 
   );
   release.resolve();
   await session.root.waitForIdle(context);
-  const entry = (await readHistory(session.root)).find((entry) => entry.kind === "pi.compaction");
+  const entry = (await readHistory(session.root)).find(
+    (candidateEntry) => candidateEntry.kind === "pi.compaction",
+  );
   assert(entry);
   assert.notEqual(entry.byTaskId, taskId);
   const task = await session.harness.getTask(taskId, context);
@@ -1083,14 +1084,16 @@ await test("Durable scans preserve filters, pages, and cursor ordering defaults"
 
 await test("server registers built-in models from environment credentials without a local execution target", async (t) => {
   for (const host of [undefined, "127.0.0.2"]) {
-    await t.test(host ?? "default host", async (t) => {
+    await t.test(host ?? "default host", async (subtest) => {
       const directory = await mkdtemp(join(tmpdir(), "serve-startup-"));
-      t.after(() => rm(directory, { recursive: true, force: true }));
+      subtest.after(() => rm(directory, { recursive: true, force: true }));
       const address = host ?? "127.0.0.1";
       const reservation = createServer();
-      await new Promise<void>((resolve) => reservation.listen(0, address, resolve));
-      const port = (reservation.address() as AddressInfo).port;
-      await new Promise<void>((resolve) => reservation.close(() => resolve()));
+      await new Promise<void>((fulfill) => reservation.listen(0, address, fulfill));
+      const listeningAddress = reservation.address();
+      assert(listeningAddress && typeof listeningAddress !== "string");
+      const port = listeningAddress.port;
+      await new Promise<void>((fulfill) => reservation.close(() => fulfill()));
       const child = spawn(
         process.execPath,
         [

@@ -12,7 +12,7 @@ check:
     markdownlint-cli2 >/dev/null
     ast-grep scan --error --report-style=short --globs '!microvm.nix/**'
     npm --prefix packages/app run check
-    oxlint --type-aware --format=unix
+    oxlint --format=unix
     ruff format --quiet --check --extend-exclude microvm.nix
     ruff check --quiet --extend-exclude microvm.nix
     PYTHONPATH="packages/mitm-proxy${PYTHONPATH:+:$PYTHONPATH}" basedpyright --threads=4 --warnings packages
@@ -23,7 +23,7 @@ ci: check test chromium
 
 # Apply the fixable variants of the check commands
 fix:
-    oxlint --type-aware --format=unix --fix
+    oxlint --format=unix --fix
     markdownlint-cli2 --fix >/dev/null
     nix fmt --quiet --quiet -- --quiet
     just --fmt

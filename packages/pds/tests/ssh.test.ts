@@ -176,9 +176,9 @@ Host *
     for (const host of ["user-trust", "global-trust"]) {
       await t.test(
         `${host}: configured route, user, identity and trust reach the packaged daemon`,
-        async (t) => {
+        async (subtest) => {
           const env = new SshExecutionEnv({ target: { host }, cwd: remote });
-          t.after(() => env.cleanup(context));
+          subtest.after(() => env.cleanup(context));
           const result = await env.exec(["touch", host], {}, context);
           assert(result.ok, result.ok ? undefined : result.error);
           assert.equal(result.value.exitCode, 0);
@@ -192,13 +192,13 @@ Host *
       );
     }
 
-    await t.test("empty trust overrides defer to native OpenSSH configuration", async (t) => {
+    await t.test("empty trust overrides defer to native OpenSSH configuration", async (subtest) => {
       const { connection } = await connectSsh({
         host: "global-trust",
         knownHostsFile: "",
         hostKeyAlias: "",
       });
-      t.after(() => connection.close());
+      subtest.after(() => connection.close());
       assert.equal((await connection.info()).home, remote);
       connection.close();
       await Promise.all(exits);
@@ -208,7 +208,7 @@ Host *
     for (const host of ["unknown", "changed"]) {
       await t.test(
         `${host}: strict verification overrides permissive config without prompts or execution`,
-        async (t) => {
+        async (subtest) => {
           const path = join(directory, `${host}_hosts`);
           const before = await readFile(path);
           await assert.rejects(
@@ -216,7 +216,7 @@ Host *
             host === "unknown" ? HostKeyUnknownError : HostKeyChangedError,
           );
           const env = new SshExecutionEnv({ target: { host }, cwd: remote });
-          t.after(() => env.cleanup(context));
+          subtest.after(() => env.cleanup(context));
           await assert.rejects(
             env.connection.info(),
             (error: unknown) => error instanceof RemoteError && error.code === "spawn_error",
@@ -242,8 +242,8 @@ Host *
 
     await t.test(
       "application persists only the host, reacquires SSH after reopen, and closes owned connections",
-      async (t) => {
-        const { sessions, faux, selection, environments, open } = await sessionsFixture(t);
+      async (subtest) => {
+        const { sessions, faux, selection, environments, open } = await sessionsFixture(subtest);
         // Extra object properties must not become persisted policy or execution overrides.
         const target = {
           host: "global-trust",

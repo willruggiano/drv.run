@@ -144,9 +144,7 @@ export class ModelAuth {
         notify: (event) => {
           if (controller.signal.aborted || attempt.view.state !== "pending") return;
           // Keep instructions/links, but not an accumulating progress log.
-          attempt.view.events = attempt.view.events.filter(
-            (previous) => previous.type !== "progress",
-          );
+          attempt.view.events = attempt.view.events.filter((item) => item.type !== "progress");
           attempt.view.events.push(event);
           if (event.type === "device_code" && event.expiresInSeconds !== undefined) {
             assert(Number.isFinite(event.expiresInSeconds) && event.expiresInSeconds >= 0);

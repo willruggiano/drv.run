@@ -133,6 +133,8 @@ function prefix(op: Delta.Op): Delta.Op {
       return ["m", path, op[2]];
     case "p":
       return ["p", path, op[2], op[3], op[4]];
+    default:
+      throw new Error("Unsupported delta operation", { cause: op satisfies never });
   }
 }
 
