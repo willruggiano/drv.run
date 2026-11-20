@@ -49,20 +49,9 @@ export async function discoverEnvironments(directory: string): Promise<Environme
     if (!entry.isDirectory() || !/^[A-Za-z0-9]+$/.test(entry.name)) continue;
     const path = join(directory, "drv.run", entry.name);
     const host = `drv.run.${entry.name}`;
-    const target = {
-      host,
-      user: "root",
-      identityFile: join(path, "id_ed25519"),
-      knownHostsFile: join(path, "known_hosts"),
-      configFile: "/etc/ssh/ssh_config",
-      hostKeyAlias: host,
-    };
+    const target = { host };
     try {
-      await Promise.all(
-        [target.identityFile, target.knownHostsFile, join(path, "ssh_config")].map((file) =>
-          access(file),
-        ),
-      );
+      await access(join(path, "ssh_config"));
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
       throw error;
@@ -201,7 +190,7 @@ async function openSession(options: {
         });
         if (environment) {
           const draft = await tx.doc(Env, conversation.id);
-          if (environment.target) draft.env = { type: "ssh", ...environment.target };
+          if (environment.target) draft.env = { type: "ssh", host: environment.target.host };
           else draft.env = { type: "local" };
         }
       }, context);
@@ -562,7 +551,7 @@ async function initialize(tx: D.Tx, id: D.ConversationId, environment?: Environm
   await tx.doc(ConversationMetadata, id);
   if (environment) {
     const draft = await tx.doc(Env, id);
-    if (environment.target) draft.env = { type: "ssh", ...environment.target };
+    if (environment.target) draft.env = { type: "ssh", host: environment.target.host };
     else draft.env = { type: "local" };
   }
 }

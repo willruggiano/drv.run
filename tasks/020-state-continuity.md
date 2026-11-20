@@ -10,8 +10,8 @@
 ## Question
 
 For each existing state category, is the requirement continued use, an archive,
-explicitly approved disposal, or regeneration/re-enrollment? What interruption is
-acceptable during the eventual rock5b cutover?
+explicitly approved disposal, or regeneration/re-enrollment? What interruption
+is acceptable during the eventual rock5b cutover?
 
 Distinguish:
 
@@ -26,8 +26,9 @@ Distinguish:
   and queued delivery.
 
 Specify the preservation obligation, not a migration algorithm. No live state
-inspection, secret disclosure, or destructive action is authorized by this ticket.
-A no-backwards-compatibility policy does not answer the data-retention question.
+inspection, secret disclosure, or destructive action is authorized by this
+ticket. A no-backwards-compatibility policy does not answer the data-retention
+question.
 
 ## Evidence
 
@@ -52,13 +53,13 @@ separation of deployment inputs from disposable state.
   them unless rotation or replacement is explicitly chosen. No additional secret
   backup, migration, or rotation tooling is required.
 - No application state needs retention or archives, including current PDS
-  conversations, old app/www conversations, and application settings. Do not build
-  importers or preserve legacy stores for compatibility.
-- Fresh OAuth enrollment during cutover is acceptable; credential-store migration
-  is not required.
-- Device re-registration, including reinstalling the standalone PWA if necessary,
-  is acceptable. Old notification history and pending alerts need not survive the
-  maintenance boundary.
+  conversations, old app/www conversations, and application settings. Do not
+  build importers or preserve legacy stores for compatibility.
+- Fresh OAuth enrollment during cutover is acceptable; credential-store
+  migration is not required.
+- Device re-registration, including reinstalling the standalone PWA if
+  necessary, is acceptable. Old notification history and pending alerts need not
+  survive the maintenance boundary.
 - Infrastructure state is disposable. Existing guest disks/workspaces, instance
   identities, and generated runtime/seed material impose no preservation or
   migration requirement on this cleanup.

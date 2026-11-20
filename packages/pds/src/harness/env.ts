@@ -3,7 +3,7 @@ import { defineDoc } from "@earendil-works/pi-durable";
 import { RemoteExecutionEnv, sshArguments, sshConnection } from "@earendil-works/pi-env";
 import type * as E from "@earendil-works/pi-env";
 
-export type EnvTarget = { type: "local" } | ({ type: "ssh" } & Omit<E.SshTarget, "ssh">);
+export type EnvTarget = { type: "local" } | ({ type: "ssh" } & Pick<E.SshTarget, "host">);
 
 export const Env = defineDoc<{ env?: EnvTarget }>({
   kind: "app.env",
@@ -18,22 +18,12 @@ export const Env = defineDoc<{ env?: EnvTarget }>({
 /** One lazy SSH connection. The application owns cleanup, not document writes. */
 export class SshExecutionEnv extends RemoteExecutionEnv {
   constructor(options: {
-    target: Omit<E.SshTarget, "ssh">;
+    target: Pick<E.SshTarget, "host">;
     cwd: string;
     connect?: typeof sshConnection;
   }) {
-    // Project explicitly: executable/daemon options must not enter through extra properties.
-    const { host, user, port, identityFile, knownHostsFile, hostKeyAlias, configFile } =
-      options.target;
-    const target = {
-      host,
-      knownHostsFile,
-      hostKeyAlias,
-      ...(user === undefined ? {} : { user }),
-      ...(port === undefined ? {} : { port }),
-      ...(identityFile === undefined ? {} : { identityFile }),
-      ...(configFile === undefined ? {} : { configFile }),
-    };
+    // Connection policy belongs to OpenSSH configuration, never application input.
+    const target = { host: options.target.host };
     const args = sshArguments(target);
     const { connection } = (options.connect ?? sshConnection)(target);
     // A stable file namespace across cwd changes; distinct SSH routes stay separate.

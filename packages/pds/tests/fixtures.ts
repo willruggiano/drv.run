@@ -39,7 +39,7 @@ export async function sessionsFixture(t: TestContext) {
     {
       id: "test-guest",
       label: "Test guest",
-      target: { host: "test-guest", knownHostsFile: "/known_hosts", hostKeyAlias: "test-guest" },
+      target: { host: "test-guest" },
     },
   ];
   const owners = new Set<Application>();

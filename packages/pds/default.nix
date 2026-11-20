@@ -7,12 +7,21 @@
   makeFontsConf,
   makeWrapper,
   nodejs,
+  nss_wrapper,
   openssh,
   writeShellApplication,
   stdenvNoCC,
   typescript,
 }: let
   manifest = lib.importJSON ./package.json;
+  patchDependencies = ''
+    patch --batch --forward --fuzz=0 \
+      -d node_modules/@earendil-works/pi-durable -p1 \
+      < ${./pi-durable-conversation-context.patch}
+    patch --batch --forward --fuzz=0 \
+      -d node_modules/@earendil-works/pi-env -p1 \
+      < ${./pi-env-native-openssh.patch}
+  '';
   datastar = fetchurl {
     url = "https://raw.githubusercontent.com/starfederation/datastar/v1.0.5/bundles/datastar.js";
     hash = "sha256-c4DgNEt/k32ArXDt7aHChXgXMVfuR0i+GFCZFJHZEf0=";
@@ -45,12 +54,11 @@ in
     npmDeps = importNpmLock {npmRoot = ./.;};
     npmRebuildFlags = ["--ignore-scripts"];
     nativeBuildInputs = [importNpmLock.npmConfigHook makeWrapper nodejs typescript];
-    preBuild = ''
-      cp ${datastar} assets/datastar.js
-      patch --batch --forward --fuzz=0 \
-        -d node_modules/@earendil-works/pi-durable -p1 \
-        < ${./pi-durable-conversation-context.patch}
-    '';
+    preBuild =
+      patchDependencies
+      + ''
+        cp ${datastar} assets/datastar.js
+      '';
     buildPhase = ''
       runHook preBuild
       npm run build
@@ -58,9 +66,11 @@ in
       runHook postBuild
     '';
     doCheck = true;
+    nativeCheckInputs = [openssh];
     checkPhase = ''
       runHook preCheck
       export HOME="$(mktemp -d)"
+      export NSS_WRAPPER_LIBRARY=${nss_wrapper}/lib/libnss_wrapper.so
       npm run check
       npm test
       runHook postCheck
@@ -109,9 +119,7 @@ in
         };
         buildPhase = ''
           runHook preBuild
-          patch --batch --forward --fuzz=0 \
-            -d node_modules/@earendil-works/pi-durable -p1 \
-            < ${./pi-durable-conversation-context.patch}
+          ${patchDependencies}
           cp -R ${finalAttrs.finalPackage}/lib/pds/{dist,assets} .
           runHook postBuild
         '';

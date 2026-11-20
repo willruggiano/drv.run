@@ -298,6 +298,7 @@
         ]);
         passthru = {inherit llms;};
         shellHook = ''
+          export NSS_WRAPPER_LIBRARY="${pkgs.nss_wrapper}/lib/libnss_wrapper.so"
           export XDG_CONFIG_DIRS="${llms}:''${XDG_CONFIG_DIRS:-/etc/xdg}"
           if cmp --silent flake.nix ${./flake.nix}; then
             linkNodeModulesHook
