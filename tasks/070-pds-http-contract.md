@@ -21,8 +21,9 @@ Settle:
   surface from reproducing the old app/www UI.
 - Session discovery and explicit open/create behavior under the retained
   `/api/s/{sessionId}/c/{conversationId}` addressing, including client-supplied
-  session IDs, repeated opens, and conversation creation. The old REST table does
-  not define these lifecycle operations; they must not be hidden in GET requests.
+  session IDs, repeated opens, and conversation creation. The old REST table
+  does not define these lifecycle operations; they must not be hidden in GET
+  requests.
 - How `env` participates in lifecycle/configuration commands rather than a
   separate mutation endpoint. Settle its conversation scope, omission/clearing,
   inheritance, and atomicity with agent changes. Keep store/Harness opening
@@ -35,8 +36,8 @@ Settle:
   and watch contracts while retaining bounded observation, explicit history
   reads, and disconnect-versus-abort semantics.
 - Which additional specification sections are retained or excluded, especially
-  telemetry, coverage thresholds, and Knip. Do not silently treat every paragraph
-  as an approved new requirement.
+  telemetry, coverage thresholds, and Knip. Do not silently treat every
+  paragraph as an approved new requirement.
 - How to preserve the useful specification in `packages/pds/SPEC.md` before
   deleting durable, without importing obsolete GraphQL/application ownership or
   stale upstream-version assumptions.
@@ -46,23 +47,25 @@ Settle:
 Confirmed by the user across the HTTP-contract discussion, including the final
 acceptance of environment omission, clearing, inheritance, and active-work
 semantics. This settles the specification's direction, not implementation or
-verification of the replacement. The product specification still needs adaptation.
+verification of the replacement. The product specification still needs
+adaptation.
 
 - The user explicitly wants to extract `packages/durable/api/SPEC.md` into
   `packages/pds/SPEC.md`, using mostly identical API endpoints with a CQRS focus
-  consistent with the Tao of Datastar. The user clarified that this means the old
-  HTTP/REST surface still documented there, not the current GraphQL API.
+  consistent with the Tao of Datastar. The user clarified that this means the
+  old HTTP/REST surface still documented there, not the current GraphQL API.
 - Adopt the complete documented REST operation surface, including submission
-  recovery/cancellation, reset, inspection, context, and task reads. This expands
-  PDS's current restricted surface without requiring the old Elm UI.
+  recovery/cancellation, reset, inspection, context, and task reads. This
+  expands PDS's current restricted surface without requiring the old Elm UI.
 - Use HTML-first representations rather than a parallel JSON API. Keep operation
-  names and HTTP methods; use forms for commands, HTML for reads, and Datastar SSE
-  for observation. Short command responses may acknowledge admission or report
-  validation errors, but do not become a second conversation-state projection.
+  names and HTTP methods; use forms for commands, HTML for reads, and Datastar
+  SSE for observation. Short command responses may acknowledge admission or
+  report validation errors, but do not become a second conversation-state
+  projection.
 - Limit extraction to the API contract and applicable verification requirements.
-  Do not implicitly adopt the separate telemetry deployment, Knip, or 100% coverage
-  mandates. Verify semantics against PDS's pinned Pi 1.5.2 rather than copying
-  stale 1.4.0 assumptions.
+  Do not implicitly adopt the separate telemetry deployment, Knip, or 100%
+  coverage mandates. Verify semantics against PDS's pinned Pi 1.5.2 rather than
+  copying stale 1.4.0 assumptions.
 
 ### Session and conversation identity
 
@@ -89,16 +92,16 @@ verification of the replacement. The product specification still needs adaptatio
 
 ### Session lifecycle and recovery
 
-| Method | Route | Meaning |
-| --- | --- | --- |
-| GET | `/api/s` | List persisted sessions, not merely open Harnesses. |
-| POST | `/api/s/open` | Open or create a session; accept a supplied ID or generate one. |
-| POST | `S/root` | Get or create the native reserved root conversation. |
-| POST | `S/createConversation` | Create another native conversation. |
+| Method | Route                  | Meaning                                                         |
+| ------ | ---------------------- | --------------------------------------------------------------- |
+| GET    | `/api/s`               | List persisted sessions, not merely open Harnesses.             |
+| POST   | `/api/s/open`          | Open or create a session; accept a supplied ID or generate one. |
+| POST   | `S/root`               | Get or create the native reserved root conversation.            |
+| POST   | `S/createConversation` | Create another native conversation.                             |
 
 - Repeated opens with the same session ID select the same database without
-  resetting or reconfiguring it. Root/conversation creation does not submit input.
-  GET requests never provision missing stores or conversations.
+  resetting or reconfiguring it. Root/conversation creation does not submit
+  input. GET requests never provision missing stores or conversations.
 - PDS startup opens persisted sessions and resumes eligible work according to
   pi-durable's recovery policy, independently of browser connections. Reads and
   watch reconnections do not start scheduling.
@@ -111,23 +114,23 @@ verification of the replacement. The product specification still needs adaptatio
 - Commands return short Datastar responses with native admission/results and
   necessary form/navigation effects, not another transcript projection.
 - A lost submission response leaves its outcome unknown. Retain the draft and
-  request ID, and recover through `submissionByRequest`. Never automatically retry
-  writes.
-- Handled form validation returns an HTTP 200 invalid-form representation without
-  an admission acknowledgement or draft reset. Other HTTP failures retain their
-  declared statuses.
+  request ID, and recover through `submissionByRequest`. Never automatically
+  retry writes.
+- Handled form validation returns an HTTP 200 invalid-form representation
+  without an admission acknowledgement or draft reset. Other HTTP failures
+  retain their declared statuses.
 
 ### Observation and history
 
-- Retain PDS's bounded HTML observation and explicit paged history contract while
-  adapting the REST surface. Use Datastar projections, not the source API's frozen
-  JSON full-snapshot watch or a browser-side conversation replica.
+- Retain PDS's bounded HTML observation and explicit paged history contract
+  while adapting the REST surface. Use Datastar projections, not the source
+  API's frozen JSON full-snapshot watch or a browser-side conversation replica.
 - Reconnection acquires a fresh bounded baseline, not a durable replay stream.
   Older history requires explicit reads. Scope both observation and history to
   the selected session and conversation.
-- Observer disconnection releases observation resources, not execution. Execution
-  cancellation remains an explicit command; an observation failure is not an
-  idle conversation.
+- Observer disconnection releases observation resources, not execution.
+  Execution cancellation remains an explicit command; an observation failure is
+  not an idle conversation.
 
 ### Integrated environment selection
 
@@ -155,7 +158,8 @@ verification of the replacement. The product specification still needs adaptatio
   environment acquisitions, not operations already running; they do not abort or
   relocate those operations.
 - Do not carry forward GraphQL's exposed SSH key/config/trust paths. The OpenSSH
-  composition boundary in [[tasks/050-infrastructure-contract.md]] still applies.
+  composition boundary in [[tasks/050-infrastructure-contract.md]] still
+  applies.
 
 ### Preservation before cleanup
 
@@ -166,25 +170,27 @@ verification of the replacement. The product specification still needs adaptatio
 
 ## Evidence
 
-- [[packages/durable/api/SPEC.md]] defines operation-oriented GET/POST routes and
-  native admission, lookup, cancellation, and configuration semantics. It also
-  contains a GraphQL direction, a frozen JSON full-snapshot watch, telemetry,
-  coverage, and Knip requirements. Some upstream citations target Pi 1.4.0.
+- [[packages/durable/api/SPEC.md]] defines operation-oriented GET/POST routes
+  and native admission, lookup, cancellation, and configuration semantics. It
+  also contains a GraphQL direction, a frozen JSON full-snapshot watch,
+  telemetry, coverage, and Knip requirements. Some upstream citations target Pi
+  1.4.0.
 - [[packages/pds/SPEC.md]] already specifies an HTML-first command/observation
   split, bounded incremental Datastar patches, and a smaller operation surface.
   It explicitly excludes reset, submission cancellation, and context inspection.
-- [Current PDS startup](../packages/pds/src/index.ts) opens one `sessions.sqlite`;
-  [routing](../packages/pds/src/server.ts) uses `/sessions/{conversationId}`.
-  That prototype differs from the selected multi-Harness model.
-  [PDS's manifest](../packages/pds/package.json) pins Pi 1.5.2.
+- [Current PDS startup](../packages/pds/src/index.ts) opens one
+  `sessions.sqlite`; [routing](../packages/pds/src/server.ts) uses
+  `/sessions/{conversationId}`. That prototype differs from the selected
+  multi-Harness model. [PDS's manifest](../packages/pds/package.json) pins Pi
+  1.5.2.
 - [Live app session storage](../packages/app/serve/sessions.ts) and
   [API session storage](../packages/durable/api/src/application.ts) each open a
   SQLite database per session ID. The [API session manager][sessions] shares
   acquisitions by external ID and distinguishes lookup from creation.
-- Pi 1.5.2's [storage contract][durable-types] specifies a session-global numeric
-  ID namespace, not cross-store uniqueness. Conversation IDs are branded numbers;
-  their native representation does not make them application-generated or encode
-  which database owns them.
+- Pi 1.5.2's [storage contract][durable-types] specifies a session-global
+  numeric ID namespace, not cross-store uniqueness. Conversation IDs are branded
+  numbers; their native representation does not make them application-generated
+  or encode which database owns them.
 - Pinned Pi 1.5.2's [Harness implementation][durable-harness] constructs the
   Harness and reconciles interrupted task state during `open`. It does not call
   `root`, create a conversation, or enable scheduling. `root` and
@@ -201,7 +207,8 @@ verification of the replacement. The product specification still needs adaptatio
   `/api/watch`; the REST route table in its specification is not evidence that
   those routes are currently implemented or used by a retained client.
 - [[packages/durable/api/watch/SPEC.md]] describes the newer bounded observation
-  model, distinct from the older full-snapshot contract in the API specification.
+  model, distinct from the older full-snapshot contract in the API
+  specification.
 - [Datastar's Tao](https://data-star.dev/guide/the_tao_of_datastar) recommends
   backend-owned state, sparse client signals, and short writes with a long-lived
   read stream. Version-specific behavior must be checked against Datastar 1.0.5,
@@ -209,7 +216,10 @@ verification of the replacement. The product specification still needs adaptatio
   from the current conceptual guide.
 
 [sessions]: ../packages/durable/api/src/sessions.ts
-[graphql-env]: ../packages/durable/api/graphql/SPEC.md#durable-conversation-configuration
+[graphql-env]:
+  ../packages/durable/api/graphql/SPEC.md#durable-conversation-configuration
 [graphql-implementation]: ../packages/durable/api/graphql/src/graphql.ts
-[durable-types]: /nix/store/66k268i56xwl405b3hnz6l84mgb4fl8c-pds-0.1.0/lib/pds/node_modules/@earendil-works/pi-durable/dist/types.d.ts
-[durable-harness]: /nix/store/66k268i56xwl405b3hnz6l84mgb4fl8c-pds-0.1.0/lib/pds/node_modules/@earendil-works/pi-durable/dist/harness/harness.js
+[durable-types]:
+  /nix/store/66k268i56xwl405b3hnz6l84mgb4fl8c-pds-0.1.0/lib/pds/node_modules/@earendil-works/pi-durable/dist/types.d.ts
+[durable-harness]:
+  /nix/store/66k268i56xwl405b3hnz6l84mgb4fl8c-pds-0.1.0/lib/pds/node_modules/@earendil-works/pi-durable/dist/harness/harness.js

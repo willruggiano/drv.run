@@ -62,15 +62,7 @@ await test("public API opens a native, paused harness with the fixed extensions"
   assert.equal(resolutions, 0);
 });
 
-const sshTarget = {
-  host: "drv.run.test1",
-  user: "root",
-  port: 22,
-  configFile: "/etc/ssh/ssh_config",
-  identityFile: "/run/user/1000/drv.run.test1/id_ed25519",
-  knownHostsFile: "/run/user/1000/drv.run.test1/known_hosts",
-  hostKeyAlias: "drv.run.test1",
-};
+const sshTarget = { host: "ordinary-host" };
 
 await test("SSH environments project targets, isolate connections, and keep file identity across cwd changes", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "ssh-env-"));
@@ -79,10 +71,20 @@ await test("SSH environments project targets, isolate connections, and keep file
     targets.push(target);
     return { connection: new Connection({ command: [localDaemon()] }), remote: () => undefined };
   };
-  const target = { ...sshTarget, ssh: "forbidden", binary: "forbidden" };
+  const target = {
+    ...sshTarget,
+    user: "forbidden",
+    port: 1,
+    identityFile: "/forbidden",
+    knownHostsFile: "/forbidden",
+    hostKeyAlias: "forbidden",
+    configFile: "/forbidden",
+    ssh: "forbidden",
+    binary: "forbidden",
+  };
   const a = new api.SshExecutionEnv({ target, cwd, connect });
   const b = new api.SshExecutionEnv({ target, cwd: "/", connect });
-  const c = new api.SshExecutionEnv({ target: { ...target, port: 2222 }, cwd, connect });
+  const c = new api.SshExecutionEnv({ target: { ...target, host: "other-host" }, cwd, connect });
   t.after(async () => {
     await Promise.all([a, b, c].map((env) => env.cleanup(context)));
     await rm(cwd, { recursive: true, force: true });
@@ -92,7 +94,7 @@ await test("SSH environments project targets, isolate connections, and keep file
   assert.equal(a.id, b.id);
   assert.notEqual(a.id, c.id);
   assert.notEqual(a.connection, b.connection);
-  assert.deepEqual(targets, [sshTarget, sshTarget, { ...sshTarget, port: 2222 }]);
+  assert.deepEqual(targets, [sshTarget, sshTarget, { host: "other-host" }]);
   target.host = "changed";
   assert.deepEqual(targets[0], sshTarget);
   const close = t.mock.method(a.connection, "close");
@@ -114,7 +116,7 @@ await test("SSH environments project targets, isolate connections, and keep file
 });
 
 await test("minimal SSH targets use lazy upstream defaults and validate before connection construction", async (t) => {
-  const target = { host: "guest", knownHostsFile: "/known_hosts", hostKeyAlias: "guest" };
+  const target = { host: "guest" };
   const env = new api.SshExecutionEnv({ target, cwd: "/workspace" });
   t.after(() => env.cleanup(context));
   assert(env.connection instanceof Connection);

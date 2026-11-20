@@ -13,11 +13,12 @@ What producer, relay, and browser contracts preserve device registration and
 `notify-send`-originated delivery without app, pds, or knowledge of pi-durable?
 
 Respect the approved scope in [[tasks/010-retained-workflows.md]]: guest-only
-sending and the installed-PWA registration path on iPhone. No host-native sending,
-inbox, actions, or direct coding-agent integration. Delivery bookkeeping is not a
-user-facing inbox requirement. Apply the Go preference for components without
-required direct PDS/pi-durable integration in [[tasks/000-foundation.md]]; legacy
-TypeScript sources are behavioral evidence, not a language selection.
+sending and the installed-PWA registration path on iPhone. No host-native
+sending, inbox, actions, or direct coding-agent integration. Delivery
+bookkeeping is not a user-facing inbox requirement. Apply the Go preference for
+components without required direct PDS/pi-durable integration in
+[[tasks/000-foundation.md]]; legacy TypeScript sources are behavioral evidence,
+not a language selection.
 
 Settle:
 
@@ -26,12 +27,14 @@ Settle:
 - What acceptance means: queueing, acknowledgement, replay/deduplication,
   replacement, close/expiry, rate limits, and behavior after source retirement.
   Distinguish accepted notifications from attempted or successful push delivery.
-- Which content and destinations producers may supply. Guest-controlled text must
-  not silently become authority to select another owner or arbitrary navigation.
+- Which content and destinations producers may supply. Guest-controlled text
+  must not silently become authority to select another owner or arbitrary
+  navigation.
 - How devices subscribe, unsubscribe, and receive notifications without a coding
   application, including the browser origin, service worker, and owner-state
   binding of the standalone management interface. Apply the Tailscale/LAN-only
-  exposure and deferred application HTTP authn/authz in [[tasks/000-foundation.md]].
+  exposure and deferred application HTTP authn/authz in
+  [[tasks/000-foundation.md]].
 - Which existing notification pieces are retained or retired, including delivery
   state and `push-policy`. Do not preserve the inbox/status model or a shared
   package solely because the legacy applications currently use it.
@@ -47,17 +50,17 @@ component contract, not an implementation or permission to remove code or state.
 
 ### Component and source ownership
 
-- Implement the guest D-Bus adapter and host push service in Go, independently of
-  app, PDS, and pi-durable. The standalone push component owns its registration
-  PWA as well as collection and delivery.
+- Implement the guest D-Bus adapter and host push service in Go, independently
+  of app, PDS, and pi-durable. The standalone push component owns its
+  registration PWA as well as collection and delivery.
 - The adapter owns `org.freedesktop.Notifications` on the guest root user's
   session bus and refuses to displace another notification server. Sending from
   other guest users or the host is not required.
-- Retain host-initiated SSH collection. The host selects the guest, SSH identity,
-  and host Unix owner binding; guest messages cannot choose an owner or recipient.
-  [[tasks/050-infrastructure-contract.md]] settles the deployment interface for
-  guest discovery and lifecycle information, rather than making push depend on
-  private runtime-directory layouts.
+- Retain host-initiated SSH collection. The host selects the guest, SSH
+  identity, and host Unix owner binding; guest messages cannot choose an owner
+  or recipient. [[tasks/050-infrastructure-contract.md]] settles the deployment
+  interface for guest discovery and lifecycle information, rather than making
+  push depend on private runtime-directory layouts.
 - Send to all registered devices belonging to the configured owner. No per-guest
   device selection or notification routing rules are required.
 
@@ -69,28 +72,30 @@ component contract, not an implementation or permission to remove code or state.
 - Drop rather than catch up when no relay is connected or the sender is
   overloaded. Service restarts may lose notifications. Bound transient work and
   diagnostics; do not turn dropped notifications into an inbox.
-- Make one bounded send attempt per registered device, with no automatic retries.
-  `notify-send` success means local acceptance for best-effort forwarding, not
-  host receipt, push-service acceptance, or phone display. Invalid input still
-  fails. There is no exactly-once display guarantee.
-- Device registrations remain persistent across service restarts. The provisioned
-  VAPID key remains separate from disposable delivery state. This does not change
-  the clean-slate cutover decision in [[tasks/020-state-continuity.md]].
+- Make one bounded send attempt per registered device, with no automatic
+  retries. `notify-send` success means local acceptance for best-effort
+  forwarding, not host receipt, push-service acceptance, or phone display.
+  Invalid input still fails. There is no exactly-once display guarantee.
+- Device registrations remain persistent across service restarts. The
+  provisioned VAPID key remains separate from disposable delivery state. This
+  does not change the clean-slate cutover decision in
+  [[tasks/020-state-continuity.md]].
 
 ### Content and lifecycle
 
 - Accept bounded plain text and supported notification metadata from guests, not
-  subscription endpoints, navigation URLs, fetched images, or executable actions.
-  The host supplies source attribution.
+  subscription endpoints, navigation URLs, fetched images, or executable
+  actions. The host supplies source attribution.
 - Track notification IDs, replacement, expiry, and closure only in guest memory.
   Replacements use the same host-generated browser notification tag; phone
   replacement is best effort.
-- Expiry or `CloseNotification` does not attempt to retract an already-sent phone
-  notification. Guest retirement stops collection; pushes already submitted may
-  still arrive.
+- Expiry or `CloseNotification` does not attempt to retract an already-sent
+  phone notification. Guest retirement stops collection; pushes already
+  submitted may still arrive.
 - Keep the current 300-second Web Push TTL, distinct from the D-Bus timeout.
-  Short-lived buffering by the external push service is permitted without a local
-  durable queue. Browser display duration is outside the delivery guarantee.
+  Short-lived buffering by the external push service is permitted without a
+  local durable queue. Browser display duration is outside the delivery
+  guarantee.
 
 ### Independent registration PWA
 
@@ -107,11 +112,12 @@ component contract, not an implementation or permission to remove code or state.
 
 ### Subscription-endpoint safeguards
 
-- Retain the existing endpoint-safety requirements in the Go service. Accept only
-  deployment-configured HTTPS push-service origins and validate subscription keys.
+- Retain the existing endpoint-safety requirements in the Go service. Accept
+  only deployment-configured HTTPS push-service origins and validate
+  subscription keys.
 - Reject private, local, and other non-public destination addresses. Resolve and
-  validate DNS for each send, then connect directly to the validated address with
-  hostname verification. Do not follow redirects or allow proxy settings to
+  validate DNS for each send, then connect directly to the validated address
+  with hostname verification. Do not follow redirects or allow proxy settings to
   bypass destination validation.
 - Bound subscription counts and management request sizes. Require same-origin
   management writes; this is not application authentication and does not change
@@ -119,13 +125,13 @@ component contract, not an implementation or permission to remove code or state.
 
 ### Retention and retirement boundary
 
-- Retain the selected D-Bus, SSH collection, owner-binding, subscription, payload,
-  and endpoint-safety behavior, not the legacy activity/status model or delivery
-  persistence. Existing TypeScript code and tests are evidence, not a requirement
-  to port every behavior or preserve their APIs.
-- The TypeScript `push-policy` package is not a runtime dependency of the Go push
-  component. Its validation requirements belong in that component; the package
-  becomes a retirement target once its legacy consumers are removed.
+- Retain the selected D-Bus, SSH collection, owner-binding, subscription,
+  payload, and endpoint-safety behavior, not the legacy activity/status model or
+  delivery persistence. Existing TypeScript code and tests are evidence, not a
+  requirement to port every behavior or preserve their APIs.
+- The TypeScript `push-policy` package is not a runtime dependency of the Go
+  push component. Its validation requirements belong in that component; the
+  package becomes a retirement target once its legacy consumers are removed.
 - The durable guest outbox, host inbox/delivery history, replay/acknowledgement
   machinery, coding-agent observation, and app-specific PWA routing are not part
   of the selected push contract. Removal still requires

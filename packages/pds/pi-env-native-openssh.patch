@@ -1,0 +1,141 @@
+--- a/dist/ssh.js
++++ b/dist/ssh.js
+@@ -37,12 +37,13 @@
+ }
+ /**
+  * Arguments for `ssh` up to the host: no prompts, no forwarding of any kind, no shared connections, no commands from
+- * the configuration, no locale forwarding (the remote uses its own), and host keys checked strictly against the
+- * application's own file under a fixed alias.
++ * the configuration, no locale forwarding (the remote uses its own), and host keys checked strictly using native
++ * configuration unless explicitly overridden.
+  */
+ export function sshArguments(target, strictHostKeys = true, knownHostsFile = target.knownHostsFile) {
+     checkField("host", target.host);
+-    checkField("host key alias", target.hostKeyAlias);
++    if (target.hostKeyAlias !== undefined)
++        checkField("host key alias", target.hostKeyAlias);
+     if (target.user !== undefined)
+         checkField("user", target.user);
+     if (target.port !== undefined && (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535)) {
+@@ -68,10 +69,14 @@
+         ...option("ConnectTimeout=15"),
+         ...option("ServerAliveInterval=15"),
+         ...option(`StrictHostKeyChecking=${strictHostKeys ? "yes" : "accept-new"}`),
+-        ...option(`UserKnownHostsFile=${configPath("known hosts file", knownHostsFile)}`),
+-        ...option("GlobalKnownHostsFile=none"),
+-        ...option("HashKnownHosts=no"),
+-        ...option(`HostKeyAlias=${target.hostKeyAlias}`),
++        ...(knownHostsFile === undefined
++            ? []
++            : [
++                ...option(`UserKnownHostsFile=${configPath("known hosts file", knownHostsFile)}`),
++                ...option("GlobalKnownHostsFile=none"),
++                ...option("HashKnownHosts=no"),
++            ]),
++        ...(target.hostKeyAlias === undefined ? [] : option(`HostKeyAlias=${target.hostKeyAlias}`)),
+         ...(target.user === undefined ? [] : ["-l", target.user]),
+         ...(target.port === undefined ? [] : ["-p", String(target.port)]),
+         ...(target.identityFile === undefined
+@@ -124,12 +129,19 @@
+         child.stdin.end(options.stdin ?? new Uint8Array(0));
+     });
+ }
++function requireManagedHostKeys(target) {
++    if (target.knownHostsFile === undefined || target.hostKeyAlias === undefined)
++        throw new Error("Host-key management requires knownHostsFile and hostKeyAlias");
++    configPath("known hosts file", target.knownHostsFile);
++    checkField("host key alias", target.hostKeyAlias);
++}
+ /**
+  * Connect once with `accept-new` against a temporary known-hosts file to capture the key the host presents, through
+  * the same route (`~/.ssh/config`, jump hosts) as real connections. Returns its known-hosts lines and fingerprints.
+  * Showing a fingerprint is not authentication: compare it with one obtained out of band before accepting it.
+  */
+ export async function scanHostKey(target) {
++    requireManagedHostKeys(target);
+     const directory = await mkdtemp(join(tmpdir(), "pi-env-hostkey-"));
+     try {
+         const scanned = join(directory, "known_hosts");
+@@ -205,6 +217,7 @@
+  * `HostKeyChangedError`; `forgetHostKey` must remove the old keys first.
+  */
+ export async function acceptHostKey(target, lines) {
++    requireManagedHostKeys(target);
+     const alias = target.hostKeyAlias;
+     const accepted = lines.map((line) => ({ line: line.trim(), ...parseHostKeyLine(alias, line) }));
+     await changeKnownHosts(target.knownHostsFile, (existing) => {
+@@ -230,6 +243,7 @@
+ }
+ /** Stop trusting every key stored for the target's alias, e.g. after the owner confirmed a changed host key. */
+ export async function forgetHostKey(target) {
++    requireManagedHostKeys(target);
+     await changeKnownHosts(target.knownHostsFile, (existing) => existing.filter((line) => line.trim().split(/\s+/)[0] !== target.hostKeyAlias));
+ }
+ /** POSIX detection, run by the remote login shell; a Windows host answers through PowerShell instead. */
+@@ -449,4 +463,3 @@
+         options.onLog?.(`${warning}\n`);
+     return { connection: sshConnectionFor(options, { remote, verified }), remote };
+ }
+-//# sourceMappingURL=ssh.js.map
+\ No newline at end of file
+--- a/dist/ssh.d.ts
++++ b/dist/ssh.d.ts
+@@ -17,15 +17,16 @@
+     user?: string;
+     port?: number;
+     identityFile?: string;
+-    /** Host keys this application trusts; `acceptHostKey` adds to it. */
+-    knownHostsFile: string;
+-    /** The name keys are stored under, independent of aliases, ports and jump hosts, e.g. `pi-env-<env name>`. */
+-    hostKeyAlias: string;
++    /** Optional application-owned trust file; omitted uses native OpenSSH configuration. */
++    knownHostsFile?: string;
++    /** Optional host-key alias override; omitted uses native OpenSSH configuration. */
++    hostKeyAlias?: string;
+     /** The `ssh` program; default `ssh`. */
+     ssh?: string;
+     /** An `ssh` configuration file instead of `~/.ssh/config` (`-F`). */
+     configFile?: string;
+ }
++type ManagedSshTarget = SshTarget & Required<Pick<SshTarget, "knownHostsFile" | "hostKeyAlias">>;
+ /** The remote host's key is not in `knownHostsFile`; `scanHostKey` shows it so the owner can accept it. */
+ export declare class HostKeyUnknownError extends Error {
+ }
+@@ -40,8 +41,8 @@
+ }
+ /**
+  * Arguments for `ssh` up to the host: no prompts, no forwarding of any kind, no shared connections, no commands from
+- * the configuration, no locale forwarding (the remote uses its own), and host keys checked strictly against the
+- * application's own file under a fixed alias.
++ * the configuration, no locale forwarding (the remote uses its own), and host keys checked strictly using native
++ * configuration unless explicitly overridden.
+  */
+ export declare function sshArguments(target: SshTarget, strictHostKeys?: boolean, knownHostsFile?: string): string[];
+ /**
+@@ -49,7 +50,7 @@
+  * the same route (`~/.ssh/config`, jump hosts) as real connections. Returns its known-hosts lines and fingerprints.
+  * Showing a fingerprint is not authentication: compare it with one obtained out of band before accepting it.
+  */
+-export declare function scanHostKey(target: SshTarget): Promise<{
++export declare function scanHostKey(target: ManagedSshTarget): Promise<{
+     lines: string[];
+     fingerprints: string[];
+ }>;
+@@ -58,9 +59,9 @@
+  * target's alias are accepted. A key that differs from a trusted key of the same type is refused with
+  * `HostKeyChangedError`; `forgetHostKey` must remove the old keys first.
+  */
+-export declare function acceptHostKey(target: SshTarget, lines: readonly string[]): Promise<void>;
++export declare function acceptHostKey(target: ManagedSshTarget, lines: readonly string[]): Promise<void>;
+ /** Stop trusting every key stored for the target's alias, e.g. after the owner confirmed a changed host key. */
+-export declare function forgetHostKey(target: SshTarget): Promise<void>;
++export declare function forgetHostKey(target: ManagedSshTarget): Promise<void>;
+ /** Which system the target runs: `uname` through the login shell, or PowerShell on Windows. */
+ export declare function detectPlatform(target: SshTarget): Promise<RemotePlatform>;
+ /** The daemon binary this package ships for a remote system. */
+@@ -102,4 +103,3 @@
+     connection: Connection;
+     remote: RemotePlatform;
+ }>;
+-//# sourceMappingURL=ssh.d.ts.map
+\ No newline at end of file

@@ -34,8 +34,6 @@ await test("sessions persist configuration, attachments, messages, compaction, a
     env: {
       type: "ssh",
       host: "test-guest",
-      knownHostsFile: "/known_hosts",
-      hostKeyAlias: "test-guest",
     },
   });
   const next = await app.send(first, form({ message: "/new" }));
@@ -114,14 +112,12 @@ await test("attachments retain image bytes and UTF-8 text; unsupported input doe
   assert.equal((await conversation.context(context)).entries.length, 0);
 });
 
-await test("environment discovery exposes only complete drv.run SSH connection files", async (t) => {
+await test("environment discovery exposes prepared drv.run host names without connection paths", async (t) => {
   const { directory } = await fixture(t);
   const ready = join(directory, "drv.run", "ready");
   await mkdir(ready, { recursive: true });
   await mkdir(join(directory, "drv.run", "starting"));
-  await Promise.all(
-    ["ssh_config", "id_ed25519", "known_hosts"].map((name) => writeFile(join(ready, name), "")),
-  );
+  await writeFile(join(ready, "ssh_config"), "");
   const environments = await discoverEnvironments(directory);
   assert.deepEqual(
     environments.map((item) => item.id),
@@ -129,11 +125,6 @@ await test("environment discovery exposes only complete drv.run SSH connection f
   );
   assert.deepEqual(environments[1]?.target, {
     host: "drv.run.ready",
-    user: "root",
-    hostKeyAlias: "drv.run.ready",
-    identityFile: join(ready, "id_ed25519"),
-    knownHostsFile: join(ready, "known_hosts"),
-    configFile: "/etc/ssh/ssh_config",
   });
 });
 
