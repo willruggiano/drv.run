@@ -139,8 +139,8 @@ await test("environment discovery exposes only complete drv.run SSH connection f
 
 await test("HTTP rejects foreign writes and accepts native forms at the configured public origin", async (t) => {
   const { serve } = await import("../src/server.ts");
-  const { sessions, selection } = await sessionsFixture(t);
-  const server = await serve(sessions, { port: 0, origin: "https://pds.test" });
+  const { sessions, auth, selection } = await sessionsFixture(t);
+  const server = await serve(sessions, { auth, port: 0, origin: "https://pds.test" });
   try {
     const foreign = await fetch(`${server.origin}/`, {
       method: "POST",
@@ -230,8 +230,8 @@ await test("partial configuration and /cd preserve unrelated state without admit
 
 await test("session lifecycle HTTP opens stores separately from native conversations", async (t) => {
   const { serve } = await import("../src/server.ts");
-  const { sessions } = await sessionsFixture(t);
-  const server = await serve(sessions, { port: 0 });
+  const { sessions, auth } = await sessionsFixture(t);
+  const server = await serve(sessions, { auth, port: 0 });
   t.after(() => server.close());
   const open = () =>
     fetch(`${server.origin}/api/s/open`, {
@@ -288,8 +288,8 @@ await test("one Harness owns each opaque session ID; opens and roots preserve ex
 
 await test("session reads, observations, missing addresses, and model metadata never provision or resume", async (t) => {
   const { serve } = await import("../src/server.ts");
-  const { sessions, faux, models } = await sessionsFixture(t);
-  const server = await serve(sessions, { port: 0 });
+  const { sessions, auth, faux, models } = await sessionsFixture(t);
+  const server = await serve(sessions, { auth, port: 0 });
   t.after(() => server.close());
   const refresh = t.mock.method(models, "refresh");
   for (const path of ["/", "/api/s", "/api/models"]) {
@@ -336,7 +336,7 @@ await test("session reads, observations, missing addresses, and model metadata n
 await test("corrupt persisted stores remain unavailable without replacement or hiding healthy sessions", async (t) => {
   const { readFile, stat } = await import("node:fs/promises");
   const { serve } = await import("../src/server.ts");
-  const { sessions, directory, open } = await sessionsFixture(t);
+  const { sessions, auth, directory, open } = await sessionsFixture(t);
   const broken = await sessions.open(decode(SessionId, "broken"));
   await broken.root(form({}));
   const healthy = await sessions.open(decode(SessionId, "healthy"));
@@ -365,7 +365,7 @@ await test("corrupt persisted stores remain unavailable without replacement or h
   const recovered = await reopened.get(decode(SessionId, "healthy"));
   assert(recovered);
   assert.equal((await recovered.root(form({}))).id, retained.id);
-  const server = await serve(reopened, { port: 0 });
+  const server = await serve(reopened, { auth, port: 0 });
   t.after(() => server.close());
   for (const [path, expected] of [
     ["/api/s", 200],
@@ -429,10 +429,10 @@ await test(
 
 await test("HTTP validates complete addresses, methods, fields, and media types before mutation", async (t) => {
   const { serve } = await import("../src/server.ts");
-  const { sessions } = await sessionsFixture(t);
+  const { sessions, auth } = await sessionsFixture(t);
   const app = await sessions.open(decode(SessionId, "validation"));
   const conversation = await app.root(form({}));
-  const server = await serve(sessions, { port: 0 });
+  const server = await serve(sessions, { auth, port: 0 });
   t.after(() => server.close());
   const base = `${server.origin}/api/s/${app.id}`;
   for (const invalid of ["-1", "1e0", "0x0", "0.0", "00", " 0", "9007199254740992", "NaN"]) {
@@ -497,9 +497,9 @@ await test("typed read errors and unexpected failures retain their declared HTTP
   const { SessionFailed, StorageRequestError } = await import("@earendil-works/pi-durable");
   const { AssertError } = await import("typebox/value");
   const { serve } = await import("../src/server.ts");
-  const { sessions } = await sessionsFixture(t);
+  const { sessions, auth } = await sessionsFixture(t);
   const app = await sessions.open(decode(SessionId, "errors"));
-  const server = await serve(sessions, { port: 0 });
+  const server = await serve(sessions, { auth, port: 0 });
   t.after(() => server.close());
   for (const [error, status] of [
     [new StorageRequestError("rejected read arguments"), 400],
@@ -520,8 +520,8 @@ await test("typed read errors and unexpected failures retain their declared HTTP
 
 await test("the combined home form validates all configuration before allocating a session", async (t) => {
   const { serve } = await import("../src/server.ts");
-  const { sessions, selection } = await sessionsFixture(t);
-  const server = await serve(sessions, { port: 0 });
+  const { sessions, auth, selection } = await sessionsFixture(t);
+  const server = await serve(sessions, { auth, port: 0 });
   t.after(() => server.close());
   const incomplete = form(selection);
   incomplete.delete("thinking");
@@ -541,7 +541,7 @@ await test("the combined home form validates all configuration before allocating
 await test("task-owned creation validates store ownership and an explicit local choice overrides inherited SSH", async (t) => {
   const { CompactionTask } = await import("@earendil-works/pi-durable");
   const { serve } = await import("../src/server.ts");
-  const { sessions, selection } = await sessionsFixture(t);
+  const { sessions, auth, selection } = await sessionsFixture(t);
   const owner = await sessions.open(decode(SessionId, "owner"));
   await sessions.open(decode(SessionId, "other"));
   const parent = await owner.createConversation(form({ ...selection, environment: "test-guest" }));
@@ -550,7 +550,7 @@ await test("task-owned creation validates store ownership and an explicit local 
       tx.createTask(CompactionTask, { reason: "manual" }, { ownership: { kind: "conversation" } }),
     context,
   );
-  const server = await serve(sessions, { port: 0 });
+  const server = await serve(sessions, { auth, port: 0 });
   t.after(() => server.close());
   const body = () => form({ ownership: "task", taskId: String(task), environment: "local" });
   const rejected = await fetch(`${server.origin}/api/s/other/createConversation`, {
@@ -730,8 +730,8 @@ await test(
   async (t) => {
     const { request } = await import("node:http");
     const { serve } = await import("../src/server.ts");
-    const { sessions } = await sessionsFixture(t);
-    const server = await serve(sessions, { port: 0 });
+    const { sessions, auth } = await sessionsFixture(t);
+    const server = await serve(sessions, { auth, port: 0 });
     t.after(() => server.close());
     const response = Promise.withResolvers<number | undefined>();
     const incoming = request(
@@ -768,9 +768,9 @@ await test("shutdown settles pending opens and rejects further ownership acquisi
 
 await test("reserved action names remain valid session identities and transport envelopes carry no read arguments", async (t) => {
   const { serve } = await import("../src/server.ts");
-  const { sessions } = await sessionsFixture(t);
+  const { sessions, auth } = await sessionsFixture(t);
   await sessions.open(decode(SessionId, "open"));
-  const server = await serve(sessions, { port: 0 });
+  const server = await serve(sessions, { auth, port: 0 });
   t.after(() => server.close());
   const session = await fetch(`${server.origin}/api/s/open`);
   assert.equal(session.status, 200);

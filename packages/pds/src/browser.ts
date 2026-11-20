@@ -42,7 +42,9 @@ document.addEventListener("datastar-fetch", (event) => {
         : "Disconnected. Reconnecting…";
   } else if (el !== stream && (type === "error" || type === "retries-failed")) {
     document.getElementById("notice")!.textContent =
-      "Request failed. Your draft has been kept; check the conversation before resending.";
+      document.getElementById("page")?.dataset.view === "login"
+        ? "Request failed. Reload login status before trying again."
+        : "Request failed. Your draft has been kept; check the conversation before resending.";
   }
 });
 const attachments = document.querySelector<HTMLInputElement>("#attachments");

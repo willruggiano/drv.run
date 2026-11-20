@@ -13,6 +13,7 @@ import {
 import type * as D from "@earendil-works/pi-durable";
 import { ConversationId, EntryId, TaskId, SessionId, decode, InvalidRequest } from "./identity.ts";
 import { observe, Projection, type Patch } from "./watch.ts";
+import { LoginError, type ModelAuth } from "./login.ts";
 import {
   context,
   field,
@@ -35,6 +36,8 @@ import {
   modelsPage,
   sessionPath,
   conversationPath,
+  loginPage,
+  loginPanel,
 } from "./render.ts";
 
 // Datastar v1.0.5 wire format: https://data-star.dev/reference/sse_events
@@ -56,8 +59,9 @@ const assets = new Map<string, readonly [string, string]>([
 
 export async function serve(
   sessions: Application,
-  options: { port?: number; host?: string; origin?: string } = {},
+  options: { auth: ModelAuth; port?: number; host?: string; origin?: string },
 ) {
+  assert.equal(sessions.models, options.auth.models, "Sessions and login must share model auth");
   const base = new URL(options.origin ?? "http://pds.invalid/");
   assert(
     ["http:", "https:"].includes(base.protocol) &&
@@ -69,6 +73,7 @@ export async function serve(
   );
   if (base.pathname.at(-1) !== "/") base.pathname += "/";
   const prefix = base.pathname.slice(0, -1);
+  const loginRoute = new URLPattern("login/:action?", base.href);
   const sessionRoute = new URLPattern("api/s/:session", base.href);
   const sessionAction = new URLPattern("api/s/:session/:action", base.href);
   const conversationRoute = new URLPattern("api/s/:session/c/:conversation/:action?", base.href);
@@ -161,6 +166,69 @@ export async function serve(
       method(request, response, ["GET"]);
       response.writeHead(200, { "Content-Type": asset[1] });
       response.end(await readFile(new URL(asset[0], import.meta.url)));
+      return;
+    }
+    const loginMatch = loginRoute.exec(url.href);
+    if (loginMatch) {
+      response.setHeader("Referrer-Policy", "same-origin");
+      const action = loginMatch.pathname.groups.action;
+      const auth = options.auth;
+      // Disconnecting observation must not cancel the owner-scoped login itself.
+      const abort = new AbortController();
+      response.once("close", () => abort.abort());
+      const view = (provider?: string) => auth.view(provider, { signal: abort.signal });
+      if (!action || action === "status") {
+        method(request, response, ["GET"]);
+        queryFields(request, url, ["provider"]);
+        const provider = url.searchParams.get("provider") ?? undefined;
+        if (provider !== undefined && !auth.models.getProvider(provider))
+          throw new InvalidRequest("Select an available provider.");
+        const snapshot = await view(provider);
+        if (action === "status") sse(response, patch(loginPanel(snapshot, prefix)));
+        else html(response, loginPage(snapshot, prefix));
+        return;
+      }
+      if (!["start", "respond", "cancel", "logout"].includes(action))
+        throw new HttpError(404, "Not found.");
+      method(request, response, ["POST"]);
+      queryFields(request, url, []);
+      const form = await formData(request, url);
+      fields(
+        form,
+        action === "start"
+          ? ["provider", "method"]
+          : action === "respond"
+            ? ["provider", "attempt", "prompt", "answer"]
+            : action === "cancel"
+              ? ["provider", "attempt"]
+              : ["provider"],
+      );
+      const provider = field(form, "provider");
+      if (!auth.models.getProvider(provider))
+        throw new InvalidRequest("Select an available provider.");
+      let notice = "";
+      try {
+        if (action === "start") auth.start(provider, field(form, "method"));
+        else if (action === "respond")
+          auth.respond(
+            provider,
+            field(form, "attempt"),
+            field(form, "prompt"),
+            field(form, "answer"),
+          );
+        else if (action === "cancel") await auth.cancel(provider, field(form, "attempt"));
+        else await auth.logout(provider);
+      } catch (error) {
+        if (!(error instanceof LoginError)) throw error;
+        notice = error.message;
+      }
+      if (request.headers["datastar-request"] === "true")
+        sse(response, patch(alert(notice)) + patch(loginPanel(await view(provider), prefix)));
+      else if (notice) html(response, loginPage(await view(provider), prefix, notice));
+      else
+        response
+          .writeHead(303, { Location: `${prefix}/login?${new URLSearchParams({ provider })}` })
+          .end();
       return;
     }
     if (url.pathname === base.pathname) {
@@ -465,6 +533,7 @@ export async function serve(
         server.close((error) => (error ? reject(error) : resolve())),
       );
       server.closeAllConnections();
+      await options.auth.close();
       await closed;
       await Promise.allSettled([...inFlight]);
     },

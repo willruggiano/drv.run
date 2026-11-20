@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import type * as A from "@earendil-works/pi-ai";
-import { hostModels } from "../src/auth.ts";
+import { hostAuth } from "../src/auth.ts";
 
 const noAmbient = { env: async () => undefined, fileExists: async () => false };
 const expired: A.OAuthCredential = {
@@ -35,7 +35,7 @@ const fresh = (): A.OAuthCredential => ({
 });
 
 function oauth(
-  models: ReturnType<typeof hostModels>,
+  models: A.MutableModels,
   refresh: (current: A.OAuthCredential, signal: AbortSignal) => Promise<A.OAuthCredential>,
 ) {
   const provider = models.getProvider("openai");
@@ -80,7 +80,7 @@ async function fixture(t: TestContext, filename = "auth.json") {
     path,
     save,
     read,
-    models: hostModels(path, noAmbient),
+    models: hostAuth(path, noAmbient).models,
   };
 }
 
@@ -191,7 +191,7 @@ await test("default shared credential selection honors the CLI home and agent-di
 
 await test("storage failures preserve diagnostics without stale credentials or ambient fallback", async (t) => {
   const f = await fixture(t);
-  const models = hostModels(f.path, { ...noAmbient, env: async () => "ambient-must-not-win" });
+  const { models } = hostAuth(f.path, { ...noAmbient, env: async () => "ambient-must-not-win" });
   await f.save({ openai: { type: "api_key", key: "stored" } });
   assert.equal((await models.getAuth("openai"))?.auth.apiKey, "stored");
   for (const [data, failureType] of [
