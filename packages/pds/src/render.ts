@@ -7,6 +7,7 @@ import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durabl
 import type * as D from "@earendil-works/pi-durable";
 import type { SessionId } from "./identity.ts";
 import { Env } from "./harness/index.ts";
+import { active, type LoginView } from "./login.ts";
 import { context, environmentId, modelKey, type Session, type Application } from "./application.ts";
 
 export const escape = (value: unknown): string =>
@@ -157,7 +158,7 @@ export async function sessionList(app: Application, prefix: string) {
 export async function home(app: Application, prefix: string): Promise<string> {
   return page(
     "Sessions",
-    `<header id="app-header">${alert()}</header><main id="main-area"><section id="landing" class="pane" aria-label="Sessions">${await sessionList(app, prefix)}<form id="open-session" method="post" action="${escape(prefix)}/api/s/open"><label>Session ID <input name="sessionId" maxlength="128" required></label><button>Open session</button></form><form method="post" action="${escape(prefix)}/api/s/open"><button>New empty session</button></form><a href="${escape(prefix)}/api/models">Models</a></section></main>${await creationForm(app, prefix)}`,
+    `<header id="app-header">${alert()}</header><main id="main-area"><section id="landing" class="pane" aria-label="Sessions">${await sessionList(app, prefix)}<form id="open-session" method="post" action="${escape(prefix)}/api/s/open"><label>Session ID <input name="sessionId" maxlength="128" required></label><button>Open session</button></form><form method="post" action="${escape(prefix)}/api/s/open"><button>New empty session</button></form><a href="${escape(prefix)}/api/models">Models</a><a href="${escape(prefix)}/login">Model login</a></section></main>${await creationForm(app, prefix)}`,
     "home",
     prefix,
   );
@@ -420,4 +421,94 @@ export async function metadata(
   const hit = cacheInput ? `CH${((100 * total.read) / cacheInput).toFixed(1)}%` : "CH—";
   return `<div id="footer-stats"><span>↑${format(total.input)}</span><span>↓${format(total.output)}</span><span>R${format(total.read)}</span><span>${hit}</span><span>$${total.cost.toFixed(3)}</span></div>
     <span id="footer-context" class="context-usage" title="Last model request / selected model context window">${requestSize}</span>`;
+}
+
+export function loginPage(view: LoginView, prefix: string, notice = ""): string {
+  const address = `${prefix}/login`;
+  const status = `${address}/status?${new URLSearchParams({ provider: view.selected?.id ?? "" })}`;
+  return page(
+    "Model login",
+    `
+    <header id="app-header"><div class="bar"><a href="${escape(prefix)}/">Sessions</a><h1 class="header-title">Model login</h1></div>${alert(notice)}</header>
+    <main id="main-area"><section class="pane" id="model-login">
+      <form method="get" action="${escape(address)}">
+        <label for="login-provider">Provider</label><select id="login-provider" name="provider" required><option value="" disabled${view.selected ? "" : " selected"}>Select a provider</option>${view.providers.map(({ id, name }) => option(id, name, view.selected?.id ?? "")).join("")}</select><button>Show provider</button>
+      </form>
+      <p>Login attempts expire after 15 minutes, or earlier when the provider expires them. Reloading or opening another tab continues the same attempt.</p>
+      <p>Loopback browser callbacks run on the server, not this browser's computer. Use a device-code or manual-code option when the provider offers one.</p>
+      <div${view.selected ? ` data-on-interval__duration.1s="@get(${js(status)}, {retry: 'never'})"` : ""}>${loginPanel(view, prefix)}</div>
+    </section></main>`,
+    "login",
+    prefix,
+  );
+}
+
+export function loginPanel(view: LoginView, prefix: string): string {
+  const selected = view.selected;
+  if (!selected) return '<section id="login-panel"></section>';
+  const form = (action: string, fields: string, label: string, id: string, disabled = false) => `
+    <form id="${escape(id)}" method="post" action="${escape(prefix)}/login/${action}"${action === "respond" ? " data-ignore-morph" : ""}
+      data-on:submit="@post(${js(`${prefix}/login/${action}`)}, {contentType: 'form', retry: 'never'})">
+      <input type="hidden" name="provider" value="${escape(selected.id)}">${fields}<button${disabled ? " disabled" : ""}>${label}</button>
+    </form>`;
+  const attempt = selected.attempt;
+  const busy = (attempt && active(attempt)) || selected.logout === "pending";
+  const status = selected.unavailable
+    ? '<p id="login-storage" role="alert" data-state="unavailable">Credential status is unavailable. Check storage before trying again.</p>'
+    : `<p id="login-storage" data-state="${selected.stored ?? "absent"}">Stored login: ${selected.stored === "oauth" ? "OAuth" : selected.stored === "api_key" ? "API key" : "None"}.</p>
+       <p id="login-authorization" data-authorized="${selected.authorized}">${selected.authorized ? (selected.stored ? "Authorization is available." : "Authorization is available without a stored login (ambient configuration).") : "Authorization is not configured."}</p>`;
+  const states = {
+    pending: "Login in progress.",
+    saving: "Saving credentials. Cancellation now waits for the save outcome.",
+    succeeded: "Login saved.",
+    cancelled: "Login cancelled before saving.",
+    expired: "Login expired before saving.",
+    failed: "Login failed. Check stored login status before trying again.",
+  };
+  const prompt = attempt?.prompt;
+  const control =
+    prompt &&
+    (prompt.request.type === "select"
+      ? `<select id="login-answer-${prompt.id}" name="answer" required>${prompt.request.options.map(({ id, label, description }) => option(id, description ? `${label} — ${description}` : label, "")).join("")}</select>`
+      : `<input id="login-answer-${prompt.id}" name="answer" type="${prompt.request.type === "text" ? "text" : "password"}" autocomplete="off" spellcheck="false" placeholder="${escape(prompt.request.placeholder ?? "")}">`);
+  return `<section id="login-panel" aria-label="${escape(selected.name)}">
+    <h2>${escape(selected.name)}</h2>${status}
+    ${form("start", `<label for="login-method">Login method</label><select id="login-method" name="method" required${busy ? " disabled" : ""}>${selected.methods.map(({ type, name }) => option(type, name, "")).join("")}</select>`, selected.stored ? "Replace login" : "Log in", "login-start", !!busy || !selected.methods.length)}
+    ${
+      attempt
+        ? `<section id="login-attempt" data-attempt="${attempt.id}" data-state="${attempt.state}">
+      <p role="status">${states[attempt.state]}</p>
+      <div id="login-events">${attempt.events.map(loginEvent).join("")}</div>
+      ${prompt ? form("respond", `<input type="hidden" name="attempt" value="${attempt.id}"><input type="hidden" name="prompt" value="${prompt.id}"><label for="login-answer-${prompt.id}">${escape(prompt.request.message)}</label>${control}`, "Continue", `login-prompt-${prompt.id}`) : ""}
+      ${active(attempt) ? form("cancel", `<input type="hidden" name="attempt" value="${attempt.id}">`, "Cancel login", "login-cancel") : ""}
+    </section>`
+        : ""
+    }
+    <p id="login-logout" role="status" data-state="${selected.logout}">${{ idle: "", pending: "Removing stored login…", succeeded: "Stored login removed.", failed: "Removal failed. Check stored login status before trying again." }[selected.logout]}</p>
+    ${form("logout", "", "Log out", "login-remove", selected.logout === "pending")}
+    <p>Logout removes this provider's shared Pi CLI credential. It does not revoke upstream authorization or stop already-authorized requests. Ambient credentials and later CLI logins can still authorize requests.</p>
+  </section>`;
+}
+
+function loginEvent(event: A.AuthEvent): string {
+  const link = (url: string, label: string) => {
+    try {
+      const target = new URL(url);
+      if (["http:", "https:"].includes(target.protocol) && !target.username && !target.password)
+        return `<a href="${escape(target.href)}" target="_blank" rel="noopener noreferrer">${escape(label)}</a>`;
+    } catch {
+      /* Invalid upstream links are inert. */
+    }
+    return "<span>Provider link unavailable.</span>";
+  };
+  switch (event.type) {
+    case "info":
+      return `<p>${escape(event.message)}</p>${event.links?.map((item) => link(item.url, item.label ?? "Open provider page")).join(" ") ?? ""}`;
+    case "auth_url":
+      return `<p>${escape(event.instructions ?? "Continue on the provider page.")}</p>${link(event.url, "Open authorization page")}`;
+    case "device_code":
+      return `<p>Device code: <code id="login-device-code">${escape(event.userCode)}</code></p>${link(event.verificationUri, "Open device verification")}`;
+    case "progress":
+      return `<p role="status">${escape(event.message)}</p>`;
+  }
 }

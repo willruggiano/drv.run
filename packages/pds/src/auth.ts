@@ -24,19 +24,16 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import type * as A from "@earendil-works/pi-ai";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { ModelAuth } from "./login.ts";
 
-export function hostModels(
+export function hostAuth(
   path = join(
     normalizePath(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi/agent")),
     "auth.json",
   ),
   authContext?: A.AuthContext,
 ) {
-  return builtinModels({
-    credentials: credentialStore(normalizePath(path)),
-    ...(authContext ? { authContext } : {}),
-  });
+  return new ModelAuth(credentialStore(normalizePath(path)), authContext);
 }
 
 function normalizePath(path: string): string {

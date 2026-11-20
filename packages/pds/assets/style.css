@@ -247,3 +247,7 @@ img { max-width: 100%; height: auto; }
 #configuration-thinking { flex-shrink: 0; }
 
 #input-toggle { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; cursor: pointer; }
+#model-login { overflow-wrap: anywhere; }
+#model-login form { display: grid; gap: 8px; margin-block: 12px; }
+#model-login button { justify-self: start; }
+#model-login input:focus { outline: 1px solid var(--primary); }

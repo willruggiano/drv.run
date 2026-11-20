@@ -8,8 +8,8 @@ assert(path);
 assert(typeof process.send === "function");
 
 if (mode !== "cli") {
-  const { hostModels } = await import("../src/auth.ts");
-  const models = hostModels(mode === "default" ? undefined : path, {
+  const { hostAuth } = await import("../src/auth.ts");
+  const { models } = hostAuth(mode === "default" ? undefined : path, {
     env: async () => undefined,
     fileExists: async () => false,
   });

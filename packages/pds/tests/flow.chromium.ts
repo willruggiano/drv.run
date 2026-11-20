@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -15,7 +14,7 @@ import { AgentDoc, LiveDoc } from "@earendil-works/pi-durable";
 import { context, type Application } from "../src/application.ts";
 import { ConversationId, SessionId, decode } from "../src/identity.ts";
 import { serve } from "../src/server.ts";
-import { fixture, sessionsFixture, form } from "./fixtures.ts";
+import { fixture, sessionsFixture, form, servePrefixed } from "./fixtures.ts";
 
 const conversationRoute = new URLPattern({ pathname: "*/api/s/:session/c/:conversation" });
 async function selected(sessions: Application, url: string) {
@@ -35,8 +34,8 @@ await test(
   "home → selections → uploads → streaming → tools → compaction → /new → persisted session",
   { timeout: 60_000 },
   async (t) => {
-    const { sessions, faux, directory } = await sessionsFixture(t);
-    const server = await serve(sessions, { port: 0 });
+    const { sessions, auth, faux, directory } = await sessionsFixture(t);
+    const server = await serve(sessions, { auth, port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -204,8 +203,8 @@ await test(
   "disconnects do not cancel runs; reconnect, stop, errors, and rejected commands keep usable state",
   { timeout: 60_000 },
   async (t) => {
-    const { sessions, faux } = await sessionsFixture(t);
-    const server = await serve(sessions, { port: 0 });
+    const { sessions, auth, faux } = await sessionsFixture(t);
+    const server = await serve(sessions, { auth, port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -287,8 +286,8 @@ await test(
   "mobile creation sends attachments; streaming preserves scroll and collapsed composer",
   { timeout: 60_000 },
   async (t) => {
-    const { sessions, faux } = await sessionsFixture(t);
-    const server = await serve(sessions, { port: 0 });
+    const { sessions, auth, faux } = await sessionsFixture(t);
+    const server = await serve(sessions, { auth, port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -383,8 +382,8 @@ await test(
   "stealth footer controls on desktop and mobile; /cd is not a model turn",
   { timeout: 60_000 },
   async (t) => {
-    const { sessions, app, faux, selection, directory } = await fixture(t);
-    const server = await serve(sessions, { port: 0 });
+    const { sessions, auth, app, faux, selection, directory } = await fixture(t);
+    const server = await serve(sessions, { auth, port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -481,7 +480,7 @@ await test(
   "bounded HTML history, native forms, and incremental patches preserve committed DOM",
   { timeout: 30_000 },
   async (t) => {
-    const { sessions, app, selection, faux } = await fixture(t);
+    const { sessions, auth, app, selection, faux } = await fixture(t);
     const conversation = await app.createConversation(form(selection));
     await conversation.commit(async (tx) => {
       for (let index = 0; index < 120; index++)
@@ -494,7 +493,7 @@ await test(
           ],
         });
     }, context);
-    const server = await serve(sessions, { port: 0 });
+    const server = await serve(sessions, { auth, port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -602,37 +601,8 @@ await test(
   "prefixed session lifecycle and metadata use native forms without secret model fields",
   { timeout: 60_000 },
   async (t) => {
-    const { createServer, request } = await import("node:http");
-    const { sessions, models, faux } = await sessionsFixture(t);
-    let upstream: URL | undefined;
-    const proxy = createServer((incoming, outgoing) => {
-      assert(upstream && incoming.url);
-      const forwarded = request(
-        new URL(incoming.url, upstream),
-        { method: incoming.method, headers: incoming.headers },
-        (response) => {
-          outgoing.writeHead(response.statusCode!, response.headers);
-          response.pipe(outgoing);
-        },
-      );
-      forwarded.on("error", () => outgoing.destroy());
-      outgoing.once("close", () => forwarded.destroy());
-      incoming.pipe(forwarded);
-    });
-    proxy.listen(0, "127.0.0.1");
-    await once(proxy, "listening");
-    const address = proxy.address();
-    assert(address && typeof address !== "string");
-    const base = `http://127.0.0.1:${address.port}/tools/pds/`;
-    const server = await serve(sessions, { port: 0, origin: base });
-    upstream = new URL(server.origin);
-    t.after(async () => {
-      proxy.closeAllConnections();
-      await new Promise<void>((resolve, reject) =>
-        proxy.close((error) => (error ? reject(error) : resolve())),
-      );
-      await server.close();
-    });
+    const { sessions, auth, models, faux } = await sessionsFixture(t);
+    const base = await servePrefixed(t, sessions, auth, "/tools/pds");
     const browser = await chromium.launch({
       executablePath:
         process.env.CHROMIUM_BINARY ??
