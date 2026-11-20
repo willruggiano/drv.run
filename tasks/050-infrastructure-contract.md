@@ -79,43 +79,86 @@ subsequent specification, not implemented behavior or permission to deploy.
   settings, rather than forcing an application-owned known-hosts path or
   host-key alias. This is not permission to disable host-key verification, and
   it does not initiate implementation during the map.
-- Discovery of available guest identities and their lifecycle is separate from
-  establishing an SSH connection. It must not expose deployment-specific
-  connection-file paths as application options.
+- SSH destination suggestions are separate from establishing a connection. A
+  discovery-directory setting must not become a connection-file path in an
+  application target or override native OpenSSH policy.
 
-### Discover drv.run instances through an optional PDS environment source
+### Discover SSH destinations through known-hosts filenames
 
-- An environment source supplies selectable environments and resolves their
-  identities. An execution environment implements execution and filesystem
-  operations for a selected environment. Keep these responsibilities distinct.
-- Deployment registers an optional drv.run environment source with PDS. This is
-  the narrowly scoped integration that populates the frontend environment
-  selector; generic PDS execution must not depend on drv.run.
-- Extend the existing drv.run CLI with machine-readable, unprivileged inventory
-  scoped to the calling host Unix owner. The PDS source translates that
-  inventory into environments. Do not parse human-formatted output or add an API
-  daemon for this purpose. Exact command syntax and record schema belong in the
-  specification.
-- Use a small PDS extension interface around its existing environment callback,
-  not a change to pi-durable's extension registry just to populate the selector.
-  The drv.run source reuses the SSH execution environment and the
-  deployment-owned OpenSSH configuration; it does not implement another
-  transport.
-- The source is read-only. It discovers available instances but does not create,
-  start, stop, or delete them. A saved selection that becomes unavailable
-  remains identifiable; it must never silently switch to local execution.
-- Push can independently consume the same drv.run inventory. It must not depend
-  on PDS or its environment-source interface.
+PDS knows only local and SSH targets. Discovery supplies suggestions, not
+instance identities, lifecycle state, readiness, or permission to execute.
 
-### Readiness and discovery failures
+```text
+trusted publisher -> ~/.ssh/known_hosts.d/<SSH destination>
+                                  |
+                       +----------+----------+
+                       |                     |
+                 PDS lists names       OpenSSH reads keys
+                       |                     |
+                    selector          selected connection
+```
 
-- Inventory distinguishes retained instances from ready instances. Only ready
-  instances are selectable. Ready means guest provisioning completed; it does
-  not guarantee that the next SSH connection succeeds.
-- An ordinary instance restart preserves its identity and saved PDS selection.
-  An unavailable selection remains identifiable under the source contract above.
-- Discovery errors must be visible and distinct from an empty inventory. Failure
-  of the drv.run source must not make other environment sources unusable.
+- Use a directory of ordinary known-hosts files, conventionally
+  `~/.ssh/known_hosts.d`. Each published filename is an SSH destination and is
+  used unchanged as its identifier and label. The local label is `local`.
+  Deployment may choose another directory; do not persist its path in an
+  execution target.
+- Native OpenSSH can select the corresponding trust file with:
+
+  ```sshconfig
+  Host *
+      UserKnownHostsFile ~/.ssh/known_hosts.d/%k
+  ```
+
+- `%k` is `HostKeyAlias` when configured, otherwise the original remote hostname
+  supplied to SSH. It is not the guest's OS hostname or necessarily an IP
+  address. A published host-key alias must also be an SSH destination:
+  `HostKeyAlias` alone does not establish a `Host` alias or connection route.
+- PDS lists immediate filenames, including named symlinks, without reading keys,
+  following configuration includes, evaluating `ssh -G`, or inspecting drv.run's
+  private runtime layout. It does not infer identities from naming patterns or
+  call `drv.run list --json`. No fish dependency, SSH configuration interpreter,
+  source registry, or identity resolver is needed.
+- Retain the existing `EnvTarget` and environment callback. Selection contains
+  only local or SSH with `host`. Manual and saved selections work independently
+  of discovery; additions, removals, errors, and instance restarts do not clear,
+  remap, or approve them. SSH failure never falls back to local execution.
+- Missing or disabled discovery supplies no suggestions. Other directory-read
+  failures remain visible and do not disable local or manual SSH selection.
+  Directory membership is neither readiness nor a promise of connection success.
+  PDS must not check membership before acquiring an environment.
+
+### Publish trust files independently of PDS
+
+- The owner or another trusted provisioner creates the directory and publishes
+  real known-hosts records atomically, as files or named links to existing
+  records. These are trust files, not empty discovery markers. Only trusted
+  writers may modify them. PDS is a reader, not a key-enrollment service.
+- drv.run can publish `drv.run.ID` using the guest host key it already owns.
+  This is a generic SSH interface, with no PDS dependency or
+  application-specific schema. OpenSSH remains responsible for route, user,
+  identity, and trust.
+- Publication and removal belong to the producer. Whether entries survive a
+  stopped instance is producer policy, not PDS policy. Do not infer readiness
+  from either choice. Removing a suggestion does not remove a saved selection;
+  no retained instance state or keys may be discarded as part of this change.
+- Other provisioners can publish the same interface. An ordinary interactive SSH
+  client can enroll a key after explicit confirmation when the parent directory
+  exists. PDS remains noninteractive with strict host-key checking; it neither
+  scans for nor accepts unknown keys.
+- Owner-scoped `drv.run list --json` remains the separate lifecycle inventory
+  interface for push and administrative consumers. Preserve its versioned schema
+  and readiness semantics; PDS does not consume it.
+
+Authority: [OpenSSH 10.6p1 configuration][openssh-config], especially
+`UserKnownHostsFile`, `HostKeyAlias`, `StrictHostKeyChecking`, and `TOKENS`. The
+existing [guest-key producer](../nixosModules/host/pre.sh) and
+[SSH routing configuration](../nixosModules/host/ssh.conf) establish the drv.run
+publication inputs. The guest's [OS hostname](../nixosModules/guest/default.nix)
+is separate from its SSH destination.
+
+[openssh-config]:
+  https://github.com/openssh/openssh-portable/blob/V_10_6_P1/ssh_config.5
 
 ### Guest-file integration through systemd
 
@@ -247,19 +290,19 @@ Export modules through each package's `passthru.services`, with these roles:
 - [Guest seed and SSH identity publication](../nixosModules/host/pre.sh) and
   [provisioning completion](../nixosModules/host/post.sh).
 - [Owner-local inventory](../nixosModules/host/command.sh) and
-  [administrative CLI](../nixosModules/host/cli.sh) already report retained
-  instances and systemd state, currently as human-formatted text.
+  [administrative CLI](../nixosModules/host/cli.sh) own lifecycle reporting,
+  independently of PDS suggestions.
 - [Guest core context](../nixosModules/guest/default.nix).
 - [Mitm deployment](../nixosModules/host/mitm-proxy.nix) and
   [guest configuration](../nixosModules/guest/mitm-proxy.nix).
 - [Notification deployment](../nixosModules/guest/notifications.nix) and
   [legacy frontend service](../nixosModules/pi.nix).
-- [PDS environment discovery](../packages/pds/src/application.ts) currently
-  reconstructs connection-file paths. The [SSH wrapper][pds-ssh] delegates to
-  pi-env 1.5.2, whose [SSH implementation][pi-env-ssh] requires an explicit
-  known-hosts file and host-key alias and passes them as SSH command-line
-  options. Those are current integration constraints, not the selected public
-  contract.
+- [PDS environment callback](../packages/pds/src/application.ts), [SSH
+  wrapper][pds-ssh], and
+  [package-applied native OpenSSH patch](../packages/pds/pi-env-native-openssh.patch)
+  define the application boundary. The pinned [pi-env SSH
+  implementation][pi-env-ssh] is the upstream reference, not a replacement for
+  the package-applied patch.
 - [PDS's environment callback](../packages/pds/src/application.ts) already
   supplies [the selector](../packages/pds/src/render.ts). In pi-durable 1.5.2's
   [interfaces][pi-durable-types], `Extension` registers harness code, while
