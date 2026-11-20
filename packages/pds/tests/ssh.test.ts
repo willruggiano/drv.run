@@ -192,6 +192,19 @@ Host *
       );
     }
 
+    await t.test("empty trust overrides defer to native OpenSSH configuration", async (t) => {
+      const { connection } = await connectSsh({
+        host: "global-trust",
+        knownHostsFile: "",
+        hostKeyAlias: "",
+      });
+      t.after(() => connection.close());
+      assert.equal((await connection.info()).home, remote);
+      connection.close();
+      await Promise.all(exits);
+      assert.equal(children.size, 0);
+    });
+
     for (const host of ["unknown", "changed"]) {
       await t.test(
         `${host}: strict verification overrides permissive config without prompts or execution`,

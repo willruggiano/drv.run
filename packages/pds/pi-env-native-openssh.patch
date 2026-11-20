@@ -12,7 +12,7 @@
  export function sshArguments(target, strictHostKeys = true, knownHostsFile = target.knownHostsFile) {
      checkField("host", target.host);
 -    checkField("host key alias", target.hostKeyAlias);
-+    if (target.hostKeyAlias !== undefined)
++    if (target.hostKeyAlias)
 +        checkField("host key alias", target.hostKeyAlias);
      if (target.user !== undefined)
          checkField("user", target.user);
@@ -25,14 +25,14 @@
 -        ...option("GlobalKnownHostsFile=none"),
 -        ...option("HashKnownHosts=no"),
 -        ...option(`HostKeyAlias=${target.hostKeyAlias}`),
-+        ...(knownHostsFile === undefined
-+            ? []
-+            : [
++        ...(knownHostsFile
++            ? [
 +                ...option(`UserKnownHostsFile=${configPath("known hosts file", knownHostsFile)}`),
 +                ...option("GlobalKnownHostsFile=none"),
 +                ...option("HashKnownHosts=no"),
-+            ]),
-+        ...(target.hostKeyAlias === undefined ? [] : option(`HostKeyAlias=${target.hostKeyAlias}`)),
++            ]
++            : []),
++        ...(target.hostKeyAlias ? option(`HostKeyAlias=${target.hostKeyAlias}`) : []),
          ...(target.user === undefined ? [] : ["-l", target.user]),
          ...(target.port === undefined ? [] : ["-p", String(target.port)]),
          ...(target.identityFile === undefined
@@ -41,7 +41,7 @@
      });
  }
 +function requireManagedHostKeys(target) {
-+    if (target.knownHostsFile === undefined || target.hostKeyAlias === undefined)
++    if (!target.knownHostsFile || !target.hostKeyAlias)
 +        throw new Error("Host-key management requires knownHostsFile and hostKeyAlias");
 +    configPath("known hosts file", target.knownHostsFile);
 +    checkField("host key alias", target.hostKeyAlias);
