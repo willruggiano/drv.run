@@ -1,18 +1,9 @@
-import type { Context } from "@earendil-works/chord/context";
-import {
-  Harness,
-  createRegistry,
-  defineExtension,
-  section,
-  type HarnessOptions,
-  type HarnessSettings,
-  type Storage,
-} from "@earendil-works/pi-durable";
+import type * as C from "@earendil-works/chord/context";
+import { Harness, createRegistry, defineExtension, section } from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import {
-  createCodemodeExtension,
-  type CodemodeToolOptions,
-} from "@earendil-works/pi-durable/codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import type * as DC from "@earendil-works/pi-durable/codemode";
 import { createConversationExtension } from "./conversations.ts";
 import { createContextExtension } from "./context.ts";
 import { createWebExtension } from "./web.ts";
@@ -22,18 +13,18 @@ import { Env } from "./env.ts";
 export { Review } from "./review.ts";
 export { Env, SshExecutionEnv } from "./env.ts";
 
-type Options = Omit<HarnessOptions, "registry" | "settings"> & {
+type Options = Omit<D.HarnessOptions, "registry" | "settings"> & {
   readonly parallelApiKeyFile?: string | undefined;
-  readonly settings?: Omit<HarnessSettings, "extensions">;
+  readonly settings?: Omit<D.HarnessSettings, "extensions">;
   /** Opt-in prototype. The caller owns the sandbox and closes it after the harness. */
-  readonly codemode?: CodemodeToolOptions["sandbox"];
+  readonly codemode?: DC.CodemodeToolOptions["sandbox"];
 };
 
 export async function openHarness(
-  storage: Storage,
+  storage: D.Storage,
   options: Options,
-  context: Context,
-): Promise<Harness> {
+  context: C.Context,
+): Promise<D.Harness> {
   const registry = createRegistry();
   registry.install(CodingTools);
   registry.install(

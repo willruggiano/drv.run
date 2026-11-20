@@ -9,7 +9,7 @@ import {
   withAbortSignal,
 } from "@earendil-works/chord/context";
 import { Type } from "typebox";
-import type { TranscriptContext } from "@earendil-works/pi-ai";
+import type * as A from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
@@ -24,19 +24,15 @@ import {
   defineExtension,
   defineTool,
   hook,
-  type ConversationId,
-  type ConversationHandle,
-  type ToolHooks,
-  type JsonObject,
-  type Storage,
 } from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createConversationExtension } from "../src/harness/conversations.ts";
 import { openHarness } from "../src/harness/index.ts";
 
 const context = BACKGROUND_CONTEXT;
-const call = (name: string, args: JsonObject) =>
+const call = (name: string, args: D.JsonObject) =>
   fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });
 const done = () => fauxAssistantMessage("Done.");
 const fork = `
@@ -44,21 +40,21 @@ const fork = `
   const at = view.entries.findLast(e => e.kind === "pi.user").id;
 `;
 
-async function fixture(t: TestContext, hooks: Partial<ToolHooks> = {}) {
+async function fixture(t: TestContext, hooks: Partial<D.ToolHooks> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "conversation-tools-"));
   const sandbox = new CodemodeSandbox({ timeoutMs: 20_000 });
   const faux = fauxProvider({ models: [{ id: "test" }] });
   const models = createModels();
   models.setProvider(faux.provider);
   const scripts = new Map<string, string>();
-  const values: { conversationId: ConversationId; value: unknown }[] = [];
+  const values: { conversationId: D.ConversationId; value: unknown }[] = [];
   const held = Promise.withResolvers<void>();
   let holding = false;
   let cancelled = false;
-  let harness: Harness;
-  let storage: Storage;
+  let harness: D.Harness;
+  let storage: D.Storage;
   faux.setResponses(
-    Array.from({ length: 100 }, () => (request: TranscriptContext) => {
+    Array.from({ length: 100 }, () => (request: A.TranscriptContext) => {
       if (request.messages.at(-1)?.role === "toolResult") return done();
       const input = request.messages.findLast((message) => message.role === "user")?.content;
       if (input === "hold") return call("hold", {});
@@ -470,7 +466,7 @@ await test(
 
 await test("tool context reads match the public view and obey caller and invocation cancellation", async (t) => {
   const f = await fixture(t);
-  let handle: ConversationHandle | undefined;
+  let handle: D.ConversationHandle | undefined;
   f.registry.install(
     defineExtension({
       name: "context-lifetime",
@@ -502,7 +498,7 @@ await test(
   { timeout: 30_000 },
   async (t) => {
     const f = await fixture(t);
-    const acquired = Promise.withResolvers<ConversationHandle>();
+    const acquired = Promise.withResolvers<D.ConversationHandle>();
     const finishTool = Promise.withResolvers<void>();
     const scanning = Promise.withResolvers<void>();
     const releaseScan = Promise.withResolvers<void>();
@@ -530,16 +526,20 @@ await test(
     const handle = await acquired.promise;
     const scanEntries = f.storage.scanEntries.bind(f.storage);
     let held = false;
-    t.mock.method(f.storage, "scanEntries", async (...args: Parameters<Storage["scanEntries"]>) => {
-      const page = await scanEntries(...args);
-      // Hold the scan off the Session line, after the context bounds were captured.
-      if (!held && args[0].maxEntryId !== undefined) {
-        held = true;
-        scanning.resolve();
-        await releaseScan.promise;
-      }
-      return page;
-    });
+    t.mock.method(
+      f.storage,
+      "scanEntries",
+      async (...args: Parameters<D.Storage["scanEntries"]>) => {
+        const page = await scanEntries(...args);
+        // Hold the scan off the Session line, after the context bounds were captured.
+        if (!held && args[0].maxEntryId !== undefined) {
+          held = true;
+          scanning.resolve();
+          await releaseScan.promise;
+        }
+        return page;
+      },
+    );
     const reading = handle.context(context);
     const rejected = assert.rejects(reading);
     try {

@@ -25,6 +25,7 @@ in
   stdenvNoCC.mkDerivation (finalAttrs: {
     pname = manifest.name;
     inherit (manifest) version;
+    outputs = ["out" "benchmark"];
     src = lib.fileset.toSource {
       root = ./.;
       fileset = lib.fileset.unions [
@@ -33,7 +34,9 @@ in
         ./.npmrc
         ./tsconfig.json
         ./tsconfig.build.json
+        ./tsconfig.bench.json
         ./src
+        ./bench
         ./tests
         ./test-utils
         ./assets/style.css
@@ -51,6 +54,7 @@ in
     buildPhase = ''
       runHook preBuild
       npm run build
+      npm run build:bench
       runHook postBuild
     '';
     doCheck = true;
@@ -76,6 +80,11 @@ in
       makeWrapper ${nodejs}/bin/node "$out/bin/pds" \
         --add-flags "$out/lib/pds/dist/index.js" \
         --prefix PATH : ${lib.makeBinPath [openssh]}
+      mkdir -p "$benchmark/lib/pds/bench"
+      cp bench/dist/bench/index.{js,d.ts} "$benchmark/lib/pds/bench/"
+      ln -s "$out/lib/pds/dist" "$benchmark/lib/pds/src"
+      ln -s "$out/lib/pds/node_modules" "$benchmark/lib/pds/node_modules"
+      ln -s "$out/lib/pds/package.json" "$benchmark/lib/pds/package.json"
       runHook postInstall
     '';
     passthru = {
@@ -83,7 +92,7 @@ in
         name = "pds-bench";
         runtimeInputs = [nodejs];
         text = ''
-          exec node ${finalAttrs.finalPackage}/lib/pds/dist/bench.js "$@"
+          exec node ${finalAttrs.finalPackage.benchmark}/lib/pds/bench/index.js "$@"
         '';
       };
       tests.visual = stdenvNoCC.mkDerivation {

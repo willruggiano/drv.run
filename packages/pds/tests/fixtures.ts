@@ -4,8 +4,8 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { openApplication, type Environment } from "../src/application.ts";
+import { openApplication, type Application, type Environment } from "../src/application.ts";
+import { SessionId, decode } from "../src/identity.ts";
 
 export const form = (fields: Record<string, string>): FormData => {
   const result = new FormData();
@@ -13,7 +13,7 @@ export const form = (fields: Record<string, string>): FormData => {
   return result;
 };
 
-export async function fixture(t: TestContext) {
+export async function sessionsFixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "pds-"));
   const faux = fauxProvider({
     models: [
@@ -33,9 +33,10 @@ export async function fixture(t: TestContext) {
       target: { host: "test-guest", knownHostsFile: "/known_hosts", hostKeyAlias: "test-guest" },
     },
   ];
-  const open = async () =>
-    openApplication({
-      storage: await openNodeSqliteStorage(join(directory, "sessions.sqlite")),
+  const owners = new Set<Application>();
+  const open = async () => {
+    const sessions = await openApplication({
+      directory,
       models,
       environments: async () => environments,
       cwd: directory,
@@ -45,11 +46,33 @@ export async function fixture(t: TestContext) {
         progress: { partialIntervalMs: 0, outputIntervalMs: 0 },
       },
     });
-  const app = await open();
+    owners.add(sessions);
+    return sessions;
+  };
+  const sessions = await open();
   t.after(async () => {
-    await app.close();
+    await Promise.all([...owners].map((owner) => owner.close()));
     await rm(directory, { recursive: true, force: true });
   });
   const selection = { model: "faux/first", thinking: "off", cwd: directory, environment: "local" };
-  return { app, faux, models, directory, selection, environments, open };
+  return { sessions, faux, models, directory, selection, environments, open };
+}
+
+export async function fixture(t: TestContext) {
+  const result = await sessionsFixture(t);
+  const app = await result.sessions.open(decode(SessionId, "test"));
+  return {
+    ...result,
+    app,
+    database: join(
+      result.directory,
+      "sessions",
+      Buffer.from(app.id).toString("base64url"),
+      "store.sqlite",
+    ),
+    async open() {
+      await result.sessions.close();
+      return (await result.open()).open(decode(SessionId, "test"));
+    },
+  };
 }

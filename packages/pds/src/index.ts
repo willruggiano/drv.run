@@ -1,7 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { hostModels } from "./auth.ts";
 import { discoverEnvironments, openApplication } from "./application.ts";
 import { serve } from "./server.ts";
@@ -14,7 +13,7 @@ await mkdir(directory, { recursive: true, mode: 0o700 });
 const models = hostModels();
 await models.refresh();
 const app = await openApplication({
-  storage: await openNodeSqliteStorage(join(directory, "sessions.sqlite")),
+  directory,
   models,
   cwd: process.cwd(),
   environments: () =>
@@ -27,7 +26,7 @@ try {
   const server = await serve(app, {
     port: Number(process.env.PORT ?? 8082),
     host: process.env.HOST ?? "127.0.0.1",
-    ...(process.env.ORIGIN ? { origin: new URL(process.env.ORIGIN).origin } : {}),
+    ...(process.env.ORIGIN ? { origin: process.env.ORIGIN } : {}),
   });
   console.log(`pds: ${server.origin}`);
   await new Promise<void>((resolve) => {

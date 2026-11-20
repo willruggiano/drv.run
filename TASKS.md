@@ -92,6 +92,10 @@ findings are not an unresolved ticket or proof of compatibility.
   confirmed the original test seams before publication. The guest-file
   integration resolution has since been explicitly revised with the user;
   implementation ticket 03's amended scope and two test seams are approved.
+- Ticket 05 is separately authorized for implementation. Its session lifecycle
+  is in [[packages/pds/src/application.ts]] and scoped HTTP routes are in
+  [[packages/pds/src/server.ts]]. Deployment still requires operator
+  authorization.
 - Ticket 23 includes a review of guest profile and shell-activation conventions.
   Ticket 03 retains the existing Nix-managed development profile; no rename or
   conversion to a global package profile is required. See

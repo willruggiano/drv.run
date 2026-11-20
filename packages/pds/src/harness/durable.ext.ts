@@ -1,21 +1,21 @@
 import { Type } from "typebox";
 import { MODEL_THINKING_LEVELS } from "@earendil-works/pi-ai/providers/model-schema";
-import type { JsonValue } from "@earendil-works/chord/json";
-import type { ConversationId, EntryId, TaskId } from "@earendil-works/pi-durable";
+import type * as J from "@earendil-works/chord/json";
+import type * as D from "@earendil-works/pi-durable";
 
 // Brands are erased on the wire; validation establishes the numeric representation, not existence.
-export const EntryIdSchema = Type.Unsafe<EntryId>(
+export const EntryIdSchema = Type.Unsafe<D.EntryId>(
   Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
-export const ConversationIdSchema = Type.Unsafe<ConversationId>(
+export const ConversationIdSchema = Type.Unsafe<D.ConversationId>(
   Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
-export const TaskIdSchema = Type.Unsafe<TaskId>(
+export const TaskIdSchema = Type.Unsafe<D.TaskId>(
   Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
 
 // TypeBox truncates recursive static inference to any; retain the upstream recursive type.
-export const JsonValueSchema = Type.Unsafe<JsonValue>(
+export const JsonValueSchema = Type.Unsafe<J.JsonValue>(
   Type.Cyclic(
     {
       JsonValue: Type.Union([

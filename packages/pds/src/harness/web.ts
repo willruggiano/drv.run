@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import type { Context } from "@earendil-works/chord/context";
+import type * as C from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 
@@ -8,7 +8,7 @@ async function request(
   path: string | undefined,
   endpoint: "search" | "extract",
   body: object,
-  context: Context,
+  context: C.Context,
 ) {
   // Read on the host, never through api.env. Re-read so SOPS key rotation needs no restart.
   assert(path, "Configure PARALLEL_API_KEY_FILE on the host to use web tools.");

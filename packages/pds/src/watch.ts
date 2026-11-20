@@ -1,39 +1,32 @@
 import assert from "node:assert/strict";
 import { withAbortSignal } from "@earendil-works/chord/context";
-import type { ToolCall } from "@earendil-works/pi-ai";
-import type { Op } from "@earendil-works/chord/delta";
+import type * as A from "@earendil-works/pi-ai";
+import type * as Delta from "@earendil-works/chord/delta";
 import { copyJson } from "@earendil-works/chord/json";
-import { Watch, type WatchEnd } from "@earendil-works/chord/watch";
-import {
-  AgentDoc,
-  InboxDoc,
-  LiveDoc,
-  UsageDoc,
-  type Conversation,
-  type ConversationView,
-  type EntryRecord,
-  type Observation,
-} from "@earendil-works/pi-durable";
+import { Watch } from "@earendil-works/chord/watch";
+import type * as W from "@earendil-works/chord/watch";
+import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import { Env } from "./harness/index.ts";
-import { context, type Application } from "./application.ts";
+import { context, environmentId, type Session } from "./application.ts";
 import { regions } from "./render.ts";
 
 type State = {
-  view: ConversationView;
-  head: EntryRecord | null;
+  view: D.ConversationView;
+  head: D.EntryRecord | null;
   environment: string;
 };
 
 /** Native observation plus a head marker that survives window eviction. */
-export async function observe(app: Application, conversation: Conversation, signal: AbortSignal) {
+export async function observe(app: Session, conversation: D.Conversation, signal: AbortSignal) {
   const ctx = withAbortSignal(signal, context);
-  let view: ConversationView | undefined;
-  let environment = "local";
+  let view: D.ConversationView | undefined;
+  let environment = "";
   let environmentAdvanced = false;
   let state: State | undefined;
-  let output: Watch<State> | undefined;
-  let end: WatchEnd | undefined;
-  const observations: Pick<Observation<unknown>, "detach">[] = [];
+  let output: W.Watch<State> | undefined;
+  let end: W.WatchEnd | undefined;
+  const observations: Pick<D.Observation<unknown>, "detach">[] = [];
   const detach = () => {
     for (const observation of observations) observation.detach();
     signal.removeEventListener("abort", abort);
@@ -42,7 +35,7 @@ export async function observe(app: Application, conversation: Conversation, sign
     output?.abort();
     detach();
   };
-  const ended = (value: WatchEnd) => {
+  const ended = (value: W.WatchEnd) => {
     end = value;
     output?.end(value);
     detach();
@@ -63,7 +56,7 @@ export async function observe(app: Application, conversation: Conversation, sign
             if (op[0] !== "p" || op[1].length !== 1 || op[1][0] !== "entries") continue;
             for (const record of op[4]) {
               assert(record !== null && typeof record === "object" && !Array.isArray(record));
-              if (record.head !== undefined) head = record as EntryRecord & typeof record;
+              if (record.head !== undefined) head = record as D.EntryRecord & typeof record;
             }
           }
           const ops = call.ops.map(prefix);
@@ -85,7 +78,7 @@ export async function observe(app: Application, conversation: Conversation, sign
         advance(call, frameContext) {
           assert(call.kind === "value");
           environmentAdvanced = true;
-          environment = call.value.env?.host ?? "local";
+          environment = environmentId(call.value.env);
           if (!state) return;
           state = { ...state, environment };
           output!.advance(
@@ -104,7 +97,7 @@ export async function observe(app: Application, conversation: Conversation, sign
     );
     assert(env, "PDS conversations have an environment document");
     observations.push(env);
-    if (!environmentAdvanced) environment = env.value.env?.host ?? "local";
+    if (!environmentAdvanced) environment = environmentId(env.value.env);
     // Calls can precede acquisition resolution; the line read below selects the latest value.
     const watch = await conversation.commit(async (tx) => {
       const head = (await tx.latestHeadMarker(conversation.id)) ?? null;
@@ -124,7 +117,7 @@ export async function observe(app: Application, conversation: Conversation, sign
   }
 }
 
-function prefix(op: Op): Op {
+function prefix(op: Delta.Op): Delta.Op {
   assert(op[0] !== "r");
   const path = ["view", ...op[1]] as const;
   switch (op[0]) {
@@ -151,16 +144,18 @@ export class Projection {
   #last = -1;
   #html = new Map<string, string>();
   #tools = new Map<string, string>();
-  #calls = new Map<string, ToolCall>();
-  readonly chrome: {
+  #calls = new Map<string, A.ToolCall>();
+  readonly renderers: {
     configuration?(): Promise<Readonly<Record<string, string>>>;
-    metadata?(view: ConversationView): Promise<string>;
+    metadata?(view: D.ConversationView): Promise<string>;
   };
-  constructor(chrome: Projection["chrome"] = {}) {
-    this.chrome = chrome;
+  readonly address: string;
+  constructor(address: string, renderers: Projection["renderers"] = {}) {
+    this.address = address;
+    this.renderers = renderers;
   }
 
-  async update(state: State, ops?: readonly Op[]): Promise<Patch[]> {
+  async update(state: State, ops?: readonly Delta.Op[]): Promise<Patch[]> {
     const patches: Patch[] = [];
     const { view, head } = state;
     const changed = (...path: string[]) =>
@@ -177,7 +172,7 @@ export class Projection {
     };
     const baseline = this.#head === undefined || this.#head !== (head?.id ?? null);
     if (baseline) {
-      patches.push({ html: regions.baseline(view, head) });
+      patches.push({ html: regions.baseline(view, head, this.address) });
       this.#head = head?.id ?? null;
       this.#last = view.entries.at(-1)?.id ?? -1;
       this.#html.delete("live");
@@ -191,11 +186,7 @@ export class Projection {
       if (added.length) {
         const gap =
           view.before !== undefined && view.before > this.#last
-            ? regions.history(
-                view.conversation.id,
-                added[0]!.id,
-                this.#last < 0 ? undefined : this.#last,
-              )
+            ? regions.history(this.address, added[0]!.id, this.#last < 0 ? undefined : this.#last)
             : "";
         const tools = regions.tools(view, this.#calls);
         patches.push({
@@ -222,17 +213,17 @@ export class Projection {
       this.#calls = regions.calls(view, this.#calls);
     }
     if (
-      this.chrome.metadata &&
+      this.renderers.metadata &&
       (changed("view", "docs", UsageDoc.definition.kind) ||
         changed("view", "docs", AgentDoc.definition.kind) ||
         changed("view", "entries"))
     )
-      cached("metadata", await this.chrome.metadata(view));
+      cached("metadata", await this.renderers.metadata(view));
     if (
-      this.chrome.configuration &&
+      this.renderers.configuration &&
       (changed("view", "docs", AgentDoc.definition.kind) || changed("environment"))
     ) {
-      for (const [key, html] of Object.entries(await this.chrome.configuration()))
+      for (const [key, html] of Object.entries(await this.renderers.configuration()))
         cached(key, html);
     }
     return patches;

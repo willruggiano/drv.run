@@ -1,15 +1,11 @@
-import type { Context } from "@earendil-works/chord/context";
+import type * as C from "@earendil-works/chord/context";
 import { defineDoc } from "@earendil-works/pi-durable";
-import {
-  RemoteExecutionEnv,
-  sshArguments,
-  sshConnection,
-  type SshTarget,
-} from "@earendil-works/pi-env";
+import { RemoteExecutionEnv, sshArguments, sshConnection } from "@earendil-works/pi-env";
+import type * as E from "@earendil-works/pi-env";
 
-export const Env = defineDoc<{
-  env?: { type: "ssh" } & Omit<SshTarget, "ssh">;
-}>({
+export type EnvTarget = { type: "local" } | ({ type: "ssh" } & Omit<E.SshTarget, "ssh">);
+
+export const Env = defineDoc<{ env?: EnvTarget }>({
   kind: "app.env",
   version: 1,
   scope: "conversation",
@@ -22,7 +18,7 @@ export const Env = defineDoc<{
 /** One lazy SSH connection. The application owns cleanup, not document writes. */
 export class SshExecutionEnv extends RemoteExecutionEnv {
   constructor(options: {
-    target: Omit<SshTarget, "ssh">;
+    target: Omit<E.SshTarget, "ssh">;
     cwd: string;
     connect?: typeof sshConnection;
   }) {
@@ -44,7 +40,7 @@ export class SshExecutionEnv extends RemoteExecutionEnv {
     super({ connection, id: JSON.stringify(args), cwd: options.cwd });
   }
 
-  override async cleanup(context: Context): Promise<void> {
+  override async cleanup(context: C.Context): Promise<void> {
     try {
       await super.cleanup(context);
     } finally {

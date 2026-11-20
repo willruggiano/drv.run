@@ -8,12 +8,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { defineDoc, CompactionTask } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
-import {
-  Connection,
-  localDaemon,
-  RemoteExecutionEnv,
-  type SshConnectOptions,
-} from "@earendil-works/pi-env";
+import { Connection, localDaemon, RemoteExecutionEnv } from "@earendil-works/pi-env";
+import type * as E from "@earendil-works/pi-env";
 import * as api from "../src/harness/index.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -78,8 +74,8 @@ const sshTarget = {
 
 await test("SSH environments project targets, isolate connections, and keep file identity across cwd changes", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "ssh-env-"));
-  const targets: SshConnectOptions[] = [];
-  const connect = (target: SshConnectOptions) => {
+  const targets: E.SshConnectOptions[] = [];
+  const connect = (target: E.SshConnectOptions) => {
     targets.push(target);
     return { connection: new Connection({ command: [localDaemon()] }), remote: () => undefined };
   };
@@ -122,8 +118,8 @@ await test("minimal SSH targets use lazy upstream defaults and validate before c
   const env = new api.SshExecutionEnv({ target, cwd: "/workspace" });
   t.after(() => env.cleanup(context));
   assert(env.connection instanceof Connection);
-  const calls: SshConnectOptions[] = [];
-  const connect = (value: SshConnectOptions) => {
+  const calls: E.SshConnectOptions[] = [];
+  const connect = (value: E.SshConnectOptions) => {
     calls.push(value);
     return { connection: new Connection({ command: [localDaemon()] }), remote: () => undefined };
   };
@@ -271,7 +267,7 @@ await test("task-owned children copy env data before the caller's creation hook,
   const child = await harness.createConversation({ ownership: { kind: "task", taskId } }, context);
   await child.commit(async (tx) => {
     const selected = (await tx.doc(api.Env, child.id)).env;
-    assert(selected);
+    assert(selected?.type === "ssh");
     selected.host = "child-only";
   }, context);
   assert.deepEqual(await harness.snapshot(api.Env, root.id, context), { env: target });

@@ -17,6 +17,7 @@
   },
   "include": [
     "src/**/*.ts",
+    "bench/index.ts",
     "tests/**/*.ts",
     "tests/*.chromium.ts",
     "test-utils/**/*.ts"

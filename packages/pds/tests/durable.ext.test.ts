@@ -1,18 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { copyJson } from "@earendil-works/chord/json";
-import { type AssistantMessage, type Message, type UserMessage } from "@earendil-works/pi-ai";
+import type * as A from "@earendil-works/pi-ai";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import type {
-  ContextEdit,
-  ContextView,
-  Cursor,
-  EntryId,
-  EntryQuery,
-  EntryRecord,
-  Page,
-  UserInput,
-} from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import { Type, type Static } from "typebox";
 import { Compile } from "typebox/compile";
 import {
@@ -33,17 +24,17 @@ import {
 
 await test("schema-inferred types are assignable to the upstream API types", () => {
   const compatible: [
-    Static<typeof EntryIdSchema> extends EntryId ? true : false,
-    Static<typeof UserInputSchema> extends UserInput ? true : false,
-    Static<typeof AssistantMessageSchema> extends AssistantMessage ? true : false,
-    Static<typeof MessageSchema> extends Message ? true : false,
-    Static<typeof ContextEditSchema> extends ContextEdit ? true : false,
-    Static<typeof EntryRecordSchema> extends EntryRecord ? true : false,
-    Static<typeof EntryQuerySchema> extends EntryQuery ? true : false,
-    Static<typeof CursorSchema> extends Cursor ? true : false,
-    Static<typeof EntryPageSchema> extends Page<EntryRecord, Cursor> ? true : false,
-    Static<typeof ContextViewSchema> extends Omit<ContextView, "head"> & {
-      head?: EntryRecord;
+    Static<typeof EntryIdSchema> extends D.EntryId ? true : false,
+    Static<typeof UserInputSchema> extends D.UserInput ? true : false,
+    Static<typeof AssistantMessageSchema> extends A.AssistantMessage ? true : false,
+    Static<typeof MessageSchema> extends A.Message ? true : false,
+    Static<typeof ContextEditSchema> extends D.ContextEdit ? true : false,
+    Static<typeof EntryRecordSchema> extends D.EntryRecord ? true : false,
+    Static<typeof EntryQuerySchema> extends D.EntryQuery ? true : false,
+    Static<typeof CursorSchema> extends D.Cursor ? true : false,
+    Static<typeof EntryPageSchema> extends D.Page<D.EntryRecord, D.Cursor> ? true : false,
+    Static<typeof ContextViewSchema> extends Omit<D.ContextView, "head"> & {
+      head?: D.EntryRecord;
     }
       ? true
       : false,
@@ -68,7 +59,7 @@ await test("IDs validate positive safe integers without conflating their brands"
 
 await test("user input accepts signed text and images, but not assistant blocks", () => {
   const validator = Compile(UserInputSchema);
-  const content: UserInput = [
+  const content: D.UserInput = [
     { type: "text", text: "question", textSignature: "signature" },
     { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
   ];
@@ -89,7 +80,7 @@ await test("user input accepts signed text and images, but not assistant blocks"
 await test("recursive JSON and opaque cursors validate nested values", () => {
   const json = Compile(JsonValueSchema);
   const cursor = Compile(CursorSchema);
-  const opaque: Cursor = {
+  const opaque: D.Cursor = {
     backend: { token: [null, true, 3, "position", { nested: [1, 2] }] },
   };
   assert(json.Check(opaque));
@@ -125,7 +116,7 @@ await test("entry queries can exclude conversation selection without weakening v
 });
 
 await test("complete messages and context metadata survive structured-output validation", () => {
-  const answer: AssistantMessage = {
+  const answer: A.AssistantMessage = {
     ...fauxAssistantMessage("answer"),
     content: [
       { type: "text", text: "answer", textSignature: "signed" },
@@ -168,7 +159,7 @@ await test("complete messages and context metadata survive structured-output val
     endTurn: false,
     durationMs: 5,
   };
-  const messages: Message[] = [
+  const messages: A.Message[] = [
     {
       role: "system",
       content: [{ type: "text", text: "instructions" }],
@@ -265,7 +256,7 @@ await test("complete messages and context metadata survive structured-output val
     validator.Check({ ...answer, diagnostics: [{ type: "retry", timestamp: 1, error: {} }] }),
     false,
   );
-  const user: UserMessage = { role: "user", content: "question", timestamp: 1 };
+  const user: A.UserMessage = { role: "user", content: "question", timestamp: 1 };
   assert.equal(
     validator.Check({ ...user, content: [{ type: "thinking", thinking: "wrong role" }] }),
     false,
@@ -273,7 +264,7 @@ await test("complete messages and context metadata survive structured-output val
 });
 
 await test("context heads are optional on the wire; malformed edits and page entries reject", () => {
-  const view: ContextView = { head: undefined, entries: [], contributions: [], messages: [] };
+  const view: D.ContextView = { head: undefined, entries: [], contributions: [], messages: [] };
   assert(Compile(ContextViewSchema).Check(copyJson(view, { omitUndefinedProperties: true })));
   assert.equal(Compile(ContextViewSchema).Check({ entries: [], messages: [] }), false);
   assert.equal(Compile(EntryPageSchema).Check({ items: [{ id: 1 }] }), false);

@@ -5,14 +5,14 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { context } from "../src/application.ts";
-import { suite } from "../src/bench.ts";
+import { suite } from "../bench/index.ts";
 import type { Patch } from "../src/watch.ts";
 import { fixture, form } from "./fixtures.ts";
 
 await test("benchmark selects the largest stored conversation and builds all workloads without mutating the database", async (t) => {
-  const { app, directory, selection } = await fixture(t);
-  const small = await app.create(form(selection));
-  const large = await app.create(form(selection));
+  const { app, directory, database, selection } = await fixture(t);
+  const small = await app.createConversation(form(selection));
+  const large = await app.createConversation(form(selection));
   const code = "```ts\nconst answer = 42;\n```";
   const first = await large.commit(async (tx) => {
     const call = await tx.appendEntry(large.id, {
@@ -50,7 +50,7 @@ await test("benchmark selects the largest stored conversation and builds all wor
     });
     return call;
   }, context);
-  const path = join(directory, "sessions.sqlite");
+  const path = database;
   const before = await readFile(path);
   const automatic = suite(relative(process.cwd(), path));
   assert.equal(automatic.db, path);
@@ -99,11 +99,11 @@ await test("benchmark selects the largest stored conversation and builds all wor
 });
 
 await test("benchmark selection is deterministic and invalid input cannot create a database", async (t) => {
-  const { app, directory, selection } = await fixture(t);
-  const path = join(directory, "sessions.sqlite");
+  const { app, directory, database, selection } = await fixture(t);
+  const path = database;
   assert.throws(() => suite(path));
-  const first = await app.create(form(selection));
-  await app.create(form(selection));
+  const first = await app.createConversation(form(selection));
+  await app.createConversation(form(selection));
   assert.equal(suite(path).conversation, first.id);
   assert.throws(() => suite(path, -1));
   assert.throws(() => suite(path, 0.5));
@@ -114,7 +114,7 @@ await test("benchmark selection is deterministic and invalid input cannot create
   await assert.rejects(stat(missing), { code: "ENOENT" });
   for (const args of [[], ["--db", path, "--conversation", "nope"], ["--db", path, "--unknown"]]) {
     const child = spawnSync(process.execPath, [
-      new URL("../src/bench.ts", import.meta.url).pathname,
+      new URL("../bench/index.ts", import.meta.url).pathname,
       ...args,
     ]);
     assert.equal(child.status, 1);
