@@ -251,3 +251,8 @@ img { max-width: 100%; height: auto; }
 #model-login form { display: grid; gap: 8px; margin-block: 12px; }
 #model-login button { justify-self: start; }
 #model-login input:focus { outline: 1px solid var(--primary); }
+
+.selector-summary:has(.clear-setting) { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.selector-summary form { min-width: 0; }
+.clear-setting { color: var(--muted); border: 0; background: transparent; padding: 0 2px; }
+.clear-setting:hover { color: var(--fg); }

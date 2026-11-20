@@ -241,25 +241,35 @@ Host *
     );
 
     await t.test(
+      "relative SSH cwd and /cd resolve on the selected host, not the PDS filesystem",
+      async (subtest) => {
+        const { sessions, selection } = await sessionsFixture(subtest);
+        const session = await sessions.open();
+        const conversation = await session.createConversation(
+          form({ ...selection, env: "ssh:global-trust", cwd: "." }),
+        );
+        assert.equal((await conversation.agent(context)).cwd, ".");
+        await session.send(conversation, form({ message: "/cd ." }));
+        assert.equal((await conversation.agent(context)).cwd, remote);
+        await session.send(conversation, form({ message: "/cd ~/nested directory" }));
+        assert.equal((await conversation.agent(context)).cwd, join(remote, "nested directory"));
+        assert.equal((await conversation.context(context)).entries.length, 0);
+      },
+    );
+
+    await t.test(
       "application persists only the host, reacquires SSH after reopen, and closes owned connections",
       async (subtest) => {
-        const { sessions, faux, selection, environments, open } = await sessionsFixture(subtest);
-        // Extra object properties must not become persisted policy or execution overrides.
-        const target = {
-          host: "global-trust",
-          identityFile: "/forbidden",
-          configFile: "/forbidden",
-        };
-        environments.push({ id: "remote", label: "Ordinary SSH", target });
+        const { sessions, faux, selection, open } = await sessionsFixture(subtest);
         const { sessionId, conversation } = await sessions.compose(
-          form({ ...selection, environment: "remote", cwd: remote }),
+          form({ ...selection, env: "ssh:global-trust", cwd: remote }),
         );
         const session = await sessions.get(sessionId);
         assert(session);
         assert.deepEqual(await session.harness.snapshot(Env, conversation.id, context), {
           env: { type: "ssh", host: "global-trust" },
         });
-        await session.configure(conversation, form({ environment: "remote" }));
+        await session.configure(conversation, form({ env: "ssh:global-trust" }));
         assert.deepEqual(await session.harness.snapshot(Env, conversation.id, context), {
           env: { type: "ssh", host: "global-trust" },
         });

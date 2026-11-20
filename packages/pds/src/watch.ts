@@ -8,7 +8,7 @@ import type * as W from "@earendil-works/chord/watch";
 import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durable";
 import type * as D from "@earendil-works/pi-durable";
 import { Env } from "./harness/index.ts";
-import { context, environmentId, type Session } from "./application.ts";
+import { context, environmentValue, type Session } from "./application.ts";
 import { regions } from "./render.ts";
 
 type State = {
@@ -79,7 +79,7 @@ export async function observe(app: Session, conversation: D.Conversation, signal
         advance(call, frameContext) {
           assert(call.kind === "value");
           environmentAdvanced = true;
-          environment = environmentId(call.value.env);
+          environment = environmentValue(call.value.env);
           if (!state) return;
           state = { ...state, environment };
           output!.advance(
@@ -98,7 +98,7 @@ export async function observe(app: Session, conversation: D.Conversation, signal
     );
     assert(env, "PDS conversations have an environment document");
     observations.push(env);
-    if (!environmentAdvanced) environment = environmentId(env.value.env);
+    if (!environmentAdvanced) environment = environmentValue(env.value.env);
     // Calls can precede acquisition resolution; the line read below selects the latest value.
     const watch = await conversation.commit(async (tx) => {
       const head = (await tx.latestHeadMarker(conversation.id)) ?? null;

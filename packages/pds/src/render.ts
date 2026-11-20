@@ -7,8 +7,15 @@ import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durabl
 import type * as D from "@earendil-works/pi-durable";
 import type { SessionId } from "./identity.ts";
 import { Env } from "./harness/index.ts";
+import type { EnvTarget } from "./harness/env.ts";
 import { active, type LoginView } from "./login.ts";
-import { context, environmentId, modelKey, type Session, type Application } from "./application.ts";
+import {
+  context,
+  environmentValue,
+  modelKey,
+  type Session,
+  type Application,
+} from "./application.ts";
 
 export const escape = (value: unknown): string =>
   String(value).replace(
@@ -51,6 +58,8 @@ const option = (value: string, label: string, selected: string) =>
   `<option value="${escape(value)}"${value === selected ? " selected" : ""}>${escape(label)}</option>`;
 const picker = (id: string, label: string, control: string, value: string) =>
   `<label id="${id}-choice"><span class="selector-label">${label}</span>${control}<span class="selector-value" aria-hidden="true">${escape(value)}</span></label>`;
+const environmentLabel = (target: EnvTarget | undefined) =>
+  target?.type === "ssh" ? target.host : (target?.type ?? "No environment");
 const updateLabel = "el.nextElementSibling.textContent = el.selectedOptions[0].label";
 
 export function thinking(
@@ -61,11 +70,13 @@ export function thinking(
 ): string {
   const model = app.models.getModels().find((candidate) => modelKey(candidate) === key);
   const levels: A.ModelThinkingLevel[] = model ? getSupportedThinkingLevels(model) : ["off"];
-  const level = levels.find((candidateLevel) => candidateLevel === selected) ?? levels[0] ?? "off";
+  const level = autosave
+    ? selected
+    : (levels.find((candidateLevel) => candidateLevel === selected) ?? levels[0] ?? "off");
   return picker(
     "thinking",
     "Thinking",
-    `<select id="thinking" name="thinking" aria-label="Thinking" data-on:change="${updateLabel}${autosave ? "; el.form.requestSubmit()" : ""}">${levels.map((item) => option(item, item, level)).join("")}</select>`,
+    `<select id="thinking" name="thinking" aria-label="Thinking" data-on:change="${updateLabel}${autosave ? "; el.form.requestSubmit()" : ""}">${levels.map((item) => option(item, item, level)).join("")}${levels.some((item) => item === level) ? "" : option(level, `${level} (unavailable)`, level)}</select>`,
     level,
   );
 }
@@ -87,24 +98,27 @@ async function selections(app: Menu, prefix: string, conversation?: D.Conversati
     : !conversation && models[0]
       ? modelKey(models[0])
       : "";
-  const environments = await app.environments();
-  const selectedEnv = conversation ? environmentId(env) : "local";
+  const environments: EnvTarget[] = [{ type: "local" }];
+  let discoveryError = "";
+  try {
+    environments.push(...(await app.environments()).filter((target) => target.type === "ssh"));
+  } catch {
+    discoveryError = "Environment discovery unavailable.";
+  }
+  const selectedEnv = conversation ? environmentValue(env) : "local";
   if (selectedModel && !models.some((model) => modelKey(model) === selectedModel)) {
     const previous = agent?.model && app.models.getModel(agent.model.provider, agent.model.modelId);
     if (previous) models.push(previous);
   }
-  const environment = picker(
-    "environment",
-    "Environment",
-    `<select name="environment" id="environment" aria-label="Environment" data-on:change="${updateLabel}${conversation ? "; el.form.requestSubmit()" : ""}">${selectedEnv ? "" : '<option value="" selected disabled>No environment</option>'}${environments.map((item) => option(item.id, item.label, selectedEnv)).join("")}${selectedEnv && !environments.some((item) => item.id === selectedEnv) ? option(selectedEnv, `${selectedEnv} (unavailable)`, selectedEnv) : ""}</select>`,
-    environments.find((item) => item.id === selectedEnv)?.label ??
-      (selectedEnv ? `${selectedEnv} (unavailable)` : "No environment"),
-  );
-  const directory = `<label id="cwd-choice"><span class="selector-label">Working directory</span><input name="cwd" id="cwd" aria-label="Working directory" value="${escape(agent?.cwd ?? app.cwd)}" placeholder="/workspace"${conversation ? ` data-on:change="el.form.requestSubmit()" data-on:keydown="if (evt.key === 'Enter') { evt.preventDefault(); el.blur() }"` : ""}></label>`;
+  const submitOnChange = conversation
+    ? ` data-on:change="el.form.requestSubmit()" data-on:keydown="if (evt.key === 'Enter') { evt.preventDefault(); el.blur() }"`
+    : "";
+  const environment = `<label id="environment-choice"><span class="selector-label">Environment</span><input name="env" id="environment" aria-label="Environment" list="environment-options" value="${escape(selectedEnv)}" title="${escape(conversation ? environmentLabel(env) : "local")}" placeholder="local or ssh:host" autocomplete="off" spellcheck="false"${submitOnChange}></label><datalist id="environment-options">${environments.map((target) => option(environmentValue(target), environmentLabel(target), "")).join("")}</datalist><span id="environment-discovery" role="status">${discoveryError}</span>`;
+  const directory = `<label id="cwd-choice"><span class="selector-label">Working directory</span><input name="cwd" id="cwd" aria-label="Working directory" value="${escape(conversation ? (agent?.cwd ?? "") : app.cwd)}" placeholder="Working directory"${submitOnChange}></label>`;
   const model = picker(
     "model",
     "Model",
-    `<select name="model" id="model" aria-label="Model" required data-on:change="${updateLabel}; ${conversation ? "el.form.requestSubmit()" : `@post(${js(`${prefix}/thinking`)}, {contentType: 'form', retry: 'never'})`}">${selectedModel ? "" : '<option value="" selected disabled>No model</option>'}${models.map((candidateModel) => option(modelKey(candidateModel), candidateModel.id, selectedModel)).join("")}</select>`,
+    `<select name="model" id="model" aria-label="Model" required data-on:change="${updateLabel}; ${conversation ? "el.form.requestSubmit()" : `@post(${js(`${prefix}/thinking`)}, {contentType: 'form', retry: 'never'})`}">${selectedModel ? "" : '<option value="" selected disabled>No model</option>'}${models.map((candidateModel) => `<option value="${escape(modelKey(candidateModel))}" data-thinking="${getSupportedThinkingLevels(candidateModel).join(" ")}"${modelKey(candidateModel) === selectedModel ? " selected" : ""}>${escape(candidateModel.id)}</option>`).join("")}</select>`,
     models.find((candidateModel) => modelKey(candidateModel) === selectedModel)?.id ?? "No model",
   );
   return {
@@ -119,13 +133,13 @@ async function selections(app: Menu, prefix: string, conversation?: D.Conversati
 export async function configuration(app: Session, conversation: D.Conversation, prefix: string) {
   const fields = await selections(app, prefix, conversation);
   const base = conversationPath(prefix, app.id, conversation.id);
-  const control = (name: "environment" | "cwd" | "model" | "thinking", html: string) =>
-    `<form id="configuration-${name}" method="post" action="${escape(base)}/configure" class="selector-summary" data-on:submit="@post(${js(`${base}/configure`)}, {contentType: 'form', retry: 'never'})">${html}<noscript><button>Save</button></noscript></form>`;
+  const control = (name: "env" | "cwd" | "model" | "thinking", label: string, html: string) =>
+    `<div id="configuration-${name}-control" class="selector-summary"><form id="configuration-${name}" method="post" action="${escape(base)}/configure" data-on:submit="@post(${js(`${base}/configure`)}, {contentType: 'form', retry: 'never'})">${html}<noscript><button>Save</button></noscript></form><form method="post" action="${escape(base)}/configure" data-on:submit="@post(${js(`${base}/configure`)}, {contentType: 'form', retry: 'never'})"><input type="hidden" name="clear" value="${name}"><button class="clear-setting" aria-label="Clear ${label}" title="Clear ${label}">×</button></form></div>`;
   return {
-    environment: control("environment", fields.environment),
-    cwd: control("cwd", fields.directory),
-    model: control("model", fields.model),
-    thinking: control("thinking", fields.thinking),
+    environment: control("env", "environment", fields.environment),
+    cwd: control("cwd", "working directory", fields.directory),
+    model: control("model", "model", fields.model),
+    thinking: control("thinking", "thinking", fields.thinking),
   };
 }
 
@@ -171,7 +185,7 @@ export async function sessionPage(app: Session, prefix: string): Promise<string>
     records.map(async (record) => {
       const agent = await app.harness.snapshot(AgentDoc, record.id, context);
       const env = await app.harness.snapshot(Env, record.id, context);
-      return `<div class="session-row" data-conversation-id="${record.id}"><a class="session" href="${escape(conversationPath(prefix, app.id, record.id))}" aria-label="${escape(record.title)}"><span class="session-heading"><strong>${escape(record.title)}</strong></span><span class="session-detail"><span class="session-environment">${escape(environmentId(env?.env) || "No environment")}:${escape(agent?.cwd ?? "")}</span><span class="model-summary"><span class="model-name">${escape(agent?.model ? `${agent.model.provider}/${agent.model.modelId}` : "")}</span></span></span></a></div>`;
+      return `<div class="session-row" data-conversation-id="${record.id}"><a class="session" href="${escape(conversationPath(prefix, app.id, record.id))}" aria-label="${escape(record.title)}"><span class="session-heading"><strong>${escape(record.title)}</strong></span><span class="session-detail"><span class="session-environment">${escape(environmentLabel(env?.env))}:${escape(agent?.cwd ?? "")}</span><span class="model-summary"><span class="model-name">${escape(agent?.model ? `${agent.model.provider}/${agent.model.modelId}` : "")}</span></span></span></a></div>`;
     }),
   );
   return page(

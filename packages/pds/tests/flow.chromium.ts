@@ -169,17 +169,18 @@ await test(
       assert.equal(await page.locator("#cwd").inputValue(), changed);
 
       // Environment changes are durable and inherited by /new, without starting SSH on selection.
-      await page.locator("#environment").selectOption("test-guest");
+      await page.locator("#environment").fill("ssh:test-guest");
+      await page.locator("#environment").press("Enter");
       await page.waitForFunction(
         () =>
-          document.querySelector<HTMLSelectElement>("#environment")?.selectedOptions[0]
-            ?.defaultSelected,
+          document.querySelector<HTMLInputElement>("#environment")?.defaultValue ===
+          "ssh:test-guest",
       );
       await page.locator("#message").fill("/new");
       await page.getByRole("button", { name: "Send", exact: true }).click();
       await page.waitForURL((url) => url.href !== firstURL);
       await idle(page);
-      assert.equal(await page.locator("#environment").inputValue(), "test-guest");
+      assert.equal(await page.locator("#environment").inputValue(), "ssh:test-guest");
       assert.equal(await page.locator("#cwd").inputValue(), changed);
       assert.equal(await page.locator("#transcript article").count(), 0);
       assert.equal((await app.list()).length, 2);
@@ -401,6 +402,13 @@ await test(
         assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
         assert.equal(await page.locator("#environment").isVisible(), true);
         assert.equal(await page.locator("#cwd").isVisible(), true);
+        if (process.env.PDS_SCREENSHOT_DIR) {
+          await mkdir(process.env.PDS_SCREENSHOT_DIR, { recursive: true });
+          await page.screenshot({
+            path: join(process.env.PDS_SCREENSHOT_DIR, `home-${width}.png`),
+            fullPage: true,
+          });
+        }
         const conversation = await app.createConversation(form(selection));
         await page.goto(
           `${server.origin}/api/s/${encodeURIComponent(app.id)}/c/${conversation.id}`,
@@ -442,6 +450,11 @@ await test(
         );
         assert.equal((await conversation.agent(context)).model?.modelId, "second");
         assert.equal((await conversation.agent(context)).thinkingLevel, "off");
+        if (process.env.PDS_SCREENSHOT_DIR)
+          await page.screenshot({
+            path: join(process.env.PDS_SCREENSHOT_DIR, `configuration-${width}.png`),
+            fullPage: true,
+          });
         const url = page.url();
         await page.locator("#footer-context").click();
         if (width > 650) await page.locator("#footer-stats").click();
@@ -733,5 +746,83 @@ await test(
     } finally {
       await browser.close();
     }
+  },
+);
+
+await test(
+  "configuration labels are target identifiers and discovery does not own selections or drafts",
+  { timeout: 30_000 },
+  async (t) => {
+    let failed = false;
+    const { app, sessions, auth, selection } = await fixture(t, async () => {
+      if (failed) throw new Error("private discovery failure");
+      return [{ type: "local" }, { type: "ssh", host: "test-guest" }];
+    });
+    const conversation = await app.createConversation(form(selection));
+    const server = await serve(sessions, { auth, port: 0 });
+    t.after(() => server.close());
+    const browser = await chromium.launch({
+      executablePath:
+        process.env.CHROMIUM_BINARY ??
+        execFileSync("which", ["chromium"], { encoding: "utf8" }).trim(),
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    t.after(() => browser.close());
+    const page = await browser.newPage();
+    await page.goto(`${server.origin}/api/s/test/c/${conversation.id}`);
+    await idle(page);
+    assert.deepEqual(
+      await page.locator("#environment-options option").evaluateAll((options) =>
+        options.map((option) => {
+          if (!(option instanceof HTMLOptionElement)) throw new Error("Expected an option");
+          return { value: option.value, label: option.label };
+        }),
+      ),
+      [
+        { value: "local", label: "local" },
+        { value: "ssh:test-guest", label: "test-guest" },
+      ],
+    );
+    assert.equal(await page.locator("#environment").getAttribute("title"), "local");
+    assert.equal(await page.locator("#environment-discovery").isVisible(), false);
+    await page.locator("#message").fill("Keep the composer draft");
+    await page.locator("#cwd").fill("untouched directory draft");
+    // Do not blur cwd: change another control in the DOM without submitting that draft.
+    await page.locator("#thinking").selectOption("high");
+    await page.waitForFunction(
+      () => document.querySelector<HTMLOptionElement>("#thinking option:checked")?.defaultSelected,
+    );
+    assert.equal(await page.locator("#cwd").inputValue(), "untouched directory draft");
+    await page.locator("#environment").fill("ssh:ordinary-alias");
+    await page.locator("#environment").press("Enter");
+    await page.waitForFunction(
+      () =>
+        document.querySelector<HTMLInputElement>("#environment")?.defaultValue ===
+        "ssh:ordinary-alias",
+    );
+    await page.getByRole("button", { name: "Clear environment", exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelector<HTMLInputElement>("#environment")?.defaultValue === "",
+    );
+    assert.equal(await page.locator("#message").inputValue(), "Keep the composer draft");
+    await page.getByRole("button", { name: "Clear working directory", exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelector<HTMLInputElement>("#cwd")?.defaultValue === "",
+    );
+    assert.equal((await conversation.agent(context)).cwd, undefined);
+    await app.configure(conversation, form({ env: "ssh:test-guest" }));
+    failed = true;
+    await page.reload();
+    await idle(page);
+    assert.equal(await page.locator("#environment").inputValue(), "ssh:test-guest");
+    assert.equal(await page.locator("#environment").getAttribute("title"), "test-guest");
+    assert.equal(await page.locator("#environment-discovery").isVisible(), true);
+    assert.equal(await page.locator("#environment-options option").count(), 1);
+    await page.locator("#environment").fill("local");
+    await page.locator("#environment").press("Enter");
+    await page.waitForFunction(
+      () => document.querySelector<HTMLInputElement>("#environment")?.defaultValue === "local",
+    );
   },
 );

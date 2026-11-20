@@ -1,22 +1,24 @@
 import assert from "node:assert/strict";
 import { readdir, access, mkdir, lstat, open } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join, posix } from "node:path";
+import { join } from "node:path";
 import * as Value from "typebox/value";
+import type * as C from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import type * as A from "@earendil-works/pi-ai";
 import { configure, AgentDoc, defineDoc } from "@earendil-works/pi-durable";
 import type * as D from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { getOrThrow } from "@earendil-works/pi-durable/env";
+import type * as DE from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import type * as DN from "@earendil-works/pi-durable/env/node";
 import { Env, openHarness, SshExecutionEnv } from "./harness/index.ts";
 import type { EnvTarget } from "./harness/env.ts";
 import { SessionId, SessionKey, decode } from "./identity.ts";
 
-export const environmentId = (selected: EnvTarget | undefined): string =>
-  selected?.type === "ssh" ? selected.host : (selected?.type ?? "");
+export const environmentValue = (selected: EnvTarget | undefined): string =>
+  selected?.type === "ssh" ? `ssh:${selected.host}` : (selected?.type ?? "");
 
 export class InvalidForm extends Error {}
 
@@ -31,14 +33,8 @@ export const ConversationMetadata = defineDoc<{ title: string; createdAt: number
   checkpointWhen: () => true,
 });
 
-export type Environment = {
-  id: string;
-  label: string;
-  target?: ConstructorParameters<typeof SshExecutionEnv>[0]["target"];
-};
-
-export async function discoverEnvironments(directory: string): Promise<Environment[]> {
-  const result: Environment[] = [{ id: "local", label: "Local (server)" }];
+export async function discoverEnvironments(directory: string): Promise<EnvTarget[]> {
+  const result: EnvTarget[] = [{ type: "local" }];
   const entries = await readdir(join(directory, "drv.run"), { withFileTypes: true }).catch(
     (error: unknown) => {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
@@ -49,7 +45,6 @@ export async function discoverEnvironments(directory: string): Promise<Environme
     if (!entry.isDirectory() || !/^[A-Za-z0-9]+$/.test(entry.name)) continue;
     const path = join(directory, "drv.run", entry.name);
     const host = `drv.run.${entry.name}`;
-    const target = { host };
     try {
       await access(join(path, "ssh_config"));
     } catch (error) {
@@ -57,7 +52,7 @@ export async function discoverEnvironments(directory: string): Promise<Environme
       throw error;
     }
     // Configuration permits a connection attempt; it does not certify activation.
-    result.push({ id: host, label: host, target });
+    result.push({ type: "ssh", host });
   }
   return result;
 }
@@ -66,40 +61,67 @@ async function openSession(options: {
   id: SessionId;
   storage: D.Storage;
   models: A.Models;
-  environments: () => Promise<Environment[]>;
+  environments: () => Promise<EnvTarget[]>;
   cwd: string;
   settings?: D.HarnessSettings;
   parallelApiKeyFile?: string;
 }): Promise<Session> {
-  const environments = new Map<string, DN.NodeExecutionEnv | SshExecutionEnv>();
+  const environments = new Map<string, Promise<DE.ExecutionEnv>>();
   const harness: D.Harness = await openHarness(
     options.storage,
     {
       models: options.models,
       ...(options.settings ? { settings: options.settings } : {}),
       parallelApiKeyFile: options.parallelApiKeyFile,
-      async env(target, ctx) {
-        const selected = (await target.read.snapshot(Env, target.conversationId, ctx))?.env;
-        if (!selected) return undefined;
-        assert(
-          selected.type === "local" || selected.type === "ssh",
-          "Unsupported execution environment selection.",
-        );
-        const cwd = target.cwd ?? options.cwd;
-        const key = JSON.stringify([selected, cwd]);
-        let env = environments.get(key);
-        if (!env) {
-          env =
-            selected.type === "ssh"
-              ? new SshExecutionEnv({ target: selected, cwd })
-              : new NodeExecutionEnv({ cwd });
-          environments.set(key, env);
-        }
-        return env;
-      },
+      env: async (target, ctx) => (await acquireEnvironment(target.conversationId, ctx)).env,
     },
     context,
   );
+  async function acquireEnvironment(id: D.ConversationId, ctx: C.Context) {
+    // Upstream's target.cwd and a later Env snapshot can straddle a configuration commit.
+    const { selected, cwd } = await harness.commit(async (tx) => {
+      const selection = (await tx.doc(Env, id)).env;
+      return {
+        selected: selection ? { ...selection } : undefined,
+        cwd: (await tx.doc(AgentDoc, id)).cwd,
+      };
+    }, ctx);
+    if (!selected) return { env: undefined, selected, cwd };
+    if (!cwd) throw new InvalidForm("Select a working directory.");
+    assert(
+      selected.type === "local" || selected.type === "ssh",
+      "Unsupported execution environment selection.",
+    );
+    const key = JSON.stringify([selected, cwd]);
+    let pending = environments.get(key);
+    if (!pending) {
+      pending = (async () => {
+        if (selected.type === "local") return new NodeExecutionEnv({ cwd });
+        const env = new SshExecutionEnv({ target: selected, cwd });
+        try {
+          // Resolve relative paths and ~ against remote metadata, before anyone borrows it.
+          env.cwd = (await env.connection.info(ctx.abortSignal)).cwd;
+          env.cwd = getOrThrow(await env.absolutePath(cwd, ctx));
+          return env;
+        } catch (error) {
+          try {
+            await env.cleanup(context);
+          } catch (cleanup) {
+            throw new AggregateError(
+              [error, cleanup],
+              "Environment acquisition and cleanup failed",
+              { cause: cleanup },
+            );
+          }
+          throw error;
+        }
+      })();
+      environments.set(key, pending);
+      void pending.catch(() => environments.delete(key));
+    }
+    return { env: await pending, selected, cwd };
+  }
+
   let available = true;
   let closing: Promise<void> | undefined;
   harness.subscribeClose(() => {
@@ -115,9 +137,7 @@ async function openSession(options: {
     async root(form: FormData) {
       return harness.root(context, {
         async init(tx, id) {
-          const initial = await initialOptions(options, form);
-          await configure(tx, id, initial.agent);
-          await initialize(tx, id, initial.environment);
+          await initialize(tx, id, options, form);
         },
       });
     },
@@ -125,13 +145,11 @@ async function openSession(options: {
       form: FormData,
       ownership: D.ConversationCreateOptions["ownership"] = { kind: "ownerless" },
     ) {
-      const initial = await initialOptions(options, form);
       return harness.createConversation(
         {
           ownership,
-          agent: initial.agent,
           async init(tx, id) {
-            await initialize(tx, id, initial.environment);
+            await initialize(tx, id, options, form);
           },
         },
         context,
@@ -160,40 +178,10 @@ async function openSession(options: {
       );
     },
     async configure(conversation: D.Conversation, form: FormData) {
-      const environment = form.has("environment")
-        ? (await options.environments()).find((item) => item.id === field(form, "environment"))
-        : undefined;
-      if (form.has("environment") && !environment)
-        throw new InvalidForm("Environment is no longer available.");
-      await conversation.commit(async (tx) => {
-        const current = await tx.doc(AgentDoc, conversation.id);
-        const model = form.has("model")
-          ? options.models
-              .getModels()
-              .find((candidate) => modelKey(candidate) === field(form, "model"))
-          : current.model && options.models.getModel(current.model.provider, current.model.modelId);
-        if (!model) throw new InvalidForm("Select an available model.");
-        const levels = getSupportedThinkingLevels(model);
-        const thinkingLevel = form.has("thinking")
-          ? levels.find((level) => level === field(form, "thinking"))
-          : (levels.find((level) => level === current.thinkingLevel) ?? levels[0]);
-        if (!thinkingLevel)
-          throw new InvalidForm("Select a thinking level supported by this model.");
-        const directory = form.has("cwd") ? field(form, "cwd").trim() : undefined;
-        if (directory === "") throw new InvalidForm("Working directory cannot be empty.");
-        await configure(tx, conversation.id, {
-          ...(form.has("model")
-            ? { model: { provider: model.provider, modelId: model.id }, thinkingLevel }
-            : {}),
-          ...(form.has("thinking") ? { thinkingLevel } : {}),
-          ...(directory ? { cwd: posix.resolve(current.cwd ?? options.cwd, directory) } : {}),
-        });
-        if (environment) {
-          const draft = await tx.doc(Env, conversation.id);
-          if (environment.target) draft.env = { type: "ssh", host: environment.target.host };
-          else draft.env = { type: "local" };
-        }
-      }, context);
+      await conversation.commit(
+        (tx) => applyConfiguration(tx, conversation.id, options, form),
+        context,
+      );
     },
     async submit(conversation: D.Conversation, form: FormData) {
       const text = field(form, "message");
@@ -221,11 +209,20 @@ async function openSession(options: {
         if (command === "/cd") {
           const directory = text.slice(command.length).trim();
           if (!directory) throw new InvalidForm("Usage: /cd <path>");
+          const acquired = await acquireEnvironment(conversation.id, context);
+          if (!acquired.env) throw new InvalidForm("Select an execution environment before /cd.");
+          const resolved = await acquired.env.absolutePath(directory, context);
+          if (!resolved.ok)
+            throw new InvalidForm("Could not resolve the directory in the selected environment.");
           await conversation.commit(async (tx) => {
             const agent = await tx.doc(AgentDoc, conversation.id);
-            await configure(tx, conversation.id, {
-              cwd: posix.resolve(agent.cwd ?? options.cwd, directory),
-            });
+            const selected = (await tx.doc(Env, conversation.id)).env;
+            if (
+              agent.cwd !== acquired.cwd ||
+              environmentValue(selected) !== environmentValue(acquired.selected)
+            )
+              throw new InvalidForm("Environment configuration changed during /cd; try again.");
+            await configure(tx, conversation.id, { cwd: resolved.value });
           }, context);
           return undefined;
         }
@@ -234,19 +231,19 @@ async function openSession(options: {
           return undefined;
         }
         if (command === "/new" && rest.length === 0) {
-          const agent = await conversation.agent(context);
-          const env = await harness.snapshot(Env, conversation.id, context);
           return harness.createConversation(
             {
               ownership: { kind: "ownerless" },
-              agent: {
-                model: agent.model ?? null,
-                thinkingLevel: agent.thinkingLevel,
-                cwd: agent.cwd ?? null,
-              },
               async init(tx, id) {
+                const agent = await tx.doc(AgentDoc, conversation.id);
+                const env = (await tx.doc(Env, conversation.id)).env;
+                await configure(tx, id, {
+                  model: agent.model ?? null,
+                  thinkingLevel: agent.thinkingLevel ?? null,
+                  cwd: agent.cwd ?? null,
+                });
+                await selectEnvironment(tx, id, env ? { ...env } : null);
                 await tx.doc(ConversationMetadata, id);
-                if (env?.env) (await tx.doc(Env, id)).env = { ...env.env };
               },
             },
             context,
@@ -275,7 +272,7 @@ async function openSession(options: {
           errors.push(error);
         }
         const results = await Promise.allSettled(
-          [...environments.values()].map((env) => env.cleanup(context)),
+          [...environments.values()].map(async (env) => (await env).cleanup(context)),
         );
         for (const result of results) {
           if (result.status === "rejected") errors.push(result.reason);
@@ -297,7 +294,7 @@ export interface Session {
     ownership?: D.ConversationCreateOptions["ownership"],
   ): Promise<D.Conversation>;
   models: A.Models;
-  environments(): Promise<Environment[]>;
+  environments(): Promise<EnvTarget[]>;
   cwd: string;
   conversation(id: D.ConversationId): Promise<D.Conversation | undefined>;
   list(): Promise<{ id: D.ConversationId; title: string; createdAt?: number }[]>;
@@ -358,31 +355,67 @@ export class SessionUnavailable extends Error {}
 
 type Options = Omit<Parameters<typeof openSession>[0], "storage" | "id">;
 
-async function initialOptions(options: Options, form: FormData) {
-  let agent: D.AgentChange = {};
-  const model = form.has("model")
-    ? options.models.getModels().find((candidate) => modelKey(candidate) === field(form, "model"))
-    : undefined;
-  if (form.has("model") && !model) throw new InvalidForm("Select an available model.");
-  if (model) agent = { ...agent, model: { provider: model.provider, modelId: model.id } };
-  if (form.has("thinking")) {
-    const value = field(form, "thinking");
-    const level =
-      model && getSupportedThinkingLevels(model).find((candidateLevel) => candidateLevel === value);
-    if (!level) throw new InvalidForm("Select a model and a supported thinking level.");
-    agent = { ...agent, thinkingLevel: level };
+function configurationChange(models: A.Models, form: FormData, current: D.AgentState = {}) {
+  const clears = form.getAll("clear");
+  const names = ["model", "thinking", "cwd", "env"];
+  if (
+    new Set(clears).size !== clears.length ||
+    clears.some((name) => typeof name !== "string" || !names.includes(name) || form.has(name))
+  )
+    throw new InvalidForm("Clear each supported field once, without supplying a value.");
+  const value = (name: string) =>
+    clears.includes(name) ? null : form.has(name) ? field(form, name) : undefined;
+  const modelValue = value("model");
+  let model: D.AgentChange["model"] = current.model;
+  if (modelValue === null) model = null;
+  else if (modelValue !== undefined) {
+    const found = models.getModels().find((candidate) => modelKey(candidate) === modelValue);
+    if (!found) throw new InvalidForm("Select an available model.");
+    model = { provider: found.provider, modelId: found.id };
   }
-  if (form.has("cwd")) {
-    const cwd = field(form, "cwd");
-    if (!cwd) throw new InvalidForm("Working directory cannot be empty.");
-    agent = { ...agent, cwd };
-  }
-  const environment = form.has("environment")
-    ? (await options.environments()).find((item) => item.id === field(form, "environment"))
-    : undefined;
-  if (form.has("environment") && !environment)
-    throw new InvalidForm("Environment is no longer available.");
-  return { agent, environment };
+  const thinkingValue = value("thinking");
+  const metadata = model && models.getModel(model.provider, model.modelId);
+  const levels = metadata ? getSupportedThinkingLevels(metadata) : [];
+  const thinking =
+    thinkingValue == null ? thinkingValue : levels.find((level) => level === thinkingValue);
+  if (thinkingValue != null && !thinking)
+    throw new InvalidForm("Select a model and a supported thinking level.");
+  if (
+    modelValue &&
+    current.thinkingLevel &&
+    thinkingValue === undefined &&
+    !levels.includes(current.thinkingLevel)
+  )
+    throw new InvalidForm("Select a thinking level supported by the new model.");
+  const cwd = value("cwd");
+  if (cwd === "") throw new InvalidForm("Working directory cannot be empty.");
+  const selected = value("env");
+  let env: EnvTarget | null | undefined;
+  if (selected == null) env = selected;
+  else if (selected === "local") env = { type: "local" };
+  else if (selected.startsWith("ssh:")) {
+    const host = selected.slice(4);
+    if (!host || host.startsWith("-") || /[\s\p{Cc}]/u.test(host))
+      throw new InvalidForm("Enter one SSH host name without options or whitespace.");
+    env = { type: "ssh", host };
+  } else throw new InvalidForm("Select local or ssh:<host>.");
+  const agent: D.AgentChange = {
+    ...(modelValue !== undefined && model !== undefined ? { model } : {}),
+    ...(thinking !== undefined ? { thinkingLevel: thinking } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
+  };
+  return { agent, env };
+}
+
+async function selectEnvironment(
+  tx: D.Tx,
+  id: D.ConversationId,
+  env: EnvTarget | null | undefined,
+) {
+  if (env === undefined) return;
+  const draft = await tx.doc(Env, id);
+  if (env === null) delete draft.env;
+  else draft.env = env;
 }
 
 export interface Application extends Options {
@@ -491,13 +524,11 @@ export async function openApplication(
       }));
     },
     async compose(form) {
-      const { agent, environment } = await initialOptions(options, form);
-      if (!agent.model || !agent.thinkingLevel || !agent.cwd || !environment)
+      const { agent, env } = configurationChange(options.models, form);
+      if (!agent.model || !agent.thinkingLevel || !agent.cwd || !env)
         throw new InvalidForm(
           "Select a model, thinking level, working directory, and environment.",
         );
-      if (!isAbsolute(agent.cwd))
-        throw new InvalidForm("Working directory must be an absolute path.");
       const text = typeof form.get("message") === "string" ? field(form, "message").trim() : "";
       const files = uploads(form);
       if (text.startsWith("/") && (text !== "/new" || files.length))
@@ -516,7 +547,10 @@ export async function openApplication(
         {
           ownership: { kind: "ownerless" },
           agent,
-          init: (tx, id) => initialize(tx, id, environment),
+          async init(tx, id) {
+            await tx.doc(ConversationMetadata, id);
+            await selectEnvironment(tx, id, env);
+          },
         },
         context,
       );
@@ -550,13 +584,21 @@ export async function openApplication(
   };
 }
 
-async function initialize(tx: D.Tx, id: D.ConversationId, environment?: Environment) {
+async function applyConfiguration(
+  tx: D.Tx,
+  id: D.ConversationId,
+  options: Options,
+  form: FormData,
+) {
+  const current = await tx.doc(AgentDoc, id);
+  const change = configurationChange(options.models, form, current);
+  await configure(tx, id, change.agent);
+  await selectEnvironment(tx, id, change.env);
+}
+
+async function initialize(tx: D.Tx, id: D.ConversationId, options: Options, form: FormData) {
+  await applyConfiguration(tx, id, options, form);
   await tx.doc(ConversationMetadata, id);
-  if (environment) {
-    const draft = await tx.doc(Env, id);
-    if (environment.target) draft.env = { type: "ssh", host: environment.target.host };
-    else draft.env = { type: "local" };
-  }
 }
 
 async function input(models: A.Models, text: string, files: File[], model: D.ModelRef | undefined) {
