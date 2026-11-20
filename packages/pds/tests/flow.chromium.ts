@@ -536,8 +536,7 @@ await test(
           entry.setAttribute("data-sentinel", "preserved");
           const changed: string[] = [];
           document.addEventListener("datastar-fetch", (event) => {
-            const detail = (event as CustomEvent<{ type: string; argsRaw: { elements?: string } }>)
-              .detail;
+            const detail = event.detail;
             if (detail.type !== "datastar-patch-elements" || !detail.argsRaw.elements) return;
             const fragment = document
               .createRange()

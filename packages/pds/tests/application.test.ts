@@ -666,6 +666,7 @@ await test("shutdown closes every Harness before waiting for all environment cle
     }
   }
   const failure = new Error("Expected cleanup failure");
+  // oxlint-disable-next-line typescript/unbound-method -- Capture before mocking; invoke with the receiver via original.call(this, ctx).
   const original = NodeExecutionEnv.prototype.cleanup;
   let count = 0;
   t.mock.method(

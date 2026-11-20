@@ -429,7 +429,9 @@ export async function serve(
         .entries(
           {
             order: "descending",
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The validated interval keeps before - 1 a nonnegative safe integer.
             maxEntryId: (before - 1) as D.EntryId,
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The validated interval keeps after + 1 a nonnegative safe integer.
             ...(after === undefined ? {} : { minEntryId: (after + 1) as D.EntryId }),
           },
           50,

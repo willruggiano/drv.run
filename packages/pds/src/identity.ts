@@ -27,12 +27,15 @@ const DecimalId = Type.Refine(
 
 // The wire representation establishes the upstream brand, not record existence.
 export const ConversationId = Type.Codec(DecimalId)
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Validated decimal ID; establish the upstream brand.
   .Decode((value) => Number(value) as D.ConversationId)
   .Encode(String);
 export const EntryId = Type.Codec(DecimalId)
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Validated decimal ID; establish the upstream brand.
   .Decode((value) => Number(value) as D.EntryId)
   .Encode(String);
 export const TaskId = Type.Codec(DecimalId)
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Validated decimal ID; establish the upstream brand.
   .Decode((value) => Number(value) as D.TaskId)
   .Encode(String);
 
@@ -66,4 +69,5 @@ export const SessionKey = Type.Codec(
   ),
 )
   .Decode((key) => Value.Parse(SessionId, Buffer.from(key, "base64url").toString("utf8")))
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Canonical base64url encoding of a validated SessionId.
   .Encode((id) => Buffer.from(id).toString("base64url") as SessionKey);

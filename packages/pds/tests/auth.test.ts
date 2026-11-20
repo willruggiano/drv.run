@@ -65,8 +65,20 @@ async function peer(t: TestContext, path: string, mode = "cli", env: Record<stri
     if (child.exitCode === null) child.kill();
     await exited;
   });
-  const [message] = await once(child, "message", { signal: AbortSignal.timeout(10_000) });
-  return { child, message: message as { state: string; data?: unknown }, exited };
+  const [message]: unknown[] = await once(child, "message", {
+    signal: AbortSignal.timeout(10_000),
+  });
+  assert(
+    message &&
+      typeof message === "object" &&
+      "state" in message &&
+      typeof message.state === "string",
+  );
+  return {
+    child,
+    message: { state: message.state, data: "data" in message ? message.data : undefined },
+    exited,
+  };
 }
 
 async function fixture(t: TestContext, filename = "auth.json") {

@@ -36,6 +36,7 @@ function load(path: string, conversation?: number) {
     const row = database.prepare("SELECT record FROM conversations WHERE id = ?").get(selected);
     assert(row && typeof row.record === "string", `Conversation ${selected} not found`);
     // The database stores Durable's JSON records; no app-specific metadata is required.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Trust Durable's persisted record schema at this read-only benchmark boundary.
     const record = JSON.parse(row.record) as D.ConversationRecord;
     assert.equal(record.id, selected);
     const entries = database
@@ -43,6 +44,7 @@ function load(path: string, conversation?: number) {
       .all(selected)
       .map((entryRow) => {
         assert(typeof entryRow.record === "string");
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Trust Durable's persisted record schema at this read-only benchmark boundary.
         const entry = JSON.parse(entryRow.record) as D.EntryRecord;
         assert.equal(entry.conversationId, selected);
         return entry;

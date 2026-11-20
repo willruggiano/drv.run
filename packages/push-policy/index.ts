@@ -4,6 +4,7 @@ export type PushSubscription = { endpoint: string; keys: { p256dh: string; auth:
 function object(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     throw new TypeError("Expected an object.");
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Object shape is checked above; every property value remains unknown.
   return value as Record<string, unknown>;
 }
 

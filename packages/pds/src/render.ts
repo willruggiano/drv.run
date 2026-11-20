@@ -373,6 +373,7 @@ function status(view: D.ConversationView): string {
 }
 
 function queue(view: D.ConversationView): string {
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Durable supplies InboxDoc values; the view map erases their type.
   const inbox = (view.docs[InboxDoc.definition.kind] ?? { items: [] }) as D.InboxState;
   return `<div id="queue">${inbox.items.length ? `<div class="queued-messages">${inbox.items.map((item) => `<article id="queued-${item.id}" data-role="user"><header><span class="speaker">Queued ${escape(item.mode)}</span></header>${"content" in item ? content({ role: "user", content: item.content, timestamp: 0 }) : "Context update"}</article>`).join("")}</div>` : ""}</div>`;
 }
@@ -399,6 +400,7 @@ export async function metadata(
 ): Promise<string> {
   const agent = await conversation.agent(context);
   const usage =
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Durable supplies UsageDoc values; the view map erases their type.
     (view?.docs[UsageDoc.definition.kind] as D.UsageState | undefined) ??
     (await app.harness.snapshot(UsageDoc, conversation.id, context));
   const total = Object.values(usage?.models ?? {}).reduce(
