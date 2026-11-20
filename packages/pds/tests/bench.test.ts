@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { context } from "../src/application.ts";
-import { suite } from "../src/bench.ts";
+import { suite } from "../bench/index.ts";
 import type { Patch } from "../src/watch.ts";
 import { fixture, form } from "./fixtures.ts";
 
@@ -114,7 +114,7 @@ await test("benchmark selection is deterministic and invalid input cannot create
   await assert.rejects(stat(missing), { code: "ENOENT" });
   for (const args of [[], ["--db", path, "--conversation", "nope"], ["--db", path, "--unknown"]]) {
     const child = spawnSync(process.execPath, [
-      new URL("../src/bench.ts", import.meta.url).pathname,
+      new URL("../bench/index.ts", import.meta.url).pathname,
       ...args,
     ]);
     assert.equal(child.status, 1);

@@ -15,7 +15,7 @@ import {
   type Observation,
 } from "@earendil-works/pi-durable";
 import { Env } from "./harness/index.ts";
-import { context, environmentId, type Application } from "./application.ts";
+import { context, environmentId, type Session } from "./application.ts";
 import { regions } from "./render.ts";
 
 type State = {
@@ -25,7 +25,7 @@ type State = {
 };
 
 /** Native observation plus a head marker that survives window eviction. */
-export async function observe(app: Application, conversation: Conversation, signal: AbortSignal) {
+export async function observe(app: Session, conversation: Conversation, signal: AbortSignal) {
   const ctx = withAbortSignal(signal, context);
   let view: ConversationView | undefined;
   let environment = "";
@@ -152,14 +152,14 @@ export class Projection {
   #html = new Map<string, string>();
   #tools = new Map<string, string>();
   #calls = new Map<string, ToolCall>();
-  readonly chrome: {
+  readonly renderers: {
     configuration?(): Promise<Readonly<Record<string, string>>>;
     metadata?(view: ConversationView): Promise<string>;
   };
   readonly address: string;
-  constructor(address: string, chrome: Projection["chrome"] = {}) {
+  constructor(address: string, renderers: Projection["renderers"] = {}) {
     this.address = address;
-    this.chrome = chrome;
+    this.renderers = renderers;
   }
 
   async update(state: State, ops?: readonly Op[]): Promise<Patch[]> {
@@ -220,17 +220,17 @@ export class Projection {
       this.#calls = regions.calls(view, this.#calls);
     }
     if (
-      this.chrome.metadata &&
+      this.renderers.metadata &&
       (changed("view", "docs", UsageDoc.definition.kind) ||
         changed("view", "docs", AgentDoc.definition.kind) ||
         changed("view", "entries"))
     )
-      cached("metadata", await this.chrome.metadata(view));
+      cached("metadata", await this.renderers.metadata(view));
     if (
-      this.chrome.configuration &&
+      this.renderers.configuration &&
       (changed("view", "docs", AgentDoc.definition.kind) || changed("environment"))
     ) {
-      for (const [key, html] of Object.entries(await this.chrome.configuration()))
+      for (const [key, html] of Object.entries(await this.renderers.configuration()))
         cached(key, html);
     }
     return patches;

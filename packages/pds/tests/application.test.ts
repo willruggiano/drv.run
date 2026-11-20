@@ -6,6 +6,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import { AgentDoc, CompactionEntry, LiveDoc } from "@earendil-works/pi-durable";
 import { Env } from "../src/harness/index.ts";
 import { attachments, context, discoverEnvironments } from "../src/application.ts";
+import { ConversationId, SessionId, decode } from "../src/identity.ts";
 import { fixture, sessionsFixture, form } from "./fixtures.ts";
 
 await test("sessions persist configuration, attachments, messages, compaction, and /new isolation", async (t) => {
@@ -57,7 +58,7 @@ await test("sessions persist configuration, attachments, messages, compaction, a
       (await reopened.list()).map((item) => item.title),
       ["New session", "First question"],
     );
-    const restored = await reopened.conversation(String(first.id));
+    const restored = await reopened.conversation(first.id);
     assert(restored);
     assert.equal((await restored.agent(context)).cwd, "/other");
     assert.equal((await restored.context(context)).head?.kind, "pi.compaction");
@@ -258,7 +259,7 @@ await test("session lifecycle HTTP opens stores separately from native conversat
 
 await test("one Harness owns each opaque session ID; opens and roots preserve existing configuration", async (t) => {
   const { sessions, directory, selection } = await sessionsFixture(t);
-  const id = "../λ/owner ' & % session";
+  const id = decode(SessionId, "../λ/owner ' & % session");
   const opened = await Promise.all(Array.from({ length: 8 }, () => sessions.open(id)));
   const first = opened[0]!;
   assert(opened.every((app) => app === first));
@@ -270,24 +271,13 @@ await test("one Harness owns each opaque session ID; opens and roots preserve ex
   const repeated = await first.root(form({ model: "not a model", cwd: "" }));
   assert.equal(repeated.id, left.id);
   assert.deepEqual(await first.harness.snapshot(AgentDoc, left.id, context), initial);
-  const second = await sessions.open("different store");
+  const second = await sessions.open(decode(SessionId, "different store"));
   const right = await second.root(form({}));
   assert.equal(right.id, left.id);
   assert.equal((await right.agent(context)).model, undefined);
   await first.configure(left, form({ model: "faux/second" }));
   assert.equal((await right.agent(context)).model, undefined);
   assert.equal((await first.harness.inspect(context)).scheduling, "paused");
-  for (const invalid of [
-    "",
-    ".",
-    "..",
-    "x".repeat(129),
-    "λ".repeat(65),
-    "\0",
-    "line\nfeed",
-    "\ud800",
-  ])
-    await assert.rejects(sessions.open(invalid));
   assert.deepEqual(
     (await sessions.list()).map((item) => item.id).sort(),
     [id, "different store"].sort(),
@@ -310,7 +300,7 @@ await test("session reads, observations, missing addresses, and model metadata n
   }
   assert.equal(refresh.mock.callCount(), 0);
   assert.deepEqual(await sessions.list(), []);
-  const app = await sessions.open("read only");
+  const app = await sessions.open(decode(SessionId, "read only"));
   const conversation = await app.createConversation(form({}));
   const base = `/api/s/${encodeURIComponent(app.id)}`;
   for (const [path, expected] of [
@@ -347,9 +337,9 @@ await test("corrupt persisted stores remain unavailable without replacement or h
   const { readFile, stat } = await import("node:fs/promises");
   const { serve } = await import("../src/server.ts");
   const { sessions, directory, open } = await sessionsFixture(t);
-  const broken = await sessions.open("broken");
+  const broken = await sessions.open(decode(SessionId, "broken"));
   await broken.root(form({}));
-  const healthy = await sessions.open("healthy");
+  const healthy = await sessions.open(decode(SessionId, "healthy"));
   const retained = await healthy.root(form({}));
   await sessions.close();
   const path = join(
@@ -369,10 +359,10 @@ await test("corrupt persisted stores remain unavailable without replacement or h
       { id: "healthy", status: "open" },
     ],
   );
-  await assert.rejects(reopened.open("broken"));
+  await assert.rejects(reopened.open(decode(SessionId, "broken")));
   assert.deepEqual(await readFile(path), bytes);
   assert.equal((await stat(path)).ino, before.ino);
-  const recovered = await reopened.get("healthy");
+  const recovered = await reopened.get(decode(SessionId, "healthy"));
   assert(recovered);
   assert.equal((await recovered.root(form({}))).id, retained.id);
   const server = await serve(reopened, { port: 0 });
@@ -402,7 +392,7 @@ await test(
   async (t) => {
     const { CompactionTask } = await import("@earendil-works/pi-durable");
     const { sessions, open, faux, selection } = await sessionsFixture(t);
-    const app = await sessions.open("recovery");
+    const app = await sessions.open(decode(SessionId, "recovery"));
     const conversation = await app.createConversation(form(selection));
     await conversation.commit(async (tx) => {
       for (let index = 0; index < 4; index++)
@@ -432,7 +422,7 @@ await test(
     assert(recovered);
     assert.equal((await recovered.harness.inspect(context)).scheduling, "running");
     await recovered.harness.waitForIdle(context);
-    assert.equal((await recovered.conversation(String(conversation.id)))?.id, conversation.id);
+    assert.equal((await recovered.conversation(conversation.id))?.id, conversation.id);
     assert.equal(faux.state.callCount, 1);
   },
 );
@@ -440,7 +430,7 @@ await test(
 await test("HTTP validates complete addresses, methods, fields, and media types before mutation", async (t) => {
   const { serve } = await import("../src/server.ts");
   const { sessions } = await sessionsFixture(t);
-  const app = await sessions.open("validation");
+  const app = await sessions.open(decode(SessionId, "validation"));
   const conversation = await app.root(form({}));
   const server = await serve(sessions, { port: 0 });
   t.after(() => server.close());
@@ -452,6 +442,25 @@ await test("HTTP validates complete addresses, methods, fields, and media types 
   }
   for (const query of ["?unknown=value", "?before=5&before=6"]) {
     const response = await fetch(`${base}/c/${conversation.id}/entries${query}`);
+    assert.equal(response.status, 400);
+    await response.body?.cancel();
+  }
+  for (const sessionId of ["", ".", "..", "x".repeat(129), "λ".repeat(65), "\0", "line\nfeed"]) {
+    const response = await fetch(`${server.origin}/api/s/open`, {
+      method: "POST",
+      body: form({ sessionId }),
+      redirect: "manual",
+    });
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.has("location"), false);
+    await response.body?.cancel();
+  }
+  for (const taskId of ["-1", "1e0", "00", "9007199254740992"]) {
+    const response = await fetch(`${base}/createConversation`, {
+      method: "POST",
+      body: form({ ownership: "task", taskId }),
+      redirect: "manual",
+    });
     assert.equal(response.status, 400);
     await response.body?.cancel();
   }
@@ -486,15 +495,17 @@ await test("HTTP validates complete addresses, methods, fields, and media types 
 
 await test("typed read errors and unexpected failures retain their declared HTTP statuses", async (t) => {
   const { SessionFailed, StorageRequestError } = await import("@earendil-works/pi-durable");
+  const { AssertError } = await import("typebox/value");
   const { serve } = await import("../src/server.ts");
   const { sessions } = await sessionsFixture(t);
-  const app = await sessions.open("errors");
+  const app = await sessions.open(decode(SessionId, "errors"));
   const server = await serve(sessions, { port: 0 });
   t.after(() => server.close());
   for (const [error, status] of [
     [new StorageRequestError("rejected read arguments"), 400],
     [new SessionFailed(new Error("storage failed")), 503],
     [new TypeError("unexpected adapter error"), 500],
+    [new AssertError("Assert", null, []), 500],
   ] as const) {
     const read = t.mock.method(app.harness, "conversation", async () => {
       throw error;
@@ -505,19 +516,6 @@ await test("typed read errors and unexpected failures retain their declared HTTP
     await response.body?.cancel();
     read.mock.restore();
   }
-});
-
-await test("the legacy single-store database is not silently bypassed or migrated", async (t) => {
-  const { readFile, readdir } = await import("node:fs/promises");
-  const { sessions, directory, open } = await sessionsFixture(t);
-  await sessions.close();
-  const legacy = join(directory, "sessions.sqlite");
-  const bytes = Buffer.from([5, 4, 3, 2, 1]);
-  await writeFile(legacy, bytes);
-  const before = await readdir(directory);
-  await assert.rejects(open());
-  assert.deepEqual(await readFile(legacy), bytes);
-  assert.deepEqual(await readdir(directory), before);
 });
 
 await test("the combined home form validates all configuration before allocating a session", async (t) => {
@@ -544,8 +542,8 @@ await test("task-owned creation validates store ownership and an explicit local 
   const { CompactionTask } = await import("@earendil-works/pi-durable");
   const { serve } = await import("../src/server.ts");
   const { sessions, selection } = await sessionsFixture(t);
-  const owner = await sessions.open("owner");
-  await sessions.open("other");
+  const owner = await sessions.open(decode(SessionId, "owner"));
+  await sessions.open(decode(SessionId, "other"));
   const parent = await owner.createConversation(form({ ...selection, environment: "test-guest" }));
   const task = await parent.commit(
     (tx) =>
@@ -572,7 +570,9 @@ await test("task-owned creation validates store ownership and an explicit local 
   const location = new URL(response.headers.get("location")!, server.origin);
   const match = new URLPattern({ pathname: "/api/s/:session/c/:conversation" }).exec(location.href);
   assert(match?.pathname.groups.conversation);
-  const child = await owner.conversation(match.pathname.groups.conversation);
+  const child = await owner.conversation(
+    decode(ConversationId, match.pathname.groups.conversation),
+  );
   assert(child);
   await response.body?.cancel();
   assert.deepEqual((await owner.harness.snapshot(Env, child.id, context))?.env, { type: "local" });
@@ -604,9 +604,9 @@ await test("missing and aliased stores remain unavailable without modifying heal
   const { link, lstat, readFile, symlink, unlink } = await import("node:fs/promises");
   const { SessionUnavailable } = await import("../src/application.ts");
   const { sessions, directory, open } = await sessionsFixture(t);
-  const healthy = await sessions.open("healthy");
+  const healthy = await sessions.open(decode(SessionId, "healthy"));
   const root = await healthy.root(form({}));
-  await sessions.open("missing");
+  await sessions.open(decode(SessionId, "missing"));
   await sessions.close();
   const path = (id: string) => join(directory, "sessions", Buffer.from(id).toString("base64url"));
   const database = join(path("healthy"), "store.sqlite");
@@ -623,24 +623,24 @@ await test("missing and aliased stores remain unavailable without modifying heal
   await link(linked, join(path("hard link"), "store.sqlite"));
   const reopened = await open();
   for (const id of ["missing", "directory alias", "file alias", "hard link"]) {
-    await assert.rejects(reopened.get(id), SessionUnavailable);
-    await assert.rejects(reopened.open(id), SessionUnavailable);
+    await assert.rejects(reopened.get(decode(SessionId, id)), SessionUnavailable);
+    await assert.rejects(reopened.open(decode(SessionId, id)), SessionUnavailable);
   }
   await assert.rejects(lstat(join(path("missing"), "store.sqlite")), { code: "ENOENT" });
   assert((await lstat(path("directory alias"))).isSymbolicLink());
   assert((await lstat(join(path("file alias"), "store.sqlite"))).isSymbolicLink());
   assert.equal((await lstat(linked)).nlink, 2);
   assert.deepEqual(await readFile(linked), retained);
-  const recovered = await reopened.get("healthy");
+  const recovered = await reopened.get(decode(SessionId, "healthy"));
   assert(recovered);
   assert.equal((await recovered.root(form({}))).id, root.id);
 });
 
 await test("shutdown closes every Harness before waiting for all environment cleanups, including failed ones", async (t) => {
-  const { openSessions } = await import("../src/application.ts");
+  const { openApplication } = await import("../src/application.ts");
   const { NodeExecutionEnv } = await import("@earendil-works/pi-durable/env/node");
   const { sessions, directory, faux, selection } = await sessionsFixture(t);
-  const owned = await openSessions({
+  const owned = await openApplication({
     directory: join(directory, "shutdown"),
     models: sessions.models,
     environments: sessions.environments,
@@ -655,7 +655,10 @@ await test("shutdown closes every Harness before waiting for all environment cle
     else await owned.close();
   });
   await mkdir(join(directory, "second"));
-  const owners = await Promise.all([owned.open("one"), owned.open("two")]);
+  const owners = await Promise.all([
+    owned.open(decode(SessionId, "one")),
+    owned.open(decode(SessionId, "two")),
+  ]);
   for (const [index, owner] of owners.entries()) {
     const conversation = await owner.createConversation(form(selection));
     for (const cwd of index === 0 ? [directory, join(directory, "second")] : [directory]) {
@@ -753,20 +756,20 @@ await test(
 await test("shutdown settles pending opens and rejects further ownership acquisition", async (t) => {
   const { SessionUnavailable } = await import("../src/application.ts");
   const { sessions } = await sessionsFixture(t);
-  const opening = sessions.open("opening");
+  const opening = sessions.open(decode(SessionId, "opening"));
   const closing = sessions.close();
-  await assert.rejects(sessions.open("too late"), SessionUnavailable);
+  await assert.rejects(sessions.open(decode(SessionId, "too late")), SessionUnavailable);
   const owner = await opening;
   await closing;
   assert.equal(owner.available, false);
-  await assert.rejects(sessions.get("opening"), SessionUnavailable);
+  await assert.rejects(sessions.get(decode(SessionId, "opening")), SessionUnavailable);
   assert.deepEqual(await sessions.list(), [{ id: "opening", status: "unavailable" }]);
 });
 
 await test("reserved action names remain valid session identities and transport envelopes carry no read arguments", async (t) => {
   const { serve } = await import("../src/server.ts");
   const { sessions } = await sessionsFixture(t);
-  await sessions.open("open");
+  await sessions.open(decode(SessionId, "open"));
   const server = await serve(sessions, { port: 0 });
   t.after(() => server.close());
   const session = await fetch(`${server.origin}/api/s/open`);

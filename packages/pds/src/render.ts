@@ -12,17 +12,13 @@ import {
   type Conversation,
   type ConversationView,
   type EntryRecord,
+  type ConversationId,
   type InboxState,
   type LiveState,
 } from "@earendil-works/pi-durable";
+import type { SessionId } from "./identity.ts";
 import { Env } from "./harness/index.ts";
-import {
-  context,
-  environmentId,
-  modelKey,
-  type Application,
-  type Sessions,
-} from "./application.ts";
+import { context, environmentId, modelKey, type Session, type Application } from "./application.ts";
 
 export const escape = (value: unknown): string =>
   String(value).replace(
@@ -68,7 +64,7 @@ const picker = (id: string, label: string, control: string, value: string) =>
 const updateLabel = "el.nextElementSibling.textContent = el.selectedOptions[0].label";
 
 export function thinking(
-  app: Pick<Application, "models">,
+  app: Pick<Session, "models">,
   key: string,
   selected: string,
   autosave = false,
@@ -84,12 +80,11 @@ export function thinking(
   );
 }
 
-type Menu = Pick<Application, "models" | "environments" | "cwd"> &
-  Partial<Pick<Application, "harness">>;
+type Menu = Pick<Session, "models" | "environments" | "cwd"> & Partial<Pick<Session, "harness">>;
 const js = (value: string) => escape(JSON.stringify(value));
-export const sessionPath = (prefix: string, id: string) =>
+export const sessionPath = (prefix: string, id: SessionId) =>
   `${prefix}/api/s/${encodeURIComponent(id)}`;
-export const conversationPath = (prefix: string, session: string, id: number) =>
+export const conversationPath = (prefix: string, session: SessionId, id: ConversationId) =>
   `${sessionPath(prefix, session)}/c/${id}`;
 
 async function selections(app: Menu, prefix: string, conversation?: Conversation) {
@@ -131,7 +126,7 @@ async function selections(app: Menu, prefix: string, conversation?: Conversation
   };
 }
 
-export async function configuration(app: Application, conversation: Conversation, prefix: string) {
+export async function configuration(app: Session, conversation: Conversation, prefix: string) {
   const fields = await selections(app, prefix, conversation);
   const base = conversationPath(prefix, app.id, conversation.id);
   const control = (name: "environment" | "cwd" | "model" | "thinking", html: string) =>
@@ -157,7 +152,7 @@ function composer(
     ${available ? "" : '<p class="error">No models available.</p>'}</div>`;
 }
 
-async function creationForm(app: Menu, prefix: string, id?: string) {
+async function creationForm(app: Menu, prefix: string, id?: SessionId) {
   const fields = await selections(app, prefix);
   const action = `${prefix}/`;
   return `<footer id="app-footer" class="composer-area"><form id="composer" data-on:reset="$_hasInput = false; $_hasFiles = false" method="post" action="${escape(action)}" class="new-composer" enctype="multipart/form-data" data-indicator:_sending data-on:submit="@post(${js(action)}, {contentType: 'form', retry: 'never'})">${id === undefined ? "" : `<input type="hidden" name="sessionId" value="${escape(id)}">`}<fieldset id="new-options" aria-label="New conversation options" data-attr:disabled="$_sending"><div id="footer-instance" class="selector-summary">${fields.environment}${fields.directory}</div>
@@ -165,12 +160,12 @@ async function creationForm(app: Menu, prefix: string, id?: string) {
     ${composer(true, fields.available, id === undefined ? "Create session" : "Create conversation")}</fieldset></form></footer>`;
 }
 
-export async function sessionList(app: Sessions, prefix: string) {
+export async function sessionList(app: Application, prefix: string) {
   const records = await app.list();
   return `<section id="session-list" aria-label="Sessions">${records.map((record) => `<div class="session-row" data-session-id="${escape(record.id)}" data-status="${record.status}"><a class="session" href="${escape(sessionPath(prefix, record.id))}">${escape(record.id)}</a><span>${record.status === "open" ? "Open" : "Unavailable"}</span><form method="post" action="${escape(prefix)}/api/s/open"><input type="hidden" name="sessionId" value="${escape(record.id)}"><button>Reopen session</button></form></div>`).join("")}${records.length ? "" : '<p id="sessions-empty">No sessions</p>'}</section>`;
 }
 
-export async function home(app: Sessions, prefix: string): Promise<string> {
+export async function home(app: Application, prefix: string): Promise<string> {
   return page(
     "Sessions",
     `<header id="app-header">${alert()}</header><main id="main-area"><section id="landing" class="pane" aria-label="Sessions">${await sessionList(app, prefix)}<form id="open-session" method="post" action="${escape(prefix)}/api/s/open"><label>Session ID <input name="sessionId" maxlength="128" required></label><button>Open session</button></form><form method="post" action="${escape(prefix)}/api/s/open"><button>New empty session</button></form><a href="${escape(prefix)}/api/models">Models</a></section></main>${await creationForm(app, prefix)}`,
@@ -179,7 +174,7 @@ export async function home(app: Sessions, prefix: string): Promise<string> {
   );
 }
 
-export async function sessionPage(app: Application, prefix: string): Promise<string> {
+export async function sessionPage(app: Session, prefix: string): Promise<string> {
   const base = sessionPath(prefix, app.id);
   const records = await app.list();
   const rows = await Promise.all(
@@ -197,7 +192,7 @@ export async function sessionPage(app: Application, prefix: string): Promise<str
   );
 }
 
-export async function modelsPage(app: Pick<Application, "models">, prefix: string) {
+export async function modelsPage(app: Pick<Session, "models">, prefix: string) {
   const models = await app.models.getAvailable();
   const rows = models.map((model) => {
     const values = {
@@ -231,7 +226,7 @@ export async function modelsPage(app: Pick<Application, "models">, prefix: strin
 }
 
 export async function conversationPage(
-  app: Application,
+  app: Session,
   conversation: Conversation,
   initial: { view: ConversationView; head: EntryRecord | null },
   prefix: string,
@@ -403,7 +398,7 @@ function toolUpdates(
 export const regions = { baseline, entry, tools, calls, live, status, queue, toolUpdates, history };
 
 export async function metadata(
-  app: Application,
+  app: Session,
   conversation: Conversation,
   view?: ConversationView,
 ): Promise<string> {

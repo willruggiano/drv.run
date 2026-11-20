@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { hostModels } from "./auth.ts";
-import { discoverEnvironments, openSessions } from "./application.ts";
+import { discoverEnvironments, openApplication } from "./application.ts";
 import { serve } from "./server.ts";
 
 const directory = resolve(
@@ -12,7 +12,7 @@ const directory = resolve(
 await mkdir(directory, { recursive: true, mode: 0o700 });
 const models = hostModels();
 await models.refresh();
-const app = await openSessions({
+const app = await openApplication({
   directory,
   models,
   cwd: process.cwd(),

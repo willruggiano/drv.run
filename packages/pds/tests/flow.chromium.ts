@@ -12,17 +12,18 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { AgentDoc, LiveDoc } from "@earendil-works/pi-durable";
-import { context, type Sessions } from "../src/application.ts";
+import { context, type Application } from "../src/application.ts";
+import { ConversationId, SessionId, decode } from "../src/identity.ts";
 import { serve } from "../src/server.ts";
 import { fixture, sessionsFixture, form } from "./fixtures.ts";
 
 const conversationRoute = new URLPattern({ pathname: "*/api/s/:session/c/:conversation" });
-async function selected(sessions: Sessions, url: string) {
+async function selected(sessions: Application, url: string) {
   const groups = conversationRoute.exec(url)?.pathname.groups;
   assert(groups?.session && groups.conversation);
-  const app = await sessions.get(decodeURIComponent(groups.session));
+  const app = await sessions.get(decode(SessionId, decodeURIComponent(groups.session)));
   assert(app);
-  const conversation = await app.conversation(groups.conversation);
+  const conversation = await app.conversation(decode(ConversationId, groups.conversation));
   assert(conversation);
   return { app, conversation };
 }
@@ -711,7 +712,7 @@ await test(
       const id = "../λ/owner ' & % session";
       await page.locator("#open-session input").fill(id);
       await page.getByRole("button", { name: "Open session", exact: true }).click();
-      const app = await sessions.get(id);
+      const app = await sessions.get(decode(SessionId, id));
       assert(app);
       assert.deepEqual(await app.list(), []);
       assert.equal((await app.harness.inspect(context)).scheduling, "paused");

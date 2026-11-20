@@ -8,9 +8,9 @@ import type { Op } from "@earendil-works/chord/delta";
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
 import type { ConversationRecord, EntryRecord } from "@earendil-works/pi-durable";
 import hljs from "highlight.js";
-import { regions } from "./render.ts";
-import { patch } from "./server.ts";
-import { Projection, type Patch } from "./watch.ts";
+import { regions } from "../src/render.ts";
+import { patch } from "../src/server.ts";
+import { Projection, type Patch } from "../src/watch.ts";
 
 type State = Parameters<Projection["update"]>[0];
 type Frame = { state: State; ops: readonly Op[] };
@@ -96,7 +96,7 @@ export function suite(path: string, conversation?: number) {
       ...(entries.length > 50 ? { before: entries[entries.length - 51]!.id } : {}),
     },
   };
-  // Chrome involves configuration discovery, not transcript rendering. Exclude it explicitly.
+  // Configuration rendering involves discovery, not transcript rendering. Exclude it.
   const projection = () => new Projection(`/api/s/benchmark/c/${record.id}`);
   const prime = async (state: State) => {
     const result = projection();

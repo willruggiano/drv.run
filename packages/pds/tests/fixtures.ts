@@ -4,7 +4,8 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { openSessions, type Sessions, type Environment } from "../src/application.ts";
+import { openApplication, type Application, type Environment } from "../src/application.ts";
+import { SessionId, decode } from "../src/identity.ts";
 
 export const form = (fields: Record<string, string>): FormData => {
   const result = new FormData();
@@ -32,9 +33,9 @@ export async function sessionsFixture(t: TestContext) {
       target: { host: "test-guest", knownHostsFile: "/known_hosts", hostKeyAlias: "test-guest" },
     },
   ];
-  const owners = new Set<Sessions>();
+  const owners = new Set<Application>();
   const open = async () => {
-    const sessions = await openSessions({
+    const sessions = await openApplication({
       directory,
       models,
       environments: async () => environments,
@@ -59,7 +60,7 @@ export async function sessionsFixture(t: TestContext) {
 
 export async function fixture(t: TestContext) {
   const result = await sessionsFixture(t);
-  const app = await result.sessions.open("test");
+  const app = await result.sessions.open(decode(SessionId, "test"));
   return {
     ...result,
     app,
@@ -71,7 +72,7 @@ export async function fixture(t: TestContext) {
     ),
     async open() {
       await result.sessions.close();
-      return (await result.open()).open("test");
+      return (await result.open()).open(decode(SessionId, "test"));
     },
   };
 }

@@ -9,19 +9,17 @@ import {
   StorageRequestError,
   ConversationBusy,
   ConversationIdle,
-  type EntryId,
   type ConversationOwnership,
-  type TaskId,
+  type EntryId as NativeEntryId,
 } from "@earendil-works/pi-durable";
+import { ConversationId, EntryId, TaskId, SessionId, decode, InvalidRequest } from "./identity.ts";
 import { observe, Projection, type Patch } from "./watch.ts";
 import {
   context,
   field,
   InvalidForm,
-  InvalidRequest,
   SessionUnavailable,
-  nativeId,
-  type Sessions,
+  type Application,
 } from "./application.ts";
 import {
   alert,
@@ -58,7 +56,7 @@ const assets = new Map<string, readonly [string, string]>([
 ] as const);
 
 export async function serve(
-  sessions: Sessions,
+  sessions: Application,
   options: { port?: number; host?: string; origin?: string } = {},
 ) {
   const base = new URL(options.origin ?? "http://pds.invalid/");
@@ -226,7 +224,7 @@ export async function serve(
         const form = await formData(request, url);
         fields(form, ["sessionId"]);
         const app = await sessions.open(
-          form.has("sessionId") ? field(form, "sessionId") : undefined,
+          form.has("sessionId") ? decode(SessionId, field(form, "sessionId")) : undefined,
         );
         navigate(request, response, sessionPath(prefix, app.id));
         return;
@@ -237,9 +235,9 @@ export async function serve(
       sessionRoute.exec(url.href)?.pathname.groups ?? sessionAction.exec(url.href)?.pathname.groups;
     const match = conversationMatch ?? sessionMatch;
     if (!match?.session) throw new HttpError(404, "Not found.");
-    let sessionId: string;
+    let sessionId: SessionId;
     try {
-      sessionId = decodeURIComponent(match.session);
+      sessionId = decode(SessionId, decodeURIComponent(match.session));
     } catch (error) {
       if (error instanceof URIError) throw new InvalidRequest("Malformed session address.");
       throw error;
@@ -270,7 +268,7 @@ export async function serve(
         if (form.has("ownership")) {
           const kind = field(form, "ownership");
           if (kind === "task") {
-            const taskId = nativeId(field(form, "taskId")) as TaskId;
+            const taskId = decode(TaskId, field(form, "taskId"));
             if (!(await app.harness.getTask(taskId, context)))
               throw new InvalidForm("Owning task does not exist in this session.");
             ownership = { kind: "task", taskId };
@@ -285,11 +283,13 @@ export async function serve(
       return;
     }
     assert(match.conversation !== undefined);
-    const conversation = await app.conversation(match.conversation).catch((error: unknown) => {
-      if (error instanceof StorageRequestError)
-        throw new InvalidRequest("Invalid conversation read.", { cause: error });
-      throw error;
-    });
+    const conversation = await app
+      .conversation(decode(ConversationId, match.conversation))
+      .catch((error: unknown) => {
+        if (error instanceof StorageRequestError)
+          throw new InvalidRequest("Invalid conversation read.", { cause: error });
+        throw error;
+      });
     if (!conversation) throw new HttpError(404, "Conversation not found.");
     const path = conversationPath(prefix, app.id, conversation.id);
     if (!action) {
@@ -348,18 +348,19 @@ export async function serve(
         output.end();
       }
     } else if (request.method === "GET" && action === "entries") {
-      const before = nativeId(url.searchParams.get("before") ?? "");
+      const before = decode(EntryId, url.searchParams.get("before"));
       const after = url.searchParams.has("after")
-        ? nativeId(url.searchParams.get("after")!)
+        ? decode(EntryId, url.searchParams.get("after"))
         : undefined;
       if (before < 1 || (after !== undefined && after >= before))
         throw new InvalidRequest("Invalid history interval.");
+      // The checked exclusive interval yields safe, nonnegative inclusive IDs.
       const result = await conversation
         .entries(
           {
             order: "descending",
-            maxEntryId: (before - 1) as EntryId,
-            ...(after === undefined ? {} : { minEntryId: (after + 1) as EntryId }),
+            maxEntryId: (before - 1) as NativeEntryId,
+            ...(after === undefined ? {} : { minEntryId: (after + 1) as NativeEntryId }),
           },
           50,
           undefined,
