@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -8,7 +8,7 @@ import { AgentDoc, CompactionEntry, LiveDoc } from "@earendil-works/pi-durable";
 import { Env } from "../src/harness/index.ts";
 import { attachments, context, discoverEnvironments } from "../src/application.ts";
 import { ConversationId, SessionId, decode } from "../src/identity.ts";
-import { fixture, sessionsFixture, form } from "./fixtures.ts";
+import { fixture, sessionsFixture, knownHostsFixture, form } from "./fixtures.ts";
 
 await test("sessions persist configuration, attachments, messages, compaction, and /new isolation", async (t) => {
   const { app, faux, selection, open } = await fixture(t);
@@ -113,14 +113,65 @@ await test("attachments retain image bytes and UTF-8 text; unsupported input doe
   assert.equal((await conversation.context(context)).entries.length, 0);
 });
 
-await test("environment discovery exposes prepared drv.run host names without connection paths", async (t) => {
-  const { directory } = await fixture(t);
-  const ready = join(directory, "drv.run", "ready");
-  await mkdir(ready, { recursive: true });
-  await mkdir(join(directory, "drv.run", "starting"));
-  await writeFile(join(ready, "ssh_config"), "");
-  const environments = await discoverEnvironments(directory);
-  assert.deepEqual(environments, [{ type: "local" }, { type: "ssh", host: "drv.run.ready" }]);
+await test("environment discovery preserves published SSH filenames without reading keys", async (t) => {
+  const directory = await knownHostsFixture(t);
+  await writeFile(join(directory, "Mixed.Case-Alias"), "not an inventory or a key", { mode: 0 });
+  assert.deepEqual(await discoverEnvironments(directory), [
+    { type: "ssh", host: "Mixed.Case-Alias" },
+  ]);
+});
+
+await test("environment discovery lists files and links, not subdirectories or their contents", async (t) => {
+  const directory = await knownHostsFixture(t);
+  await writeFile(join(directory, "zebra"), "");
+  await symlink("zebra", join(directory, "linked-alias"));
+  await symlink("not-present", join(directory, "stale-alias"));
+  await mkdir(join(directory, "nested"));
+  await writeFile(join(directory, "nested", "not-a-suggestion"), "");
+  assert.deepEqual(await discoverEnvironments(directory), [
+    { type: "ssh", host: "linked-alias" },
+    { type: "ssh", host: "stale-alias" },
+    { type: "ssh", host: "zebra" },
+  ]);
+  await rm(join(directory, "linked-alias"));
+  assert.deepEqual(await discoverEnvironments(directory), [
+    { type: "ssh", host: "stale-alias" },
+    { type: "ssh", host: "zebra" },
+  ]);
+});
+
+await test("environment discovery treats disabled, empty and missing directories as no suggestions", async (t) => {
+  const directory = await knownHostsFixture(t);
+  assert.deepEqual(await discoverEnvironments(""), []);
+  assert.deepEqual(await discoverEnvironments(directory), []);
+  const missing = join(directory, "absent");
+  assert.deepEqual(await discoverEnvironments(missing), []);
+  const { stat } = await import("node:fs/promises");
+  await assert.rejects(stat(missing), { code: "ENOENT" });
+});
+
+await test("environment discovery reports directory read failures", async (t) => {
+  const directory = await knownHostsFixture(t);
+  const file = join(directory, "not-a-directory");
+  await writeFile(file, "");
+  await assert.rejects(discoverEnvironments(file), { code: "ENOTDIR" });
+  const loop = join(directory, "loop");
+  await symlink(loop, loop);
+  await assert.rejects(discoverEnvironments(loop), { code: "ELOOP" });
+});
+
+await test("environment discovery defaults to the owner's known-hosts directory", async (t) => {
+  const home = await knownHostsFixture(t);
+  const previous = process.env.HOME;
+  process.env.HOME = home;
+  t.after(() => {
+    if (previous === undefined) delete process.env.HOME;
+    else process.env.HOME = previous;
+  });
+  const directory = join(home, ".ssh", "known_hosts.d");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "ordinary-host"), "");
+  assert.deepEqual(await discoverEnvironments(), [{ type: "ssh", host: "ordinary-host" }]);
 });
 
 await test("HTTP rejects foreign writes and accepts native forms at the configured public origin", async (t) => {
@@ -591,7 +642,7 @@ await test("new unselected conversations cannot execute tools on the host", asyn
 });
 
 await test("missing and aliased stores remain unavailable without modifying healthy storage", async (t) => {
-  const { link, lstat, readFile, symlink, unlink } = await import("node:fs/promises");
+  const { link, lstat, readFile, unlink } = await import("node:fs/promises");
   const { SessionUnavailable } = await import("../src/application.ts");
   const { sessions, directory, open } = await sessionsFixture(t);
   const healthy = await sessions.open(decode(SessionId, "healthy"));

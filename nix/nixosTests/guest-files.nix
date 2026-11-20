@@ -18,6 +18,8 @@
         ssh-keygen -q -t ed25519 -N "" -f "$STATE_DIRECTORY/host-key"
       fi
       ssh-keygen -q -t ed25519 -N "" -f "$runtime/id_ed25519"
+      printf 'drv.run.%s %s\n' "''${STATE_DIRECTORY##*/}" \
+        "$(ssh-keygen -y -f "$STATE_DIRECTORY/host-key")" > "$runtime/known_hosts"
       ln -sfn ${environment} "$STATE_DIRECTORY/environment"
       printf 'fixture:%s\n' "''${STATE_DIRECTORY##*/}" > "$STATE_DIRECTORY/reference"
       mkdir -p "$STATE_DIRECTORY/ready"
@@ -89,13 +91,9 @@ in
       systemd.user.services = {
         # Only environment realization and the guest process are doubles. Core
         # SSH preparation, assembly, dependencies and runtime ownership are real.
-        "drv.run-prepare@".serviceConfig = {
-          ExecStart = lib.mkForce "${lib.getExe prepare} %t/drv.run/%i";
-          ExecStopPost = lib.getExe (pkgs.writeShellApplication {
-            name = "fixture-preparation-stop";
-            runtimeInputs = [pkgs.coreutils];
-            text = gate "preparation-stop";
-          });
+        "drv.run-prepare@" = {
+          serviceConfig.ExecStart = lib.mkForce "${lib.getExe prepare} %t/drv.run/%i";
+          postStop = lib.mkBefore (gate "preparation-stop");
         };
         "fixture-files@" = {
           requires = ["drv.run-prepare@%i.service"];

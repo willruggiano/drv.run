@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { chromium, type Page } from "playwright";
@@ -11,10 +11,10 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { AgentDoc, LiveDoc } from "@earendil-works/pi-durable";
-import { context, type Application } from "../src/application.ts";
+import { context, discoverEnvironments, type Application } from "../src/application.ts";
 import { ConversationId, SessionId, decode } from "../src/identity.ts";
 import { serve } from "../src/server.ts";
-import { fixture, sessionsFixture, form, servePrefixed } from "./fixtures.ts";
+import { fixture, sessionsFixture, knownHostsFixture, form, servePrefixed } from "./fixtures.ts";
 
 const conversationRoute = new URLPattern({ pathname: "*/api/s/:session/c/:conversation" });
 async function selected(sessions: Application, url: string) {
@@ -753,11 +753,11 @@ await test(
   "configuration labels are target identifiers and discovery does not own selections or drafts",
   { timeout: 30_000 },
   async (t) => {
-    let failed = false;
-    const { app, sessions, auth, selection } = await fixture(t, async () => {
-      if (failed) throw new Error("private discovery failure");
-      return [{ type: "local" }, { type: "ssh", host: "test-guest" }];
-    });
+    const directory = await knownHostsFixture(t);
+    await writeFile(join(directory, "test-guest"), "");
+    const { app, sessions, auth, selection } = await fixture(t, () =>
+      discoverEnvironments(directory),
+    );
     const conversation = await app.createConversation(form(selection));
     const server = await serve(sessions, { auth, port: 0 });
     t.after(() => server.close());
@@ -812,13 +812,26 @@ await test(
     );
     assert.equal((await conversation.agent(context)).cwd, undefined);
     await app.configure(conversation, form({ env: "ssh:test-guest" }));
-    failed = true;
+    await rm(directory, { recursive: true });
+    await writeFile(directory, "not a directory");
     await page.reload();
     await idle(page);
     assert.equal(await page.locator("#environment").inputValue(), "ssh:test-guest");
     assert.equal(await page.locator("#environment").getAttribute("title"), "test-guest");
     assert.equal(await page.locator("#environment-discovery").isVisible(), true);
     assert.equal(await page.locator("#environment-options option").count(), 1);
+    await rm(directory);
+    await mkdir(directory);
+    await page.reload();
+    await idle(page);
+    assert.equal(await page.locator("#environment-discovery").isVisible(), false);
+    assert.equal(await page.locator("#environment-options option").count(), 1);
+    assert.equal(await page.locator("#environment").inputValue(), "ssh:test-guest");
+    await rm(directory, { recursive: true });
+    await writeFile(directory, "not a directory");
+    await page.reload();
+    await idle(page);
+    assert.equal(await page.locator("#environment-discovery").isVisible(), true);
     await page.locator("#environment").fill("local");
     await page.locator("#environment").press("Enter");
     await page.waitForFunction(

@@ -40,12 +40,12 @@ Settle:
   safeguards. Push delivery is explicitly best effort; do not require durable
   notification queues, replay, retries, or delivery receipts as retirement
   gates. Include generic PDS execution without drv.run and the optional
-  read-only drv.run environment source using owner-scoped CLI inventory;
-  unavailable selections must not fall back to local execution. Push inventory
-  consumption must remain independent of PDS. Include native OpenSSH
-  configuration, discovery readiness and failures, seed failure/restart
-  boundaries, correct service-module import scopes, and prefixed HTTP routing
-  with a narrowly scoped push service worker; see
+  read-only SSH suggestions from known-hosts filenames; unavailable selections
+  must not fall back to local execution. Push inventory consumption must remain
+  independent of PDS. Include native OpenSSH configuration, producer-owned
+  publication/removal, discovery failures, seed failure/restart boundaries,
+  correct service-module import scopes, and prefixed HTTP routing with a
+  narrowly scoped push service worker; see
   [[tasks/050-infrastructure-contract.md]].
 - Which package, flake, development-shell, formatter/check, generated-context,
   and example references must no longer depend on the legacy applications.
@@ -127,13 +127,13 @@ does not initiate deletion, deployment, or disposal of live state.
 
 Demonstrate these boundaries, not only an all-services-running happy path:
 
-| Component    | Required demonstration                                                                                                                                |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bare drv.run | Guest lifecycle, flake environment, and SSH without application services.                                                                             |
-| PDS          | Local and ordinary SSH execution, model login, and shared Pi credentials without accounts, mitm, or push; test optional drv.run discovery separately. |
-| Accounts     | Standalone enrollment, status, reauthorization, disconnect, and owner-local credential access without coding applications or mitm.                    |
-| Mitm         | Guest credential injection through accounts, no upstream credentials in guests, and fail-closed substitution failures.                                |
-| Push         | Guest `notify-send` and independent registration UI without coding applications, accounts, or mitm.                                                   |
+| Component    | Required demonstration                                                                                                                                     |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bare drv.run | Guest lifecycle, flake environment, and SSH without application services.                                                                                  |
+| PDS          | Local and ordinary SSH execution, model login, and shared Pi credentials without accounts, mitm, or push; test optional SSH filename discovery separately. |
+| Accounts     | Standalone enrollment, status, reauthorization, disconnect, and owner-local credential access without coding applications or mitm.                         |
+| Mitm         | Guest credential injection through accounts, no upstream credentials in guests, and fail-closed substitution failures.                                     |
+| Push         | Guest `notify-send` and independent registration UI without coding applications, accounts, or mitm.                                                        |
 
 Across the composition, verify two distinct Unix owners, unavailable discovery,
 missing seed inputs, restart boundaries, prefixed HTTP routing, and

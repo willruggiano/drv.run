@@ -298,6 +298,24 @@ in {
       description = "Prepare drv.run instance %i";
       partOf = ["drv.run@%i.service"];
       unitConfig.StopWhenUnneeded = true;
+      postStart = ''
+        set -euo pipefail
+        name="drv.run.''${RUNTIME_DIRECTORY##*/}"
+        test -f "$RUNTIME_DIRECTORY/known_hosts"
+        test -r "$RUNTIME_DIRECTORY/known_hosts"
+        install -d -m 0700 "$HOME/.ssh" "$HOME/.ssh/known_hosts.d"
+        published="$HOME/.ssh/known_hosts.d/$name"
+        if [[ ! -L $published || $(readlink -- "$published") != "$RUNTIME_DIRECTORY/known_hosts" ]]; then
+          ln -sT "$RUNTIME_DIRECTORY/known_hosts" "$published"
+        fi
+      '';
+      postStop = ''
+        set -euo pipefail
+        published="$HOME/.ssh/known_hosts.d/drv.run.''${RUNTIME_DIRECTORY##*/}"
+        if [[ -L $published && $(readlink -- "$published") == "$RUNTIME_DIRECTORY/known_hosts" ]]; then
+          rm -- "$published"
+        fi
+      '';
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

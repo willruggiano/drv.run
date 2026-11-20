@@ -18,6 +18,12 @@ export const form = (fields: Record<string, string>): FormData => {
   return result;
 };
 
+export async function knownHostsFixture(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), "pds-known-hosts-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return directory;
+}
+
 export async function sessionsFixture(t: TestContext, discover?: () => Promise<EnvTarget[]>) {
   const directory = await mkdtemp(join(tmpdir(), "pds-"));
   const faux = fauxProvider({

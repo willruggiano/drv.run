@@ -22,7 +22,7 @@ It exposes native operation-oriented commands and reads, with Datastar for
 bounded live projection. Sessions select independent SQLite stores;
 conversations retain native IDs within each store. Model login uses pi-ai and
 the Unix owner's shared Pi credentials. Execution is explicitly local, ordinary
-SSH, or a selection from an optional environment source.
+SSH. Optional suggestions come from filenames in a known-hosts directory.
 
 ```text
 HTML forms -- short POST --> PDS -- native commands --> session Harness
@@ -31,7 +31,7 @@ browser    <-- Datastar --- PDS <-- bounded watch ---- conversation
 
 PDS model login --> pi-ai --> shared owner credential file
 PDS execution  --> explicit selection --> local | native OpenSSH
-optional drv.run source --> owner-scoped CLI inventory
+trusted publishers --> known_hosts.d/<SSH destination> --> PDS suggestions
 ```
 
 Pi owns conversation execution and provider protocols. PDS owns application
@@ -113,8 +113,9 @@ PDS behavior; independent-component deployment and retirement gates belong in
     later work uses changes, so that configuration does not relocate a command.
 31. As a PDS user, I want ordinary SSH configured through OpenSSH, so that PDS
     does not require private connection paths or manage host trust.
-32. As a PDS user, I want optional drv.run discovery with visible readiness and
-    failures, so that other environments remain usable during discovery outages.
+32. As a PDS user, I want optional SSH suggestions from known-hosts filenames,
+    so that discovery is independent of infrastructure and never gates
+    execution.
 33. As a PDS user, I want /new, /cd, and /compact retained, so that selected
     composer workflows do not depend on the old frontend.
 34. As a mobile PDS user, I want home environment selection and footer model and
@@ -357,9 +358,9 @@ PDS behavior; independent-component deployment and retirement gates belong in
   fallback in the API; native unset thinking resolves to off. UI model changes
   can submit a supported thinking value in the same command when the previous
   value is incompatible, but omission itself must not secretly change it.
-- A selected environment is explicitly local, SSH with a host name, or a named
-  source/environment identity. Source references retain their logical identity;
-  do not persist a transient resolution as the authoritative selection. No
+- A selected environment is explicitly local or SSH with a host name. Use the
+  existing `EnvTarget`; the SSH host is both its identifier and label, and the
+  local label is `local`. Do not add source identities or a resolution layer. No
   selection means no execution environment. An unavailable selection is an
   execution failure, never an implicit local fallback.
 - Initial selection belongs in the creating commit, not on store-only open. New
@@ -374,15 +375,15 @@ PDS behavior; independent-component deployment and retirement gates belong in
   new selection; existing operations keep their acquired environment and are
   neither aborted nor relocated. Do not mutate or close an environment while
   running work still borrows it.
-- Environment sources have a small application interface: stable source
-  identity, listing selectable identities/labels/readiness, and resolving a
-  saved identity to local/SSH execution or explicit unavailability. Errors are
-  distinct from an empty list. Sources do not register tools/tasks or control
-  guest lifecycle.
-- Generic local and SSH execution need no drv.run. Deployment may register the
-  optional drv.run source, which consumes the inventory contract in the parent
-  specification. Failed discovery affects that source only. Saved unavailable
-  identities remain visible through ordinary instance restarts.
+- The existing environment callback supplies optional SSH suggestions by listing
+  filenames in an owner-selected known-hosts directory. Follow the `%k`
+  publication and failure contract in [[tasks/050-infrastructure-contract.md]].
+  Do not read file contents, interpret SSH configuration, query lifecycle
+  inventory, or expose readiness metadata. No drv.run dependency is required.
+- Discovery is advisory. Directory-read failures are visible without disabling
+  local or manual SSH selection. Saved hosts remain unchanged across entry
+  removal, publication changes, failures, and instance restarts. Acquisition
+  must not consult discovery, require directory membership, or control guests.
 - SSH requires only `host` at the application boundary. Use the selected native
   pi-env/OpenSSH integration, with deployment-owned configuration and strict
   host-key verification. Do not expose keys, trust/config paths, SSH executable,
@@ -641,9 +642,10 @@ serialized HTML, stdout/stderr, private helpers, or production test hooks.
   [Harness tests](tests/harness.test.ts) and
   [conversation tests](tests/conversations.test.ts).
 - Verify actual ordinary SSH through native configuration, including trust
-  rejection, rather than matching command arguments. Test optional drv.run
-  discovery independently. The parent specification assigns OS-level
-  permissions, seed/restart behavior, service modules, and closure checks.
+  rejection and `%k` trust-file selection, rather than matching command
+  arguments. Test filename discovery independently from publication and
+  execution. The parent specification assigns OS-level permissions, seed/restart
+  behavior, service modules, and closure checks.
 - Measure incremental rendering against the original full-transcript workload
   using equal committed history and partial updates. Report rendering work and
   generated bytes separately from model/network time. Retain PDS's benchmark; do

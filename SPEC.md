@@ -165,11 +165,11 @@ and model-credential contracts have one specification owner:
 52. As an operator, I want push destinations checked at registration and send,
     so that subscriptions cannot become an SSRF or redirect bypass.
 53. As an operator, I want read-only machine-readable owner inventory, so that
-    PDS and push do not parse human output or reconstruct private runtime paths.
-54. As a PDS user, I want ready instances distinguished from retained instances,
-    so that a stopped or provisioning guest is not offered as ready.
-55. As a PDS user, I want a failed discovery source distinguished from an empty
-    source, so that other selectable environments remain usable.
+    push and administrative consumers need not parse human output.
+54. As a PDS user, I want SSH suggestions from known-hosts filenames, so that
+    discovery needs no infrastructure-specific inventory or readiness model.
+55. As a PDS user, I want discovery failures shown without losing my selection,
+    so that local and manually selected SSH environments remain usable.
 56. As an operator, I want SSH connection and trust settings resolved by
     OpenSSH, so that applications need only an SSH host name.
 57. As an operator, I want owner-scoped systemd integration units to supply
@@ -439,11 +439,15 @@ and model-credential contracts have one specification owner:
 - Empty inventory is a successful empty array. Discovery failure exits nonzero
   and does not emit a successful partial/empty document. Consumers validate the
   version and schema; they do not parse human-readable diagnostics.
-- PDS registers an optional drv.run environment source around its existing
-  environment callback. It lists selectable ready instances and resolves saved
-  identities, showing unavailable selections and source errors explicitly. A
-  source failure does not disable other sources. Push consumes inventory
-  independently rather than importing PDS's source interface.
+- PDS does not consume lifecycle inventory. Its existing environment callback
+  lists SSH destinations from filenames in an owner-selected known-hosts
+  directory, conventionally `~/.ssh/known_hosts.d`. Native OpenSSH can use
+  `UserKnownHostsFile ~/.ssh/known_hosts.d/%k`. The publication, token, and
+  failure contract is [[tasks/050-infrastructure-contract.md]].
+- PDS stores only local or SSH with `host`; it has no instance identity, source
+  registry, readiness gate, or identity resolver. Manual and saved selections
+  are independent of discovery and never fall back to local execution. Push
+  consumes lifecycle inventory independently of PDS.
 - The public SSH connection input is a host name. Deployment owns user, route,
   keys, known hosts, and native `Host`/`Include` configuration. Applications do
   not reconstruct connection-file paths or require equivalent path fields in
@@ -502,11 +506,11 @@ and model-credential contracts have one specification owner:
 - Service-class modules declare `_class = "service"`; NixOS modules use the
   NixOS class. Use ordinary module-class and option checks, not scope-prefixed
   export names or an adapter that hides different import scopes.
-- Rock5b selects packages, users, secrets, state/runtime access, inventory
-  consumers, guest-file producer units, endpoint exposure, and unit
-  dependencies. Central infrastructure modules do not import functional
-  application modules. Extract shared composition only when there is an actual
-  second consumer.
+- Rock5b selects packages, users, secrets, state/runtime access, SSH suggestion
+  directories, lifecycle inventory consumers, guest-file producer units,
+  endpoint exposure, and unit dependencies. Central infrastructure modules do
+  not import functional application modules. Extract shared composition only
+  when there is an actual second consumer.
 
 ### HTTP composition
 

@@ -51,6 +51,9 @@
       system.stateVersion = lib.trivial.release;
     }
   ];
+  preparation = host.systemd.user.services."drv.run-prepare@";
+  publish = pkgs.writeShellScript "publish-known-hosts" preparation.postStart;
+  withdraw = pkgs.writeShellScript "withdraw-known-hosts" preparation.postStop;
   fixtureTool = pkgs.writeShellScriptBin "environment-tool" ''
     set -euo pipefail
     test "''${activated:-}" = 1
@@ -104,6 +107,60 @@ in
   assert !(host.systemd.user.services ? "drv-run-ssh@");
   assert !(host.security.wrappers ? "sshx.bind");
     pkgs.runCommand "ssh-policy-check" {} ''
+      # Publication consumes an existing trust record; it does not create keys.
+      (
+        export HOME="$PWD/owner" RUNTIME_DIRECTORY="$PWD/runtime/alpha"
+        mkdir -p "$HOME" "$RUNTIME_DIRECTORY" retained
+        ${lib.getExe' pkgs.openssh "ssh-keygen"} -q -t ed25519 -N "" -f retained/host-key
+        { printf '%s ' drv.run.alpha; cat retained/host-key.pub; } > "$RUNTIME_DIRECTORY/known_hosts"
+        ${publish}
+        test "$HOME/.ssh/known_hosts.d/drv.run.alpha" -ef "$RUNTIME_DIRECTORY/known_hosts"
+        test -f retained/host-key
+      )
+      # Stop only withdraws this instance's publication, retaining keys and peers.
+      (
+        export HOME="$PWD/stopping" RUNTIME_DIRECTORY="$PWD/runtime/beta"
+        mkdir -p "$HOME" "$RUNTIME_DIRECTORY"
+        { printf '%s ' drv.run.beta; cat retained/host-key.pub; } > "$RUNTIME_DIRECTORY/known_hosts"
+        ${publish}
+        ln -s "$PWD/runtime/alpha/known_hosts" "$HOME/.ssh/known_hosts.d/another-host"
+        ${withdraw}
+        test ! -L "$HOME/.ssh/known_hosts.d/drv.run.beta"
+        test "$HOME/.ssh/known_hosts.d/another-host" -ef "$PWD/runtime/alpha/known_hosts"
+        test -f retained/host-key
+        ${withdraw}
+        ${publish}
+        test "$HOME/.ssh/known_hosts.d/drv.run.beta" -ef "$RUNTIME_DIRECTORY/known_hosts"
+      )
+      # An unclean shutdown can leave our own link after runtime cleanup.
+      (
+        export HOME="$PWD/restarting" RUNTIME_DIRECTORY="$PWD/runtime/gamma"
+        mkdir -p "$HOME/.ssh/known_hosts.d"
+        ln -s "$RUNTIME_DIRECTORY/known_hosts" "$HOME/.ssh/known_hosts.d/drv.run.gamma"
+        mkdir -p "$RUNTIME_DIRECTORY"
+        { printf '%s ' drv.run.gamma; cat retained/host-key.pub; } > "$RUNTIME_DIRECTORY/known_hosts"
+        ${publish}
+        test "$HOME/.ssh/known_hosts.d/drv.run.gamma" -ef "$RUNTIME_DIRECTORY/known_hosts"
+      )
+      # Conflicting records are not ours to replace or withdraw.
+      for kind in file link; do
+        (
+          export HOME="$PWD/conflict-$kind" RUNTIME_DIRECTORY="$PWD/runtime/conflict"
+          mkdir -p "$HOME/.ssh/known_hosts.d" "$RUNTIME_DIRECTORY"
+          { printf '%s ' drv.run.conflict; cat retained/host-key.pub; } > "$RUNTIME_DIRECTORY/known_hosts"
+          published="$HOME/.ssh/known_hosts.d/drv.run.conflict"
+          if [ "$kind" = file ]; then
+            touch "$published"
+            ln "$published" "$HOME/original"
+          else
+            ln -s "$PWD/runtime/alpha/known_hosts" "$published"
+            ln -s "$PWD/runtime/alpha/known_hosts" "$HOME/original"
+          fi
+          if ${publish}; then exit 1; fi
+          ${withdraw}
+          test "$published" -ef "$HOME/original"
+        )
+      done
       test -x ${lib.getExe guest.users.users.root.shell}
       export NIX_REMOTE="local?state=$PWD/state&log=$PWD/log"
       ${lib.getExe' guest.nix.package "nix-store"} --load-db < ${(pkgs.closureInfo {rootPaths = [environment];})}/registration

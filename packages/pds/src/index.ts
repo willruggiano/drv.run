@@ -17,8 +17,7 @@ const app = await openApplication({
   directory,
   models,
   cwd: process.cwd(),
-  environments: () =>
-    discoverEnvironments(process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.()}`),
+  environments: () => discoverEnvironments(process.env.PDS_KNOWN_HOSTS_DIR),
   ...(process.env.PARALLEL_API_KEY_FILE
     ? { parallelApiKeyFile: process.env.PARALLEL_API_KEY_FILE }
     : {}),

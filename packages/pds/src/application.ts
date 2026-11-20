@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { readdir, access, mkdir, lstat, open } from "node:fs/promises";
+import { readdir, mkdir, lstat, open } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import * as Value from "typebox/value";
 import type * as C from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -33,28 +34,20 @@ export const ConversationMetadata = defineDoc<{ title: string; createdAt: number
   checkpointWhen: () => true,
 });
 
-export async function discoverEnvironments(directory: string): Promise<EnvTarget[]> {
-  const result: EnvTarget[] = [{ type: "local" }];
-  const entries = await readdir(join(directory, "drv.run"), { withFileTypes: true }).catch(
-    (error: unknown) => {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-      throw error;
-    },
-  );
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !/^[A-Za-z0-9]+$/.test(entry.name)) continue;
-    const path = join(directory, "drv.run", entry.name);
-    const host = `drv.run.${entry.name}`;
-    try {
-      await access(join(path, "ssh_config"));
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
-      throw error;
-    }
-    // Configuration permits a connection attempt; it does not certify activation.
-    result.push({ type: "ssh", host });
+export async function discoverEnvironments(
+  directory = join(homedir(), ".ssh", "known_hosts.d"),
+): Promise<EnvTarget[]> {
+  if (!directory) return [];
+  try {
+    return (await readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() || entry.isSymbolicLink())
+      .map((entry) => entry.name)
+      .toSorted()
+      .map((host) => ({ type: "ssh", host }));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    throw error;
   }
-  return result;
 }
 
 async function openSession(options: {

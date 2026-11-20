@@ -85,6 +85,5 @@ cat >"$RUNTIME_DIRECTORY/.ssh_config" <<EOF
 Host $name
     ProxyCommand @proxy@ vsock-mux$RUNTIME_DIRECTORY/notify.vsock %p
     IdentityFile $RUNTIME_DIRECTORY/id_ed25519
-    UserKnownHostsFile $RUNTIME_DIRECTORY/known_hosts
 EOF
 mv "$RUNTIME_DIRECTORY/.ssh_config" "$RUNTIME_DIRECTORY/ssh_config"

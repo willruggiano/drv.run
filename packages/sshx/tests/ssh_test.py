@@ -235,8 +235,10 @@ class SSHTransport(unittest.TestCase):
             f"Host {target}\n"
             + f" ProxyCommand {os.environ['SSH_PROXY']} vsock-mux{runtime}/notify.vsock %p\n"
             + f" IdentityFile {runtime}/id_ed25519\n"
-            + f" UserKnownHostsFile {known}\n"
         )
+        catalog = fixture.root / ".ssh" / "known_hosts.d"
+        catalog.mkdir(parents=True)
+        (catalog / target).symlink_to(known)
         original = connection.read_bytes()
         config = fixture.root / "included.conf"
         _ = config.write_text(
@@ -244,6 +246,7 @@ class SSHTransport(unittest.TestCase):
             + Path("tests/ssh.conf")
             .read_text()
             .replace("/run/user/%i/drv.run", str(runtime.parent))
+            .replace("~/.ssh", str(fixture.root / ".ssh"))
         )
         # Another included Host block must neither supply identities nor alter routing.
         other = runtime.parent / "fedcba9876543210"

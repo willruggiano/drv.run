@@ -9,6 +9,11 @@
     if [[ ! -e $STATE_DIRECTORY/reference ]]; then
       printf 'fixture:%s\n' "''${STATE_DIRECTORY##*/}" > "$STATE_DIRECTORY/reference"
     fi
+    if [[ ! -f $STATE_DIRECTORY/host-key ]]; then
+      ${lib.getExe' pkgs.openssh "ssh-keygen"} -q -t ed25519 -N "" -f "$STATE_DIRECTORY/host-key"
+    fi
+    printf 'drv.run.%s %s\n' "''${STATE_DIRECTORY##*/}" \
+      "$(${lib.getExe' pkgs.openssh "ssh-keygen"} -y -f "$STATE_DIRECTORY/host-key")" > "$RUNTIME_DIRECTORY/known_hosts"
     mkdir -p "$STATE_DIRECTORY/ready"
     ln -sfn ${environment} "$STATE_DIRECTORY/environment"
     printf 'private connection configuration\n' > "$RUNTIME_DIRECTORY/ssh_config"
@@ -226,9 +231,52 @@ in
           assert inventory("bob") == [record("bob", "beta", "active", "running", True), record("bob", "zeta", "active", "running", True)]
           machine.succeed("drv.run stop -u alice zeta")
           machine.wait_until_fails(f"test -e {runtime}")
+          machine.succeed("drv.run reset -u alice zeta")
           machine.succeed("drv.run clean -u alice zeta")
           machine.fail(f"test -e {state}")
           assert inventory("alice") == []
           assert inventory("bob") == [record("bob", "beta", "active", "running", True), record("bob", "zeta", "active", "running", True)]
+
+      catalog_state = "/home/alice/.local/state/drv.run/catalog"
+      catalog_runtime = "/run/user/1000/drv.run/catalog"
+      published = "/home/alice/.ssh/known_hosts.d/drv.run.catalog"
+      catalog_unit = "drv.run@catalog.service"
+
+      with subtest("SSH publication precedes readiness and is owner-private"):
+          run("alice", f"systemctl --user start --no-block {catalog_unit}")
+          machine.wait_until_succeeds(f"test -f {catalog_state}/provisioning")
+          run("alice", f"test {published} -ef {catalog_runtime}/known_hosts")
+          machine.fail(as_user("bob", f"cat {published} > /dev/null"))
+          machine.fail(as_user("bob", f"touch {published}"))
+          machine.succeed(f"ln {catalog_state}/host-key /tmp/catalog-original-key")
+          run("alice", f"touch {catalog_state}/release")
+          machine.wait_until_succeeds(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active --quiet {catalog_unit}"))
+
+      with subtest("stop withdraws only the instance entry; restart preserves its key"):
+          run("alice", "touch ~/.ssh/known_hosts.d/unrelated-host")
+          run("alice", f"systemctl --user stop {catalog_unit}")
+          machine.wait_until_fails(f"test -L {published}")
+          machine.succeed(f"test {catalog_state}/host-key -ef /tmp/catalog-original-key")
+          run("alice", "test -f ~/.ssh/known_hosts.d/unrelated-host")
+          run("alice", f"systemctl --user start {catalog_unit}")
+          run("alice", f"test {published} -ef {catalog_runtime}/known_hosts")
+          machine.succeed(f"test {catalog_state}/host-key -ef /tmp/catalog-original-key")
+          run("alice", f"systemctl --user stop {catalog_unit}")
+          machine.wait_until_fails(f"test -L {published}")
+
+      with subtest("failed startup withdraws publication without deleting the retained key"):
+          run("alice", f"touch {catalog_state}/fail")
+          machine.fail(as_user("alice", f"XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start {catalog_unit}"))
+          machine.wait_until_fails(f"test -L {published}")
+          machine.succeed(f"test {catalog_state}/host-key -ef /tmp/catalog-original-key")
+          run("alice", f"rm {catalog_state}/fail {catalog_state}/release {catalog_state}/provisioning")
+
+      with subtest("cancelled startup withdraws publication"):
+          run("alice", f"systemctl --user start --no-block {catalog_unit}")
+          machine.wait_until_succeeds(f"test -f {catalog_state}/provisioning")
+          run("alice", f"test {published} -ef {catalog_runtime}/known_hosts")
+          run("alice", f"systemctl --user stop {catalog_unit}")
+          machine.wait_until_fails(f"test -L {published}")
+          machine.succeed(f"test {catalog_state}/host-key -ef /tmp/catalog-original-key")
     '';
   }
