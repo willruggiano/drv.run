@@ -11,7 +11,12 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { AgentDoc, LiveDoc } from "@earendil-works/pi-durable";
-import { context, discoverEnvironments, type Application } from "../src/application.ts";
+import {
+  context,
+  ConversationMetadata,
+  discoverEnvironments,
+  type Application,
+} from "../src/application.ts";
 import { ConversationId, SessionId, decode } from "../src/identity.ts";
 import { serve } from "../src/server.ts";
 import { fixture, sessionsFixture, knownHostsFixture, form, servePrefixed } from "./fixtures.ts";
@@ -380,6 +385,109 @@ await test(
 );
 
 await test(
+  "home retains recent sessions and only the composer on desktop and mobile",
+  { timeout: 60_000 },
+  async (t) => {
+    const { sessions, auth, selection, faux } = await sessionsFixture(t);
+    const server = await serve(sessions, { auth, port: 0 });
+    t.after(() => server.close());
+    const browser = await chromium.launch({
+      executablePath:
+        process.env.CHROMIUM_BINARY ??
+        execFileSync("which", ["chromium"], { encoding: "utf8" }).trim(),
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    try {
+      for (const width of [1280, 390]) {
+        const page = await browser.newPage({ viewport: { width, height: 844 } });
+        await page.goto(server.origin);
+        assert.equal(await page.locator("#sessions-empty").isVisible(), true);
+        assert.equal(await page.locator("#recent-title").count(), 0);
+        assert.deepEqual(
+          await page.locator("form").evaluateAll((forms) => forms.map((element) => element.id)),
+          ["composer"],
+        );
+        assert.equal(await page.locator("#landing a, #landing input, #landing button").count(), 0);
+        await page.close();
+      }
+      const expected = [];
+      for (const [id, title, date] of [
+        ["older", "Fix the build", "2026-11-18"],
+        ["newer", "Review the changes", "2026-11-20"],
+      ]) {
+        assert(id && title && date);
+        const app = await sessions.open(decode(SessionId, id));
+        const conversation = await app.createConversation(form(selection));
+        await conversation.commit(async (tx) => {
+          const metadata = await tx.doc(ConversationMetadata, conversation.id);
+          metadata.title = title;
+          metadata.createdAt = Date.parse(date);
+        }, context);
+        expected.unshift({ title, date, path: `/api/s/${id}/c/${conversation.id}` });
+      }
+      for (const width of [1280, 390]) {
+        const page = await browser.newPage({ viewport: { width, height: 844 } });
+        await page.goto(server.origin);
+        assert.equal(await page.getByRole("heading", { name: "Recent sessions" }).count(), 1);
+        assert.deepEqual(
+          await page.locator("#session-list .session").evaluateAll((links) =>
+            links.map((link) => ({
+              title: link.querySelector("strong")?.textContent,
+              date: link.querySelector("time")?.dateTime,
+              path: new URL(link.getAttribute("href")!, document.baseURI).pathname,
+            })),
+          ),
+          expected,
+        );
+        assert.equal(await page.locator("#landing form, #landing button").count(), 0);
+        assert.equal(await page.locator("#sessions-empty").count(), 0);
+        const alignment = await page.locator("#environment").evaluate((element) => ({
+          text: getComputedStyle(element).textAlign,
+          right: element.getBoundingClientRect().right,
+          label: element.parentElement!.getBoundingClientRect().right,
+          composer: document.querySelector(".compose-box")!.getBoundingClientRect().right,
+        }));
+        assert.equal(alignment.text, "right");
+        assert.equal(alignment.right, alignment.label);
+        assert.equal(alignment.right, alignment.composer);
+        if (process.env.PDS_SCREENSHOT_DIR) {
+          await mkdir(process.env.PDS_SCREENSHOT_DIR, { recursive: true });
+          await page.screenshot({
+            path: join(process.env.PDS_SCREENSHOT_DIR, `recent-home-${width}.png`),
+            fullPage: true,
+          });
+        }
+        await page.getByRole("link", { name: "Review the changes", exact: true }).click();
+        await page.waitForURL(new URL(expected[0]!.path, server.origin).href);
+        await idle(page);
+        await page.close();
+      }
+      const page = await browser.newPage();
+      await page.goto(server.origin);
+      faux.setResponses([fauxAssistantMessage("New session response")]);
+      const posts: string[] = [];
+      page.on("request", (request) => {
+        if (request.method() === "POST") posts.push(new URL(request.url()).pathname);
+      });
+      await page.locator("#message").fill("Start from the home composer");
+      await page
+        .locator("#composer")
+        .evaluate((element: HTMLFormElement) => element.requestSubmit());
+      await page.waitForURL((url) => conversationRoute.test(url.href));
+      const { conversation } = await selected(sessions, page.url());
+      await conversation.waitForIdle(context);
+      assert.deepEqual(posts, ["/"]);
+      assert.equal((await sessions.list()).length, 3);
+      assert.equal(faux.state.callCount, 1);
+      await page.close();
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+await test(
   "stealth footer controls on desktop and mobile; /cd is not a model turn",
   { timeout: 60_000 },
   async (t) => {
@@ -690,10 +798,14 @@ await test(
       assert.equal(refresh.mock.callCount(), 0);
       models.setProvider(faux.provider);
 
-      await page.goto(base);
       const id = "../λ/owner ' & % session";
-      await page.locator("#open-session input").fill(id);
-      await page.getByRole("button", { name: "Open session", exact: true }).click();
+      // Explicit store opening remains an API operation, not a second home creation control.
+      const opened = await page.request.post(new URL("api/s/open", base).href, {
+        form: { sessionId: id },
+        maxRedirects: 0,
+      });
+      assert.equal(opened.status(), 303);
+      await page.goto(new URL(opened.headers().location!, base).href);
       const app = await sessions.get(decode(SessionId, id));
       assert(app);
       assert.deepEqual(await app.list(), []);
