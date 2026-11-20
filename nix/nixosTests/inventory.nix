@@ -231,6 +231,7 @@ in
           assert inventory("bob") == [record("bob", "beta", "active", "running", True), record("bob", "zeta", "active", "running", True)]
           machine.succeed("drv.run stop -u alice zeta")
           machine.wait_until_fails(f"test -e {runtime}")
+          machine.succeed("drv.run reset -u alice zeta")
           machine.succeed("drv.run clean -u alice zeta")
           machine.fail(f"test -e {state}")
           assert inventory("alice") == []
