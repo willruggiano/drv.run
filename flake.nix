@@ -285,6 +285,7 @@
           findutils
           gawk
           gh
+          gh-stack
           git
           gnugrep
           gnused

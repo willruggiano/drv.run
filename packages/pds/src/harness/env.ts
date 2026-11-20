@@ -3,7 +3,15 @@ import { defineDoc } from "@earendil-works/pi-durable";
 import { RemoteExecutionEnv, sshArguments, sshConnection } from "@earendil-works/pi-env";
 import type * as E from "@earendil-works/pi-env";
 
-export type EnvTarget = { type: "local" } | ({ type: "ssh" } & Pick<E.SshTarget, "host">);
+export type ExecutionTarget = { type: "local" } | ({ type: "ssh" } & Pick<E.SshTarget, "host">);
+export type EnvTarget = ExecutionTarget | { type: "source"; source: string; id: string };
+
+/** Discovery only. Resolve ready identities at each acquisition; undefined means unavailable. */
+export interface EnvironmentSource {
+  readonly id: string;
+  list(context: C.Context): Promise<readonly { id: string; label: string; ready: boolean }[]>;
+  resolve(id: string, context: C.Context): Promise<ExecutionTarget | undefined>;
+}
 
 export const Env = defineDoc<{ env?: EnvTarget }>({
   kind: "app.env",

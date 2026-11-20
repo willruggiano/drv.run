@@ -98,7 +98,7 @@ await test("head survives eviction, environment changes are observed, and slow l
       await release.promise;
     } else folded.resolve();
   });
-  await app.configure(conversation, form({ environment: "test-guest" }));
+  await app.configure(conversation, form({ env: "ssh:test-guest" }));
   await entered.promise;
   const head = await conversation.commit(
     (tx) => tx.appendEntry(conversation.id, { kind: "test.reset", head: "self" }),
@@ -113,7 +113,7 @@ await test("head survives eviction, environment changes are observed, and slow l
   release.resolve();
   await folded.promise;
   assert.equal(frames, 2);
-  assert.equal(watch.value.environment, "test-guest");
+  assert.equal(watch.value.environment, "ssh:test-guest");
   assert.equal(watch.value.head?.id, head.id);
   assert.equal(
     watch.value.view.entries.some((entry) => entry.id === head.id),
@@ -124,7 +124,7 @@ await test("head survives eviction, environment changes are observed, and slow l
   try {
     assert.equal(reconnect.value.view.entries.length, 50);
     assert.equal(reconnect.value.head?.id, head.id);
-    assert.equal(reconnect.value.environment, "test-guest");
+    assert.equal(reconnect.value.environment, "ssh:test-guest");
   } finally {
     await reconnect.stop();
   }

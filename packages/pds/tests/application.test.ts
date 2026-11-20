@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -28,7 +29,7 @@ await test("sessions persist configuration, attachments, messages, compaction, a
   assert.equal((await first.context(context)).head?.kind, "pi.compaction");
   await app.configure(
     first,
-    form({ ...selection, model: "faux/second", environment: "test-guest", cwd: "/other" }),
+    form({ ...selection, model: "faux/second", env: "ssh:test-guest", cwd: "/other" }),
   );
   assert.deepEqual(await app.harness.snapshot(Env, first.id, context), {
     env: {
@@ -194,11 +195,15 @@ await test("partial configuration and /cd preserve unrelated state without admit
     app.configure(conversation, form({ thinking: "high" })),
     app.configure(conversation, form({ cwd: "subdirectory" })),
   ]);
-  assert.equal((await conversation.agent(context)).cwd, join(directory, "subdirectory"));
+  assert.equal((await conversation.agent(context)).cwd, "subdirectory");
   assert.equal((await conversation.agent(context)).thinkingLevel, "high");
-  await app.configure(conversation, form({ model: "faux/second" }));
+  await assert.rejects(app.configure(conversation, form({ model: "faux/second" })));
+  assert.equal((await conversation.agent(context)).thinkingLevel, "high");
+  await app.configure(
+    conversation,
+    form({ model: "faux/second", thinking: "off", cwd: join(directory, "subdirectory") }),
+  );
   assert.equal((await conversation.agent(context)).thinkingLevel, "off");
-  await app.configure(conversation, form({ environment: "test-guest" }));
   const env = await app.harness.snapshot(Env, conversation.id, context);
   await app.send(conversation, form({ message: "/cd ../a  directory" }));
   assert.equal((await conversation.agent(context)).cwd, join(directory, "a  directory"));
@@ -306,7 +311,7 @@ await test("session reads, observations, missing addresses, and model metadata n
     await response.body?.cancel();
   }
   const signals = new URLSearchParams({
-    datastar: JSON.stringify({ model: "faux/second", environment: "local" }),
+    datastar: JSON.stringify({ model: "faux/second", env: "local" }),
   });
   const observed = await fetch(`${server.origin}${base}/c/${conversation.id}/watch?${signals}`, {
     headers: { "Datastar-Request": "true" },
@@ -518,8 +523,8 @@ await test("the combined home form validates all configuration before allocating
   incomplete.delete("thinking");
   for (const body of [
     incomplete,
-    form({ ...selection, cwd: "relative" }),
-    form({ ...selection, environment: "missing" }),
+    form({ ...selection, cwd: "" }),
+    form({ ...selection, env: "missing" }),
   ]) {
     const response = await fetch(`${server.origin}/`, { method: "POST", body, redirect: "manual" });
     assert.equal(response.status, 200);
@@ -535,7 +540,7 @@ await test("task-owned creation validates store ownership and an explicit local 
   const { sessions, auth, selection } = await sessionsFixture(t);
   const owner = await sessions.open(decode(SessionId, "owner"));
   await sessions.open(decode(SessionId, "other"));
-  const parent = await owner.createConversation(form({ ...selection, environment: "test-guest" }));
+  const parent = await owner.createConversation(form({ ...selection, env: "ssh:test-guest" }));
   const task = await parent.commit(
     (tx) =>
       tx.createTask(CompactionTask, { reason: "manual" }, { ownership: { kind: "conversation" } }),
@@ -543,7 +548,7 @@ await test("task-owned creation validates store ownership and an explicit local 
   );
   const server = await serve(sessions, { auth, port: 0 });
   t.after(() => server.close());
-  const body = () => form({ ownership: "task", taskId: String(task), environment: "local" });
+  const body = () => form({ ownership: "task", taskId: String(task), env: "local" });
   const rejected = await fetch(`${server.origin}/api/s/other/createConversation`, {
     method: "POST",
     body: body(),
@@ -818,4 +823,315 @@ await test("unsupported persisted environment selections never fall back to host
   await conversation.waitForIdle(context);
   await assert.rejects(stat(join(directory, "unsupported-write")), { code: "ENOENT" });
   assert.equal(app.available, true);
+});
+
+await test("HTTP configuration commits tri-state agent and env changes atomically without normalizing cwd", async (t) => {
+  const { serve } = await import("../src/server.ts");
+  const { app, sessions, auth, selection } = await fixture(t);
+  const conversation = await app.createConversation(form(selection));
+  const server = await serve(sessions, { auth, port: 0 });
+  t.after(() => server.close());
+  const post = async (body: FormData) => {
+    const response = await fetch(`${server.origin}/api/s/test/c/${conversation.id}/configure`, {
+      method: "POST",
+      body,
+      redirect: "manual",
+    });
+    await response.body?.cancel();
+    return response;
+  };
+  const change = form({ cwd: " ../raw directory ", env: "ssh:ordinary-host" });
+  change.append("clear", "model");
+  change.append("clear", "thinking");
+  assert.equal((await post(change)).status, 303);
+  assert.deepEqual(await app.harness.snapshot(AgentDoc, conversation.id, context), {
+    cwd: " ../raw directory ",
+  });
+  assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
+    env: { type: "ssh", host: "ordinary-host" },
+  });
+  const conflict = form({ cwd: "/should-not-commit", env: "local", clear: "env" });
+  const rejected = await post(conflict);
+  assert.equal(rejected.status, 200);
+  assert.equal(rejected.headers.has("location"), false);
+  assert.deepEqual(await app.harness.snapshot(AgentDoc, conversation.id, context), {
+    cwd: " ../raw directory ",
+  });
+  assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
+    env: { type: "ssh", host: "ordinary-host" },
+  });
+  const clear = form({ clear: "cwd" });
+  clear.append("clear", "env");
+  assert.equal((await post(clear)).status, 303);
+  assert.deepEqual(await app.harness.snapshot(AgentDoc, conversation.id, context), {});
+  assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {});
+  assert.equal((await conversation.agent(context)).thinkingLevel, "off");
+});
+
+await test("creation applies explicit clears after task inheritance and existing roots ignore new options", async (t) => {
+  const { CompactionTask } = await import("@earendil-works/pi-durable");
+  const { app, sessions, auth } = await fixture(t);
+  const { serve } = await import("../src/server.ts");
+  const server = await serve(sessions, { auth, port: 0 });
+  t.after(() => server.close());
+  const post = async (action: string, body: FormData) => {
+    const response = await fetch(`${server.origin}/api/s/test/${action}`, {
+      method: "POST",
+      body,
+      redirect: "manual",
+    });
+    await response.body?.cancel();
+    assert.equal(response.status, 303);
+    const location = new URL(response.headers.get("location")!, server.origin);
+    const parts = new URLPattern({ pathname: "/api/s/:session/c/:conversation" }).exec(
+      location.href,
+    );
+    assert(parts?.pathname.groups.conversation);
+    const conversation = await app.conversation(
+      decode(ConversationId, parts.pathname.groups.conversation),
+    );
+    assert(conversation);
+    return conversation;
+  };
+  const root = await post(
+    "root",
+    form({ model: "faux/first", thinking: "high", cwd: "relative", env: "ssh:inherited" }),
+  );
+  const task = await root.commit(
+    (tx) =>
+      tx.createTask(CompactionTask, { reason: "manual" }, { ownership: { kind: "conversation" } }),
+    context,
+  );
+  const inherited = await post(
+    "createConversation",
+    form({ ownership: "task", taskId: String(task), thinking: "low" }),
+  );
+  assert.deepEqual(await app.harness.snapshot(Env, inherited.id, context), {
+    env: { type: "ssh", host: "inherited" },
+  });
+  assert.deepEqual(await app.harness.snapshot(AgentDoc, inherited.id, context), {
+    model: { provider: "faux", modelId: "first" },
+    thinkingLevel: "low",
+    cwd: "relative",
+  });
+  const cleared = form({ ownership: "task", taskId: String(task) });
+  for (const name of ["model", "thinking", "cwd", "env"]) cleared.append("clear", name);
+  const child = await post("createConversation", cleared);
+  assert.deepEqual(await app.harness.snapshot(AgentDoc, child.id, context), {});
+  assert.deepEqual(await app.harness.snapshot(Env, child.id, context), {});
+  const existing = await post(
+    "root",
+    form({ model: "not-a-model", env: "invalid", clear: "model" }),
+  );
+  assert.equal(existing.id, root.id);
+  assert.deepEqual(await app.harness.snapshot(Env, root.id, context), {
+    env: { type: "ssh", host: "inherited" },
+  });
+});
+
+await test("saved source identity survives unavailability without local fallback and resolves anew on acquisition", async (t) => {
+  const { readFile, stat } = await import("node:fs/promises");
+  const { sources, app, selection, faux, directory } = await fixture(t);
+  let ready = true;
+  let failing = false;
+  sources.push({
+    id: "test source",
+    async list() {
+      return [{ id: "opaque/id", label: "Test target", ready }];
+    },
+    async resolve(id) {
+      assert.equal(id, "opaque/id");
+      if (failing) throw new Error("Discovery failed");
+      return ready ? { type: "local" } : undefined;
+    },
+  });
+  const conversation = await app.createConversation(
+    form({ ...selection, env: "source:test%20source/opaque%2Fid" }),
+  );
+  assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
+    env: { type: "source", source: "test source", id: "opaque/id" },
+  });
+  const write = async (name: string) => {
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("write", { path: name, content: "selected" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("Finished"),
+    ]);
+    await app.send(conversation, form({ message: "Write the file" }));
+    await conversation.waitForIdle(context);
+  };
+  await write("available");
+  assert.equal(await readFile(join(directory, "available"), "utf8"), "selected");
+  ready = false;
+  await write("unavailable");
+  await assert.rejects(stat(join(directory, "unavailable")), { code: "ENOENT" });
+  assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
+    env: { type: "source", source: "test source", id: "opaque/id" },
+  });
+  ready = true;
+  failing = true;
+  await write("failed");
+  await assert.rejects(stat(join(directory, "failed")), { code: "ENOENT" });
+  failing = false;
+  await write("restored");
+  assert.equal(await readFile(join(directory, "restored"), "utf8"), "selected");
+  await app.configure(conversation, form({ clear: "env" }));
+  await write("cleared");
+  await assert.rejects(stat(join(directory, "cleared")), { code: "ENOENT" });
+});
+
+await test("/new preserves unset overrides and /cd requires a selected environment and cwd", async (t) => {
+  const { app, directory } = await fixture(t);
+  const conversation = await app.root(form({}));
+  await assert.rejects(app.send(conversation, form({ message: "/cd elsewhere" })));
+  assert.deepEqual(await app.harness.snapshot(AgentDoc, conversation.id, context), {});
+  const next = await app.send(conversation, form({ message: "/new" }));
+  assert(next && typeof next === "object");
+  assert.deepEqual(await app.harness.snapshot(AgentDoc, next.id, context), {});
+  assert.deepEqual(await app.harness.snapshot(Env, next.id, context), {});
+  await app.configure(next, form({ env: "local" }));
+  await assert.rejects(app.send(next, form({ message: "/cd elsewhere" })));
+  await app.configure(next, form({ cwd: directory }));
+  await app.send(next, form({ message: "/cd nested directory" }));
+  assert.equal((await next.agent(context)).cwd, join(directory, "nested directory"));
+  assert.equal((await next.context(context)).entries.length, 0);
+});
+
+await test("configuration rejects unavailable sources and invalid host-only selections without partial writes", async (t) => {
+  const { app, sources, selection } = await fixture(t);
+  sources.push({
+    id: "offline",
+    async list() {
+      return [];
+    },
+    async resolve() {
+      return undefined;
+    },
+  });
+  const conversation = await app.createConversation(form(selection));
+  const before = await app.harness.snapshot(AgentDoc, conversation.id, context);
+  for (const env of [
+    "source:offline/missing",
+    "source:unknown/missing",
+    "ssh:-option",
+    "ssh:two hosts",
+    "ssh:host\n",
+  ]) {
+    await assert.rejects(app.configure(conversation, form({ env, cwd: "/must-not-commit" })));
+    assert.deepEqual(await app.harness.snapshot(AgentDoc, conversation.id, context), before);
+    assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
+      env: { type: "local" },
+    });
+  }
+});
+
+await test(
+  "active tools retain their environment while later acquisitions use the committed cwd",
+  { timeout: 15_000 },
+  async (t) => {
+    const { watch } = await import("node:fs");
+    const { readFile, stat } = await import("node:fs/promises");
+    const { app, faux, selection, directory } = await fixture(t);
+    const oldCwd = join(directory, "old");
+    const newCwd = join(directory, "new");
+    await Promise.all([mkdir(oldCwd), mkdir(newCwd)]);
+    const watcher = watch(oldCwd);
+    t.after(() => watcher.close());
+    const started = once(watcher, "change");
+    const conversation = await app.createConversation(form({ ...selection, cwd: oldCwd }));
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall("bash", {
+          command: "touch started; while [ ! -f release ]; do sleep 0.02; done; touch retained",
+        }),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(fauxToolCall("write", { path: "later", content: "new environment" }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("Finished"),
+    ]);
+    await app.send(conversation, form({ message: "Run across configuration" }));
+    await started;
+    await app.configure(conversation, form({ cwd: newCwd }));
+    await writeFile(join(oldCwd, "release"), "");
+    await conversation.waitForIdle(context);
+    assert((await stat(join(oldCwd, "retained"))).isFile());
+    await assert.rejects(stat(join(newCwd, "retained")), { code: "ENOENT" });
+    assert.equal(await readFile(join(newCwd, "later"), "utf8"), "new environment");
+  },
+);
+
+await test("/cd rejects a path resolved against a selection changed during acquisition", async (t) => {
+  const { app, sources, selection } = await fixture(t);
+  const acquired = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let block = false;
+  sources.push({
+    id: "delayed",
+    async list() {
+      return [{ id: "target", label: "Target", ready: true }];
+    },
+    async resolve() {
+      if (block) {
+        acquired.resolve();
+        await release.promise;
+      }
+      return { type: "local" };
+    },
+  });
+  const conversation = await app.createConversation(
+    form({ ...selection, env: "source:delayed/target" }),
+  );
+  block = true;
+  t.after(() => release.resolve());
+  const pending = app.send(conversation, form({ message: "/cd nested" }));
+  const rejected = assert.rejects(pending);
+  await acquired.promise;
+  await app.configure(conversation, form({ env: "local", cwd: "/changed" }));
+  release.resolve();
+  await rejected;
+  assert.equal((await conversation.agent(context)).cwd, "/changed");
+  assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
+    env: { type: "local" },
+  });
+});
+
+await test("configuration forms reject unsupported fields, duplicate scalars, and ambiguous clears", async (t) => {
+  const { app, sessions, auth, selection } = await fixture(t);
+  const { serve } = await import("../src/server.ts");
+  const server = await serve(sessions, { auth, port: 0 });
+  t.after(() => server.close());
+  const conversation = await app.createConversation(form(selection));
+  const before = await app.harness.snapshot(AgentDoc, conversation.id, context);
+  const cases: { body: FormData; status: number }[] = [];
+  for (const name of ["instructions", "tools", "extensions", "environment", "configFile", "host"])
+    cases.push({ body: form({ [name]: "unsupported", cwd: "/not-committed" }), status: 400 });
+  const duplicate = form({ cwd: "/one" });
+  duplicate.append("cwd", "/two");
+  cases.push({ body: duplicate, status: 400 });
+  const repeated = form({ clear: "model" });
+  repeated.append("clear", "model");
+  cases.push({ body: repeated, status: 200 });
+  const fileClear = form({ clear: "model" });
+  fileClear.append("clear", new File(["cwd"], "field.txt"));
+  cases.push({ body: fileClear, status: 400 });
+  cases.push({ body: form({ clear: "unsupported", cwd: "/not-committed" }), status: 200 });
+  cases.push({ body: form({ cwd: "" }), status: 200 });
+  cases.push({ body: form({ env: "" }), status: 200 });
+  for (const { body, status } of cases) {
+    const response = await fetch(`${server.origin}/api/s/test/c/${conversation.id}/configure`, {
+      method: "POST",
+      body,
+      redirect: "manual",
+    });
+    assert.equal(response.status, status);
+    assert.equal(response.headers.has("location"), false);
+    await response.body?.cancel();
+    assert.deepEqual(await app.harness.snapshot(AgentDoc, conversation.id, context), before);
+    assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
+      env: { type: "local" },
+    });
+  }
 });

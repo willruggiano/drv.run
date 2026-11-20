@@ -113,3 +113,28 @@ if (attachments && previews) {
     }
   });
 }
+
+// Submit a compatible thinking value only when the user's model change requires one.
+document.addEventListener(
+  "change",
+  (event) => {
+    const select = event.target;
+    if (
+      !(select instanceof HTMLSelectElement) ||
+      select.id !== "model" ||
+      select.form?.id !== "configuration-model"
+    )
+      return;
+    select.form.querySelector('input[name="thinking"]')?.remove();
+    const current = document.querySelector<HTMLSelectElement>("#thinking")?.value;
+    const levels = select.selectedOptions[0]?.dataset.thinking?.split(" ");
+    if (levels?.length && current && !levels.includes(current)) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "thinking";
+      input.value = levels[0]!;
+      select.form.append(input);
+    }
+  },
+  true,
+);

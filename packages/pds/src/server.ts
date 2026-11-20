@@ -245,7 +245,8 @@ export async function serve(
           "model",
           "thinking",
           "cwd",
-          "environment",
+          "env",
+          "clear",
           "message",
           "attachments",
         ]);
@@ -267,7 +268,8 @@ export async function serve(
         "model",
         "thinking",
         "cwd",
-        "environment",
+        "env",
+        "clear",
         "message",
         "attachments",
       ]);
@@ -331,8 +333,8 @@ export async function serve(
         fields(
           form,
           action === "root"
-            ? ["model", "thinking", "cwd", "environment"]
-            : ["model", "thinking", "cwd", "environment", "ownership", "taskId"],
+            ? ["model", "thinking", "cwd", "env", "clear"]
+            : ["model", "thinking", "cwd", "env", "clear", "ownership", "taskId"],
         );
         let ownership: D.ConversationOwnership = { kind: "ownerless" };
         if (form.has("ownership")) {
@@ -467,10 +469,6 @@ export async function serve(
           ? await app.send(conversation, form)
           : await app.submit(conversation, form);
       const next = typeof result === "object" ? result : undefined;
-      const directory =
-        typeof result === "number" || next
-          ? ""
-          : patch((await configuration(app, conversation, prefix)).cwd);
       if (request.headers["datastar-request"] !== "true") {
         response
           .writeHead(303, {
@@ -486,29 +484,17 @@ export async function serve(
           : patch(
               alert() +
                 `<div id="admission" hidden${typeof result === "number" ? ` data-submission-id="${result}"` : ""}></div>`,
-            ) +
-              directory +
-              script("document.getElementById('composer').reset()"),
+            ) + script("document.getElementById('composer').reset()"),
       );
     } else if (request.method === "POST" && action === "configure") {
       const form = await formData(request, url);
-      fields(form, ["model", "thinking", "cwd", "environment"]);
+      fields(form, ["model", "thinking", "cwd", "env", "clear"]);
       await app.configure(conversation, form);
       if (request.headers["datastar-request"] !== "true") {
         response.writeHead(303, { Location: path }).end();
         return;
       }
-      const controls = await configuration(app, conversation, prefix);
-      sse(
-        response,
-        patch(alert()) +
-          patch(
-            Object.entries(controls)
-              .filter(([name]) => form.has(name) || (name === "thinking" && form.has("model")))
-              .map(([, markup]) => markup)
-              .join(""),
-          ),
-      );
+      sse(response, patch(alert()));
     } else if (request.method === "POST" && action === "abort") {
       fields(await formData(request, url), []);
       await conversation.abort(context);
@@ -602,11 +588,14 @@ class HttpError extends Error {
 
 function fields(input: FormData | URLSearchParams, allowed: readonly string[]) {
   for (const name of input.keys()) {
-    if (!allowed.includes(name) || (name !== "attachments" && input.getAll(name).length !== 1))
+    if (
+      !allowed.includes(name) ||
+      (!["attachments", "clear"].includes(name) && input.getAll(name).length !== 1)
+    )
       throw new InvalidRequest("Unknown or repeated request field.");
     if (name === "attachments" && input.getAll(name).some((value) => !(value instanceof File)))
       throw new InvalidRequest("Expected a file field.");
-    if (name !== "attachments" && typeof input.get(name) !== "string")
+    if (name !== "attachments" && input.getAll(name).some((value) => typeof value !== "string"))
       throw new InvalidRequest("Expected a text field.");
   }
 }

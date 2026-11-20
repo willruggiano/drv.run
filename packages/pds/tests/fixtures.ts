@@ -9,6 +9,7 @@ import type { TestContext } from "node:test";
 import { hostAuth } from "../src/auth.ts";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { openApplication, type Application, type Environment } from "../src/application.ts";
+import type { EnvironmentSource } from "../src/harness/env.ts";
 import { SessionId, decode } from "../src/identity.ts";
 
 export const form = (fields: Record<string, string>): FormData => {
@@ -42,12 +43,14 @@ export async function sessionsFixture(t: TestContext) {
       target: { host: "test-guest" },
     },
   ];
+  const sources: EnvironmentSource[] = [];
   const owners = new Set<Application>();
   const open = async () => {
     const sessions = await openApplication({
       directory,
       models,
       environments: async () => environments,
+      sources,
       cwd: directory,
       settings: {
         retry: { maxRetries: 0 },
@@ -64,8 +67,8 @@ export async function sessionsFixture(t: TestContext) {
     await Promise.all([...owners].map((owner) => owner.close()));
     await rm(directory, { recursive: true, force: true });
   });
-  const selection = { model: "faux/first", thinking: "off", cwd: directory, environment: "local" };
-  return { sessions, auth, faux, models, directory, selection, environments, open };
+  const selection = { model: "faux/first", thinking: "off", cwd: directory, env: "local" };
+  return { sessions, auth, faux, models, directory, selection, environments, sources, open };
 }
 
 export async function fixture(t: TestContext) {
