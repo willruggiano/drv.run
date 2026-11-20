@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type {
-  ConversationId as DurableConversationId,
-  EntryId as DurableEntryId,
-  TaskId as DurableTaskId,
-} from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import type { Static, StaticDecode } from "typebox";
 import * as Value from "typebox/value";
 import type { Application, Session } from "../src/application.ts";
@@ -20,10 +16,10 @@ import {
 
 await test("address codecs retain distinct upstream and session identity brands", () => {
   const compatible: [
-    StaticDecode<typeof ConversationId> extends DurableConversationId ? true : false,
-    StaticDecode<typeof EntryId> extends DurableEntryId ? true : false,
-    StaticDecode<typeof TaskId> extends DurableTaskId ? true : false,
-    StaticDecode<typeof TaskId> extends DurableConversationId ? false : true,
+    StaticDecode<typeof ConversationId> extends D.ConversationId ? true : false,
+    StaticDecode<typeof EntryId> extends D.EntryId ? true : false,
+    StaticDecode<typeof TaskId> extends D.TaskId ? true : false,
+    StaticDecode<typeof TaskId> extends D.ConversationId ? false : true,
     number extends StaticDecode<typeof ConversationId> ? false : true,
     string extends SessionId ? false : true,
     SessionId extends SessionKey ? false : true,

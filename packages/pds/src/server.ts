@@ -9,9 +9,8 @@ import {
   StorageRequestError,
   ConversationBusy,
   ConversationIdle,
-  type ConversationOwnership,
-  type EntryId as NativeEntryId,
 } from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import { ConversationId, EntryId, TaskId, SessionId, decode, InvalidRequest } from "./identity.ts";
 import { observe, Projection, type Patch } from "./watch.ts";
 import {
@@ -264,7 +263,7 @@ export async function serve(
             ? ["model", "thinking", "cwd", "environment"]
             : ["model", "thinking", "cwd", "environment", "ownership", "taskId"],
         );
-        let ownership: ConversationOwnership = { kind: "ownerless" };
+        let ownership: D.ConversationOwnership = { kind: "ownerless" };
         if (form.has("ownership")) {
           const kind = field(form, "ownership");
           if (kind === "task") {
@@ -359,8 +358,8 @@ export async function serve(
         .entries(
           {
             order: "descending",
-            maxEntryId: (before - 1) as NativeEntryId,
-            ...(after === undefined ? {} : { minEntryId: (after + 1) as NativeEntryId }),
+            maxEntryId: (before - 1) as D.EntryId,
+            ...(after === undefined ? {} : { minEntryId: (after + 1) as D.EntryId }),
           },
           50,
           undefined,

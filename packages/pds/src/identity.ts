@@ -1,8 +1,4 @@
-import type {
-  ConversationId as DurableConversationId,
-  EntryId as DurableEntryId,
-  TaskId as DurableTaskId,
-} from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import { Type, type StaticDecode, type TSchema } from "typebox";
 import * as Value from "typebox/value";
 
@@ -31,13 +27,13 @@ const DecimalId = Type.Refine(
 
 // The wire representation establishes the upstream brand, not record existence.
 export const ConversationId = Type.Codec(DecimalId)
-  .Decode((value) => Number(value) as DurableConversationId)
+  .Decode((value) => Number(value) as D.ConversationId)
   .Encode(String);
 export const EntryId = Type.Codec(DecimalId)
-  .Decode((value) => Number(value) as DurableEntryId)
+  .Decode((value) => Number(value) as D.EntryId)
   .Encode(String);
 export const TaskId = Type.Codec(DecimalId)
-  .Decode((value) => Number(value) as DurableTaskId)
+  .Decode((value) => Number(value) as D.TaskId)
   .Encode(String);
 
 declare const sessionBrand: unique symbol;
