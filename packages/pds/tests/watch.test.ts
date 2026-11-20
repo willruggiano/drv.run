@@ -10,7 +10,7 @@ import { fixture, form } from "./fixtures.ts";
 
 await test("bounded projection never highlights committed history on partial updates", async (t) => {
   const { app, selection } = await fixture(t);
-  const conversation = await app.create(form(selection));
+  const conversation = await app.createConversation(form(selection));
   await conversation.commit(async (tx) => {
     for (let index = 0; index < 250; index++)
       await tx.appendEntry(conversation.id, {
@@ -26,8 +26,8 @@ await test("bounded projection never highlights committed history on partial upd
   assert.equal(watch.value.view.entries.length, 50);
   assert(watch.value.view.before !== undefined);
   const highlight = t.mock.method(hljs, "highlight");
-  const projection = new Projection({
-    configuration: () => configuration(app, conversation),
+  const projection = new Projection(`/api/s/${app.id}/c/${conversation.id}`, {
+    configuration: () => configuration(app, conversation, ""),
     metadata: (view) => metadata(app, conversation, view),
   });
   await projection.update(watch.value);
@@ -83,7 +83,7 @@ await test("bounded projection never highlights committed history on partial upd
 
 await test("head survives eviction, environment changes are observed, and slow listeners fold updates", async (t) => {
   const { app, selection } = await fixture(t);
-  const conversation = await app.create(form(selection));
+  const conversation = await app.createConversation(form(selection));
   const watch = await observe(app, conversation, new AbortController().signal);
   t.after(() => watch.stop());
   const entered = Promise.withResolvers<void>();
@@ -132,7 +132,7 @@ await test("head survives eviction, environment changes are observed, and slow l
 
 await test("tool progress updates only its presentation after the call leaves the window", async (t) => {
   const { app, selection } = await fixture(t);
-  const conversation = await app.create(form(selection));
+  const conversation = await app.createConversation(form(selection));
   await conversation.commit(async (tx) => {
     const live = await tx.doc(LiveDoc, conversation.id);
     live.tools = [{ callId: "read-one", name: "read", status: "running" }];
@@ -148,8 +148,8 @@ await test("tool progress updates only its presentation after the call leaves th
   }, context);
   const watch = await observe(app, conversation, new AbortController().signal);
   t.after(() => watch.stop());
-  const projection = new Projection({
-    configuration: () => configuration(app, conversation),
+  const projection = new Projection(`/api/s/${app.id}/c/${conversation.id}`, {
+    configuration: () => configuration(app, conversation, ""),
     metadata: (view) => metadata(app, conversation, view),
   });
   await projection.update(watch.value);

@@ -97,7 +97,7 @@ export function suite(path: string, conversation?: number) {
     },
   };
   // Chrome involves configuration discovery, not transcript rendering. Exclude it explicitly.
-  const projection = () => new Projection();
+  const projection = () => new Projection(`/api/s/benchmark/c/${record.id}`);
   const prime = async (state: State) => {
     const result = projection();
     await result.update(state);

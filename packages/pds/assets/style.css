@@ -38,6 +38,7 @@ button:disabled { opacity: .4; cursor: default; }
 #app-footer { max-height: calc(100dvh - 68px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow-y: auto; grid-row: 4; display: flex; flex-direction: column; position: relative; background: var(--bg); }
 #main-area, #app-footer { container-type: inline-size; }
 .pane { grid-row: 1; min-height: 0; height: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 12px max(20px, calc((100% - 820px)/2)) 20px; }
+#models { overflow-wrap: anywhere; }
 #landing { display: flex; flex-direction: column; }
 #landing > div { width: 100%; max-width: 560px; margin: auto; }
 h2 { margin: 0; font-size: 16px; font-weight: 500; }

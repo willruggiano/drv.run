@@ -271,7 +271,7 @@ await test("task-owned children copy env data before the caller's creation hook,
   const child = await harness.createConversation({ ownership: { kind: "task", taskId } }, context);
   await child.commit(async (tx) => {
     const selected = (await tx.doc(api.Env, child.id)).env;
-    assert(selected);
+    assert(selected?.type === "ssh");
     selected.host = "child-only";
   }, context);
   assert.deepEqual(await harness.snapshot(api.Env, root.id, context), { env: target });

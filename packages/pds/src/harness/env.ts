@@ -7,9 +7,9 @@ import {
   type SshTarget,
 } from "@earendil-works/pi-env";
 
-export const Env = defineDoc<{
-  env?: { type: "ssh" } & Omit<SshTarget, "ssh">;
-}>({
+export type EnvironmentSelection = { type: "local" } | ({ type: "ssh" } & Omit<SshTarget, "ssh">);
+
+export const Env = defineDoc<{ env?: EnvironmentSelection }>({
   kind: "app.env",
   version: 1,
   scope: "conversation",

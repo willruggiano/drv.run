@@ -15,7 +15,7 @@ import {
   type Observation,
 } from "@earendil-works/pi-durable";
 import { Env } from "./harness/index.ts";
-import { context, type Application } from "./application.ts";
+import { context, environmentId, type Application } from "./application.ts";
 import { regions } from "./render.ts";
 
 type State = {
@@ -28,7 +28,7 @@ type State = {
 export async function observe(app: Application, conversation: Conversation, signal: AbortSignal) {
   const ctx = withAbortSignal(signal, context);
   let view: ConversationView | undefined;
-  let environment = "local";
+  let environment = "";
   let environmentAdvanced = false;
   let state: State | undefined;
   let output: Watch<State> | undefined;
@@ -85,7 +85,7 @@ export async function observe(app: Application, conversation: Conversation, sign
         advance(call, frameContext) {
           assert(call.kind === "value");
           environmentAdvanced = true;
-          environment = call.value.env?.host ?? "local";
+          environment = environmentId(call.value.env);
           if (!state) return;
           state = { ...state, environment };
           output!.advance(
@@ -104,7 +104,7 @@ export async function observe(app: Application, conversation: Conversation, sign
     );
     assert(env, "PDS conversations have an environment document");
     observations.push(env);
-    if (!environmentAdvanced) environment = env.value.env?.host ?? "local";
+    if (!environmentAdvanced) environment = environmentId(env.value.env);
     // Calls can precede acquisition resolution; the line read below selects the latest value.
     const watch = await conversation.commit(async (tx) => {
       const head = (await tx.latestHeadMarker(conversation.id)) ?? null;
@@ -156,7 +156,9 @@ export class Projection {
     configuration?(): Promise<Readonly<Record<string, string>>>;
     metadata?(view: ConversationView): Promise<string>;
   };
-  constructor(chrome: Projection["chrome"] = {}) {
+  readonly address: string;
+  constructor(address: string, chrome: Projection["chrome"] = {}) {
+    this.address = address;
     this.chrome = chrome;
   }
 
@@ -177,7 +179,7 @@ export class Projection {
     };
     const baseline = this.#head === undefined || this.#head !== (head?.id ?? null);
     if (baseline) {
-      patches.push({ html: regions.baseline(view, head) });
+      patches.push({ html: regions.baseline(view, head, this.address) });
       this.#head = head?.id ?? null;
       this.#last = view.entries.at(-1)?.id ?? -1;
       this.#html.delete("live");
@@ -191,11 +193,7 @@ export class Projection {
       if (added.length) {
         const gap =
           view.before !== undefined && view.before > this.#last
-            ? regions.history(
-                view.conversation.id,
-                added[0]!.id,
-                this.#last < 0 ? undefined : this.#last,
-              )
+            ? regions.history(this.address, added[0]!.id, this.#last < 0 ? undefined : this.#last)
             : "";
         const tools = regions.tools(view, this.#calls);
         patches.push({

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,9 +12,20 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { AgentDoc, LiveDoc } from "@earendil-works/pi-durable";
-import { context } from "../src/application.ts";
+import { context, type Sessions } from "../src/application.ts";
 import { serve } from "../src/server.ts";
-import { fixture, form } from "./fixtures.ts";
+import { fixture, sessionsFixture, form } from "./fixtures.ts";
+
+const conversationRoute = new URLPattern({ pathname: "*/api/s/:session/c/:conversation" });
+async function selected(sessions: Sessions, url: string) {
+  const groups = conversationRoute.exec(url)?.pathname.groups;
+  assert(groups?.session && groups.conversation);
+  const app = await sessions.get(decodeURIComponent(groups.session));
+  assert(app);
+  const conversation = await app.conversation(groups.conversation);
+  assert(conversation);
+  return { app, conversation };
+}
 
 const idle = (page: Page) =>
   page.waitForFunction(() => document.getElementById("status")?.dataset.state === "idle");
@@ -22,8 +34,8 @@ await test(
   "home → selections → uploads → streaming → tools → compaction → /new → persisted session",
   { timeout: 60_000 },
   async (t) => {
-    const { app, faux, directory } = await fixture(t);
-    const server = await serve(app, { port: 0 });
+    const { sessions, faux, directory } = await sessionsFixture(t);
+    const server = await serve(sessions, { port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -39,10 +51,9 @@ await test(
       await page.goto(server.origin);
       await page.locator("#thinking").selectOption("high");
       await page.getByRole("button", { name: "Create session", exact: true }).click();
-      await page.waitForURL((url) => url.pathname.startsWith("/sessions/"));
+      await page.waitForURL((url) => conversationRoute.test(url.href));
       const firstURL = page.url();
-      const session = await app.conversation(new URL(firstURL).pathname.split("/")[2]!);
-      assert(session);
+      const { app, conversation: session } = await selected(sessions, firstURL);
       assert.equal((await session.agent(context)).thinkingLevel, "high");
       await idle(page);
 
@@ -172,7 +183,7 @@ await test(
       assert.equal(await page.locator("#cwd").inputValue(), changed);
       assert.equal(await page.locator("#transcript article").count(), 0);
       assert.equal((await app.list()).length, 2);
-      await page.getByRole("link", { name: "Sessions", exact: true }).first().click();
+      await page.getByRole("link", { name: "Conversations", exact: true }).first().click();
       assert.equal(await page.locator("#session-list .session-row").count(), 2);
       await page.getByRole("link", { name: "Review these files", exact: true }).click();
       await page.locator('[data-kind="pi.compaction"]').waitFor();
@@ -192,8 +203,8 @@ await test(
   "disconnects do not cancel runs; reconnect, stop, errors, and rejected commands keep usable state",
   { timeout: 60_000 },
   async (t) => {
-    const { app, faux } = await fixture(t);
-    const server = await serve(app, { port: 0 });
+    const { sessions, faux } = await sessionsFixture(t);
+    const server = await serve(sessions, { port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -208,10 +219,9 @@ await test(
       page.on("pageerror", (error) => errors.push(error));
       await page.goto(server.origin);
       await page.getByRole("button", { name: "Create session", exact: true }).click();
-      await page.waitForURL((url) => url.pathname.startsWith("/sessions/"));
+      await page.waitForURL((url) => conversationRoute.test(url.href));
       const url = page.url();
-      const session = await app.conversation(new URL(url).pathname.split("/")[2]!);
-      assert(session);
+      const { app, conversation: session } = await selected(sessions, url);
       await idle(page);
       await page.locator("#message").fill("/not-a-command");
       await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -276,8 +286,8 @@ await test(
   "mobile creation sends attachments; streaming preserves scroll and collapsed composer",
   { timeout: 60_000 },
   async (t) => {
-    const { app, faux } = await fixture(t);
-    const server = await serve(app, { port: 0 });
+    const { sessions, faux } = await sessionsFixture(t);
+    const server = await serve(sessions, { port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -302,10 +312,9 @@ await test(
         ]);
       await page.getByRole("button", { name: "Remove notes.txt", exact: true }).waitFor();
       await page.getByRole("button", { name: "Create session", exact: true }).click();
-      await page.waitForURL((url) => url.pathname.startsWith("/sessions/"));
+      await page.waitForURL((url) => conversationRoute.test(url.href));
       await page.locator("#partial").waitFor();
-      const session = await app.conversation(new URL(page.url()).pathname.split("/")[2]!);
-      assert(session);
+      const { conversation: session } = await selected(sessions, page.url());
       const user = (await session.context(context)).messages.find(
         (message) => message.role === "user",
       );
@@ -373,8 +382,8 @@ await test(
   "stealth footer controls on desktop and mobile; /cd is not a model turn",
   { timeout: 60_000 },
   async (t) => {
-    const { app, faux, selection, directory } = await fixture(t);
-    const server = await serve(app, { port: 0 });
+    const { sessions, app, faux, selection, directory } = await fixture(t);
+    const server = await serve(sessions, { port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -392,8 +401,10 @@ await test(
         assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
         assert.equal(await page.locator("#environment").isVisible(), true);
         assert.equal(await page.locator("#cwd").isVisible(), true);
-        const conversation = await app.create(form(selection));
-        await page.goto(`${server.origin}/sessions/${conversation.id}`);
+        const conversation = await app.createConversation(form(selection));
+        await page.goto(
+          `${server.origin}/api/s/${encodeURIComponent(app.id)}/c/${conversation.id}`,
+        );
         await idle(page);
         assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
         assert.equal(await page.locator("dialog").count(), 0);
@@ -469,8 +480,8 @@ await test(
   "bounded HTML history, native forms, and incremental patches preserve committed DOM",
   { timeout: 30_000 },
   async (t) => {
-    const { app, selection, faux } = await fixture(t);
-    const conversation = await app.create(form(selection));
+    const { sessions, app, selection, faux } = await fixture(t);
+    const conversation = await app.createConversation(form(selection));
     await conversation.commit(async (tx) => {
       for (let index = 0; index < 120; index++)
         await tx.appendEntry(conversation.id, {
@@ -482,7 +493,7 @@ await test(
           ],
         });
     }, context);
-    const server = await serve(app, { port: 0 });
+    const server = await serve(sessions, { port: 0 });
     t.after(() => server.close());
     const browser = await chromium.launch({
       executablePath:
@@ -492,7 +503,9 @@ await test(
     });
     try {
       const native = await browser.newPage({ javaScriptEnabled: false });
-      await native.goto(`${server.origin}/sessions/${conversation.id}`);
+      await native.goto(
+        `${server.origin}/api/s/${encodeURIComponent(app.id)}/c/${conversation.id}`,
+      );
       assert.equal(await native.locator("#entries > article").count(), 50);
       assert.equal(await native.locator("#model").inputValue(), "faux/first");
       await native.locator("#cwd").fill("/native-directory");
@@ -501,7 +514,7 @@ await test(
       await native.close();
 
       const page = await browser.newPage();
-      await page.goto(`${server.origin}/sessions/${conversation.id}`);
+      await page.goto(`${server.origin}/api/s/${encodeURIComponent(app.id)}/c/${conversation.id}`);
       await idle(page);
       assert.equal(await page.locator("#entries > article").count(), 50);
       await page.getByRole("link", { name: "Earlier messages", exact: true }).click();
@@ -578,6 +591,175 @@ await test(
         await page.getByRole("link", { name: "Load missing messages", exact: true }).count(),
         0,
       );
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+await test(
+  "prefixed session lifecycle and metadata use native forms without secret model fields",
+  { timeout: 60_000 },
+  async (t) => {
+    const { createServer, request } = await import("node:http");
+    const { sessions, models, faux } = await sessionsFixture(t);
+    let upstream: URL | undefined;
+    const proxy = createServer((incoming, outgoing) => {
+      assert(upstream && incoming.url);
+      const forwarded = request(
+        new URL(incoming.url, upstream),
+        { method: incoming.method, headers: incoming.headers },
+        (response) => {
+          outgoing.writeHead(response.statusCode!, response.headers);
+          response.pipe(outgoing);
+        },
+      );
+      forwarded.on("error", () => outgoing.destroy());
+      outgoing.once("close", () => forwarded.destroy());
+      incoming.pipe(forwarded);
+    });
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    const address = proxy.address();
+    assert(address && typeof address !== "string");
+    const base = `http://127.0.0.1:${address.port}/tools/pds/`;
+    const server = await serve(sessions, { port: 0, origin: base });
+    upstream = new URL(server.origin);
+    t.after(async () => {
+      proxy.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        proxy.close((error) => (error ? reject(error) : resolve())),
+      );
+      await server.close();
+    });
+    const browser = await chromium.launch({
+      executablePath:
+        process.env.CHROMIUM_BINARY ??
+        execFileSync("which", ["chromium"], { encoding: "utf8" }).trim(),
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+    try {
+      const page = await browser.newPage();
+      const errors: Error[] = [];
+      page.on("pageerror", (error) => errors.push(error));
+      const originals = faux.provider.getModels();
+      models.setProvider({
+        ...faux.provider,
+        getModels: () =>
+          originals.map((model) => ({
+            ...model,
+            baseUrl: "https://private.invalid",
+            headers: { Authorization: "not-for-the-browser" },
+          })),
+      });
+      const refresh = t.mock.method(models, "refresh");
+      await page.goto(new URL("api/models", base).href);
+      assert.deepEqual(
+        await page.locator("#models article").evaluateAll((rows) =>
+          rows.map((row) => ({
+            id: row.getAttribute("data-model-id"),
+            provider: row.getAttribute("data-provider"),
+            fields: Array.from(row.querySelectorAll("dd"), (field) =>
+              field.getAttribute("data-field"),
+            ),
+          })),
+        ),
+        originals.map((model) => ({
+          id: model.id,
+          provider: model.provider,
+          fields: [
+            "id",
+            "provider",
+            "name",
+            "input",
+            "reasoning",
+            "contextWindow",
+            "maxTokens",
+            "cost",
+            "thinkingLevels",
+          ],
+        })),
+      );
+      assert.equal(await page.locator("#models select, #models input").count(), 0);
+      const viewport = page.viewportSize();
+      assert(viewport);
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(
+        await page.locator("#models").evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          return (
+            bounds.left >= 0 &&
+            bounds.right <= innerWidth &&
+            element.scrollWidth <= element.clientWidth
+          );
+        }),
+        true,
+      );
+      await page.locator("#models").press("End");
+      await page.waitForFunction(() => (document.getElementById("models")?.scrollTop ?? 0) > 0);
+      await page.setViewportSize(viewport);
+      assert.deepEqual(await sessions.list(), []);
+      models.setProvider({ ...faux.provider, getModels: () => [] });
+      await page.reload();
+      assert.equal(await page.locator("#models article").count(), 0);
+      assert.deepEqual(await sessions.list(), []);
+      assert.equal(refresh.mock.callCount(), 0);
+      models.setProvider(faux.provider);
+
+      await page.goto(base);
+      const id = "../λ/owner ' & % session";
+      await page.locator("#open-session input").fill(id);
+      await page.getByRole("button", { name: "Open session", exact: true }).click();
+      const app = await sessions.get(id);
+      assert(app);
+      assert.deepEqual(await app.list(), []);
+      assert.equal((await app.harness.inspect(context)).scheduling, "paused");
+      assert.equal(
+        await page.getByRole("button", { name: "Create conversation", exact: true }).count(),
+        1,
+      );
+      await page.getByRole("button", { name: "Open root conversation", exact: true }).click();
+      await page.waitForURL((url) => conversationRoute.test(url.href));
+      await idle(page);
+      const selectedSession = await selected(sessions, page.url());
+      assert.equal(selectedSession.app, app);
+      assert.equal((await selectedSession.conversation.agent(context)).model, undefined);
+      assert.equal((await app.harness.inspect(context)).scheduling, "paused");
+      assert.deepEqual(
+        await page
+          .locator("link[rel=stylesheet], script[src]")
+          .evaluateAll((nodes) =>
+            nodes
+              .map(
+                (node) =>
+                  new URL(node.getAttribute("href") ?? node.getAttribute("src")!, document.baseURI)
+                    .pathname,
+              )
+              .sort(),
+          ),
+        [
+          "/tools/pds/assets/browser.js",
+          "/tools/pds/assets/datastar.js",
+          "/tools/pds/assets/style.css",
+        ],
+      );
+      await page.locator("#model").selectOption("faux/second");
+      await page.waitForFunction(
+        () =>
+          document.querySelector<HTMLSelectElement>("#model")?.selectedOptions[0]?.defaultSelected,
+      );
+      faux.setResponses([fauxAssistantMessage("A prefixed conversation")]);
+      await page.locator("#message").fill("Continue in this store");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await selectedSession.conversation.waitForIdle(context);
+      await idle(page);
+      assert.equal((await selectedSession.conversation.agent(context)).model?.modelId, "second");
+      assert.equal(faux.state.callCount, 1);
+      await page.getByRole("link", { name: "Conversations", exact: true }).first().click();
+      assert.equal((await app.list()).length, 1);
+      assert.equal(await page.locator("#session-list .session-row").count(), 1);
+      assert.deepEqual(errors, []);
     } finally {
       await browser.close();
     }
