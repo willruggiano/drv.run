@@ -270,8 +270,8 @@ await test("one Harness owns each opaque session ID; opens and roots preserve ex
   assert.equal((await right.agent(context)).model, undefined);
   assert.equal((await first.harness.inspect(context)).scheduling, "paused");
   assert.deepEqual(
-    (await sessions.list()).map((item) => item.id).sort(),
-    [id, "different store"].sort(),
+    (await sessions.list()).map((item) => item.id).toSorted(),
+    [id, "different store"].toSorted(),
   );
   const { readdir } = await import("node:fs/promises");
   assert.deepEqual(await readdir(directory), ["sessions"]);
@@ -344,7 +344,7 @@ await test("corrupt persisted stores remain unavailable without replacement or h
   const before = await stat(path);
   const reopened = await open();
   assert.deepEqual(
-    (await reopened.list()).sort((a, b) => a.id.localeCompare(b.id)),
+    (await reopened.list()).toSorted((a, b) => a.id.localeCompare(b.id)),
     [
       { id: "broken", status: "unavailable" },
       { id: "healthy", status: "open" },
@@ -358,12 +358,12 @@ await test("corrupt persisted stores remain unavailable without replacement or h
   assert.equal((await recovered.root(form({}))).id, retained.id);
   const server = await serve(reopened, { auth, port: 0 });
   t.after(() => server.close());
-  for (const [path, expected] of [
+  for (const [route, expected] of [
     ["/api/s", 200],
     ["/api/s/broken", 503],
     ["/api/s/healthy", 200],
   ] as const) {
-    const response = await fetch(`${server.origin}${path}`);
+    const response = await fetch(`${server.origin}${route}`);
     assert.equal(response.status, expected);
     await response.body?.cancel();
   }
@@ -666,6 +666,7 @@ await test("shutdown closes every Harness before waiting for all environment cle
     }
   }
   const failure = new Error("Expected cleanup failure");
+  // oxlint-disable-next-line typescript/unbound-method -- Capture before mocking; invoke with the receiver via original.call(this, ctx).
   const original = NodeExecutionEnv.prototype.cleanup;
   let count = 0;
   t.mock.method(
@@ -678,13 +679,20 @@ await test("shutdown closes every Harness before waiting for all environment cle
       assert(owners.every((owner) => !owner.available));
       const call = ++count;
       await original.call(this, ctx);
-      if (call === 1) throw failure;
       if (call === 2) {
         started.resolve();
         await release.promise;
       }
+      if (this.cwd === join(directory, "second")) throw failure;
     },
   );
+  const harnessFailure = new Error("Expected Harness close failure");
+  const firstHarness = owners[0].harness;
+  const close = firstHarness.close.bind(firstHarness);
+  t.mock.method(firstHarness, "close", async (ctx: Parameters<typeof close>[0]) => {
+    await close(ctx);
+    throw harnessFailure;
+  });
   closing = owned.close();
   let settled = false;
   const result = closing.then(
@@ -707,7 +715,10 @@ await test("shutdown closes every Harness before waiting for all environment cle
     (error: unknown) =>
       error instanceof AggregateError &&
       error.errors.some(
-        (error: unknown) => error instanceof AggregateError && error.errors.includes(failure),
+        (cleanupError: unknown) =>
+          cleanupError instanceof AggregateError &&
+          cleanupError.errors.includes(failure) &&
+          cleanupError.errors.includes(harnessFailure),
       ),
   );
   await result;

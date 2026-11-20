@@ -80,7 +80,7 @@ export async function fixture(t: TestContext) {
       Buffer.from(app.id).toString("base64url"),
       "store.sqlite",
     ),
-    async open() {
+    async open(this: void) {
       await result.sessions.close();
       return (await result.open()).open(decode(SessionId, "test"));
     },

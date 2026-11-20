@@ -189,8 +189,8 @@ export function decode(text: string): Tape {
     );
     seq = next;
     const kinds = new Set<string>();
-    const changes = list(frame.changes, 2).map((item): Change => {
-      const change = object(item, ["kind", "version", "key", "value"]);
+    const changes = list(frame.changes, 2).map((changeValue): Change => {
+      const change = object(changeValue, ["kind", "version", "key", "value"]);
       assert(change.version === 1, "Unsupported document version");
       const kind = string(change.kind);
       assert(!kinds.has(kind), "Duplicate document in commit");

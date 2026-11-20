@@ -80,6 +80,35 @@
       environmentImage = import ./nix/nixosTests/environment-image.nix {inherit pkgs;};
     in {
       app-tests = pkgs.app;
+      typescript-lint =
+        pkgs.runCommand "typescript-lint" {
+          nativeBuildInputs = [pkgs.oxlint];
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset =
+              lib.fileset.fileFilter (
+                file: lib.any file.hasExt ["ts" "tsx" "mts" "cts" "js" "jsx" "mjs" "cjs" "json"] || file.name == ".gitignore"
+              )
+              ./.;
+          };
+        } ''
+          cp -R "$src" source
+          chmod -R u+w source
+          cd source
+          cp -rs ${pkgs.app.nodeModules}/node_modules packages/app/node_modules
+          chmod u+w packages/app/node_modules
+          ${lib.concatMapStringsSep "\n" (workspace: ''
+              ln -s ../${workspace} packages/app/node_modules/${workspace}
+            '')
+            (lib.importJSON ./packages/app/package.json).workspaces}
+          ln -s ${self.packages.${pkgs.stdenv.hostPlatform.system}.pds.nodeModules}/node_modules packages/pds/node_modules
+          ln -s ${(pkgs.importNpmLock.buildNodeModules {
+            npmRoot = ./packages/push-policy;
+            inherit (pkgs) nodejs;
+          })}/node_modules packages/push-policy/node_modules
+          oxlint --format=unix
+          touch "$out"
+        '';
       bench-tests = pkgs.bench;
       guest-files-tests = pkgs.drvr.guest-files;
       pds-tests = self.packages.${pkgs.stdenv.hostPlatform.system}.pds;

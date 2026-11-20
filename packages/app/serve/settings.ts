@@ -149,7 +149,7 @@ export function resolveSelection(
     (item) => targetKey(item) === values.target && item.available,
   );
   const model = choices.models.find((item) => modelKey(item) === values.model);
-  const level = thinkingLevels.find((level) => level === values.thinkingLevel);
+  const level = thinkingLevels.find((candidateLevel) => candidateLevel === values.thinkingLevel);
   if (values.thinkingLevel && !level) throw new SessionError("invalid", "Invalid thinking level.");
   if (!model && (!current?.model || modelKey(current.model) !== values.model))
     throw new SessionError("unavailable", "Model is unavailable.");

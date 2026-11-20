@@ -34,13 +34,13 @@ function parseSettings(value: unknown): GlobalSettings {
     ...object(data.values),
   };
   for (const field of settingFields) {
-    const value = values[field.key];
+    const fieldValue = values[field.key];
     const valid =
       "choices" in field
-        ? field.choices.some((choice) => choice === value)
+        ? field.choices.some((choice) => choice === fieldValue)
         : field.type === "boolean"
-          ? typeof value === "boolean"
-          : typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+          ? typeof fieldValue === "boolean"
+          : typeof fieldValue === "number" && Number.isSafeInteger(fieldValue) && fieldValue >= 0;
     if (!valid) throw new RequestError(400, `Invalid setting: ${field.key}`);
   }
   const model = data.model === null ? null : object(data.model);
@@ -170,7 +170,7 @@ export class GlobalSettingsStore {
         throw new RequestError(400, "Unknown settings field.");
     const values = data.values === undefined ? {} : object(data.values);
     for (const key of Object.keys(values)) {
-      const field = settingFields.find((field) => field.key === key);
+      const field = settingFields.find((candidateField) => candidateField.key === key);
       if (!field || ("readonly" in field && field.readonly))
         throw new RequestError(400, `Unsupported setting: ${key}`);
     }
@@ -439,11 +439,11 @@ export async function main(): Promise<void> {
   try {
     if (notifications) await sessions.openAll();
     server = httpServer(sessions, host, undefined, settings, origin, authorization, notifications);
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((fulfill, reject) => {
       server.once("error", reject);
       server.listen(port, host, () => {
         server.off("error", reject);
-        resolve();
+        fulfill();
       });
     });
   } catch (error) {

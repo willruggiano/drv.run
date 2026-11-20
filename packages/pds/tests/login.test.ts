@@ -289,7 +289,13 @@ await test("metadata distinguishes ambient authorization, stored login, and stor
   assert.equal(view.unavailable, true);
   assert.equal(view.authorized, undefined);
   assert.equal(view.stored, undefined);
-  assert.deepEqual(Object.keys(view).sort(), ["id", "logout", "methods", "name", "unavailable"]);
+  assert.deepEqual(Object.keys(view).toSorted(), [
+    "id",
+    "logout",
+    "methods",
+    "name",
+    "unavailable",
+  ]);
 });
 
 await test("prefixed login commands enforce methods, origins and canonical fields without provisioning sessions", async (t) => {
@@ -385,7 +391,7 @@ await test("unsuccessful replacement preserves the old credential and malformed 
     throw new Error("raw-provider-secret", { cause: key });
   });
   auth.start("openai", "api_key");
-  const view = await until(auth, (view) => view.attempt?.state === "failed");
+  const view = await until(auth, (currentView) => currentView.attempt?.state === "failed");
   assert.deepEqual(view.attempt, { id: view.attempt?.id, state: "failed", events: [] });
   assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { openai: key });
   await writeFile(path, "invalid-secret-bearing-record");
@@ -448,7 +454,7 @@ await test("native Codex device enrollment stays upstream and stores its native 
         });
       }
       default:
-        assert.fail("Unexpected provider request");
+        return assert.fail("Unexpected provider request");
     }
   });
   auth.start("openai-codex", "oauth");

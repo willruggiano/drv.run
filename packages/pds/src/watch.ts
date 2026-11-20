@@ -56,6 +56,7 @@ export async function observe(app: Session, conversation: D.Conversation, signal
             if (op[0] !== "p" || op[1].length !== 1 || op[1][0] !== "entries") continue;
             for (const record of op[4]) {
               assert(record !== null && typeof record === "object" && !Array.isArray(record));
+              // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Durable emits EntryRecords in splices at the checked entries path.
               if (record.head !== undefined) head = record as D.EntryRecord & typeof record;
             }
           }
@@ -133,6 +134,8 @@ function prefix(op: Delta.Op): Delta.Op {
       return ["m", path, op[2]];
     case "p":
       return ["p", path, op[2], op[3], op[4]];
+    default:
+      throw new Error("Unsupported delta operation", { cause: op satisfies never });
   }
 }
 

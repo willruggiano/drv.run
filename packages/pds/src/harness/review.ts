@@ -32,19 +32,20 @@ const INSTRUCTION =
   `If there are no findings, include the exact text "No findings." in your response and do *not* write REVIEW.md. ` +
   "Do not modify other files.";
 
+async function mutationPath(path: string, api: D.ToolExecutionApi, context: C.Context) {
+  if ((await api.snapshot(Review, api.conversationId, context))?.original === undefined)
+    return path;
+  assert(api.env, "Review requires an execution environment.");
+  const target = getOrThrow(await api.env.absolutePath("REVIEW.md", context));
+  if (getOrThrow(await api.env.absolutePath(path, context)) !== target) return undefined;
+  const file = await api.env.fileInfo(target, context);
+  if (file.ok && file.value.kind !== "file") return undefined;
+  if (!file.ok && file.error.code !== "not_found") throw file.error;
+  // Pass a fixed relative path so the tool's own path normalization cannot redirect it.
+  return "REVIEW.md";
+}
+
 export function createReviewExtension(environment: D.HarnessOptions["env"]) {
-  async function mutationPath(path: string, api: D.ToolExecutionApi, context: C.Context) {
-    if ((await api.snapshot(Review, api.conversationId, context))?.original === undefined)
-      return path;
-    assert(api.env, "Review requires an execution environment.");
-    const target = getOrThrow(await api.env.absolutePath("REVIEW.md", context));
-    if (getOrThrow(await api.env.absolutePath(path, context)) !== target) return undefined;
-    const file = await api.env.fileInfo(target, context);
-    if (file.ok && file.value.kind !== "file") return undefined;
-    if (!file.ok && file.error.code !== "not_found") throw file.error;
-    // Pass a fixed relative path so the tool's own path normalization cannot redirect it.
-    return "REVIEW.md";
-  }
   const blocked = {
     isError: true,
     diagnostics: [
@@ -56,24 +57,24 @@ export function createReviewExtension(environment: D.HarnessOptions["env"]) {
       },
     ],
   };
-  return defineExtension<D.ToolRegistration>({
+  return defineExtension({
     name: "review",
     sections: [
       section("review", async (input, context) => {
         if (
           (await input.read.snapshot(Review, input.conversationId, context))?.original === undefined
         )
-          return;
+          return undefined;
         return INSTRUCTION;
       }),
       section("review-guidelines", async (input, context) => {
         if (
           (await input.read.snapshot(Review, input.conversationId, context))?.original === undefined
         )
-          return;
+          return undefined;
         assert(input.env, "Review requires an execution environment.");
         const file = await input.env.readTextFile("REVIEW_GUIDELINES.md", context);
-        if (!file.ok && file.error.code === "not_found") return;
+        if (!file.ok && file.error.code === "not_found") return undefined;
         return getOrThrow(file);
       }),
     ],
@@ -97,7 +98,7 @@ export function createReviewExtension(environment: D.HarnessOptions["env"]) {
       hook(GenerationTask, {
         async onYield(answer, api, context) {
           if ((await api.snapshot(Review, api.conversationId, context))?.original === undefined)
-            return;
+            return undefined;
           const text = answer.content
             .flatMap((part) => (part.type === "text" ? [part.text] : []))
             .join("");
@@ -117,10 +118,10 @@ export function createReviewExtension(environment: D.HarnessOptions["env"]) {
                 if (text.includes("No findings.")) {
                   await env.remove(file.value.path, { force: true }, context);
                 }
-                return;
+                return undefined;
               }
             }
-            if (text.includes("No findings.")) return;
+            if (text.includes("No findings.")) return undefined;
           } catch (error) {
             if (context.abortSignal?.aborted) throw error;
             // A failed check is not permission to finish. Hook exceptions otherwise get skipped.

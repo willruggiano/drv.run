@@ -9,6 +9,7 @@ import * as web from "../src/harness/web.ts";
 
 const context = BACKGROUND_CONTEXT;
 // Neither tool may read the guest environment (or any other execution API state).
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Deliberately incomplete test double; every property read throws.
 const api = new Proxy({} as D.ToolExecutionApi, {
   get() {
     assert.fail("Web tools must not access the guest execution API.");

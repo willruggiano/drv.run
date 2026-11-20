@@ -27,12 +27,15 @@ const DecimalId = Type.Refine(
 
 // The wire representation establishes the upstream brand, not record existence.
 export const ConversationId = Type.Codec(DecimalId)
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Validated decimal ID; establish the upstream brand.
   .Decode((value) => Number(value) as D.ConversationId)
   .Encode(String);
 export const EntryId = Type.Codec(DecimalId)
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Validated decimal ID; establish the upstream brand.
   .Decode((value) => Number(value) as D.EntryId)
   .Encode(String);
 export const TaskId = Type.Codec(DecimalId)
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Validated decimal ID; establish the upstream brand.
   .Decode((value) => Number(value) as D.TaskId)
   .Encode(String);
 
@@ -43,14 +46,15 @@ export type SessionKey = string & { readonly [sessionBrand]: "key" };
 export const SessionId = Type.Unsafe<SessionId>(
   Type.Refine(
     Type.String({ minLength: 1 }),
-    (id) =>
-      id.isWellFormed() &&
-      Buffer.byteLength(id) <= 128 &&
-      ![...id].some(
-        (character) => character.codePointAt(0)! < 32 || character.codePointAt(0) === 127,
-      ) &&
-      id !== "." &&
-      id !== "..",
+    (id) => {
+      if (!id.isWellFormed() || Buffer.byteLength(id) > 128 || id === "." || id === "..")
+        return false;
+      for (const character of id) {
+        const code = character.codePointAt(0)!;
+        if (code < 32 || code === 127) return false;
+      }
+      return true;
+    },
     () => "Session IDs must be 1–128 UTF-8 bytes without control characters or URL dot segments.",
   ),
 );
@@ -65,4 +69,5 @@ export const SessionKey = Type.Codec(
   ),
 )
   .Decode((key) => Value.Parse(SessionId, Buffer.from(key, "base64url").toString("utf8")))
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Canonical base64url encoding of a validated SessionId.
   .Encode((id) => Buffer.from(id).toString("base64url") as SessionKey);

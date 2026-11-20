@@ -77,15 +77,15 @@ export class BranchTree {
     const ids = [...this.dirty];
     this.dirty.clear();
     for (const id of ids) this.branches.set(id, await this.readBranch(id, context));
-    return [...this.branches.values()].sort((a, b) => a.id - b.id);
+    return [...this.branches.values()].toSorted((a, b) => a.id - b.id);
   }
 
   private async readBranch(id: ConversationId, context: Context): Promise<Branch> {
     const { record, activity, state, active } = await this.session.harness.commit(async (tx) => {
-      const record = await tx.conversation(id);
-      assert(record);
-      let activity: number | null = null;
-      let state: Branch["state"] = "pending";
+      const conversationRecord = await tx.conversation(id);
+      assert(conversationRecord);
+      let lastActivity: number | null = null;
+      let currentState: Branch["state"] = "pending";
       let cursor: Cursor | undefined;
       let latest: Message | undefined;
       // Fork ancestry is navigation, not activity in this branch.
@@ -109,30 +109,30 @@ export class BranchTree {
         cursor = !latest && !inherited ? page.next : undefined;
       } while (cursor);
       if (latest) {
-        activity = latest.timestamp;
-        state = messageState(latest);
+        lastActivity = latest.timestamp;
+        currentState = messageState(latest);
       }
-      let active: "running" | "pending" | undefined;
+      let activeState: "running" | "pending" | undefined;
       cursor = undefined;
       do {
         const page = await tx.scanTasks({ conversationId: id, background: false }, 256, cursor);
         for (const task of page.items) {
           if (task.state.status !== "terminal") {
-            if (task.state.status !== "pending") active = "running";
-            else active ??= "pending";
+            if (task.state.status !== "pending") activeState = "running";
+            else activeState ??= "pending";
           }
           const timestamp = task.endedAt ?? task.startedAt;
           if (
             timestamp === undefined ||
             !Number.isFinite(timestamp) ||
-            (activity !== null && timestamp < activity)
+            (lastActivity !== null && timestamp < lastActivity)
           )
             continue;
-          activity = timestamp;
+          lastActivity = timestamp;
           // A failed tool can be recovered by its run; it is not the run's outcome.
           if (task.state.status === "terminal" && task.owner === undefined) {
             const outcome = task.state.outcome.status;
-            state =
+            currentState =
               outcome === "completed"
                 ? "completed"
                 : outcome === "aborted"
@@ -142,7 +142,12 @@ export class BranchTree {
         }
         cursor = page.next;
       } while (cursor);
-      return { record, activity, state, active };
+      return {
+        record: conversationRecord,
+        activity: lastActivity,
+        state: currentState,
+        active: activeState,
+      };
     }, context);
     const review = await this.session.harness.snapshot(Review, id, context);
     const inbox = await this.session.harness.snapshot(InboxDoc, id, context);

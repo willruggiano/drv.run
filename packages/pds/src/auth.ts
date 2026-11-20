@@ -46,6 +46,19 @@ class NotImplementedError extends Error {
   override readonly name = "NotImplementedError";
 }
 
+async function load(file: string) {
+  const content = await readFile(file, "utf8");
+  // U+FEFF is a leading byte-order mark; Pi's file reader strips it too.
+  const value: unknown = JSON.parse(content.replace(/^\uFEFF/, ""));
+  if (!object(value)) throw new Error("Invalid credential file");
+  const data = new Map<string, A.Credential>();
+  for (const [providerId, entry] of Object.entries(value)) {
+    if (!credential(entry)) throw new Error("Invalid credential record");
+    data.set(providerId, entry);
+  }
+  return data;
+}
+
 function credentialStore(path: string): A.CredentialStore {
   async function locked<T>(
     fn: (file: string, guard: () => Promise<void>) => Promise<T>,
@@ -102,18 +115,7 @@ function credentialStore(path: string): A.CredentialStore {
       if (!compromised) await release();
     }
   }
-  async function load(path: string) {
-    const content = await readFile(path, "utf8");
-    // U+FEFF is a leading byte-order mark; Pi's file reader strips it too.
-    const value: unknown = JSON.parse(content.replace(/^\uFEFF/, ""));
-    if (!object(value)) throw new Error("Invalid credential file");
-    const data = new Map<string, A.Credential>();
-    for (const [providerId, entry] of Object.entries(value)) {
-      if (!credential(entry)) throw new Error("Invalid credential record");
-      data.set(providerId, entry);
-    }
-    return data;
-  }
+
   return {
     read(providerId, options) {
       return locked(async (file) => {

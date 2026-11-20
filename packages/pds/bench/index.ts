@@ -36,14 +36,16 @@ function load(path: string, conversation?: number) {
     const row = database.prepare("SELECT record FROM conversations WHERE id = ?").get(selected);
     assert(row && typeof row.record === "string", `Conversation ${selected} not found`);
     // The database stores Durable's JSON records; no app-specific metadata is required.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Trust Durable's persisted record schema at this read-only benchmark boundary.
     const record = JSON.parse(row.record) as D.ConversationRecord;
     assert.equal(record.id, selected);
     const entries = database
       .prepare("SELECT record FROM entries WHERE conversation_id = ? ORDER BY id")
       .all(selected)
-      .map((row) => {
-        assert(typeof row.record === "string");
-        const entry = JSON.parse(row.record) as D.EntryRecord;
+      .map((entryRow) => {
+        assert(typeof entryRow.record === "string");
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Trust Durable's persisted record schema at this read-only benchmark boundary.
+        const entry = JSON.parse(entryRow.record) as D.EntryRecord;
         assert.equal(entry.conversationId, selected);
         return entry;
       });
@@ -303,7 +305,7 @@ async function benchmark(path: string, conversation?: number) {
         counters = counts;
         timings.push(elapsed);
       }
-      const sorted = [...timings].sort((a, b) => a - b);
+      const sorted = timings.toSorted((a, b) => a - b);
       results.push({
         name: scenario.name,
         operations: scenario.operations,

@@ -174,15 +174,15 @@ async function listPaths(
   env: ExecutionEnv,
   query: string,
   directoriesOnly = false,
-  context = BACKGROUND_CONTEXT,
+  ctx = BACKGROUND_CONTEXT,
 ): Promise<string[]> {
-  context.abortSignal?.throwIfAborted();
+  ctx.abortSignal?.throwIfAborted();
   const slash = query.lastIndexOf("/");
   const directory = query.slice(0, slash + 1);
   const prefix = query.slice(slash + 1).toLowerCase();
-  const opened = await env.openDirReader(directory || ".", context);
+  const opened = await env.openDirReader(directory || ".", ctx);
   if (!opened.ok) {
-    context.abortSignal?.throwIfAborted();
+    ctx.abortSignal?.throwIfAborted();
     if (["not_found", "not_directory"].includes(opened.error.code)) return [];
     throw new SessionError("unavailable", "Cannot list paths in this workspace.");
   }
@@ -190,8 +190,8 @@ async function listPaths(
   try {
     // Bound both scanning and the response; completion must not walk entire trees.
     for (let count = 0; count < 5000; count += 100) {
-      const page = await opened.value.next(100, context);
-      context.abortSignal?.throwIfAborted();
+      const page = await opened.value.next(100, ctx);
+      ctx.abortSignal?.throwIfAborted();
       if (!page.ok) throw new SessionError("unavailable", "Cannot list paths in this workspace.");
       for (const file of page.value.entries) {
         const name = posix.basename(file.path);
@@ -203,12 +203,12 @@ async function listPaths(
           continue;
         let isDirectory = file.kind === "directory";
         if (directoriesOnly && file.kind === "symlink") {
-          const canonical = await env.canonicalPath(directory + name, context);
+          const canonical = await env.canonicalPath(directory + name, ctx);
           if (canonical.ok) {
-            const info = await env.fileInfo(canonical.value, context);
+            const info = await env.fileInfo(canonical.value, ctx);
             isDirectory = info.ok && info.value.kind === "directory";
           }
-          context.abortSignal?.throwIfAborted();
+          ctx.abortSignal?.throwIfAborted();
         }
         if (directoriesOnly && !isDirectory) continue;
         paths.push(directory + name + (isDirectory ? "/" : ""));
@@ -216,9 +216,9 @@ async function listPaths(
       if (page.value.done) break;
     }
   } finally {
-    await opened.value.close(withoutAbortSignal(context));
+    await opened.value.close(withoutAbortSignal(ctx));
   }
-  return paths.sort((a, b) => a.localeCompare(b)).slice(0, 50);
+  return paths.toSorted((a, b) => a.localeCompare(b)).slice(0, 50);
 }
 
 export class Sessions {
@@ -238,11 +238,11 @@ export class Sessions {
   }
 
   /** Discover execution and model choices without opening saved sessions. */
-  async choices(context = BACKGROUND_CONTEXT): Promise<Choices> {
-    context.abortSignal?.throwIfAborted();
-    const targets = (await this.options.targets?.(context)) ?? [];
+  async choices(ctx = BACKGROUND_CONTEXT): Promise<Choices> {
+    ctx.abortSignal?.throwIfAborted();
+    const targets = (await this.options.targets?.(ctx)) ?? [];
     const models = await this.options.models.getAvailable();
-    context.abortSignal?.throwIfAborted();
+    ctx.abortSignal?.throwIfAborted();
     return {
       targets,
       models: models.map((model) => ({
@@ -257,25 +257,25 @@ export class Sessions {
   }
 
   /** Open persisted harnesses and attach their observers, without starting model work. */
-  async openAll(context = BACKGROUND_CONTEXT): Promise<Session[]> {
-    context.abortSignal?.throwIfAborted();
+  async openAll(ctx = BACKGROUND_CONTEXT): Promise<Session[]> {
+    ctx.abortSignal?.throwIfAborted();
     const names = await readdir(this.options.directory);
-    context.abortSignal?.throwIfAborted();
+    ctx.abortSignal?.throwIfAborted();
     return Promise.all(
       names
         .filter((name) => name.endsWith(".sqlite") && uuid.test(name.slice(0, -7)))
-        .map((name) => awaitWithContext(this.get(name.slice(0, -7)), context)),
+        .map((name) => awaitWithContext(this.get(name.slice(0, -7)), ctx)),
     );
   }
 
-  async catalog(context = BACKGROUND_CONTEXT): Promise<Catalog> {
-    const choices = await this.choices(context);
+  async catalog(ctx = BACKGROUND_CONTEXT): Promise<Catalog> {
+    const choices = await this.choices(ctx);
     const sessions = await Promise.all(
-      (await this.openAll(context)).map(async (session) => {
-        const watch = await session.root.watch(context);
+      (await this.openAll(ctx)).map(async (session) => {
+        const watch = await session.root.watch(ctx);
         try {
           return {
-            ...(await sessionInfo(session, session.root, choices.targets, context)),
+            ...(await sessionInfo(session, session.root, choices.targets, ctx)),
             context: contextStatus(session, watch.value),
           };
         } finally {
@@ -283,16 +283,16 @@ export class Sessions {
         }
       }),
     );
-    return { ...choices, sessions: sessions.sort((a, b) => b.created - a.created) };
+    return { ...choices, sessions: sessions.toSorted((a, b) => b.created - a.created) };
   }
 
   async baseDirectory(
     binding: ExecutionBinding,
     value: string,
-    context = BACKGROUND_CONTEXT,
+    ctx = BACKGROUND_CONTEXT,
   ): Promise<string> {
-    context.abortSignal?.throwIfAborted();
-    const target = (await this.options.targets?.(context))?.find(
+    ctx.abortSignal?.throwIfAborted();
+    const target = (await this.options.targets?.(ctx))?.find(
       (item) => item.provider === binding.provider && item.target === binding.target,
     );
     if (!target?.directoryRoot)
@@ -303,15 +303,15 @@ export class Sessions {
   async completeDirectories(
     binding: ExecutionBinding,
     query: string,
-    context = BACKGROUND_CONTEXT,
+    ctx = BACKGROUND_CONTEXT,
   ): Promise<string[]> {
     if (this.closing) throw new SessionError("closing", "Runtime is stopping.");
-    const root = await this.baseDirectory(binding, "", context);
+    const root = await this.baseDirectory(binding, "", ctx);
     resolveBaseDirectory(root, query);
-    context.abortSignal?.throwIfAborted();
-    const env = await this.options.directoryEnv?.({ ...binding, cwd: root }, context);
+    ctx.abortSignal?.throwIfAborted();
+    const env = await this.options.directoryEnv?.({ ...binding, cwd: root }, ctx);
     if (!env) throw new SessionError("unavailable", "Directory browsing is unavailable.");
-    return (await listPaths(env, `./${query}`, true, context)).map((path) => path.slice(2));
+    return (await listPaths(env, `./${query}`, true, ctx)).map((path) => path.slice(2));
   }
 
   resolveThinking(ref: ModelRef, requested?: ModelThinkingLevel): ModelThinkingLevel {
@@ -479,13 +479,13 @@ async function openSession(owner: Sessions, id: string, create?: InitialSession)
 export async function environment(
   session: Session,
   conversation = session.root,
-  context = BACKGROUND_CONTEXT,
+  ctx = BACKGROUND_CONTEXT,
 ): Promise<ExecutionEnv> {
-  const agent = await conversation.agent(context);
-  context.abortSignal?.throwIfAborted();
+  const agent = await conversation.agent(ctx);
+  ctx.abortSignal?.throwIfAborted();
   const env = await session.owner.options.env?.(
     { conversationId: conversation.id, cwd: agent.cwd, read: session.harness },
-    context,
+    ctx,
   );
   if (!env) throw new SessionError("unavailable", "No execution environment selected.");
   return env;
@@ -501,7 +501,7 @@ export async function configureSession(
     model?: ModelRef;
     thinkingLevel?: ModelThinkingLevel;
   },
-  context: Context,
+  ctx: Context,
 ): Promise<void> {
   const name = validateName(change.name);
   if (change.binding && !validBinding({ ...change.binding, cwd: change.cwd }))
@@ -518,14 +518,14 @@ export async function configureSession(
       cwd: change.cwd,
     });
     (await tx.doc(Metadata, session.root.id)).name = name;
-  }, context);
+  }, ctx);
 }
 /** Complete relative paths in the bound environment, never the server's filesystem. */
 export async function completePaths(
   session: Session,
   query: string,
   conversation = session.root,
-  context = BACKGROUND_CONTEXT,
+  ctx = BACKGROUND_CONTEXT,
 ): Promise<string[]> {
   if (
     query.length > 4096 ||
@@ -534,8 +534,8 @@ export async function completePaths(
     query.split("/").includes("..")
   )
     throw new SessionError("invalid", "Expected a workspace-relative path.");
-  const env = await environment(session, conversation, context);
-  return (await listPaths(env, `./${query}`, false, context)).map((path) => path.slice(2));
+  const env = await environment(session, conversation, ctx);
+  return (await listPaths(env, `./${query}`, false, ctx)).map((path) => path.slice(2));
 }
 
 /** Change only this conversation; paths are literal, not shell expressions. */
@@ -543,18 +543,18 @@ export async function changeDirectory(
   session: Session,
   argument: string,
   conversation = session.root,
-  context = BACKGROUND_CONTEXT,
+  ctx = BACKGROUND_CONTEXT,
 ): Promise<void> {
   if (argument.length > 4096 || hasControlCharacters(argument))
     throw new SessionError("invalid", "Invalid directory.");
-  const before = await conversation.agent(context);
-  const binding = await session.harness.snapshot(Environment, conversation.id, context);
-  const env = await environment(session, conversation, context);
-  const canonical = await env.canonicalPath(argument.trim() || "~", context);
-  context.abortSignal?.throwIfAborted();
+  const before = await conversation.agent(ctx);
+  const binding = await session.harness.snapshot(Environment, conversation.id, ctx);
+  const env = await environment(session, conversation, ctx);
+  const canonical = await env.canonicalPath(argument.trim() || "~", ctx);
+  ctx.abortSignal?.throwIfAborted();
   if (!canonical.ok) throw new SessionError("invalid", "Directory is unavailable.");
-  const info = await env.fileInfo(canonical.value, context);
-  context.abortSignal?.throwIfAborted();
+  const info = await env.fileInfo(canonical.value, ctx);
+  ctx.abortSignal?.throwIfAborted();
   if (!info.ok || info.value.kind !== "directory")
     throw new SessionError("invalid", "Expected an existing directory.");
   await conversation.commit(async (tx) => {
@@ -569,19 +569,19 @@ export async function changeDirectory(
     )
       throw new SessionError("conflict", "Execution environment changed; retry /cd.");
     await configure(tx, conversation.id, { cwd: canonical.value });
-  }, context);
+  }, ctx);
 }
 
 export async function completeWorkingDirectories(
   session: Session,
   query: string,
   conversation = session.root,
-  context = BACKGROUND_CONTEXT,
+  ctx = BACKGROUND_CONTEXT,
 ): Promise<string[]> {
   if (query.length > 4096 || hasControlCharacters(query))
     throw new SessionError("invalid", "Invalid directory.");
-  const env = await environment(session, conversation, context);
-  return listPaths(env, query, true, context);
+  const env = await environment(session, conversation, ctx);
+  return listPaths(env, query, true, ctx);
 }
 
 /** Capture at the supplied watch boundary, including its agent configuration.
@@ -627,21 +627,19 @@ export function contextStatus(session: Session, view: ConversationView): Context
     agent?.model &&
     session.owner.options.models.getModel(agent.model.provider, agent.model.modelId);
   const head = view.entries.reduce(
-    (head, entry) => (entry.head === undefined ? head : Math.max(head, entry.id)),
+    (maximumHead, entry) =>
+      entry.head === undefined ? maximumHead : Math.max(maximumHead, entry.id),
     -1,
   );
   let last: { message: AssistantMessage; entry: number } | undefined;
   for (const entry of view.entries) {
     if (entry.id <= head || (last && entry.id <= last.entry)) continue;
-    const message = entry.model
-      ?.slice()
-      .reverse()
-      .find(
-        (message): message is AssistantMessage =>
-          message.role === "assistant" &&
-          message.stopReason !== "error" &&
-          message.stopReason !== "aborted",
-      );
+    const message = entry.model?.findLast(
+      (candidateMessage): candidateMessage is AssistantMessage =>
+        candidateMessage.role === "assistant" &&
+        candidateMessage.stopReason !== "error" &&
+        candidateMessage.stopReason !== "aborted",
+    );
     if (message) last = { message, entry: entry.id };
   }
   let lastResponse: ContextStatus["lastResponse"] = null;
@@ -672,18 +670,18 @@ export async function sessionInfo(
   session: Session,
   conversation = session.root,
   targets?: readonly ExecutionTarget[],
-  context = BACKGROUND_CONTEXT,
+  ctx = BACKGROUND_CONTEXT,
 ): Promise<SessionInfo> {
-  const agent = await conversation.agent(context);
-  const metadata = await session.harness.snapshot(Metadata, session.root.id, context);
-  const selected = await session.harness.snapshot(Environment, conversation.id, context);
-  const review = await session.harness.snapshot(Review, conversation.id, context);
-  context.abortSignal?.throwIfAborted();
-  targets ??= (await session.owner.options.targets?.(context)) ?? [];
+  const agent = await conversation.agent(ctx);
+  const metadata = await session.harness.snapshot(Metadata, session.root.id, ctx);
+  const selected = await session.harness.snapshot(Environment, conversation.id, ctx);
+  const review = await session.harness.snapshot(Review, conversation.id, ctx);
+  ctx.abortSignal?.throwIfAborted();
+  targets ??= (await session.owner.options.targets?.(ctx)) ?? [];
   const target = targets.find(
     (item) => item.provider === selected?.provider && item.target === selected.target,
   );
-  const inspection = await session.harness.inspect(context);
+  const inspection = await session.harness.inspect(ctx);
   return {
     id: session.id,
     name: metadata?.name ?? "",
@@ -727,13 +725,13 @@ export async function rename(session: Session, name: string): Promise<void> {
 export async function getConversation(
   session: Session,
   id?: number,
-  context = BACKGROUND_CONTEXT,
+  ctx = BACKGROUND_CONTEXT,
 ): Promise<Conversation> {
-  context.abortSignal?.throwIfAborted();
+  ctx.abortSignal?.throwIfAborted();
   if (id === undefined) return session.root;
   if (!Number.isSafeInteger(id) || id < 0)
     throw new SessionError("invalid", "Invalid conversation ID.");
-  const conversation = await session.harness.conversation(id as ConversationId, context);
+  const conversation = await session.harness.conversation(id as ConversationId, ctx);
   if (!conversation) throw new SessionError("not_found", "Conversation not found.");
   return conversation;
 }

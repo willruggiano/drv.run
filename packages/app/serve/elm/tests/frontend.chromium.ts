@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type { ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -91,13 +90,19 @@ await test(
     await page.waitForFunction(
       () => document.querySelector("#controls")?.getAttribute("data-state") === "working",
     );
-    assert.equal(await node.evaluate((node) => node === document.getElementById(node.id)), true);
+    assert.equal(
+      await node.evaluate((element) => element === document.getElementById(element.id)),
+      true,
+    );
     const reset = await session.root.commit(
       (tx) => tx.appendEntry(session.root.id, { kind: "pi.reset", head: "self" }),
       context,
     );
     await page.locator(`[data-context="pi.reset"]`).waitFor();
-    assert.equal(await node.evaluate((node) => node === document.getElementById(node.id)), true);
+    assert.equal(
+      await node.evaluate((element) => element === document.getElementById(element.id)),
+      true,
+    );
     assert.equal(await node.getAttribute("data-archives"), String(reset.id));
     assert.equal(await node.isVisible(), false);
     await page.locator(`[data-context="pi.reset"] summary`).click();
@@ -105,9 +110,10 @@ await test(
     assert.equal(await node.isVisible(), true);
     assert.equal(await prompt.inputValue(), "Retain this newer draft");
     assert.equal(
-      await page
-        .locator('[data-call-id="build"]')
-        .evaluate((node) => (node as HTMLDetailsElement).open),
+      await page.locator('[data-call-id="build"]').evaluate((element) => {
+        if (!(element instanceof HTMLDetailsElement)) throw new Error("Expected tool details");
+        return element.open;
+      }),
       true,
     );
     await page.reload();
@@ -147,7 +153,7 @@ await test(
         const values = [0, Date.UTC(2024, 2, 10, 9, 59), Date.UTC(2024, 6, 1, 13, 5, 11), NaN];
         node.setAttribute("timestamp", String(values[0]));
         document.body.append(node);
-        const results = values.map((value) => {
+        const measurements = values.map((value) => {
           node.setAttribute("timestamp", String(value));
           const date = new Date(value);
           return {
@@ -165,7 +171,7 @@ await test(
         document.body.append(node);
         const reconnected = { label: node.textContent, title: node.title };
         node.remove();
-        return { results, reconnected };
+        return { results: measurements, reconnected };
       });
       for (const result of results.results)
         assert.deepEqual(result.actual, result.expected, `${locale}, ${timezoneId}`);
@@ -550,7 +556,7 @@ await test(
     await second.root.waitForIdle(context);
     const message = (await readHistory(second.root))
       .flatMap((entry) => entry.model ?? [])
-      .find((message) => message.role === "user");
+      .find((candidateMessage) => candidateMessage.role === "user");
     assert(message && Array.isArray(message.content));
     assert.equal(message.content.filter((part) => part.type === "image").length, 1);
     assert.deepEqual(b.errors, []);
@@ -604,7 +610,10 @@ await test(
     await page.keyboard.press("Control+f");
     await page.locator("#search").fill("needle");
     await page.waitForFunction((id) => !document.getElementById(id)?.hidden, `entry-${first.id}`);
-    assert.equal(await node.evaluate((node) => node === document.getElementById(node.id)), true);
+    assert.equal(
+      await node.evaluate((element) => element === document.getElementById(element.id)),
+      true,
+    );
     assert.equal(await page.locator("#search-count").textContent(), "1/1");
     await page.locator("#search").press("Escape");
     assert.equal(await node.isVisible(), false);
@@ -983,9 +992,11 @@ async function streamServer(t: TestContext, sessions: Sessions, assets: string) 
       server.close((error) => (error ? reject(error) : resolve())),
     );
   });
+  const listeningAddress = server.address();
+  assert(listeningAddress && typeof listeningAddress !== "string");
   return {
     server,
-    base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    base: `http://127.0.0.1:${listeningAddress.port}`,
     streams,
     disconnect() {
       blocked = true;
@@ -1006,8 +1017,8 @@ function observeWatches(t: TestContext, session: Session) {
     if (conversation && !observed.has(conversation)) {
       observed.add(conversation);
       const watch = conversation.watch.bind(conversation);
-      t.mock.method(conversation, "watch", async (...args: Parameters<typeof watch>) => {
-        const observer = await watch(...args);
+      t.mock.method(conversation, "watch", async (...watchArgs: Parameters<typeof watch>) => {
+        const observer = await watch(...watchArgs);
         active.add(observer);
         void observer.closed.then(() => active.delete(observer));
         return observer;
@@ -1025,7 +1036,7 @@ await test(
     const f = await fixture(t);
     const session = await f.create();
     const first = await session.root.commit(async (tx) => {
-      const first = await tx.appendEntry(session.root.id, {
+      const firstEntry = await tx.appendEntry(session.root.id, {
         kind: "message",
         model: [{ role: "user", content: "Retain this entry", timestamp: 0 }],
       });
@@ -1034,7 +1045,7 @@ await test(
           kind: "message",
           model: [fauxAssistantMessage(`History paragraph ${i}`)],
         });
-      return first;
+      return firstEntry;
     }, context);
     const b = await browserFixture(t, f.sessions);
     const server = await streamServer(t, f.sessions, b.assets);
@@ -1090,7 +1101,10 @@ await test(
         () => document.querySelector("#connection")?.textContent === "Connected",
       );
       await waitFor(async () => watches.size === 1 && server.streams.size === 1);
-      assert.equal(await node.evaluate((node) => node === document.getElementById(node.id)), true);
+      assert.equal(
+        await node.evaluate((element) => element === document.getElementById(element.id)),
+        true,
+      );
       assert.equal(await page.locator("#prompt").inputValue(), "Newer local draft");
       assert.equal(
         await page.locator("#controls").getAttribute("data-state"),
@@ -1102,13 +1116,13 @@ await test(
       } else {
         assert.equal(await page.locator("#live article").count(), 1);
         assert.equal(
-          await page.locator("#conversation-scroll").evaluate((node) => node.scrollTop),
+          await page.locator("#conversation-scroll").evaluate((element) => element.scrollTop),
           0,
         );
       }
       const ids = await page
         .locator("#transcript [data-entry]")
-        .evaluateAll((nodes) => nodes.map((node) => node.id));
+        .evaluateAll((nodes) => nodes.map((element) => element.id));
       assert.equal(new Set(ids).size, ids.length);
     }
     await page.evaluate(() =>
@@ -1212,8 +1226,8 @@ await test(
       const page = await b.browserContext.newPage();
       page.on("pageerror", (error) => b.errors.push(error));
       page.setDefaultTimeout(10000);
-      await page.addInitScript((mode) => {
-        if (mode === "denied") {
+      await page.addInitScript((appearanceMode) => {
+        if (appearanceMode === "denied") {
           Storage.prototype.getItem = () => {
             throw new DOMException("Denied", "SecurityError");
           };
@@ -1239,8 +1253,8 @@ await test(
       await received.promise;
       await page.locator("#prompt").press("Escape");
       await page.locator("#prompt").fill("New draft");
-      const response = page.waitForResponse((response) =>
-        new URL(response.url()).pathname.endsWith("/completions"),
+      const response = page.waitForResponse((candidateResponse) =>
+        new URL(candidateResponse.url()).pathname.endsWith("/completions"),
       );
       release.resolve();
       await response;
@@ -1359,7 +1373,7 @@ await test(
     assert.equal(user.content.filter((part) => part.type === "text").length, 6);
     assert.deepEqual(user.content[1], { type: "text", text: 'File: "data0.json"\n\n{"ok":true}' });
     const entry = (await readHistory(session.root)).find(
-      (entry) => entry.kind === "app.attachments",
+      (candidateEntry) => candidateEntry.kind === "app.attachments",
     );
     assert(entry && entry.data && typeof entry.data === "object" && !Array.isArray(entry.data));
     assert(Array.isArray(entry.data.attachments));
@@ -1377,7 +1391,7 @@ await test(
       other = await f.create();
     await rename(other, "Other");
     const first = await session.root.commit(async (tx) => {
-      const first = await tx.appendEntry(session.root.id, {
+      const firstEntry = await tx.appendEntry(session.root.id, {
         kind: "message",
         model: [{ role: "user", content: "Selected history", timestamp: 0 }],
       });
@@ -1386,7 +1400,7 @@ await test(
           kind: "message",
           model: [fauxAssistantMessage(`Long history ${i}`)],
         });
-      return first;
+      return firstEntry;
     }, context);
     const failedTool = async (id: string) =>
       session.root.commit(async (tx) => {
@@ -1593,7 +1607,7 @@ await test(
     const session = await f.sessions.get(id);
     await session.root.waitForIdle(context);
     const entry = (await readHistory(session.root)).find(
-      (entry) => entry.kind === "app.attachments",
+      (candidateEntry) => candidateEntry.kind === "app.attachments",
     );
     assert(entry);
     assert.deepEqual(entry.data, {
@@ -1747,7 +1761,7 @@ await test(
           kind: "pi.user",
           model: [{ role: "user", content: `Earlier request ${i}`, timestamp: i }],
         });
-      const user = await tx.appendEntry(session.root.id, {
+      const userEntry = await tx.appendEntry(session.root.id, {
         kind: "pi.user",
         model: [
           { role: "user", content: "Explain the final build result.", timestamp: 1700000000000 },
@@ -1762,7 +1776,7 @@ await test(
             ),
           ],
         });
-      return user;
+      return userEntry;
     }, context);
     const atBottom = () =>
       page.waitForFunction(() => {
@@ -1770,9 +1784,9 @@ await test(
         return Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop) < 1;
       });
     const atMessage = (id: number) =>
-      page.waitForFunction((id) => {
+      page.waitForFunction((expectedId) => {
         const node = document.getElementById("conversation-scroll")!;
-        const message = document.getElementById(`entry-${id}`)!;
+        const message = document.getElementById(`entry-${expectedId}`)!;
         const offset = message.getBoundingClientRect().top - node.getBoundingClientRect().top;
         const margin = parseFloat(getComputedStyle(message).scrollMarginTop);
         return message.checkVisibility() && offset >= 0 && offset <= margin + 1;
@@ -1804,8 +1818,8 @@ await test(
         [latest, last, top].map((button) => button.boundingBox()),
       );
       assert(positions.every((box) => box !== null));
-      assert(positions[0]!.x + positions[0]!.width < positions[1]!.x);
-      assert(positions[1]!.x + positions[1]!.width < positions[2]!.x);
+      assert(positions[0].x + positions[0].width < positions[1].x);
+      assert(positions[1].x + positions[1].width < positions[2].x);
       if (b.screenshots)
         await page.screenshot({
           path: join(b.screenshots, `elm-conversation-navigation-${width}.png`),

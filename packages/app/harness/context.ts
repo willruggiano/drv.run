@@ -19,7 +19,7 @@ export function contextPaths(home: string, configHome: string, configDirs: strin
     ),
   ];
   return [
-    ...directories.reverse().map((directory) => posix.join(directory, "llms.txt")),
+    ...directories.toReversed().map((directory) => posix.join(directory, "llms.txt")),
     posix.join(posix.isAbsolute(configHome) ? configHome : posix.join(home, ".config"), "llms.txt"),
   ];
 }

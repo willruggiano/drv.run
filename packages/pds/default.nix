@@ -98,6 +98,17 @@ in
       runHook postInstall
     '';
     passthru = {
+      nodeModules = importNpmLock.buildNodeModules {
+        npmRoot = ./.;
+        inherit nodejs;
+        derivationArgs = {
+          inherit (finalAttrs) npmRebuildFlags;
+          preConfigure = ''
+            cp --no-preserve=mode ${./.npmrc} .npmrc
+          '';
+          preBuild = patchDependencies;
+        };
+      };
       bench = writeShellApplication {
         name = "pds-bench";
         runtimeInputs = [nodejs];

@@ -31,7 +31,7 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 function state(value: unknown): State {
-  const found = states.find((state) => state === value);
+  const found = states.find((currentState) => currentState === value);
   if (!found) throw new Error("Invalid authorization state.");
   return found;
 }
@@ -57,23 +57,23 @@ function status(value: unknown, provider: AuthorizationProvider): AuthorizationS
     throw new Error("Invalid OpenAI identity.");
   let device: AuthorizationStatus["device"] = null;
   if (data.device !== null) {
-    const value = object(data.device);
+    const deviceInfo = object(data.device);
     const verificationUri =
       provider === "github"
         ? "https://github.com/login/device"
         : "https://auth.openai.com/codex/device";
     if (
-      typeof value.user_code !== "string" ||
+      typeof deviceInfo.user_code !== "string" ||
       !(provider === "github" ? /^[A-Z0-9]{4}-[A-Z0-9]{4}$/ : /^[A-Za-z0-9-]{4,32}$/).test(
-        value.user_code,
+        deviceInfo.user_code,
       ) ||
-      value.verification_uri !== verificationUri
+      deviceInfo.verification_uri !== verificationUri
     )
       throw new Error("Invalid device authorization.");
     device = {
-      userCode: value.user_code,
+      userCode: deviceInfo.user_code,
       verificationUri,
-      expiresAt: timestamp(value.expires_at),
+      expiresAt: timestamp(deviceInfo.expires_at),
     };
   }
   return {
@@ -198,9 +198,9 @@ export function hostModels(authorization: ProxyAuthorization) {
               apiKey: {
                 name: "Host OpenAI OAuth",
                 async check({ signal }) {
-                  const status = await authorization.status(signal, "openai");
-                  return status.state === "usable" ||
-                    (status.state === "temporarily-unavailable" && status.accountId)
+                  const loginStatus = await authorization.status(signal, "openai");
+                  return loginStatus.state === "usable" ||
+                    (loginStatus.state === "temporarily-unavailable" && loginStatus.accountId)
                     ? { source: "Host OpenAI OAuth", type: "oauth" }
                     : undefined;
                 },

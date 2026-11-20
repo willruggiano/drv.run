@@ -149,7 +149,7 @@ export function describeContext(
   // no matching contribution and intentionally receive no source entry.
   const sources = new Map<Message, ContextMessage["source"]>();
   projection.contributions.forEach((messages, index) => {
-    const entry = projection.entries[index]!;
+    const entry = projection.entries[index];
     for (const message of messages) sources.set(message, { entry: entry.id, kind: entry.kind });
   });
   const roles = new Map<Message["role"], number>();
@@ -181,7 +181,7 @@ export function describeContext(
     policy,
     blockingAt: window === null ? null : window - policy.reserveTokens,
     backgroundAt: window === null ? null : window - policy.reserveTokens - policy.backgroundTokens,
-    roles: Array.from(roles, ([role, tokens]) => ({ role, tokens })),
+    roles: Array.from(roles, ([role, roleTokens]) => ({ role, tokens: roleTokens })),
     messages,
   };
 }

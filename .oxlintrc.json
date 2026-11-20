@@ -1,0 +1,11 @@
+{
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "ignorePatterns": ["packages/app/**"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "options": {
+    "typeAware": true
+  }
+}

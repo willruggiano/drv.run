@@ -73,15 +73,15 @@ await test("session tree observes sibling commits and paginated history without 
   const f = await fixture(t);
   const session = await f.create();
   const entries = await session.root.commit(async (tx) => {
-    const entries = [];
+    const listedEntries = [];
     for (let index = 0; index < 270; index++)
-      entries.push(
+      listedEntries.push(
         await tx.appendEntry(session.root.id, {
           kind: "pi.user",
           model: [{ role: "user", content: `Entry ${index}`, timestamp: index }],
         }),
       );
-    return entries;
+    return listedEntries;
   }, context);
   const tree = new SessionTree(session);
   const changes: boolean[] = [];

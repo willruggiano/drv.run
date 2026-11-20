@@ -544,9 +544,10 @@ export class Activity {
         "DELETE FROM pending WHERE activity IN (SELECT id FROM activity WHERE delivery='expired')",
       );
       const last = this.db.prepare("SELECT value FROM policy WHERE key='lastPush'").get();
-      if (last && now - number(last.value) < this.options.intervalMs / this.options.burst) return;
+      if (last && now - number(last.value) < this.options.intervalMs / this.options.burst)
+        return undefined;
       const row = this.db.prepare("SELECT activity FROM pending ORDER BY activity LIMIT 1").get();
-      if (!row) return;
+      if (!row) return undefined;
       this.db
         .prepare(
           "INSERT INTO policy VALUES('lastPush',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",

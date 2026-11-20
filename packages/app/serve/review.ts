@@ -76,8 +76,8 @@ export async function endReview(session: Session, review: Conversation, context:
     context,
   );
   await original.commit(async (tx) => {
-    const state = await tx.doc(Review, original.id);
-    if (state.active === review.id) delete state.active;
+    const currentState = await tx.doc(Review, original.id);
+    if (currentState.active === review.id) delete currentState.active;
   }, context);
   return { id: original.id };
 }

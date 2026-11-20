@@ -44,7 +44,7 @@ await test("native Pi completion reaches the durable inbox without a terminal or
   assert.equal(message.body, "Original assistant message\nSecond line");
   assert.equal(message.url, `/sessions/${session.id}/conversations/${session.root.id}`);
   assert.equal(activity.history()[0].delivery, "pending");
-  await f.reopen({ onSession: (session) => notifications.attach(session) });
+  await f.reopen({ onSession: (openedSession) => notifications.attach(openedSession) });
   await f.sessions.get(session.id);
   assert.equal(activity.history().length, 1, "snapshot on reopen must not alert again");
   assert.equal(activity.sources()[0].available, true);
@@ -311,7 +311,7 @@ await test("upgrade supersedes pending per-generation alerts without losing thei
     type: "status",
     record: { id: `${session.root.id}/123`, state: "done", app: "pi" },
   });
-  await f.reopen({ onSession: (session) => notifications.attach(session) });
+  await f.reopen({ onSession: (openedSession) => notifications.attach(openedSession) });
   await f.sessions.get(session.id);
   assert.equal(activity.history().length, 1);
   assert.equal(activity.history()[0].delivery, "superseded");

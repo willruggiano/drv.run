@@ -168,7 +168,7 @@ await test("recorder keeps a publication atomic and fails on overflow or use aft
   assert.equal(recorder.frames.length, 1);
   const [frame] = recorder.frames;
   assert(frame.type === "commit");
-  assert.deepEqual(frame.changes.map((change) => change.kind).sort(), [
+  assert.deepEqual(frame.changes.map((change) => change.kind).toSorted(), [
     "app.presentation",
     "pi.live",
   ]);

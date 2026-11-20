@@ -10,7 +10,7 @@ import type { Patch } from "../src/watch.ts";
 import { fixture, form } from "./fixtures.ts";
 
 await test("benchmark selects the largest stored conversation and builds all workloads without mutating the database", async (t) => {
-  const { app, directory, database, selection } = await fixture(t);
+  const { app, database, selection } = await fixture(t);
   const small = await app.createConversation(form(selection));
   const large = await app.createConversation(form(selection));
   const code = "```ts\nconst answer = 42;\n```";

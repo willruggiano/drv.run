@@ -117,7 +117,7 @@ for (const provider of ["github", "openai"] as const)
         true,
       );
       resume.resolve();
-      await waitFor(async () => settings.read().values.hideThinkingBlock === true);
+      await waitFor(async () => settings.read().values.hideThinkingBlock);
       await page.locator('#settings form[data-autosave][aria-busy="false"]').waitFor();
       assert.equal(await page.locator("#settings form[data-autosave] output").count(), 0);
       await page

@@ -221,17 +221,17 @@ export async function launch(directory: string, signal: AbortSignal) {
         () => reject(new Error(`Chromium startup timeout: ${stderr}`)),
         10_000,
       );
-      const finish = (error?: Error, url?: string) => {
+      const finish = (error?: Error, endpoint?: string) => {
         clearTimeout(timer);
         if (error) reject(error);
-        else if (url) resolve(url);
+        else if (endpoint) resolve(endpoint);
       };
       child.once("error", (error) => finish(error));
       child.once("exit", () => finish(new Error(`Chromium exited: ${stderr}`)));
-      child.stderr!.on("data", (chunk: Buffer) => {
+      child.stderr.on("data", (chunk: Buffer) => {
         stderr = (stderr + chunk.toString()).slice(-8192);
-        const url = /DevTools listening on (ws:\/\/[^\s]+)/.exec(stderr)?.[1];
-        if (url) finish(undefined, url);
+        const endpoint = /DevTools listening on (ws:\/\/[^\s]+)/.exec(stderr)?.[1];
+        if (endpoint) finish(undefined, endpoint);
       });
     });
     cdp = await CDP.connect(url);

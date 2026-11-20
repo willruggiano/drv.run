@@ -381,8 +381,8 @@ await test(
     await attachment.getByRole("link", { name: "Open in new tab" }).click();
     const imageTab = await openedImage;
     await imageTab.waitForFunction(() => {
-      const image = document.querySelector("img");
-      return image?.complete && image.naturalWidth > 0;
+      const imageElement = document.querySelector("img");
+      return imageElement?.complete && imageElement.naturalWidth > 0;
     });
     await imageTab.close();
     await attachment.getByRole("button", { name: "Collapse Attachment" }).click();
@@ -446,9 +446,9 @@ await test(
     await writeFile(join(f.workspace, sourceName), sourceLines.join("\n"));
     const text = `![Screenshot](shot%20%231%3F.png)\n\n[Source:50](${encodeURIComponent(sourceName)}#L50)\n\n[Docs](https://example.com/docs)`;
     const assistant = fauxAssistantMessage("");
-    const liveMessage = (text: string) => ({
+    const liveMessage = (contentText: string) => ({
       role: "assistant" as const,
-      content: [{ type: "text" as const, text }],
+      content: [{ type: "text" as const, text: contentText }],
       api: assistant.api,
       provider: assistant.provider,
       model: assistant.model,
@@ -472,15 +472,16 @@ await test(
       };
     }, context);
     await page.waitForFunction(
-      (text) => document.querySelector("#live .text")?.getAttribute("data-source") === text,
+      (contentText) =>
+        document.querySelector("#live .text")?.getAttribute("data-source") === contentText,
       text,
     );
     assert.equal(await page.locator("#live img").count(), 0);
     assert.deepEqual(fileRequests, []);
     await settings.update({ values: { "terminal.showImages": true } }, f.sessions);
     await page.waitForFunction(() => {
-      const image = document.querySelector<HTMLImageElement>("#live img.transcript-image");
-      return image?.complete && image.naturalWidth > 0;
+      const imageElement = document.querySelector<HTMLImageElement>("#live img.transcript-image");
+      return imageElement?.complete && imageElement.naturalWidth > 0;
     });
     await session.root.commit(async (tx) => {
       delete (await tx.doc(LiveDoc, session.root.id)).generation;
@@ -501,20 +502,22 @@ await test(
     ]) {
       await page.setViewportSize(viewport);
       await page.waitForFunction(() => {
-        const image = document.querySelector<HTMLImageElement>("#transcript img.transcript-image");
-        return image?.complete && image.naturalWidth > 0;
+        const imageElement = document.querySelector<HTMLImageElement>(
+          "#transcript img.transcript-image",
+        );
+        return imageElement?.complete && imageElement.naturalWidth > 0;
       });
-      const imageElement = page.locator("#transcript img.transcript-image");
-      assert.equal(await imageElement.getAttribute("alt"), "Screenshot");
-      assert.equal(await imageElement.getAttribute("loading"), "lazy");
-      assert.equal(await imageElement.getAttribute("decoding"), "async");
+      const renderedImage = page.locator("#transcript img.transcript-image");
+      assert.equal(await renderedImage.getAttribute("alt"), "Screenshot");
+      assert.equal(await renderedImage.getAttribute("loading"), "lazy");
+      assert.equal(await renderedImage.getAttribute("decoding"), "async");
       const imagePreview = page.locator("#transcript elm-file[image]");
       const openedImage = page.waitForEvent("popup");
       await imagePreview.getByRole("link", { name: "Open in new tab" }).click();
       const imageTab = await openedImage;
       await imageTab.waitForFunction(() => {
-        const image = document.querySelector("img");
-        return image?.complete && image.naturalWidth > 0;
+        const imageElement = document.querySelector("img");
+        return imageElement?.complete && imageElement.naturalWidth > 0;
       });
       await imageTab.close();
       await imagePreview.getByRole("button", { name: "Collapse Screenshot" }).click();
@@ -652,8 +655,8 @@ await test(
     assert.deepEqual(requests, []);
     await page.locator("#transcript img").scrollIntoViewIfNeeded();
     await page.waitForFunction(() => {
-      const image = document.querySelector<HTMLImageElement>("#transcript img");
-      return image?.complete && image.naturalWidth > 0;
+      const imageElement = document.querySelector<HTMLImageElement>("#transcript img");
+      return imageElement?.complete && imageElement.naturalWidth > 0;
     });
     assert.equal(requests.length, 1);
     assert.deepEqual(b.errors, []);
@@ -945,7 +948,8 @@ await test(
         };
       }, context);
       await page.waitForFunction(
-        (text) => document.querySelector("#live .text")?.getAttribute("data-source") === text,
+        (contentText) =>
+          document.querySelector("#live .text")?.getAttribute("data-source") === contentText,
         text,
       );
     }

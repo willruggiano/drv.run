@@ -40,15 +40,17 @@ export function completionToken(text: string, caret: number): CompletionToken | 
       end: text.length,
     };
   const match = /(?:^|\s)@("(?:\\.|[^"\\])*|[^\s"@]*)$/.exec(before);
-  if (!match) return;
+  if (!match) return undefined;
   const raw = match[1];
   let query = raw;
   let rest: string;
   if (raw.startsWith('"')) {
     try {
-      query = JSON.parse(`${raw}"`) as string;
+      const decoded: unknown = JSON.parse(`${raw}"`);
+      if (typeof decoded !== "string") return undefined;
+      query = decoded;
     } catch {
-      return;
+      return undefined;
     }
     rest = text.slice(caret).match(/^(?:\\.|[^"\\])*(?:"|\\?$)/)![0];
   } else rest = text.slice(caret).match(/^[^\s"]*/)![0];

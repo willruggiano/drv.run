@@ -71,7 +71,7 @@ export class SessionTree {
     for (const id of dirty) {
       // Read the full fork-aware history once; subsequent reads only fetch newer entries.
       const own = [...this.records.values()].filter((record) => record.conversationId === id);
-      const last = own.sort((a, b) => b.id - a.id)[0]?.id;
+      const last = own.toSorted((a, b) => b.id - a.id)[0]?.id;
       let cursor: Cursor | undefined;
       do {
         const page = await this.session.harness.commit(
@@ -89,7 +89,7 @@ export class SessionTree {
     }
     const latest = new Map<ConversationId, number>();
     const nodes: TreeNode[] = [];
-    for (const record of [...this.records.values()].sort((a, b) => a.id - b.id)) {
+    for (const record of [...this.records.values()].toSorted((a, b) => a.id - b.id)) {
       const conversation = this.conversations.get(record.conversationId);
       assert(conversation, "Entry conversation must exist");
       const parent = latest.get(record.conversationId) ?? conversation.parent?.at ?? null;
@@ -114,6 +114,10 @@ export class SessionTree {
                         return "[image]";
                       case "toolCall":
                         return `[${part.name}: ${JSON.stringify(part.arguments)}]`;
+                      default:
+                        throw new Error("Unsupported message content", {
+                          cause: part satisfies never,
+                        });
                     }
                   })
                   .join(" ");

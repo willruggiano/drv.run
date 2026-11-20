@@ -65,8 +65,20 @@ async function peer(t: TestContext, path: string, mode = "cli", env: Record<stri
     if (child.exitCode === null) child.kill();
     await exited;
   });
-  const [message] = await once(child, "message", { signal: AbortSignal.timeout(10_000) });
-  return { child, message: message as { state: string; data?: unknown }, exited };
+  const [message]: unknown[] = await once(child, "message", {
+    signal: AbortSignal.timeout(10_000),
+  });
+  assert(
+    message &&
+      typeof message === "object" &&
+      "state" in message &&
+      typeof message.state === "string",
+  );
+  return {
+    child,
+    message: { state: message.state, data: "data" in message ? message.data : undefined },
+    exited,
+  };
 }
 
 async function fixture(t: TestContext, filename = "auth.json") {
@@ -103,20 +115,22 @@ await test("the complete native provider catalog can resolve shared-file availab
   assert(available.some((model) => model.provider === "openai"));
 });
 
+const credential = (generation: number) => ({
+  type: "oauth",
+  access: `header.${Buffer.from(
+    JSON.stringify({
+      "https://api.openai.com/auth": { chatgpt_account_id: "account-me" },
+      generation,
+    }),
+  ).toString("base64url")}.signature`,
+  refresh: "fixture-refresh",
+  expires: Date.now() + 3_600_000,
+  accountId: "account-me",
+});
+
 await test("native Codex inference observes CLI rotations and logout without holding storage during inference", async (t) => {
   const f = await fixture(t);
-  const credential = (generation: number) => ({
-    type: "oauth",
-    access: `header.${Buffer.from(
-      JSON.stringify({
-        "https://api.openai.com/auth": { chatgpt_account_id: "account-me" },
-        generation,
-      }),
-    ).toString("base64url")}.signature`,
-    refresh: "fixture-refresh",
-    expires: Date.now() + 3_600_000,
-    accountId: "account-me",
-  });
+
   await f.save({ "openai-codex": credential(1) });
   const model = (await f.models.getAvailable("openai-codex"))[0];
   assert(model);

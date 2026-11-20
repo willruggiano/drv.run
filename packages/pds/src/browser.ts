@@ -1,4 +1,16 @@
 // Presentation only. Conversation state and rendering stay on the server.
+
+// Datastar 1.0.5's fetch event contract; the pinned bundle has no TypeScript declarations.
+declare global {
+  interface DocumentEventMap {
+    "datastar-fetch": CustomEvent<{
+      type: string;
+      el: Element;
+      argsRaw: Record<string, string>;
+    }>;
+  }
+}
+
 const stream = document.getElementById("stream");
 const latest = document.querySelector<HTMLButtonElement>("#latest");
 if (stream && latest) {
@@ -32,7 +44,7 @@ if (stream && latest) {
   });
 }
 document.addEventListener("datastar-fetch", (event) => {
-  const { type, el } = (event as CustomEvent<{ type: string; el: Element }>).detail;
+  const { type, el } = event.detail;
   if (el === stream && ["error", "retrying", "retries-failed", "finished"].includes(type)) {
     const connection = document.getElementById("connection")!;
     connection.classList.remove("sr-only");
@@ -56,7 +68,7 @@ if (attachments && previews) {
     previews.replaceChildren();
     Array.from(attachments.files!).forEach((file, index) => {
       const template = document.querySelector<HTMLTemplateElement>("#attachment-preview")!;
-      const fragment = template.content.cloneNode(true) as DocumentFragment;
+      const fragment = document.importNode(template.content, true);
       const button = fragment.querySelector("button")!;
       button.title = `Remove ${file.name}`;
       button.setAttribute("aria-label", `Remove ${file.name}`);

@@ -275,7 +275,7 @@ async function fixture(t: TestContext) {
   bus = dbus.sessionBus({ busAddress: address, authMethods: ["EXTERNAL"] });
   bus.on("error", (error: unknown) => errors.push(error));
   const call = async (member: string, signature = "", body: unknown[] = []) => {
-    const reply = await bus!.call(
+    const reply = await bus.call(
       new dbus.Message({
         destination: "org.freedesktop.Notifications",
         path: notificationPath,
@@ -478,12 +478,13 @@ await test("D-Bus methods replace IDs, reject controls, ignore unsupported hints
   assert.equal(f.service.outbox.active().length, 0);
 });
 
+const read = async (chunks: Buffer[]) => {
+  const result: unknown[] = [];
+  for await (const value of frames(Duplex.from(chunks))) result.push(value);
+  return result;
+};
+
 await test("wire handles split frames and rejects oversize, truncated and invalid UTF-8 input", async () => {
-  const read = async (chunks: Buffer[]) => {
-    const result: unknown[] = [];
-    for await (const value of frames(Duplex.from(chunks))) result.push(value);
-    return result;
-  };
   assert.deepEqual(await read([Buffer.from('{"v":'), Buffer.from("1}\n{}\n")]), [{ v: 1 }, {}]);
   await assert.rejects(read([Buffer.alloc(16385, 65)]), Error);
   await assert.rejects(read([Buffer.from('{"v":1}')]), Error);

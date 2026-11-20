@@ -268,17 +268,19 @@ async function openSession(options: {
     },
     close() {
       closing ??= (async () => {
+        const errors: unknown[] = [];
         try {
           await harness.close(context);
-        } finally {
-          const results = await Promise.allSettled(
-            [...environments.values()].map((env) => env.cleanup(context)),
-          );
-          const errors = results.flatMap((result) =>
-            result.status === "rejected" ? [result.reason] : [],
-          );
-          if (errors.length) throw new AggregateError(errors, "Environment cleanup failed");
+        } catch (error) {
+          errors.push(error);
         }
+        const results = await Promise.allSettled(
+          [...environments.values()].map((env) => env.cleanup(context)),
+        );
+        for (const result of results) {
+          if (result.status === "rejected") errors.push(result.reason);
+        }
+        if (errors.length) throw new AggregateError(errors, "Session cleanup failed");
       })();
       return closing;
     },
@@ -365,7 +367,8 @@ async function initialOptions(options: Options, form: FormData) {
   if (model) agent = { ...agent, model: { provider: model.provider, modelId: model.id } };
   if (form.has("thinking")) {
     const value = field(form, "thinking");
-    const level = model && getSupportedThinkingLevels(model).find((level) => level === value);
+    const level =
+      model && getSupportedThinkingLevels(model).find((candidateLevel) => candidateLevel === value);
     if (!level) throw new InvalidForm("Select a model and a supported thinking level.");
     agent = { ...agent, thinkingLevel: level };
   }
