@@ -4,26 +4,13 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute, join, posix } from "node:path";
 import * as Value from "typebox/value";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { getSupportedThinkingLevels, type Models } from "@earendil-works/pi-ai/models";
-import {
-  configure,
-  AgentDoc,
-  defineDoc,
-  type AgentChange,
-  type ConversationCreateOptions,
-  type Conversation,
-  type ConversationId,
-  type Harness,
-  type HarnessSettings,
-  type ModelRef,
-  type InputSubmissionDraft,
-  type Tx,
-  type Storage,
-  type SubmissionId,
-  type UserInput,
-} from "@earendil-works/pi-durable";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
+import type * as A from "@earendil-works/pi-ai";
+import { configure, AgentDoc, defineDoc } from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import type * as DN from "@earendil-works/pi-durable/env/node";
 import { Env, openHarness, SshExecutionEnv } from "./harness/index.ts";
 import type { EnvTarget } from "./harness/env.ts";
 import { SessionId, SessionKey, decode } from "./identity.ts";
@@ -88,15 +75,15 @@ export async function discoverEnvironments(directory: string): Promise<Environme
 
 async function openSession(options: {
   id: SessionId;
-  storage: Storage;
-  models: Models;
+  storage: D.Storage;
+  models: A.Models;
   environments: () => Promise<Environment[]>;
   cwd: string;
-  settings?: HarnessSettings;
+  settings?: D.HarnessSettings;
   parallelApiKeyFile?: string;
 }): Promise<Session> {
-  const environments = new Map<string, NodeExecutionEnv | SshExecutionEnv>();
-  const harness: Harness = await openHarness(
+  const environments = new Map<string, DN.NodeExecutionEnv | SshExecutionEnv>();
+  const harness: D.Harness = await openHarness(
     options.storage,
     {
       models: options.models,
@@ -147,7 +134,7 @@ async function openSession(options: {
     },
     async createConversation(
       form: FormData,
-      ownership: ConversationCreateOptions["ownership"] = { kind: "ownerless" },
+      ownership: D.ConversationCreateOptions["ownership"] = { kind: "ownerless" },
     ) {
       const initial = await initialOptions(options, form);
       return harness.createConversation(
@@ -164,7 +151,7 @@ async function openSession(options: {
     models: options.models,
     environments: options.environments,
     cwd: options.cwd,
-    async conversation(id: ConversationId) {
+    async conversation(id: D.ConversationId) {
       return harness.conversation(id, context);
     },
     async list() {
@@ -183,7 +170,7 @@ async function openSession(options: {
         }),
       );
     },
-    async configure(conversation: Conversation, form: FormData) {
+    async configure(conversation: D.Conversation, form: FormData) {
       const environment = form.has("environment")
         ? (await options.environments()).find((item) => item.id === field(form, "environment"))
         : undefined;
@@ -219,7 +206,7 @@ async function openSession(options: {
         }
       }, context);
     },
-    async submit(conversation: Conversation, form: FormData) {
+    async submit(conversation: D.Conversation, form: FormData) {
       const text = field(form, "message");
       const files = uploads(form);
       return submitInput(
@@ -236,7 +223,7 @@ async function openSession(options: {
         text || files[0]!.name,
       );
     },
-    async send(conversation: Conversation, form: FormData) {
+    async send(conversation: D.Conversation, form: FormData) {
       const text = field(form, "message").trim();
       const files = uploads(form);
       if (text.startsWith("/")) {
@@ -311,24 +298,24 @@ async function openSession(options: {
 
 export interface Session {
   readonly id: SessionId;
-  harness: Harness;
+  harness: D.Harness;
   readonly available: boolean;
-  root(form: FormData): Promise<Conversation>;
+  root(form: FormData): Promise<D.Conversation>;
   createConversation(
     form: FormData,
-    ownership?: ConversationCreateOptions["ownership"],
-  ): Promise<Conversation>;
-  models: Models;
+    ownership?: D.ConversationCreateOptions["ownership"],
+  ): Promise<D.Conversation>;
+  models: A.Models;
   environments(): Promise<Environment[]>;
   cwd: string;
-  conversation(id: ConversationId): Promise<Conversation | undefined>;
-  list(): Promise<{ id: ConversationId; title: string; createdAt?: number }[]>;
-  configure(conversation: Conversation, form: FormData): Promise<void>;
-  submit(conversation: Conversation, form: FormData): Promise<SubmissionId>;
+  conversation(id: D.ConversationId): Promise<D.Conversation | undefined>;
+  list(): Promise<{ id: D.ConversationId; title: string; createdAt?: number }[]>;
+  configure(conversation: D.Conversation, form: FormData): Promise<void>;
+  submit(conversation: D.Conversation, form: FormData): Promise<D.SubmissionId>;
   send(
-    conversation: Conversation,
+    conversation: D.Conversation,
     form: FormData,
-  ): Promise<Conversation | SubmissionId | undefined>;
+  ): Promise<D.Conversation | D.SubmissionId | undefined>;
   close(): Promise<void>;
 }
 export const modelKey = (model: { provider: string; id: string }) =>
@@ -347,9 +334,9 @@ const uploads = (form: FormData) =>
 export async function attachments(
   text: string,
   files: File[],
-): Promise<Exclude<UserInput, string>> {
+): Promise<Exclude<D.UserInput, string>> {
   if (!text && !files.length) throw new InvalidForm("Enter a message or attach a file.");
-  const content: Exclude<UserInput, string> = text ? [{ type: "text", text }] : [];
+  const content: Exclude<D.UserInput, string> = text ? [{ type: "text", text }] : [];
   for (const file of files) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type)) {
@@ -381,7 +368,7 @@ export class SessionUnavailable extends Error {}
 type Options = Omit<Parameters<typeof openSession>[0], "storage" | "id">;
 
 async function initialOptions(options: Options, form: FormData) {
-  let agent: AgentChange = {};
+  let agent: D.AgentChange = {};
   const model = form.has("model")
     ? options.models.getModels().find((candidate) => modelKey(candidate) === field(form, "model"))
     : undefined;
@@ -410,7 +397,7 @@ export interface Application extends Options {
   open(id?: SessionId): Promise<Session>;
   get(id: SessionId): Promise<Session | undefined>;
   list(): Promise<{ id: SessionId; status: "open" | "unavailable" }[]>;
-  compose(form: FormData): Promise<{ sessionId: SessionId; conversation: Conversation }>;
+  compose(form: FormData): Promise<{ sessionId: SessionId; conversation: D.Conversation }>;
   close(): Promise<void>;
 }
 
@@ -571,7 +558,7 @@ export async function openApplication(
   };
 }
 
-async function initialize(tx: Tx, id: ConversationId, environment?: Environment) {
+async function initialize(tx: D.Tx, id: D.ConversationId, environment?: Environment) {
   await tx.doc(ConversationMetadata, id);
   if (environment) {
     const draft = await tx.doc(Env, id);
@@ -580,7 +567,7 @@ async function initialize(tx: Tx, id: ConversationId, environment?: Environment)
   }
 }
 
-async function input(models: Models, text: string, files: File[], model: ModelRef | undefined) {
+async function input(models: A.Models, text: string, files: File[], model: D.ModelRef | undefined) {
   const content = await attachments(text, files);
   if (
     content.some((part) => part.type === "image") &&
@@ -590,7 +577,11 @@ async function input(models: Models, text: string, files: File[], model: ModelRe
   return content;
 }
 
-async function submitInput(conversation: Conversation, draft: InputSubmissionDraft, title: string) {
+async function submitInput(
+  conversation: D.Conversation,
+  draft: D.InputSubmissionDraft,
+  title: string,
+) {
   return conversation.commit(async (tx) => {
     const id = await conversation.submit(tx, draft);
     const info = await tx.doc(ConversationMetadata, conversation.id);

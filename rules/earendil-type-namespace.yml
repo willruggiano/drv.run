@@ -1,0 +1,25 @@
+id: earendil-type-namespace
+language: TypeScript
+severity: error
+message: Use a namespace type import for @earendil-works types; keep runtime value imports separate.
+ignores:
+  - packages/app/**
+rule:
+  kind: import_statement
+  has:
+    field: source
+    regex: ^['"]@earendil-works/
+  any:
+    - all:
+        - pattern: import type $CLAUSE from $MODULE
+        - not:
+            pattern: import type * as $NAMESPACE from $MODULE
+    - has:
+        stopBy: end
+        any:
+          - pattern:
+              context: import { type $TYPE } from "module"
+              selector: import_specifier
+          - pattern:
+              context: import { type $TYPE as $ALIAS } from "module"
+              selector: import_specifier

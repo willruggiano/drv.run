@@ -4,16 +4,16 @@ import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 import { copyJson } from "@earendil-works/chord/json";
-import type { Op } from "@earendil-works/chord/delta";
-import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
-import type { ConversationRecord, EntryRecord } from "@earendil-works/pi-durable";
+import type * as Delta from "@earendil-works/chord/delta";
+import type * as A from "@earendil-works/pi-ai";
+import type * as D from "@earendil-works/pi-durable";
 import hljs from "highlight.js";
 import { regions } from "../src/render.ts";
 import { patch } from "../src/server.ts";
 import { Projection, type Patch } from "../src/watch.ts";
 
 type State = Parameters<Projection["update"]>[0];
-type Frame = { state: State; ops: readonly Op[] };
+type Frame = { state: State; ops: readonly Delta.Op[] };
 const samples = 10;
 const chunks = 16;
 
@@ -36,14 +36,14 @@ function load(path: string, conversation?: number) {
     const row = database.prepare("SELECT record FROM conversations WHERE id = ?").get(selected);
     assert(row && typeof row.record === "string", `Conversation ${selected} not found`);
     // The database stores Durable's JSON records; no app-specific metadata is required.
-    const record = JSON.parse(row.record) as ConversationRecord;
+    const record = JSON.parse(row.record) as D.ConversationRecord;
     assert.equal(record.id, selected);
     const entries = database
       .prepare("SELECT record FROM entries WHERE conversation_id = ? ORDER BY id")
       .all(selected)
       .map((row) => {
         assert(typeof row.record === "string");
-        const entry = JSON.parse(row.record) as EntryRecord;
+        const entry = JSON.parse(row.record) as D.EntryRecord;
         assert.equal(entry.conversationId, selected);
         return entry;
       });
@@ -53,7 +53,7 @@ function load(path: string, conversation?: number) {
   }
 }
 
-function prepare(record: ConversationRecord, entries: readonly EntryRecord[]) {
+function prepare(record: D.ConversationRecord, entries: readonly D.EntryRecord[]) {
   const empty: State = {
     view: { conversation: record, entries: [], docs: {} },
     head: null,
@@ -64,7 +64,9 @@ function prepare(record: ConversationRecord, entries: readonly EntryRecord[]) {
   for (const entry of entries) {
     let window = [...state.view.entries, entry];
     let before = state.view.before;
-    const ops: Op[] = [["p", ["view", "entries"], state.view.entries.length, 0, [copyJson(entry)]]];
+    const ops: Delta.Op[] = [
+      ["p", ["view", "entries"], state.view.entries.length, 0, [copyJson(entry)]],
+    ];
     if (window.length > 100) {
       const drop = window.length - 50;
       before = window[drop - 1]!.id;
@@ -167,9 +169,9 @@ export function suite(path: string, conversation?: number) {
     });
 
   // Deterministic synthetic progress from the longest recorded text response/output.
-  let response: { message: AssistantMessage; index: number; length: number } | undefined;
-  const calls = new Map<string, { call: ToolCall; index: number }>();
-  let output: { call: ToolCall; index: number; text: string } | undefined;
+  let response: { message: A.AssistantMessage; index: number; length: number } | undefined;
+  const calls = new Map<string, { call: A.ToolCall; index: number }>();
+  let output: { call: A.ToolCall; index: number; text: string } | undefined;
   for (const [index, entry] of entries.entries())
     for (const message of entry.model ?? []) {
       if (message.role === "assistant") {

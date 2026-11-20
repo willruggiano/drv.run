@@ -16,12 +16,17 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
-import type { OAuthCredential } from "@earendil-works/pi-ai";
+import type * as A from "@earendil-works/pi-ai";
 import { hostModels } from "../src/auth.ts";
 
 const noAmbient = { env: async () => undefined, fileExists: async () => false };
-const expired: OAuthCredential = { type: "oauth", access: "old", refresh: "rotate-me", expires: 0 };
-const fresh = (): OAuthCredential => ({
+const expired: A.OAuthCredential = {
+  type: "oauth",
+  access: "old",
+  refresh: "rotate-me",
+  expires: 0,
+};
+const fresh = (): A.OAuthCredential => ({
   type: "oauth",
   access: "new",
   refresh: "rotated",
@@ -31,7 +36,7 @@ const fresh = (): OAuthCredential => ({
 
 function oauth(
   models: ReturnType<typeof hostModels>,
-  refresh: (current: OAuthCredential, signal: AbortSignal) => Promise<OAuthCredential>,
+  refresh: (current: A.OAuthCredential, signal: AbortSignal) => Promise<A.OAuthCredential>,
 ) {
   const provider = models.getProvider("openai");
   assert(provider);
@@ -343,7 +348,7 @@ await test("caller cancellation does not discard a rotating refresh and concurre
   const f = await fixture(t);
   await f.save({ openai: expired });
   const entered = Promise.withResolvers<AbortSignal>();
-  const finish = Promise.withResolvers<OAuthCredential>();
+  const finish = Promise.withResolvers<A.OAuthCredential>();
   const replacement = fresh();
   t.after(() => finish.resolve(replacement));
   oauth(f.models, async (_current, signal) => {
@@ -372,7 +377,7 @@ await test("logout serializes behind refresh and cannot be undone by its late re
   const f = await fixture(t);
   await f.save({ openai: expired });
   const entered = Promise.withResolvers<void>();
-  const finish = Promise.withResolvers<OAuthCredential>();
+  const finish = Promise.withResolvers<A.OAuthCredential>();
   t.after(() => finish.resolve(fresh()));
   oauth(f.models, async () => {
     entered.resolve();
@@ -424,7 +429,7 @@ await test("rotating refresh excludes a CLI-protocol writer through a symlink al
   await f.save({ openai: expired });
   await symlink(f.path, alias);
   const entered = Promise.withResolvers<void>();
-  const finish = Promise.withResolvers<OAuthCredential>();
+  const finish = Promise.withResolvers<A.OAuthCredential>();
   t.after(() => finish.resolve(fresh()));
   oauth(f.models, async (current) => {
     assert.deepEqual(current, expired);

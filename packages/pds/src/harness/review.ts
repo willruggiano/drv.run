@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { posix } from "node:path";
-import type { Context } from "@earendil-works/chord/context";
+import type * as C from "@earendil-works/chord/context";
 import {
   AgentDoc,
   defineDoc,
@@ -9,17 +9,14 @@ import {
   hook,
   section,
   wrapTool,
-  type ConversationId,
-  type HarnessOptions,
-  type ToolExecutionApi,
-  type ToolRegistration,
 } from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 
 export const Review = defineDoc<{
-  original?: ConversationId;
-  active?: ConversationId;
+  original?: D.ConversationId;
+  active?: D.ConversationId;
 }>({
   kind: "app.review",
   version: 1,
@@ -35,8 +32,8 @@ const INSTRUCTION =
   `If there are no findings, include the exact text "No findings." in your response and do *not* write REVIEW.md. ` +
   "Do not modify other files.";
 
-export function createReviewExtension(environment: HarnessOptions["env"]) {
-  async function mutationPath(path: string, api: ToolExecutionApi, context: Context) {
+export function createReviewExtension(environment: D.HarnessOptions["env"]) {
+  async function mutationPath(path: string, api: D.ToolExecutionApi, context: C.Context) {
     if ((await api.snapshot(Review, api.conversationId, context))?.original === undefined)
       return path;
     assert(api.env, "Review requires an execution environment.");
@@ -59,7 +56,7 @@ export function createReviewExtension(environment: HarnessOptions["env"]) {
       },
     ],
   };
-  return defineExtension<ToolRegistration>({
+  return defineExtension<D.ToolRegistration>({
     name: "review",
     sections: [
       section("review", async (input, context) => {

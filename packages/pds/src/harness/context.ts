@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { posix } from "node:path";
-import type { Context } from "@earendil-works/chord/context";
+import type * as C from "@earendil-works/chord/context";
 import { defineExtension, section } from "@earendil-works/pi-durable";
-import { getOrThrow, type ExecutionEnv } from "@earendil-works/pi-durable/env";
+import { getOrThrow } from "@earendil-works/pi-durable/env";
+import type * as DE from "@earendil-works/pi-durable/env";
 
 export type ContextFile = {
   level: "system" | "user" | "project";
@@ -24,7 +25,7 @@ export function contextPaths(home: string, configHome: string, configDirs: strin
   ];
 }
 
-async function configurationPaths(env: ExecutionEnv, context: Context): Promise<string[]> {
+async function configurationPaths(env: DE.ExecutionEnv, context: C.Context): Promise<string[]> {
   let output = "";
   const result = getOrThrow(
     await env.exec(
@@ -52,7 +53,7 @@ async function configurationPaths(env: ExecutionEnv, context: Context): Promise<
   return contextPaths(home, configHome, configDirs);
 }
 
-async function repositoryRoot(env: ExecutionEnv, context: Context): Promise<string> {
+async function repositoryRoot(env: DE.ExecutionEnv, context: C.Context): Promise<string> {
   const cwd = getOrThrow(await env.canonicalPath(env.cwd, context));
   let directory = cwd;
   while (true) {
@@ -68,8 +69,8 @@ async function repositoryRoot(env: ExecutionEnv, context: Context): Promise<stri
 
 /** All discovery and reads use the selected environment, including HOME and XDG variables. */
 export async function loadContextFiles(
-  env: ExecutionEnv,
-  context: Context,
+  env: DE.ExecutionEnv,
+  context: C.Context,
 ): Promise<ContextFile[]> {
   const paths = await configurationPaths(env, context);
   const root = await repositoryRoot(env, context);

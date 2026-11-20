@@ -4,18 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
-import type { Extension, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import * as web from "../src/harness/web.ts";
 
 const context = BACKGROUND_CONTEXT;
 // Neither tool may read the guest environment (or any other execution API state).
-const api = new Proxy({} as ToolExecutionApi, {
+const api = new Proxy({} as D.ToolExecutionApi, {
   get() {
     assert.fail("Web tools must not access the guest execution API.");
   },
 });
 function tools(path = process.env.PARALLEL_API_KEY_FILE) {
-  const extension: Extension = web.createWebExtension(path);
+  const extension: D.Extension = web.createWebExtension(path);
   assert(extension.tools);
   const [search, extract] = extension.tools;
   assert(search);
@@ -185,7 +185,7 @@ await test("HTTP failures expose actionable API fields, redact credentials, and 
           headers: status === 429 ? { "retry-after": "30" } : {},
         }),
     );
-    const requests: readonly [ToolRegistration, object, "search" | "extract"][] = [
+    const requests: readonly [D.ToolRegistration, object, "search" | "extract"][] = [
       [search, { objective: "Docs", search_queries: ["Nix"] }, "search"],
       [extract, { urls: ["https://example.com"] }, "extract"],
     ];

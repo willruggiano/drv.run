@@ -1,0 +1,41 @@
+id: earendil-type-namespace
+valid:
+  - import type * as D from "@earendil-works/pi-durable";
+  - import type * as Models from '@earendil-works/pi-ai/models';
+  - import { Harness, defineDoc } from "@earendil-works/pi-durable";
+  - import * as D from "@earendil-works/pi-durable";
+  - import Runtime from "@earendil-works/package";
+  - import { type as typeFactory } from "@earendil-works/package";
+  - import "@earendil-works/package";
+  - const module = await import("@earendil-works/pi-durable");
+  - import type { Model } from "another-package";
+  - import { type Model, createModel } from "another-package";
+  - import type { Model } from "@earendil-works-extra/package";
+  - import type { Model } from "./@earendil-works/package";
+  - export type { Model } from "@earendil-works/pi-ai";
+  - |
+    import type { Local } from "./local.ts";
+    import { Harness } from "@earendil-works/pi-durable";
+invalid:
+  - import type { ConversationId } from "@earendil-works/pi-durable";
+  - import type { ConversationId as Id } from '@earendil-works/pi-durable';
+  - import type { Models } from "@earendil-works/pi-ai/models";
+  - import type Default from "@earendil-works/package";
+  - import type {} from "@earendil-works/package";
+  - import { type Context } from "@earendil-works/chord/context";
+  - import { type Context as C } from '@earendil-works/chord/context';
+  - import { type Conversation, Harness } from "@earendil-works/pi-durable";
+  - import { Harness, type Conversation } from "@earendil-works/pi-durable";
+  - import { Harness, type Conversation as C, defineDoc } from "@earendil-works/pi-durable";
+  - import Runtime, { type Model } from "@earendil-works/package";
+  - |
+    import /* boundary types */ type {
+      ConversationId,
+      EntryId as Id,
+    } from "@earendil-works/pi-durable";
+  - |
+    import {
+      Harness,
+      type /* identity */ ConversationId,
+      defineDoc,
+    } from "@earendil-works/pi-durable";

@@ -1,21 +1,10 @@
 import assert from "node:assert/strict";
 import MarkdownIt from "markdown-it";
 import hljs from "highlight.js";
-import type { Message, ModelThinkingLevel, ToolCall } from "@earendil-works/pi-ai";
+import type * as A from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import {
-  AgentDoc,
-  InboxDoc,
-  LiveDoc,
-  UsageDoc,
-  type UsageState,
-  type Conversation,
-  type ConversationView,
-  type EntryRecord,
-  type ConversationId,
-  type InboxState,
-  type LiveState,
-} from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import type { SessionId } from "./identity.ts";
 import { Env } from "./harness/index.ts";
 import { context, environmentId, modelKey, type Session, type Application } from "./application.ts";
@@ -70,7 +59,7 @@ export function thinking(
   autosave = false,
 ): string {
   const model = app.models.getModels().find((candidate) => modelKey(candidate) === key);
-  const levels: ModelThinkingLevel[] = model ? getSupportedThinkingLevels(model) : ["off"];
+  const levels: A.ModelThinkingLevel[] = model ? getSupportedThinkingLevels(model) : ["off"];
   const level = levels.find((level) => level === selected) ?? levels[0] ?? "off";
   return picker(
     "thinking",
@@ -84,10 +73,10 @@ type Menu = Pick<Session, "models" | "environments" | "cwd"> & Partial<Pick<Sess
 const js = (value: string) => escape(JSON.stringify(value));
 export const sessionPath = (prefix: string, id: SessionId) =>
   `${prefix}/api/s/${encodeURIComponent(id)}`;
-export const conversationPath = (prefix: string, session: SessionId, id: ConversationId) =>
+export const conversationPath = (prefix: string, session: SessionId, id: D.ConversationId) =>
   `${sessionPath(prefix, session)}/c/${id}`;
 
-async function selections(app: Menu, prefix: string, conversation?: Conversation) {
+async function selections(app: Menu, prefix: string, conversation?: D.Conversation) {
   assert(!conversation || app.harness);
   const agent = await conversation?.agent(context);
   const env = conversation && (await app.harness!.snapshot(Env, conversation.id, context))?.env;
@@ -126,7 +115,7 @@ async function selections(app: Menu, prefix: string, conversation?: Conversation
   };
 }
 
-export async function configuration(app: Session, conversation: Conversation, prefix: string) {
+export async function configuration(app: Session, conversation: D.Conversation, prefix: string) {
   const fields = await selections(app, prefix, conversation);
   const base = conversationPath(prefix, app.id, conversation.id);
   const control = (name: "environment" | "cwd" | "model" | "thinking", html: string) =>
@@ -227,8 +216,8 @@ export async function modelsPage(app: Pick<Session, "models">, prefix: string) {
 
 export async function conversationPage(
   app: Session,
-  conversation: Conversation,
-  initial: { view: ConversationView; head: EntryRecord | null },
+  conversation: D.Conversation,
+  initial: { view: D.ConversationView; head: D.EntryRecord | null },
   prefix: string,
 ): Promise<string> {
   const controls = await configuration(app, conversation, prefix);
@@ -247,12 +236,12 @@ export async function conversationPage(
   );
 }
 
-type Tools = Map<string, { state: string; output: string; call?: ToolCall }>;
+type Tools = Map<string, { state: string; output: string; call?: A.ToolCall }>;
 function toolStatus(state: string): string {
   return `<span class="tool-status" data-state="${state}" role="img" aria-label="${state}">${state === "running" ? "<span></span><span></span><span></span><span></span>" : state === "failed" ? "×" : state === "completed" ? "✓" : "·"}</span>`;
 }
 
-function content(message: Message, tools: Tools = new Map()): string {
+function content(message: A.Message, tools: Tools = new Map()): string {
   if (typeof message.content === "string") return markdown.render(message.content);
   return message.content
     .map((part) => {
@@ -272,21 +261,21 @@ function content(message: Message, tools: Tools = new Map()): string {
     .join("");
 }
 
-function tool(call: ToolCall, state?: { state: string; output: string }): string {
+function tool(call: A.ToolCall, state?: { state: string; output: string }): string {
   const command = call.arguments.command ?? call.arguments.path ?? JSON.stringify(call.arguments);
   return `<details id="call-${escape(call.id)}" class="tool-call" data-preserve-attr="open" data-state="${state?.state ?? "recorded"}"><summary>${toolStatus(state?.state ?? "recorded")}<span class="tool-command">${escape(call.name)} ${escape(command)}</span></summary><div class="tool-result"><pre><code>${escape(state?.output || JSON.stringify(call.arguments, null, 2))}</code></pre></div></details>`;
 }
 
-function messageHeader(message: Message): string {
+function messageHeader(message: A.Message): string {
   const timestamp = new Date(message.timestamp);
   return `<header><span class="speaker">${message.role === "user" ? "You" : message.role === "assistant" ? "Pi" : escape(message.role)}</span><time class="message-time" datetime="${timestamp.toISOString()}" title="${escape(timestamp.toLocaleString())}">${escape(timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }))}</time></header>`;
 }
 
 function tools(
-  view: Pick<ConversationView, "entries" | "docs">,
-  previous = new Map<string, ToolCall>(),
+  view: Pick<D.ConversationView, "entries" | "docs">,
+  previous = new Map<string, A.ToolCall>(),
 ): Tools {
-  const live = (view.docs[LiveDoc.definition.kind] ?? {}) as LiveState;
+  const live = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
   const result: Tools = new Map(
     (live.tools ?? []).map((tool) => [
       tool.callId,
@@ -313,11 +302,11 @@ function tools(
 }
 
 function calls(
-  view: Pick<ConversationView, "entries" | "docs">,
-  previous = new Map<string, ToolCall>(),
+  view: Pick<D.ConversationView, "entries" | "docs">,
+  previous = new Map<string, A.ToolCall>(),
   prune = true,
-): Map<string, ToolCall> {
-  const live = (view.docs[LiveDoc.definition.kind] ?? {}) as LiveState;
+): Map<string, A.ToolCall> {
+  const live = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
   const active = new Set(live.tools?.map((slot) => slot.callId));
   const result = new Map([...previous].filter(([id]) => !prune || active.has(id)));
   for (const record of view.entries)
@@ -328,7 +317,7 @@ function calls(
   return result;
 }
 
-function entry(record: EntryRecord, states: Tools): string {
+function entry(record: D.EntryRecord, states: Tools): string {
   if (record.kind === "pi.compaction" || record.head !== undefined)
     return `<article id="entry-${record.id}" data-kind="${escape(record.kind)}"><details class="tool-call context-event" data-preserve-attr="open"><summary>${toolStatus("completed")}<span class="tool-command">${record.kind === "pi.compaction" ? "Compaction summary" : "Context boundary"}</span></summary><div class="compaction-summary">${(record.model ?? []).map((message) => content(message)).join("")}</div></details></article>`;
   const orphan = (record.model ?? []).find(
@@ -349,8 +338,8 @@ function history(address: string, before: number, after?: number): string {
 }
 
 function baseline(
-  view: ConversationView,
-  head: EntryRecord | null,
+  view: D.ConversationView,
+  head: D.EntryRecord | null,
   address: string,
   initial = false,
 ): string {
@@ -365,14 +354,14 @@ function baseline(
   return `<div id="conversation"><div id="transcript">${head ? `${entry(head, states)}<details id="context-history" class="context-history" data-preserve-attr="open"><summary>Earlier messages</summary>${older}${archived.map((record) => entry(record, states)).join("")}</details>` : older}<div id="entries">${entries.map((record) => entry(record, states)).join("")}</div>${initial ? live(view) : '<div id="live-response"></div>'}<div id="failures"></div></div></div>`;
 }
 
-function live(view: ConversationView): string {
-  const state = (view.docs[LiveDoc.definition.kind] ?? {}) as LiveState;
+function live(view: D.ConversationView): string {
+  const state = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
   const message = state.generation?.message;
   return `<div id="live-response">${message ? `<article id="partial" data-role="assistant" aria-label="Streaming response">${messageHeader(message)}<div class="markdown">${content(message)}</div></article>` : ""}</div>`;
 }
 
-function status(view: ConversationView): string {
-  const live = (view.docs[LiveDoc.definition.kind] ?? {}) as LiveState;
+function status(view: D.ConversationView): string {
+  const live = (view.docs[LiveDoc.definition.kind] ?? {}) as D.LiveState;
   const state = live.compactions?.length ? "compacting" : live.run ? "working" : "idle";
   return `<div id="status" class="sr-only" role="status" data-state="${state}">${state}</div>
     <div id="activity" role="status">${live.compactions?.length ? "Compacting…" : live.generation?.retry ? `Retrying: ${escape(live.generation.retry.error)}` : ""}</div>
@@ -380,14 +369,14 @@ function status(view: ConversationView): string {
     <div id="failures">${live.runFailure ? `<p class="error" role="alert">${escape(live.runFailure.reason)}: ${escape(live.runFailure.detail ?? "")}</p>` : ""}${live.compactionFailure ? `<p class="error" role="alert">Compaction failed: ${escape(live.compactionFailure.error)}</p>` : ""}</div>`;
 }
 
-function queue(view: ConversationView): string {
-  const inbox = (view.docs[InboxDoc.definition.kind] ?? { items: [] }) as InboxState;
+function queue(view: D.ConversationView): string {
+  const inbox = (view.docs[InboxDoc.definition.kind] ?? { items: [] }) as D.InboxState;
   return `<div id="queue">${inbox.items.length ? `<div class="queued-messages">${inbox.items.map((item) => `<article id="queued-${item.id}" data-role="user"><header><span class="speaker">Queued ${escape(item.mode)}</span></header>${"content" in item ? content({ role: "user", content: item.content, timestamp: 0 }) : "Context update"}</article>`).join("")}</div>` : ""}</div>`;
 }
 
 function toolUpdates(
-  view: ConversationView,
-  previous?: Map<string, ToolCall>,
+  view: D.ConversationView,
+  previous?: Map<string, A.ToolCall>,
 ): Map<string, string> {
   const updates = new Map<string, string>();
   for (const [id, state] of tools(view, previous))
@@ -399,12 +388,12 @@ export const regions = { baseline, entry, tools, calls, live, status, queue, too
 
 export async function metadata(
   app: Session,
-  conversation: Conversation,
-  view?: ConversationView,
+  conversation: D.Conversation,
+  view?: D.ConversationView,
 ): Promise<string> {
   const agent = await conversation.agent(context);
   const usage =
-    (view?.docs[UsageDoc.definition.kind] as UsageState | undefined) ??
+    (view?.docs[UsageDoc.definition.kind] as D.UsageState | undefined) ??
     (await app.harness.snapshot(UsageDoc, conversation.id, context));
   const total = Object.values(usage?.models ?? {}).reduce(
     (sum, item) => ({

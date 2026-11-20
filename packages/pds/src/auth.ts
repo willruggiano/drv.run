@@ -23,12 +23,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import lockfile from "proper-lockfile";
-import type {
-  AuthContext,
-  AuthOperationOptions,
-  Credential,
-  CredentialStore,
-} from "@earendil-works/pi-ai";
+import type * as A from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 
 export function hostModels(
@@ -36,7 +31,7 @@ export function hostModels(
     normalizePath(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi/agent")),
     "auth.json",
   ),
-  authContext?: AuthContext,
+  authContext?: A.AuthContext,
 ) {
   return builtinModels({
     credentials: credentialStore(normalizePath(path)),
@@ -54,10 +49,10 @@ class NotImplementedError extends Error {
   override readonly name = "NotImplementedError";
 }
 
-function credentialStore(path: string): CredentialStore {
+function credentialStore(path: string): A.CredentialStore {
   async function locked<T>(
     fn: (file: string, guard: () => Promise<void>) => Promise<T>,
-    options?: AuthOperationOptions,
+    options?: A.AuthOperationOptions,
   ) {
     options?.signal?.throwIfAborted();
     const file = await ensureFile(path);
@@ -115,7 +110,7 @@ function credentialStore(path: string): CredentialStore {
     // U+FEFF is a leading byte-order mark; Pi's file reader strips it too.
     const value: unknown = JSON.parse(content.replace(/^\uFEFF/, ""));
     if (!object(value)) throw new Error("Invalid credential file");
-    const data = new Map<string, Credential>();
+    const data = new Map<string, A.Credential>();
     for (const [providerId, entry] of Object.entries(value)) {
       if (!credential(entry)) throw new Error("Invalid credential record");
       data.set(providerId, entry);
@@ -169,7 +164,7 @@ function credentialStore(path: string): CredentialStore {
   };
 }
 
-async function persist(path: string, data: Map<string, Credential>): Promise<void> {
+async function persist(path: string, data: Map<string, A.Credential>): Promise<void> {
   const content = JSON.stringify(Object.fromEntries(data), null, 2);
   // Match Pi's in-place writes to retain inode, ownership, and permissions.
   const file = await open(path, "r+");
@@ -224,7 +219,7 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function credential(value: unknown): value is Credential {
+function credential(value: unknown): value is A.Credential {
   if (!object(value)) return false;
   if (value.type === "oauth") {
     return (

@@ -11,15 +11,12 @@ import {
   fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
 import { createModels } from "@earendil-works/pi-ai/models";
-import {
-  type Conversation,
-  type Cursor,
-  type EntryRecord,
-  ToolResultEntry,
-} from "@earendil-works/pi-durable";
+import { ToolResultEntry } from "@earendil-works/pi-durable";
+import type * as D from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { FileError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import type * as DN from "@earendil-works/pi-durable/env/node";
 import { createContextExtension, contextPaths, loadContextFiles } from "../src/harness/context.ts";
 import { openHarness } from "../src/harness/index.ts";
 
@@ -27,9 +24,9 @@ const context = BACKGROUND_CONTEXT;
 const done = () => fauxAssistantMessage("Done.");
 const write = (path = "result.json", content = "1") =>
   fauxAssistantMessage(fauxToolCall("write", { path, content }), { stopReason: "toolUse" });
-async function readHistory(conversation: Conversation): Promise<EntryRecord[]> {
-  const entries: EntryRecord[] = [];
-  let cursor: Cursor | undefined;
+async function readHistory(conversation: D.Conversation): Promise<D.EntryRecord[]> {
+  const entries: D.EntryRecord[] = [];
+  let cursor: D.Cursor | undefined;
   do {
     const page = await conversation.entries({ order: "ascending" }, 256, cursor, context);
     entries.push(...page.items);
@@ -53,7 +50,7 @@ async function configured(t: TestContext) {
       cwd,
       shellEnv: { ...process.env, HOME: home, XDG_CONFIG_HOME: user, XDG_CONFIG_DIRS: system },
     });
-  const views: NodeExecutionEnv[] = [];
+  const views: DN.NodeExecutionEnv[] = [];
   let harness: Awaited<ReturnType<typeof openHarness>> | undefined;
   async function open() {
     harness = await openHarness(
@@ -93,7 +90,7 @@ async function configured(t: TestContext) {
       return open();
     },
   };
-  const run = async (conversation: Conversation) => {
+  const run = async (conversation: D.Conversation) => {
     await conversation.submit(
       { type: "input", content: "Work.", requestId: randomUUID() },
       context,
