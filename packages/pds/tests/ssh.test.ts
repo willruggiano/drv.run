@@ -260,14 +260,7 @@ Host *
     await t.test(
       "application persists only the host, reacquires SSH after reopen, and closes owned connections",
       async (subtest) => {
-        const { sessions, faux, selection, environments, open } = await sessionsFixture(subtest);
-        // Extra object properties must not become persisted policy or execution overrides.
-        const target = {
-          host: "global-trust",
-          identityFile: "/forbidden",
-          configFile: "/forbidden",
-        };
-        environments.push({ id: "remote", label: "Ordinary SSH", target });
+        const { sessions, faux, selection, open } = await sessionsFixture(subtest);
         const { sessionId, conversation } = await sessions.compose(
           form({ ...selection, env: "ssh:global-trust", cwd: remote }),
         );

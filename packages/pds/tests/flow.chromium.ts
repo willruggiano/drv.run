@@ -750,40 +750,14 @@ await test(
 );
 
 await test(
-  "configuration exposes source failures, permits ordinary SSH, and clears overrides without losing drafts",
+  "configuration labels are target identifiers and discovery does not own selections or drafts",
   { timeout: 30_000 },
   async (t) => {
-    const { app, sessions, auth, sources, selection } = await fixture(t);
-    let ready = true;
-    sources.push(
-      {
-        id: "registry",
-        async list() {
-          return [{ id: "logical/id", label: "Named environment", ready }];
-        },
-        async resolve() {
-          return ready ? { type: "local" } : undefined;
-        },
-      },
-      {
-        id: "empty",
-        async list() {
-          return [];
-        },
-        async resolve() {
-          return undefined;
-        },
-      },
-      {
-        id: "failed",
-        async list() {
-          throw new Error("private source failure");
-        },
-        async resolve() {
-          throw new Error("private source failure");
-        },
-      },
-    );
+    let failed = false;
+    const { app, sessions, auth, selection } = await fixture(t, async () => {
+      if (failed) throw new Error("private discovery failure");
+      return [{ type: "local" }, { type: "ssh", host: "test-guest" }];
+    });
     const conversation = await app.createConversation(form(selection));
     const server = await serve(sessions, { auth, port: 0 });
     t.after(() => server.close());
@@ -798,9 +772,20 @@ await test(
     const page = await browser.newPage();
     await page.goto(`${server.origin}/api/s/test/c/${conversation.id}`);
     await idle(page);
-    assert.equal(await page.locator('[data-source="empty"]').count(), 1);
-    assert.equal(await page.locator('[data-source="empty"]').getAttribute("data-state"), "empty");
-    assert.equal(await page.locator('[data-source="failed"]').getAttribute("data-state"), "error");
+    assert.deepEqual(
+      await page.locator("#environment-options option").evaluateAll((options) =>
+        options.map((option) => {
+          if (!(option instanceof HTMLOptionElement)) throw new Error("Expected an option");
+          return { value: option.value, label: option.label };
+        }),
+      ),
+      [
+        { value: "local", label: "local" },
+        { value: "ssh:test-guest", label: "test-guest" },
+      ],
+    );
+    assert.equal(await page.locator("#environment").getAttribute("title"), "local");
+    assert.equal(await page.locator("#environment-discovery").isVisible(), false);
     await page.locator("#message").fill("Keep the composer draft");
     await page.locator("#cwd").fill("untouched directory draft");
     // Do not blur cwd: change another control in the DOM without submitting that draft.
@@ -826,21 +811,18 @@ await test(
       () => document.querySelector<HTMLInputElement>("#cwd")?.defaultValue === "",
     );
     assert.equal((await conversation.agent(context)).cwd, undefined);
-    await app.configure(conversation, form({ env: "source:registry/logical%2Fid" }));
-    ready = false;
+    await app.configure(conversation, form({ env: "ssh:test-guest" }));
+    failed = true;
     await page.reload();
     await idle(page);
-    assert.equal(await page.locator("#environment").inputValue(), "source:registry/logical%2Fid");
-    assert.equal(await page.locator("#environment-state").count(), 1);
-    assert.equal(
-      await page.locator("#environment-state").getAttribute("data-state"),
-      "unavailable",
-    );
-    assert.equal(
-      await page
-        .locator('#environment-options option[value="source:registry/logical%2Fid"]')
-        .count(),
-      0,
+    assert.equal(await page.locator("#environment").inputValue(), "ssh:test-guest");
+    assert.equal(await page.locator("#environment").getAttribute("title"), "test-guest");
+    assert.equal(await page.locator("#environment-discovery").isVisible(), true);
+    assert.equal(await page.locator("#environment-options option").count(), 1);
+    await page.locator("#environment").fill("local");
+    await page.locator("#environment").press("Enter");
+    await page.waitForFunction(
+      () => document.querySelector<HTMLInputElement>("#environment")?.defaultValue === "local",
     );
   },
 );

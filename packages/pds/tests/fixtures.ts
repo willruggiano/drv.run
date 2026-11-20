@@ -8,8 +8,8 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { hostAuth } from "../src/auth.ts";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { openApplication, type Application, type Environment } from "../src/application.ts";
-import type { EnvironmentSource } from "../src/harness/env.ts";
+import { openApplication, type Application } from "../src/application.ts";
+import type { EnvTarget } from "../src/harness/env.ts";
 import { SessionId, decode } from "../src/identity.ts";
 
 export const form = (fields: Record<string, string>): FormData => {
@@ -18,7 +18,7 @@ export const form = (fields: Record<string, string>): FormData => {
   return result;
 };
 
-export async function sessionsFixture(t: TestContext) {
+export async function sessionsFixture(t: TestContext, discover?: () => Promise<EnvTarget[]>) {
   const directory = await mkdtemp(join(tmpdir(), "pds-"));
   const faux = fauxProvider({
     models: [
@@ -35,22 +35,13 @@ export async function sessionsFixture(t: TestContext) {
   const { models } = auth;
   models.clearProviders();
   models.setProvider(faux.provider);
-  const environments: Environment[] = [
-    { id: "local", label: "Local (server)" },
-    {
-      id: "test-guest",
-      label: "Test guest",
-      target: { host: "test-guest" },
-    },
-  ];
-  const sources: EnvironmentSource[] = [];
+  const environments: EnvTarget[] = [{ type: "local" }, { type: "ssh", host: "test-guest" }];
   const owners = new Set<Application>();
   const open = async () => {
     const sessions = await openApplication({
       directory,
       models,
-      environments: async () => environments,
-      sources,
+      environments: discover ?? (async () => environments),
       cwd: directory,
       settings: {
         retry: { maxRetries: 0 },
@@ -68,11 +59,11 @@ export async function sessionsFixture(t: TestContext) {
     await rm(directory, { recursive: true, force: true });
   });
   const selection = { model: "faux/first", thinking: "off", cwd: directory, env: "local" };
-  return { sessions, auth, faux, models, directory, selection, environments, sources, open };
+  return { sessions, auth, faux, models, directory, selection, open };
 }
 
-export async function fixture(t: TestContext) {
-  const result = await sessionsFixture(t);
+export async function fixture(t: TestContext, discover?: Parameters<typeof sessionsFixture>[1]) {
+  const result = await sessionsFixture(t, discover);
   const app = await result.sessions.open(decode(SessionId, "test"));
   return {
     ...result,

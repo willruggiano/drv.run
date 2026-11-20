@@ -11,21 +11,16 @@ import { configure, AgentDoc, defineDoc } from "@earendil-works/pi-durable";
 import type * as D from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
+import type * as DE from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import type * as DN from "@earendil-works/pi-durable/env/node";
 import { Env, openHarness, SshExecutionEnv } from "./harness/index.ts";
-import type { EnvTarget, EnvironmentSource } from "./harness/env.ts";
+import type { EnvTarget } from "./harness/env.ts";
 import { SessionId, SessionKey, decode } from "./identity.ts";
 
-export const environmentId = (selected: EnvTarget | undefined): string =>
-  selected?.type === "source"
-    ? `source:${encodeURIComponent(selected.source)}/${encodeURIComponent(selected.id)}`
-    : selected?.type === "ssh"
-      ? `ssh:${selected.host}`
-      : (selected?.type ?? "");
+export const environmentValue = (selected: EnvTarget | undefined): string =>
+  selected?.type === "ssh" ? `ssh:${selected.host}` : (selected?.type ?? "");
 
 export class InvalidForm extends Error {}
-export class EnvironmentUnavailable extends InvalidForm {}
 
 export const context = BACKGROUND_CONTEXT;
 export const ConversationMetadata = defineDoc<{ title: string; createdAt: number }>({
@@ -38,14 +33,8 @@ export const ConversationMetadata = defineDoc<{ title: string; createdAt: number
   checkpointWhen: () => true,
 });
 
-export type Environment = {
-  id: string;
-  label: string;
-  target?: ConstructorParameters<typeof SshExecutionEnv>[0]["target"];
-};
-
-export async function discoverEnvironments(directory: string): Promise<Environment[]> {
-  const result: Environment[] = [{ id: "local", label: "Local (server)" }];
+export async function discoverEnvironments(directory: string): Promise<EnvTarget[]> {
+  const result: EnvTarget[] = [{ type: "local" }];
   const entries = await readdir(join(directory, "drv.run"), { withFileTypes: true }).catch(
     (error: unknown) => {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
@@ -56,7 +45,6 @@ export async function discoverEnvironments(directory: string): Promise<Environme
     if (!entry.isDirectory() || !/^[A-Za-z0-9]+$/.test(entry.name)) continue;
     const path = join(directory, "drv.run", entry.name);
     const host = `drv.run.${entry.name}`;
-    const target = { host };
     try {
       await access(join(path, "ssh_config"));
     } catch (error) {
@@ -64,7 +52,7 @@ export async function discoverEnvironments(directory: string): Promise<Environme
       throw error;
     }
     // Configuration permits a connection attempt; it does not certify activation.
-    result.push({ id: host, label: host, target });
+    result.push({ type: "ssh", host });
   }
   return result;
 }
@@ -73,13 +61,12 @@ async function openSession(options: {
   id: SessionId;
   storage: D.Storage;
   models: A.Models;
-  environments: () => Promise<Environment[]>;
-  sources?: readonly EnvironmentSource[];
+  environments: () => Promise<EnvTarget[]>;
   cwd: string;
   settings?: D.HarnessSettings;
   parallelApiKeyFile?: string;
 }): Promise<Session> {
-  const environments = new Map<string, Promise<DN.NodeExecutionEnv | SshExecutionEnv>>();
+  const environments = new Map<string, Promise<DE.ExecutionEnv>>();
   const harness: D.Harness = await openHarness(
     options.storage,
     {
@@ -100,18 +87,17 @@ async function openSession(options: {
       };
     }, ctx);
     if (!selected) return { env: undefined, selected, cwd };
-    if (!cwd) throw new EnvironmentUnavailable("Select a working directory.");
-    const target = await resolveEnvironment(selected, options.sources, ctx);
+    if (!cwd) throw new InvalidForm("Select a working directory.");
     assert(
-      target.type === "local" || target.type === "ssh",
+      selected.type === "local" || selected.type === "ssh",
       "Unsupported execution environment selection.",
     );
-    const key = JSON.stringify([target, cwd]);
+    const key = JSON.stringify([selected, cwd]);
     let pending = environments.get(key);
     if (!pending) {
       pending = (async () => {
-        if (target.type === "local") return new NodeExecutionEnv({ cwd });
-        const env = new SshExecutionEnv({ target, cwd });
+        if (selected.type === "local") return new NodeExecutionEnv({ cwd });
+        const env = new SshExecutionEnv({ target: selected, cwd });
         try {
           // Resolve relative paths and ~ against remote metadata, before anyone borrows it.
           env.cwd = (await env.connection.info(ctx.abortSignal)).cwd;
@@ -171,7 +157,6 @@ async function openSession(options: {
     },
     models: options.models,
     environments: options.environments,
-    ...(options.sources ? { sources: options.sources } : {}),
     cwd: options.cwd,
     async conversation(id: D.ConversationId) {
       return harness.conversation(id, context);
@@ -234,7 +219,7 @@ async function openSession(options: {
             const selected = (await tx.doc(Env, conversation.id)).env;
             if (
               agent.cwd !== acquired.cwd ||
-              environmentId(selected) !== environmentId(acquired.selected)
+              environmentValue(selected) !== environmentValue(acquired.selected)
             )
               throw new InvalidForm("Environment configuration changed during /cd; try again.");
             await configure(tx, conversation.id, { cwd: resolved.value });
@@ -309,8 +294,7 @@ export interface Session {
     ownership?: D.ConversationCreateOptions["ownership"],
   ): Promise<D.Conversation>;
   models: A.Models;
-  environments(): Promise<Environment[]>;
-  sources?: readonly EnvironmentSource[];
+  environments(): Promise<EnvTarget[]>;
   cwd: string;
   conversation(id: D.ConversationId): Promise<D.Conversation | undefined>;
   list(): Promise<{ id: D.ConversationId; title: string; createdAt?: number }[]>;
@@ -414,45 +398,13 @@ function configurationChange(models: A.Models, form: FormData, current: D.AgentS
     if (!host || host.startsWith("-") || /[\s\p{Cc}]/u.test(host))
       throw new InvalidForm("Enter one SSH host name without options or whitespace.");
     env = { type: "ssh", host };
-  } else if (selected.startsWith("source:")) {
-    const parts = selected.slice(7).split("/");
-    if (parts.length !== 2 || !parts[0] || !parts[1])
-      throw new InvalidForm("Select a source and environment identity.");
-    try {
-      env = {
-        type: "source",
-        source: decodeURIComponent(parts[0]),
-        id: decodeURIComponent(parts[1]),
-      };
-    } catch (error) {
-      if (error instanceof URIError) throw new InvalidForm("Invalid environment identity.");
-      throw error;
-    }
-  } else throw new InvalidForm("Select local, ssh:<host>, or a named source environment.");
+  } else throw new InvalidForm("Select local or ssh:<host>.");
   const agent: D.AgentChange = {
     ...(modelValue !== undefined && model !== undefined ? { model } : {}),
     ...(thinking !== undefined ? { thinkingLevel: thinking } : {}),
     ...(cwd !== undefined ? { cwd } : {}),
   };
   return { agent, env };
-}
-
-async function resolveEnvironment(
-  selected: EnvTarget,
-  sources: readonly EnvironmentSource[] | undefined,
-  ctx: C.Context,
-) {
-  if (selected.type !== "source") return selected;
-  const source = sources?.find((candidate) => candidate.id === selected.source);
-  if (!source) throw new EnvironmentUnavailable("Selected environment source is unavailable.");
-  let target;
-  try {
-    target = await source.resolve(selected.id, ctx);
-  } catch (error) {
-    throw new EnvironmentUnavailable("Environment source failed.", { cause: error });
-  }
-  if (!target) throw new EnvironmentUnavailable("Selected environment is unavailable.");
-  return target;
 }
 
 async function selectEnvironment(
@@ -573,7 +525,6 @@ export async function openApplication(
     },
     async compose(form) {
       const { agent, env } = configurationChange(options.models, form);
-      if (env) await resolveEnvironment(env, options.sources, context);
       if (!agent.model || !agent.thinkingLevel || !agent.cwd || !env)
         throw new InvalidForm(
           "Select a model, thinking level, working directory, and environment.",
@@ -641,7 +592,6 @@ async function applyConfiguration(
 ) {
   const current = await tx.doc(AgentDoc, id);
   const change = configurationChange(options.models, form, current);
-  if (change.env) await resolveEnvironment(change.env, options.sources, context);
   await configure(tx, id, change.agent);
   await selectEnvironment(tx, id, change.env);
 }

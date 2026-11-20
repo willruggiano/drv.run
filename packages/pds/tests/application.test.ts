@@ -120,13 +120,7 @@ await test("environment discovery exposes prepared drv.run host names without co
   await mkdir(join(directory, "drv.run", "starting"));
   await writeFile(join(ready, "ssh_config"), "");
   const environments = await discoverEnvironments(directory);
-  assert.deepEqual(
-    environments.map((item) => item.id),
-    ["local", "drv.run.ready"],
-  );
-  assert.deepEqual(environments[1]?.target, {
-    host: "drv.run.ready",
-  });
+  assert.deepEqual(environments, [{ type: "local" }, { type: "ssh", host: "drv.run.ready" }]);
 });
 
 await test("HTTP rejects foreign writes and accepts native forms at the configured public origin", async (t) => {
@@ -929,56 +923,21 @@ await test("creation applies explicit clears after task inheritance and existing
   });
 });
 
-await test("saved source identity survives unavailability without local fallback and resolves anew on acquisition", async (t) => {
-  const { readFile, stat } = await import("node:fs/promises");
-  const { sources, app, selection, faux, directory } = await fixture(t);
-  let ready = true;
-  let failing = false;
-  sources.push({
-    id: "test source",
-    async list() {
-      return [{ id: "opaque/id", label: "Test target", ready }];
-    },
-    async resolve(id) {
-      assert.equal(id, "opaque/id");
-      if (failing) throw new Error("Discovery failed");
-      return ready ? { type: "local" } : undefined;
-    },
-  });
-  const conversation = await app.createConversation(
-    form({ ...selection, env: "source:test%20source/opaque%2Fid" }),
-  );
-  assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
-    env: { type: "source", source: "test source", id: "opaque/id" },
-  });
-  const write = async (name: string) => {
-    faux.setResponses([
-      fauxAssistantMessage(fauxToolCall("write", { path: name, content: "selected" }), {
-        stopReason: "toolUse",
-      }),
-      fauxAssistantMessage("Finished"),
-    ]);
-    await app.send(conversation, form({ message: "Write the file" }));
-    await conversation.waitForIdle(context);
-  };
-  await write("available");
-  assert.equal(await readFile(join(directory, "available"), "utf8"), "selected");
-  ready = false;
-  await write("unavailable");
-  await assert.rejects(stat(join(directory, "unavailable")), { code: "ENOENT" });
-  assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
-    env: { type: "source", source: "test source", id: "opaque/id" },
-  });
-  ready = true;
-  failing = true;
-  await write("failed");
-  await assert.rejects(stat(join(directory, "failed")), { code: "ENOENT" });
-  failing = false;
-  await write("restored");
-  assert.equal(await readFile(join(directory, "restored"), "utf8"), "selected");
+await test("clearing the local selection prevents subsequent execution on the host", async (t) => {
+  const { stat } = await import("node:fs/promises");
+  const { app, selection, faux, directory } = await fixture(t);
+  const conversation = await app.createConversation(form(selection));
   await app.configure(conversation, form({ clear: "env" }));
-  await write("cleared");
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("write", { path: "cleared", content: "not permitted" }), {
+      stopReason: "toolUse",
+    }),
+    fauxAssistantMessage("Finished"),
+  ]);
+  await app.send(conversation, form({ message: "Try the write" }));
+  await conversation.waitForIdle(context);
   await assert.rejects(stat(join(directory, "cleared")), { code: "ENOENT" });
+  assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {});
 });
 
 await test("/new preserves unset overrides and /cd requires a selected environment and cwd", async (t) => {
@@ -998,26 +957,11 @@ await test("/new preserves unset overrides and /cd requires a selected environme
   assert.equal((await next.context(context)).entries.length, 0);
 });
 
-await test("configuration rejects unavailable sources and invalid host-only selections without partial writes", async (t) => {
-  const { app, sources, selection } = await fixture(t);
-  sources.push({
-    id: "offline",
-    async list() {
-      return [];
-    },
-    async resolve() {
-      return undefined;
-    },
-  });
+await test("configuration rejects invalid host-only selections without partial writes", async (t) => {
+  const { app, selection } = await fixture(t);
   const conversation = await app.createConversation(form(selection));
   const before = await app.harness.snapshot(AgentDoc, conversation.id, context);
-  for (const env of [
-    "source:offline/missing",
-    "source:unknown/missing",
-    "ssh:-option",
-    "ssh:two hosts",
-    "ssh:host\n",
-  ]) {
+  for (const env of ["other:missing", "ssh:-option", "ssh:two hosts", "ssh:host\n"]) {
     await assert.rejects(app.configure(conversation, form({ env, cwd: "/must-not-commit" })));
     assert.deepEqual(await app.harness.snapshot(AgentDoc, conversation.id, context), before);
     assert.deepEqual(await app.harness.snapshot(Env, conversation.id, context), {
@@ -1063,28 +1007,17 @@ await test(
   },
 );
 
-await test("/cd rejects a path resolved against a selection changed during acquisition", async (t) => {
-  const { app, sources, selection } = await fixture(t);
+await test("/cd rejects a path when configuration changes during resolution", async (t) => {
+  const { NodeExecutionEnv } = await import("@earendil-works/pi-durable/env/node");
+  const { app, selection } = await fixture(t);
   const acquired = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  let block = false;
-  sources.push({
-    id: "delayed",
-    async list() {
-      return [{ id: "target", label: "Target", ready: true }];
-    },
-    async resolve() {
-      if (block) {
-        acquired.resolve();
-        await release.promise;
-      }
-      return { type: "local" };
-    },
+  t.mock.method(NodeExecutionEnv.prototype, "absolutePath", async () => {
+    acquired.resolve();
+    await release.promise;
+    return { ok: true, value: "/stale" } as const;
   });
-  const conversation = await app.createConversation(
-    form({ ...selection, env: "source:delayed/target" }),
-  );
-  block = true;
+  const conversation = await app.createConversation(form(selection));
   t.after(() => release.resolve());
   const pending = app.send(conversation, form({ message: "/cd nested" }));
   const rejected = assert.rejects(pending);

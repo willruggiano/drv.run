@@ -7,8 +7,15 @@ import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durabl
 import type * as D from "@earendil-works/pi-durable";
 import type { SessionId } from "./identity.ts";
 import { Env } from "./harness/index.ts";
+import type { EnvTarget } from "./harness/env.ts";
 import { active, type LoginView } from "./login.ts";
-import { context, environmentId, modelKey, type Session, type Application } from "./application.ts";
+import {
+  context,
+  environmentValue,
+  modelKey,
+  type Session,
+  type Application,
+} from "./application.ts";
 
 export const escape = (value: unknown): string =>
   String(value).replace(
@@ -51,6 +58,8 @@ const option = (value: string, label: string, selected: string) =>
   `<option value="${escape(value)}"${value === selected ? " selected" : ""}>${escape(label)}</option>`;
 const picker = (id: string, label: string, control: string, value: string) =>
   `<label id="${id}-choice"><span class="selector-label">${label}</span>${control}<span class="selector-value" aria-hidden="true">${escape(value)}</span></label>`;
+const environmentLabel = (target: EnvTarget | undefined) =>
+  target?.type === "ssh" ? target.host : (target?.type ?? "No environment");
 const updateLabel = "el.nextElementSibling.textContent = el.selectedOptions[0].label";
 
 export function thinking(
@@ -72,8 +81,7 @@ export function thinking(
   );
 }
 
-type Menu = Pick<Session, "models" | "environments" | "sources" | "cwd"> &
-  Partial<Pick<Session, "harness">>;
+type Menu = Pick<Session, "models" | "environments" | "cwd"> & Partial<Pick<Session, "harness">>;
 const js = (value: string) => escape(JSON.stringify(value));
 export const sessionPath = (prefix: string, id: SessionId) =>
   `${prefix}/api/s/${encodeURIComponent(id)}`;
@@ -90,61 +98,22 @@ async function selections(app: Menu, prefix: string, conversation?: D.Conversati
     : !conversation && models[0]
       ? modelKey(models[0])
       : "";
-  const environments = [{ id: "local", label: "Local (server)", ready: true }];
-  const statuses: string[] = [];
+  const environments: EnvTarget[] = [{ type: "local" }];
+  let discoveryError = "";
   try {
-    for (const item of await app.environments())
-      if (item.target)
-        environments.push({
-          id: environmentId({ type: "ssh", host: item.target.host }),
-          label: item.label,
-          ready: true,
-        });
+    environments.push(...(await app.environments()).filter((target) => target.type === "ssh"));
   } catch {
-    statuses.push('<span role="status">SSH suggestions unavailable.</span>');
+    discoveryError = "Environment discovery unavailable.";
   }
-  for (const source of app.sources ?? []) {
-    try {
-      const entries = await source.list(context);
-      environments.push(
-        ...entries.map((item) => ({
-          id: environmentId({ type: "source", source: source.id, id: item.id }),
-          label: item.label,
-          ready: item.ready,
-        })),
-      );
-      statuses.push(
-        `<span role="status" data-source="${escape(source.id)}" data-state="${entries.length ? "available" : "empty"}">${entries.length ? "" : `${escape(source.id)}: no environments.`}</span>`,
-      );
-    } catch {
-      statuses.push(
-        `<span role="status" data-source="${escape(source.id)}" data-state="error">${escape(source.id)}: discovery unavailable.</span>`,
-      );
-    }
-  }
-  const selectedEnv = conversation ? environmentId(env) : "local";
+  const selectedEnv = conversation ? environmentValue(env) : "local";
   if (selectedModel && !models.some((model) => modelKey(model) === selectedModel)) {
     const previous = agent?.model && app.models.getModel(agent.model.provider, agent.model.modelId);
     if (previous) models.push(previous);
   }
-  const choice = environments.find((item) => item.id === selectedEnv);
-  const label = choice?.ready
-    ? choice.label
-    : env?.type === "ssh"
-      ? env.host
-      : selectedEnv
-        ? `${selectedEnv} (unavailable)`
-        : "No environment";
-  const unavailable = !!selectedEnv && !choice?.ready && env?.type !== "ssh";
   const submitOnChange = conversation
     ? ` data-on:change="el.form.requestSubmit()" data-on:keydown="if (evt.key === 'Enter') { evt.preventDefault(); el.blur() }"`
     : "";
-  const environment = `<label id="environment-choice"><span class="selector-label">Environment</span><input name="env" id="environment" aria-label="Environment" list="environment-options" value="${escape(selectedEnv)}" title="${escape(label)}" placeholder="local or ssh:host" autocomplete="off" spellcheck="false"${submitOnChange}></label><datalist id="environment-options">${environments
-    .filter((item) => item.ready)
-    .map((item) => option(item.id, item.label, ""))
-    .join(
-      "",
-    )}</datalist><span id="environment-state" role="status" data-state="${unavailable ? "unavailable" : selectedEnv ? "selected" : "unselected"}">${unavailable ? "Unavailable" : ""}</span>${statuses.join("")}`;
+  const environment = `<label id="environment-choice"><span class="selector-label">Environment</span><input name="env" id="environment" aria-label="Environment" list="environment-options" value="${escape(selectedEnv)}" title="${escape(conversation ? environmentLabel(env) : "local")}" placeholder="local or ssh:host" autocomplete="off" spellcheck="false"${submitOnChange}></label><datalist id="environment-options">${environments.map((target) => option(environmentValue(target), environmentLabel(target), "")).join("")}</datalist><span id="environment-discovery" role="status">${discoveryError}</span>`;
   const directory = `<label id="cwd-choice"><span class="selector-label">Working directory</span><input name="cwd" id="cwd" aria-label="Working directory" value="${escape(conversation ? (agent?.cwd ?? "") : app.cwd)}" placeholder="Working directory"${submitOnChange}></label>`;
   const model = picker(
     "model",
@@ -216,7 +185,7 @@ export async function sessionPage(app: Session, prefix: string): Promise<string>
     records.map(async (record) => {
       const agent = await app.harness.snapshot(AgentDoc, record.id, context);
       const env = await app.harness.snapshot(Env, record.id, context);
-      return `<div class="session-row" data-conversation-id="${record.id}"><a class="session" href="${escape(conversationPath(prefix, app.id, record.id))}" aria-label="${escape(record.title)}"><span class="session-heading"><strong>${escape(record.title)}</strong></span><span class="session-detail"><span class="session-environment">${escape(environmentId(env?.env) || "No environment")}:${escape(agent?.cwd ?? "")}</span><span class="model-summary"><span class="model-name">${escape(agent?.model ? `${agent.model.provider}/${agent.model.modelId}` : "")}</span></span></span></a></div>`;
+      return `<div class="session-row" data-conversation-id="${record.id}"><a class="session" href="${escape(conversationPath(prefix, app.id, record.id))}" aria-label="${escape(record.title)}"><span class="session-heading"><strong>${escape(record.title)}</strong></span><span class="session-detail"><span class="session-environment">${escape(environmentLabel(env?.env))}:${escape(agent?.cwd ?? "")}</span><span class="model-summary"><span class="model-name">${escape(agent?.model ? `${agent.model.provider}/${agent.model.modelId}` : "")}</span></span></span></a></div>`;
     }),
   );
   return page(
