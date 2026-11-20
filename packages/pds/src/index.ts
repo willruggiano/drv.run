@@ -17,7 +17,7 @@ const app = await openApplication({
   directory,
   models,
   cwd: process.cwd(),
-  environments: () => discoverEnvironments(process.env.PDS_DRV_RUN),
+  environments: () => discoverEnvironments(process.env.PDS_KNOWN_HOSTS_DIR),
   ...(process.env.PARALLEL_API_KEY_FILE
     ? { parallelApiKeyFile: process.env.PARALLEL_API_KEY_FILE }
     : {}),

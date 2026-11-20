@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { readdir, mkdir, lstat, open } from "node:fs/promises";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { promisify } from "node:util";
-import { Type } from "typebox";
+import { homedir } from "node:os";
 import * as Value from "typebox/value";
 import type * as C from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -36,31 +34,20 @@ export const ConversationMetadata = defineDoc<{ title: string; createdAt: number
   checkpointWhen: () => true,
 });
 
-export async function discoverEnvironments(command?: string): Promise<EnvTarget[]> {
-  if (!command) return [];
-  const { stdout } = await promisify(execFile)(command, ["list", "--json"], { encoding: "utf8" });
-  const inventory: unknown = JSON.parse(stdout);
-  Value.Assert(Type.Object({ version: Type.Number() }), inventory);
-  assert.equal(inventory.version, 1, "Unsupported drv.run inventory version.");
-  Value.Assert(
-    Type.Object({
-      instances: Type.Array(
-        Type.Object({
-          id: Type.String(),
-          reference: Type.String(),
-          host: Type.String(),
-          ready: Type.Boolean(),
-          activeState: Type.String(),
-          subState: Type.String(),
-          result: Type.String(),
-        }),
-      ),
-    }),
-    inventory,
-  );
-  return inventory.instances
-    .filter((instance) => instance.ready)
-    .map(({ host }) => ({ type: "ssh", host }));
+export async function discoverEnvironments(
+  directory = join(homedir(), ".ssh", "known_hosts.d"),
+): Promise<EnvTarget[]> {
+  if (!directory) return [];
+  try {
+    return (await readdir(directory, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() || entry.isSymbolicLink())
+      .map((entry) => entry.name)
+      .toSorted()
+      .map((host) => ({ type: "ssh", host }));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  }
 }
 
 async function openSession(options: {

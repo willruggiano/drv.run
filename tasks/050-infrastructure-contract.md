@@ -138,10 +138,11 @@ trusted publisher -> ~/.ssh/known_hosts.d/<SSH destination>
   This is a generic SSH interface, with no PDS dependency or
   application-specific schema. OpenSSH remains responsible for route, user,
   identity, and trust.
-- Publication and removal belong to the producer. Whether entries survive a
-  stopped instance is producer policy, not PDS policy. Do not infer readiness
-  from either choice. Removing a suggestion does not remove a saved selection;
-  no retained instance state or keys may be discarded as part of this change.
+- Publication and removal belong to the producer. drv.run publishes on start and
+  removes its entry on stop, including failed or cancelled startup. Restart
+  republishes the same destination using the retained guest host key. PDS does
+  not interpret that lifetime as readiness. Removing a suggestion does not
+  remove a saved selection or discard retained instance state or host keys.
 - Other provisioners can publish the same interface. An ordinary interactive SSH
   client can enroll a key after explicit confirmation when the parent directory
   exists. PDS remains noninteractive with strict host-key checking; it neither

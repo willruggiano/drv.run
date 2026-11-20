@@ -16,8 +16,8 @@ import {
   SshError,
 } from "@earendil-works/pi-env";
 import { Env, SshExecutionEnv } from "../src/harness/index.ts";
-import { context, discoverEnvironments } from "../src/application.ts";
-import { sessionsFixture, inventoryFixture, form } from "./fixtures.ts";
+import { context } from "../src/application.ts";
+import { sessionsFixture, form } from "./fixtures.ts";
 
 const execute = promisify(execFile);
 
@@ -138,10 +138,20 @@ SetEnv PATH=${process.env.PATH}
     await writeFile(join(directory, "global_hosts"), `configured-alias ${key}`);
     await writeFile(join(directory, "changed_hosts"), `configured-alias ${wrongKey}`);
     await writeFile(join(directory, "unknown_hosts"), "");
+    const knownHosts = join(client, ".ssh", "known_hosts.d");
+    await mkdir(knownHosts);
+    await writeFile(join(knownHosts, "catalog-fallback"), `[127.0.0.1]:${address.port} ${key}`);
+    await writeFile(join(knownHosts, "catalog-alias"), `catalog-alias ${key}`);
     await writeFile(join(client, ".ssh/config"), "Include hosts.conf\n");
     await writeFile(
       join(client, ".ssh/hosts.conf"),
       `
+Host catalog-fallback catalog-route catalog-alias
+    UserKnownHostsFile ~/.ssh/known_hosts.d/%k
+    GlobalKnownHostsFile none
+    IdentityFile ${directory}/identity
+Host catalog-route catalog-alias
+    HostKeyAlias catalog-alias
 Host user-trust locked-identity
     UserKnownHostsFile ${directory}/user_hosts
     GlobalKnownHostsFile none
@@ -190,6 +200,17 @@ Host *
           assert.equal(children.size, 0);
         },
       );
+    }
+
+    for (const host of ["catalog-fallback", "catalog-route", "catalog-alias"]) {
+      await t.test(`${host}: native %k selects the per-host trust file`, async (subtest) => {
+        const env = new SshExecutionEnv({ target: { host }, cwd: remote });
+        subtest.after(() => env.cleanup(context));
+        const result = await env.exec(["touch", host], {}, context);
+        assert(result.ok, result.ok ? undefined : result.error);
+        assert.equal(result.value.exitCode, 0);
+        assert.deepEqual(await readFile(join(remote, host)), Buffer.alloc(0));
+      });
     }
 
     await t.test("empty trust overrides defer to native OpenSSH configuration", async (subtest) => {
@@ -257,82 +278,59 @@ Host *
       },
     );
 
-    await t.test(
-      "inventory changes do not control saved or manual local and SSH execution",
-      async (subtest) => {
-        const inventory = await inventoryFixture(subtest);
-        const ready = { ...inventory.instance, host: "global-trust" };
-        const { sessions, faux, selection, open } = await sessionsFixture(subtest, () =>
-          discoverEnvironments(inventory.command),
-        );
-        let application = sessions;
-        const { sessionId, conversation } = await application.compose(
-          form({ ...selection, env: "ssh:global-trust", cwd: "." }),
-        );
-        const states = {
-          ready: [ready],
-          stopped: [{ ...ready, ready: false, activeState: "inactive", subState: "dead" }],
-          restarted: [ready],
-          missing: [],
-          remapped: [{ ...ready, host: "unknown" }],
-          failed: null,
-        };
-        for (const [name, instances] of Object.entries(states)) {
-          await inventory.respond(JSON.stringify({ version: 1, instances }), instances ? 0 : 7);
-          if (instances) await application.environments();
-          else await assert.rejects(application.environments(), { code: 7 });
-          await rm(inventory.invoked);
-          await application.close();
-          application = await open();
-          const session = await application.get(sessionId);
+    for (const failed of [false, true]) {
+      await t.test(
+        `manual SSH execution ignores ${failed ? "failed" : "empty"} discovery`,
+        async (subtest) => {
+          const { sessions, faux, selection } = await sessionsFixture(subtest, async () => {
+            if (failed) throw new Error("Discovery unavailable");
+            return [];
+          });
+          const { sessionId, conversation } = await sessions.compose(
+            form({ ...selection, env: "ssh:global-trust", cwd: "." }),
+          );
+          const session = await sessions.get(sessionId);
           assert(session);
-          const current = await session.conversation(conversation.id);
-          assert(current);
-          assert.deepEqual(await session.harness.snapshot(Env, current.id, context), {
+          const marker = `independent-${failed}`;
+          faux.setResponses([
+            fauxAssistantMessage(fauxToolCall("bash", { command: `touch ~/${marker}` }), {
+              stopReason: "toolUse",
+            }),
+            fauxAssistantMessage("Done"),
+          ]);
+          await session.send(conversation, form({ message: "Run the command" }));
+          await conversation.waitForIdle(context);
+          assert.deepEqual(await readFile(join(remote, marker)), Buffer.alloc(0));
+          await assert.rejects(readFile(join(client, marker)), { code: "ENOENT" });
+          assert.deepEqual(await session.harness.snapshot(Env, conversation.id, context), {
             env: { type: "ssh", host: "global-trust" },
           });
-          for (const env of ["ssh:global-trust", "local"]) {
-            await session.configure(current, form({ env }));
-            const local = env === "local";
-            const marker = `inventory-${name}-${local ? "local" : "ssh"}`;
-            faux.setResponses([
-              fauxAssistantMessage(fauxToolCall("bash", { command: `touch ~/${marker}` }), {
-                stopReason: "toolUse",
-              }),
-              fauxAssistantMessage("Done"),
-            ]);
-            await session.send(current, form({ message: "Run the command" }));
-            await current.waitForIdle(context);
-            assert.deepEqual(
-              await readFile(join(local ? client : remote, marker)),
-              Buffer.alloc(0),
-            );
-            await assert.rejects(readFile(join(local ? remote : client, marker)), {
-              code: "ENOENT",
-            });
-            await assert.rejects(readFile(inventory.invoked), { code: "ENOENT" });
-          }
-          await session.configure(current, form({ env: "ssh:global-trust" }));
-        }
-        const session = await application.get(sessionId);
-        assert(session);
-        const current = await session.conversation(conversation.id);
-        assert(current);
-        await session.configure(current, form({ env: "ssh:unknown" }));
-        await assert.rejects(session.send(current, form({ message: "/cd ." })), RemoteError);
-        assert.deepEqual(await session.harness.snapshot(Env, current.id, context), {
+        },
+      );
+    }
+
+    await t.test(
+      "failed SSH acquisition preserves selection without local fallback",
+      async (subtest) => {
+        const { sessions, selection } = await sessionsFixture(subtest, async () => []);
+        const session = await sessions.open();
+        const conversation = await session.createConversation(
+          form({ ...selection, env: "ssh:unknown", cwd: "." }),
+        );
+        await assert.rejects(session.send(conversation, form({ message: "/cd ." })), RemoteError);
+        assert.deepEqual(await session.harness.snapshot(Env, conversation.id, context), {
           env: { type: "ssh", host: "unknown" },
         });
-        assert.equal((await current.agent(context)).cwd, ".");
-        await assert.rejects(readFile(inventory.invoked), { code: "ENOENT" });
-        await application.close();
+        assert.equal((await conversation.agent(context)).cwd, ".");
       },
     );
 
     await t.test(
       "application persists only the host, reacquires SSH after reopen, and closes owned connections",
       async (subtest) => {
-        const { sessions, faux, selection, open } = await sessionsFixture(subtest);
+        const { sessions, faux, selection, open } = await sessionsFixture(subtest, async () => {
+          throw new Error("Discovery unavailable after reopen");
+        });
         const { sessionId, conversation } = await sessions.compose(
           form({ ...selection, env: "ssh:global-trust", cwd: remote }),
         );

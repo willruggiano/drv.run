@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer, request } from "node:http";
 import { serve } from "../src/server.ts";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -18,41 +18,10 @@ export const form = (fields: Record<string, string>): FormData => {
   return result;
 };
 
-export async function inventoryFixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), "pds-inventory-"));
+export async function knownHostsFixture(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), "pds-known-hosts-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  await mkdir(join(directory, "bin"));
-  const command = join(directory, "bin", "drv.run");
-  const response = join(directory, "response.json");
-  const invoked = join(directory, "invoked");
-  await writeFile(
-    command,
-    `#!${process.execPath}
-const fs = require("node:fs");
-fs.writeFileSync(${JSON.stringify(invoked)}, "");
-const response = JSON.parse(fs.readFileSync(${JSON.stringify(response)}, "utf8"));
-process.stdout.write(response.output);
-process.exitCode = response.code;
-`,
-    { mode: 0o700 },
-  );
-  return {
-    directory,
-    command,
-    invoked,
-    instance: {
-      id: "opaque:id/with-delimiters",
-      reference: "github:owner/project",
-      host: "Mixed.Case-Alias",
-      ready: true,
-      activeState: "active",
-      subState: "running",
-      result: "success",
-    },
-    async respond(output: string, code = 0) {
-      await writeFile(response, JSON.stringify({ output, code }));
-    },
-  };
+  return directory;
 }
 
 export async function sessionsFixture(t: TestContext, discover?: () => Promise<EnvTarget[]>) {
