@@ -189,8 +189,8 @@ await test(
       assert.equal(await page.locator("#cwd").inputValue(), changed);
       assert.equal(await page.locator("#transcript article").count(), 0);
       assert.equal((await app.list()).length, 2);
-      await page.getByRole("link", { name: "Conversations", exact: true }).first().click();
-      assert.equal(await page.locator("#session-list .session-row").count(), 2);
+      await page.getByRole("link", { name: "Sessions", exact: true }).first().click();
+      assert.equal(await page.locator("#session-list .session-row").count(), 1);
       await page.getByRole("link", { name: "Review these files", exact: true }).click();
       await page.locator('[data-kind="pi.compaction"]').waitFor();
       assert.equal(page.url(), firstURL);
@@ -680,11 +680,7 @@ await test(
       assert.equal(roots.includes((await kept.getAttribute("id"))!), false);
       assert.equal(await page.locator("#conversation article[data-role]").count(), 122);
       assert.equal(await page.locator("#partial").count(), 0);
-      assert(
-        Number.isSafeInteger(
-          Number(await page.locator("#admission").getAttribute("data-submission-id")),
-        ),
-      );
+      assert.equal(await page.locator("#admission, #execution-result, #recovery").count(), 0);
       await page.reload();
       await idle(page);
       assert.equal(await page.locator("#entries > article").count(), 50);
@@ -718,10 +714,10 @@ await test(
 );
 
 await test(
-  "prefixed session lifecycle and metadata use native forms without secret model fields",
+  "prefixed session lifecycle stays API-only and returns to home or conversation",
   { timeout: 60_000 },
   async (t) => {
-    const { sessions, auth, models, faux } = await sessionsFixture(t);
+    const { sessions, auth, faux } = await sessionsFixture(t);
     const base = await servePrefixed(t, sessions, auth, "/tools/pds");
     const browser = await chromium.launch({
       executablePath:
@@ -734,70 +730,6 @@ await test(
       const page = await browser.newPage();
       const errors: Error[] = [];
       page.on("pageerror", (error) => errors.push(error));
-      const originals = faux.provider.getModels();
-      models.setProvider({
-        ...faux.provider,
-        getModels: () =>
-          originals.map((model) => ({
-            ...model,
-            baseUrl: "https://private.invalid",
-            headers: { Authorization: "not-for-the-browser" },
-          })),
-      });
-      const refresh = t.mock.method(models, "refresh");
-      await page.goto(new URL("api/models", base).href);
-      assert.deepEqual(
-        await page.locator("#models article").evaluateAll((rows) =>
-          rows.map((row) => ({
-            id: row.getAttribute("data-model-id"),
-            provider: row.getAttribute("data-provider"),
-            fields: Array.from(row.querySelectorAll("dd"), (field) =>
-              field.getAttribute("data-field"),
-            ),
-          })),
-        ),
-        originals.map((model) => ({
-          id: model.id,
-          provider: model.provider,
-          fields: [
-            "id",
-            "provider",
-            "name",
-            "input",
-            "reasoning",
-            "contextWindow",
-            "maxTokens",
-            "cost",
-            "thinkingLevels",
-          ],
-        })),
-      );
-      assert.equal(await page.locator("#models select, #models input").count(), 0);
-      const viewport = page.viewportSize();
-      assert(viewport);
-      await page.setViewportSize({ width: 390, height: 844 });
-      assert.equal(
-        await page.locator("#models").evaluate((element) => {
-          const bounds = element.getBoundingClientRect();
-          return (
-            bounds.left >= 0 &&
-            bounds.right <= innerWidth &&
-            element.scrollWidth <= element.clientWidth
-          );
-        }),
-        true,
-      );
-      await page.locator("#models").press("End");
-      await page.waitForFunction(() => (document.getElementById("models")?.scrollTop ?? 0) > 0);
-      await page.setViewportSize(viewport);
-      assert.deepEqual(await sessions.list(), []);
-      models.setProvider({ ...faux.provider, getModels: () => [] });
-      await page.reload();
-      assert.equal(await page.locator("#models article").count(), 0);
-      assert.deepEqual(await sessions.list(), []);
-      assert.equal(refresh.mock.callCount(), 0);
-      models.setProvider(faux.provider);
-
       const id = "../λ/owner ' & % session";
       // Explicit store opening remains an API operation, not a second home creation control.
       const opened = await page.request.post(new URL("api/s/open", base).href, {
@@ -812,9 +744,16 @@ await test(
       assert.equal((await app.harness.inspect(context)).scheduling, "paused");
       assert.equal(
         await page.getByRole("button", { name: "New empty conversation", exact: true }).count(),
-        1,
+        0,
       );
-      await page.getByRole("button", { name: "Open root conversation", exact: true }).click();
+      assert.equal(new URL(page.url()).pathname, "/tools/pds/");
+      assert.equal(await page.locator("#session-list a").count(), 0);
+      const rooted = await page.request.post(
+        new URL(`api/s/${encodeURIComponent(id)}/root`, base).href,
+        { form: {}, maxRedirects: 0 },
+      );
+      assert.equal(rooted.status(), 303);
+      await page.goto(new URL(rooted.headers().location!, base).href);
       await page.waitForURL((url) => conversationRoute.test(url.href));
       await idle(page);
       const selectedSession = await selected(sessions, page.url());
@@ -854,7 +793,7 @@ await test(
       await idle(page);
       assert.equal((await selectedSession.conversation.agent(context)).model?.modelId, "second");
       assert.equal(faux.state.callCount, 1);
-      await page.getByRole("link", { name: "Conversations", exact: true }).first().click();
+      await page.getByRole("link", { name: "Sessions", exact: true }).first().click();
       assert.equal((await app.list()).length, 1);
       assert.equal(await page.locator("#session-list .session-row").count(), 1);
       assert.deepEqual(errors, []);

@@ -51,7 +51,14 @@ await test(
           await page.waitForFunction(() =>
             document.getElementById("connection")?.classList.contains("sr-only"),
           );
-        assert.equal(await page.locator("#execution-controls, #admission-options").count(), 0);
+        assert.equal(
+          await page
+            .locator(
+              "#execution-controls, #admission-options, #execution-result, #admission, #recovery",
+            )
+            .count(),
+          0,
+        );
         assert.equal(
           await page.locator('#composer [name="requestId"]').getAttribute("type"),
           "hidden",
@@ -86,12 +93,8 @@ await test(
         const posted = page.waitForResponse((response) => response.request().method() === "POST");
         await button.click();
         assert.equal((await posted).status(), enhanced ? 200 : 303);
-        await page
-          .locator('#execution-result[data-result="aborted"]')
-          .waitFor({ state: "attached" });
-        const result = page.locator("#execution-result");
-        assert.equal(await result.getAttribute("data-submission-id"), String(queued));
-        assert.equal(await result.getAttribute("data-scope"), scope);
+        await page.locator(`#queued-${queued}`).waitFor({ state: "detached" });
+        assert.equal(await page.locator("#execution-result, #admission, #recovery").count(), 0);
         if (enhanced)
           assert.equal(await page.locator("#message").inputValue(), "Unsubmitted draft");
         assert.equal(
@@ -111,15 +114,12 @@ await test(
             maxRedirects: 0,
           });
           assert.equal(response.status(), 303);
-          await page.goto(new URL(response.headers().location!, base).href);
-          assert.equal(
-            await page.locator("#execution-result").getAttribute("data-result"),
-            expected,
-          );
-          assert.equal(
-            await page.locator("#execution-result").getAttribute("data-submission-id"),
-            String(id),
-          );
+          const destination = new URL(response.headers().location!, base);
+          assert.equal(destination.pathname, scope);
+          assert.equal(destination.searchParams.get("withdrawal"), expected);
+          assert.equal(destination.searchParams.get("id"), String(id));
+          await page.goto(destination.href);
+          assert.equal(await page.locator("#execution-result, #admission").count(), 0);
         }
         finish.resolve();
         await conversation.waitForIdle(context);
@@ -179,37 +179,41 @@ await test(
     });
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     await signalled.promise;
-    assert.equal(await page.locator("#execution-result").getAttribute("data-action"), null);
+    assert.equal(await page.locator("#execution-result").count(), 0);
     finish.resolve();
     await page.waitForFunction(() => document.getElementById("notice")?.textContent !== "");
     assert.equal(await page.locator("#message").inputValue(), "Keep this draft");
     await conversation.waitForIdle(context);
     assert.equal(writes, 1);
-    assert.equal(await page.locator("#execution-result").getAttribute("data-action"), null);
+    assert.equal(await page.locator("#execution-result").count(), 0);
     await page.goto(new URL(`/pds/api/s/${app.id}`, base).href);
     assert.deepEqual((await app.harness.inspect(context)).tasks, []);
     assert.equal(writes, 1);
   },
 );
 
-await test("receipt-page withdrawal acknowledges in place", { timeout: 30000 }, async (t) => {
-  const { sessions, auth, selection } = await sessionsFixture(t);
-  const base = await servePrefixed(t, sessions, auth, "/pds");
-  const app = await sessions.open();
-  const conversation = await app.root(form(selection));
-  const record = await conversation.commit(
-    (tx) =>
-      tx.createSubmission({ type: "input", conversationId: conversation.id, status: "queued" }),
-    context,
-  );
-  const page = await browserPage(t);
-  const scope = `/pds/api/s/${app.id}/c/${conversation.id}`;
-  await page.goto(new URL(`${scope}/submissions/status?id=${record.id}`, base).href);
-  await page.getByRole("button", { name: "Cancel queued message", exact: true }).click();
-  await page.locator('#execution-result[data-result="aborted"]').waitFor({ state: "attached" });
-  assert.equal(await page.locator("#notice").textContent(), "");
-  assert.equal((await app.harness.inspect(context)).scheduling, "paused");
-});
+await test(
+  "receipt reads return to the conversation without result UI",
+  { timeout: 30000 },
+  async (t) => {
+    const { sessions, auth, selection } = await sessionsFixture(t);
+    const base = await servePrefixed(t, sessions, auth, "/pds");
+    const app = await sessions.open();
+    const conversation = await app.root(form(selection));
+    const record = await conversation.commit(
+      (tx) =>
+        tx.createSubmission({ type: "input", conversationId: conversation.id, status: "queued" }),
+      context,
+    );
+    const page = await browserPage(t);
+    const scope = `/pds/api/s/${app.id}/c/${conversation.id}`;
+    await page.goto(new URL(`${scope}/submissions/status?id=${record.id}`, base).href);
+    assert.equal(new URL(page.url()).pathname, scope);
+    assert.equal(await page.locator("#composer").count(), 1);
+    assert.equal(await page.locator("#execution-result, #admission, #recovery").count(), 0);
+    assert.equal((await app.harness.inspect(context)).scheduling, "paused");
+  },
+);
 
 await test(
   "composer /resume enables scheduling without submitting input, with and without Datastar",

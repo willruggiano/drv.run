@@ -1,8 +1,11 @@
+import type { Acknowledgement } from "./server.ts";
+
 // Presentation only. Conversation state and rendering stay on the server.
 
 // Datastar 1.0.5's fetch event contract; the pinned bundle has no TypeScript declarations.
 declare global {
   interface DocumentEventMap {
+    "pds-acknowledgement": CustomEvent<Acknowledgement>;
     "datastar-fetch": CustomEvent<{
       type: string;
       el: Element;
@@ -43,28 +46,31 @@ if (stream && latest) {
     follow();
   });
 }
-const acknowledgedControls = new WeakSet<Element>();
+const controls = new Map<HTMLFormElement, boolean>();
+document.addEventListener("pds-acknowledgement", ({ detail }) => {
+  if (detail.action === "submit" || detail.action === "receipt") return;
+  for (const form of controls.keys()) {
+    const id = form.elements.namedItem("id");
+    if (
+      new URL(form.action).pathname === `${detail.scope}/${detail.action}` &&
+      (detail.action !== "abortSubmission" ||
+        (id instanceof HTMLInputElement && id.value === String(detail.id)))
+    )
+      controls.set(form, true);
+  }
+});
 document.addEventListener("datastar-fetch", (event) => {
   const { type, el } = event.detail;
   if (el instanceof HTMLFormElement && el.hasAttribute("data-execution-control")) {
-    const result = document.getElementById("execution-result")!;
     if (type === "started") {
-      acknowledgedControls.delete(el);
+      controls.set(el, false);
       document.getElementById("notice")!.replaceChildren();
-      result.replaceChildren();
-      for (const name of ["action", "result", "submissionId"]) delete result.dataset[name];
-    } else if (type === "datastar-patch-elements") {
-      const path = new URL(el.action).pathname;
-      const id = el.elements.namedItem("id");
-      if (
-        `${result.dataset.scope}/${result.dataset.action}` === path &&
-        (!(id instanceof HTMLInputElement) || result.dataset.submissionId === id.value)
-      )
-        acknowledgedControls.add(el);
-    } else if (type === "finished" && !acknowledgedControls.has(el)) {
+    } else if (type === "finished") {
       // Datastar 1.0.5 emits only finished for a network failure with retry: never.
-      document.getElementById("notice")!.textContent =
-        "Control outcome is uncertain. Check the conversation and submission status before trying again. No command was replayed.";
+      if (!controls.get(el))
+        document.getElementById("notice")!.textContent =
+          "Control outcome is uncertain. Check the conversation before trying again. No command was replayed.";
+      controls.delete(el);
     }
   }
   if (el === stream && ["error", "retrying", "retries-failed", "finished"].includes(type)) {
@@ -77,7 +83,6 @@ document.addEventListener("datastar-fetch", (event) => {
   } else if (
     el !== stream &&
     el.id !== "composer" &&
-    el.id !== "recover-admission" &&
     !el.hasAttribute("data-execution-control") &&
     (type === "error" || type === "retries-failed")
   ) {
@@ -91,13 +96,20 @@ document.addEventListener("datastar-fetch", (event) => {
 const composer = document.querySelector<HTMLFormElement>("#composer");
 if (composer) {
   const identity = composer.querySelector<HTMLInputElement>('[name="requestId"]')!;
-  const recovery = document.getElementById("recovery")!;
-  const lookup = document.querySelector<HTMLAnchorElement>("#recover-admission")!;
   const fields = composer.querySelector<HTMLFieldSetElement>("fieldset")!;
-  let pending: { requestId: string; scope: string } | undefined;
+  let pending:
+    | { requestId: string; scope: string; phase: "sending" | "recovering" | "uncertain" }
+    | undefined;
   let attempted = false;
   const newIdentity = () => {
     identity.value = crypto.randomUUID();
+  };
+  const recover = () => {
+    if (!pending) return;
+    pending.phase = "recovering";
+    fields.disabled = true;
+    composer.dataset.recovery = `${pending.scope}/submissionByRequest?${new URLSearchParams({ requestId: pending.requestId })}`;
+    composer.dispatchEvent(new Event("recover-admission"));
   };
   composer.addEventListener(
     "submit",
@@ -105,11 +117,11 @@ if (composer) {
       if (pending) {
         event.preventDefault();
         event.stopImmediatePropagation();
+        if (pending.phase === "uncertain") recover();
         return;
       }
-      pending = { requestId: identity.value, scope: composer.dataset.scope! };
+      pending = { requestId: identity.value, scope: composer.dataset.scope!, phase: "sending" };
       attempted = true;
-      recovery.hidden = true;
       const notice = document.getElementById("notice")!;
       for (const attribute of ["data-invalid-request", "data-issue", "data-field"])
         notice.removeAttribute(attribute);
@@ -123,37 +135,44 @@ if (composer) {
     const requestId = event.formData.get("requestId");
     if (typeof requestId !== "string") throw new Error("The composer requires a text request ID.");
     pending.requestId = requestId;
-    lookup.href = `${pending.scope}/submissionByRequest?${new URLSearchParams({ requestId })}`;
     // The entry list is complete. Disabling fields before this event would omit them.
     fields.disabled = true;
   });
   for (const name of ["input", "change"])
-    composer.addEventListener(name, (event) => {
-      if (attempted && !pending) {
-        if (event.target !== identity) newIdentity();
+    composer.addEventListener(name, () => {
+      if (attempted && (!pending || pending.phase === "uncertain")) {
+        pending = undefined;
+        newIdentity();
         attempted = false;
       }
     });
   composer.addEventListener("reset", () => {
     pending = undefined;
     attempted = false;
-    recovery.hidden = true;
     fields.disabled = false;
+    delete composer.dataset.recovery;
     queueMicrotask(newIdentity);
   });
-  document.getElementById("edit-draft")!.addEventListener("click", () => {
-    pending = undefined;
-    attempted = false;
-    recovery.hidden = true;
-    newIdentity();
-    fields.disabled = false;
+  document.addEventListener("pds-acknowledgement", ({ detail }) => {
+    if (
+      !pending ||
+      detail.scope !== pending.scope ||
+      (detail.action !== "submit" && detail.action !== "receipt") ||
+      detail.requestId !== pending.requestId
+    )
+      return;
+    if (detail.action === "receipt" && detail.record?.type !== "input") return;
+    const destination = composer.dataset.home ? pending.scope : undefined;
+    document.getElementById("notice")!.replaceChildren();
+    composer.reset();
+    if (destination) window.location.assign(destination);
   });
   document.addEventListener("datastar-fetch", (event) => {
     const { el, type, argsRaw } = event.detail;
-    if (!pending || (el !== composer && el !== lookup)) return;
+    if (!pending || el !== composer) return;
     const status = argsRaw.status;
     if (
-      el === composer &&
+      pending.phase === "sending" &&
       type === "error" &&
       ["400", "403", "404", "405", "409", "413", "415"].includes(status ?? "")
     ) {
@@ -165,7 +184,7 @@ if (composer) {
     }
     if (type !== "datastar-patch-elements" && type !== "finished") return;
     if (
-      el === composer &&
+      pending.phase === "sending" &&
       document.getElementById("notice")?.dataset.invalidRequest ===
         encodeURIComponent(pending.requestId)
     ) {
@@ -173,25 +192,15 @@ if (composer) {
       fields.disabled = false;
       return;
     }
-    // The pinned Datastar watcher applies its patch before this listener runs.
-    const receipt = document.getElementById("admission")!;
-    if (
-      receipt.dataset.scope === pending.scope &&
-      receipt.dataset.requestId === encodeURIComponent(pending.requestId) &&
-      receipt.dataset.type === "input" &&
-      receipt.dataset.submissionId !== undefined &&
-      (receipt.dataset.result === "admitted" || receipt.dataset.result === "present")
-    ) {
-      const destination = composer.dataset.home ? pending.scope : undefined;
-      composer.reset();
-      if (destination) window.location.assign(destination);
-      return;
-    }
-    if (el === composer && type === "finished") {
-      fields.disabled = true;
-      recovery.hidden = false;
+    if (type !== "finished") return;
+    if (pending.phase === "sending") {
       // Read after an uncertain response; never replay the write.
-      lookup.click();
+      recover();
+    } else {
+      pending.phase = "uncertain";
+      fields.disabled = false;
+      document.getElementById("notice")!.textContent =
+        "Acknowledgement unavailable. Your draft and files have been kept. Send checks admission again; editing starts a new input and may duplicate work.";
     }
   });
 }

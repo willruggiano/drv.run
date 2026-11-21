@@ -65,60 +65,8 @@ export function alert(message = ""): string {
   return `<div id="notice" role="alert">${escape(message)}</div>`;
 }
 
-export function admission(path: string, id: D.SubmissionId, requestId?: string) {
-  return `<section id="admission" role="status" data-result="admitted" data-type="input" data-scope="${escape(path)}" data-submission-id="${id}"${requestId === undefined ? "" : ` data-request-id="${encodeURIComponent(requestId)}"`}><span>Input admitted: ${id}.</span> <a href="${escape(path)}/submissions/status?id=${id}">Submission status</a></section>`;
-}
-
-export function submissionResult(
-  path: string,
-  record: D.SubmissionRecord | undefined,
-  requestId?: string,
-) {
-  const key = record?.requestId ?? requestId;
-  const fields = record && {
-    id: record.id,
-    conversationId: record.conversationId,
-    requestId: record.requestId,
-    type: record.type,
-    status: record.status,
-    entry: record.entry,
-    answer: record.answer,
-    reason: record.reason,
-    detail: record.detail,
-  };
-  return `<section id="admission" role="status" data-scope="${escape(path)}" data-result="${record ? "present" : "absent"}"${key === undefined ? "" : ` data-request-id="${encodeURIComponent(key)}"`}${record ? ` data-submission-id="${record.id}" data-type="${record.type}" data-status="${record.status}"` : ""}>${
-    fields
-      ? `<h2>Submission ${record.id}</h2><dl>${Object.entries(fields)
-          .filter(([, value]) => value !== undefined)
-          .map(
-            ([name, value]) =>
-              `<dt>${name}</dt><dd data-field="${name}">${escape(name === "detail" ? JSON.stringify(value) : value)}</dd>`,
-          )
-          .join("")}</dl>`
-      : "<p>No submission found at this time. Admission may still be in progress. Do not resend automatically.</p>"
-  }${record?.type === "input" && record.status === "queued" ? withdrawForm(path, record.id) : ""}</section>`;
-}
-
 function withdrawForm(path: string, id: D.SubmissionId) {
   return `<form method="post" action="${escape(path)}/abortSubmission" data-execution-control data-on:submit="@post(${js(`${path}/abortSubmission`)}, {contentType: 'form', retry: 'never'})"><input type="hidden" name="id" value="${id}"><button class="icon" aria-label="Cancel queued message">×</button></form>`;
-}
-
-export function executionResult(path: string, action?: "abort" | "resume") {
-  return `<section id="execution-result" role="status" data-scope="${escape(path)}"${action ? ` data-action="${action}"` : ""}>${action === "abort" ? "Abort completed for ordinary owned work. Queued inputs withdrawn; queued writes and background work are preserved." : action === "resume" ? "Scheduling enabled. This does not promise completion or recovery of blocked tasks." : ""}</section>`;
-}
-
-export function withdrawalResult(
-  path: string,
-  id: D.SubmissionId,
-  result: Awaited<ReturnType<D.Harness["abortSubmission"]>>,
-) {
-  const explanation = {
-    aborted: "Queued submission withdrawn.",
-    already_placed: "Submission already placed. Execution was not aborted.",
-    settled: "Submission already settled.",
-    not_found: "No submission found in this conversation.",
-  }[result];
-  return `<section id="execution-result" role="status" data-action="abortSubmission" data-result="${result}" data-scope="${escape(path)}" data-submission-id="${id}"><p>${result}: ${explanation}</p><a href="${escape(path)}/submissions/status?id=${id}">Submission ${id} status</a></section>`;
 }
 
 export function invalidForm(issue: FormIssue, requestId?: string) {
@@ -126,8 +74,6 @@ export function invalidForm(issue: FormIssue, requestId?: string) {
     issue.kind === "image-model" ? "Select a model that accepts images." : issue.message;
   return `<div id="notice" role="alert" data-issue="${issue.kind}"${issue.kind === "field" ? ` data-field="${escape(issue.field)}"` : ""}${requestId === undefined ? "" : ` data-invalid-request="${encodeURIComponent(requestId)}"`}><p>${escape(message)}</p>${issue.kind === "image-model" ? `<ul aria-label="Available image models">${issue.models.map((model) => `<li><button type="button" data-select-model="${escape(modelKey(model))}" data-thinking="${model.thinkingLevels.join(" ")}">${escape(model.name)} (${escape(modelKey(model))})</button></li>`).join("")}</ul>` : ""}</div>`;
 }
-
-const recovery = `<div id="recovery" hidden><p>Admission is uncertain. The draft and files have been kept.</p><a id="recover-admission" data-on:click__prevent="@get(el.href, {retry: 'never'})">Check admission</a> <button id="edit-draft" type="button">Edit as new input</button><p>New input can duplicate work if the previous input was admitted.</p></div>`;
 
 const option = (value: string, label: string, selected: string) =>
   `<option value="${escape(value)}"${value === selected ? " selected" : ""}>${escape(label)}</option>`;
@@ -233,16 +179,16 @@ async function creationForm(app: Menu, prefix: string) {
   const action = `${prefix}/`;
   const id = decode(SessionId, randomUUID());
   const scope = conversationPath(prefix, id, ROOT_CONVERSATION_ID);
-  return `<footer id="app-footer" class="composer-area"><form id="composer" data-on:reset="$_hasInput = false; $_hasFiles = false" method="post" action="${escape(action)}" class="new-composer" data-home="true" data-scope="${escape(scope)}" enctype="multipart/form-data" data-indicator:_sending data-on:submit="@post(${js(action)}, {contentType: 'form', retry: 'never'})"><input type="hidden" name="sessionId" value="${escape(id)}"><fieldset id="new-options" aria-label="New conversation options"><div id="footer-instance" class="selector-summary">${fields.environment}${fields.directory}</div>
+  return `<footer id="app-footer" class="composer-area"><form id="composer" data-on:recover-admission="@get(el.dataset.recovery, {retry: 'never'})" data-on:reset="$_hasInput = false; $_hasFiles = false" method="post" action="${escape(action)}" class="new-composer" data-home="true" data-scope="${escape(scope)}" enctype="multipart/form-data" data-indicator:_sending data-on:submit="@post(${js(action)}, {contentType: 'form', retry: 'never'})"><input type="hidden" name="sessionId" value="${escape(id)}"><fieldset id="new-options" aria-label="New conversation options"><div id="footer-instance" class="selector-summary">${fields.environment}${fields.directory}</div>
     <div id="bottom-line"><div class="footer-row"><div class="footer-model-context"><div id="footer-model" class="model-summary selector-summary"><span class="model-name">${fields.model}</span>${dot}<span class="model-effort">${fields.thinking}</span></div></div></div></div>
-    ${composer(true, fields.available)}</fieldset>${recovery}</form></footer>`;
+    ${composer(true, fields.available)}</fieldset></form></footer>`;
 }
 
-export async function sessionList(app: Application, prefix: string, limit?: number) {
+async function sessionList(app: Application, prefix: string) {
   const records = await Promise.all(
     (await app.list()).map(async (record) => {
       let availability = record.status;
-      let path = sessionPath(prefix, record.id);
+      let path: string | undefined;
       let title: string = record.id;
       let createdAt: number | undefined;
       let detail = "";
@@ -271,72 +217,22 @@ export async function sessionList(app: Application, prefix: string, limit?: numb
           availability = "unavailable";
         }
       }
+      const tag = path ? "a" : "div";
       const date = createdAt === undefined ? "" : new Date(createdAt).toISOString().slice(0, 10);
       return {
         createdAt: createdAt ?? 0,
-        html: `<div class="session-row" data-session-id="${escape(record.id)}" data-status="${availability}"><a class="session" href="${escape(path)}" aria-label="${escape(title)}"><span class="session-heading"><strong>${escape(title)}</strong>${date ? `<time datetime="${date}">${date}</time>` : ""}</span>${availability === "unavailable" ? '<span class="session-detail">Unavailable</span>' : detail}</a></div>`,
+        html: `<div class="session-row" data-session-id="${escape(record.id)}" data-status="${availability}"><${tag} class="session"${path ? ` href="${escape(path)}"` : ""} aria-label="${escape(title)}"><span class="session-heading"><strong>${escape(title)}</strong>${date ? `<time datetime="${date}">${date}</time>` : ""}</span>${availability === "unavailable" ? '<span class="session-detail">Unavailable</span>' : detail}</${tag}></div>`,
       };
     }),
   );
-  const rows = records.toSorted((left, right) => right.createdAt - left.createdAt).slice(0, limit);
+  const rows = records.toSorted((left, right) => right.createdAt - left.createdAt).slice(0, 5);
   return `<div>${rows.length ? '<h2 id="recent-title">Recent sessions</h2>' : ""}<section id="session-list" aria-label="Sessions">${rows.map((row) => row.html).join("")}</section>${rows.length ? "" : '<p id="sessions-empty">No sessions</p>'}</div>`;
 }
 
 export async function home(app: Application, prefix: string): Promise<string> {
   return page(
     "Sessions",
-    `<header id="app-header">${alert()}<div hidden><section id="admission" role="status"></section><section id="execution-result" role="status"></section></div></header><main id="main-area"><section id="landing" class="pane" aria-label="Sessions">${await sessionList(app, prefix, 5)}</section></main>${await creationForm(app, prefix)}`,
-    "home",
-    prefix,
-  );
-}
-
-export async function sessionPage(app: Session, prefix: string): Promise<string> {
-  const base = sessionPath(prefix, app.id);
-  const records = await app.list();
-  const rows = await Promise.all(
-    records.map(async (record) => {
-      const agent = await app.harness.snapshot(AgentDoc, record.id, context);
-      const env = await app.harness.snapshot(Env, record.id, context);
-      return `<div class="session-row" data-conversation-id="${record.id}"><a class="session" href="${escape(conversationPath(prefix, app.id, record.id))}" aria-label="${escape(record.title)}"><span class="session-heading"><strong>${escape(record.title)}</strong></span><span class="session-detail"><span class="session-environment">${escape(environmentLabel(env?.env))}:${escape(agent?.cwd ?? "")}</span><span class="model-summary"><span class="model-name">${escape(agent?.model ? `${agent.model.provider}/${agent.model.modelId}` : "")}</span></span></span></a></div>`;
-    }),
-  );
-  return page(
-    `Session ${app.id}`,
-    `<header id="app-header"><div class="bar"><a href="${escape(prefix)}/">Sessions</a><h1 class="header-title" title="${escape(app.id)}">${escape(app.id)}</h1></div>${alert()}</header><main id="main-area"><section id="landing" class="pane" aria-label="Conversations"><div id="session-list">${rows.join("")}</div><form method="post" action="${escape(base)}/root"><button>Open root conversation</button></form><form method="post" action="${escape(base)}/createConversation"><button>New empty conversation</button></form></section></main>`,
-    "home",
-    prefix,
-  );
-}
-
-export async function modelsPage(app: Pick<Session, "models">, prefix: string) {
-  const models = await app.models.getAvailable();
-  const rows = models.map((model) => {
-    const values = {
-      id: model.id,
-      provider: model.provider,
-      name: model.name,
-      input: model.input.join(", "),
-      reasoning: model.reasoning,
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
-      cost: JSON.stringify({
-        input: model.cost.input,
-        output: model.cost.output,
-        cacheRead: model.cost.cacheRead,
-        cacheWrite: model.cost.cacheWrite,
-      }),
-      thinkingLevels: getSupportedThinkingLevels(model).join(", "),
-    };
-    return `<article data-model-id="${escape(model.id)}" data-provider="${escape(model.provider)}"><dl>${Object.entries(
-      values,
-    )
-      .map(([name, value]) => `<dt>${name}</dt><dd data-field="${name}">${escape(value)}</dd>`)
-      .join("")}</dl></article>`;
-  });
-  return page(
-    "Models",
-    `<header id="app-header"><div class="bar"><a href="${escape(prefix)}/">Sessions</a><h1>Models</h1></div></header><main id="main-area"><section id="models" class="pane" tabindex="0" aria-label="Available models">${rows.join("")}</section></main>`,
+    `<header id="app-header">${alert()}</header><main id="main-area"><section id="landing" class="pane" aria-label="Sessions">${await sessionList(app, prefix)}</section></main>${await creationForm(app, prefix)}`,
     "home",
     prefix,
   );
@@ -347,18 +243,16 @@ export async function conversationPage(
   conversation: D.Conversation,
   initial: { view: D.ConversationView; head: D.EntryRecord | null },
   prefix: string,
-  receipt = '<section id="admission" role="status"></section>',
-  result = '<section id="execution-result" role="status"></section>',
 ): Promise<string> {
   const controls = await configuration(app, conversation, prefix);
   const base = conversationPath(prefix, app.id, conversation.id);
   return page(
     `Conversation ${conversation.id}`,
-    `<header id="app-header"><div class="bar"><h1><a id="conversation-title" class="header-title" href="${escape(sessionPath(prefix, app.id))}" aria-label="Conversations">Conversation ${conversation.id}</a></h1></div>${alert()}<div hidden>${receipt}${result}</div><div id="connection" role="status">Connecting…</div><div id="activity" role="status"></div><div id="status" class="sr-only" role="status"></div></header>
+    `<header id="app-header"><div class="bar"><h1><a id="conversation-title" class="header-title" href="${escape(prefix)}/" aria-label="Sessions">Conversation ${conversation.id}</a></h1></div>${alert()}<div id="connection" role="status">Connecting…</div><div id="activity" role="status"></div><div id="status" class="sr-only" role="status"></div></header>
     <main id="main-area"><section id="stream" class="pane" tabindex="0" aria-label="Conversation" data-init="@get(${js(`${base}/watch`)}, {requestCancellation: 'cleanup', retry: 'always'})">${baseline(initial.view, initial.head, base, true)}</section></main>${queue(initial.view, base)}
     <footer id="app-footer" class="composer-area"><div id="conversation-navigation" role="group" aria-label="Conversation navigation"><button id="latest" type="button" aria-label="Latest" title="Latest">${icon("latest")}</button><button id="last" type="button" data-on:click="Array.from(document.querySelectorAll('#stream article[data-role=user]')).at(-1)?.scrollIntoView({block: 'start'})" aria-label="Last user message" title="Last user message">${icon("up")}</button><button id="top" type="button" data-on:click="document.getElementById('stream').scrollTop = 0" aria-label="Top" title="Top">${icon("top")}</button></div>
     <form id="abort-command" hidden method="post" action="${escape(base)}/abort" data-execution-control data-on:submit="@post(${js(`${base}/abort`)}, {contentType: 'form', retry: 'never'})"></form>
-    <form id="composer" data-on:reset="$_hasInput = false; $_hasFiles = false" method="post" action="${escape(base)}/composer" data-scope="${escape(base)}" enctype="multipart/form-data" data-indicator:_sending data-on:submit="@post(${js(`${base}/composer`)}, {contentType: 'form', retry: 'never'})"><fieldset class="composer-fields">${composer(false, true, initial.view)}</fieldset>${recovery}</form><div id="session-meta"><div id="bottom-line"><div class="footer-row"><a id="footer-sessions" class="icon footer-chevron" href="${escape(sessionPath(prefix, app.id))}" aria-label="Conversations" title="Conversations">${icon("back")}</a>
+    <form id="composer" data-on:recover-admission="@get(el.dataset.recovery, {retry: 'never'})" data-on:reset="$_hasInput = false; $_hasFiles = false" method="post" action="${escape(base)}/composer" data-scope="${escape(base)}" enctype="multipart/form-data" data-indicator:_sending data-on:submit="@post(${js(`${base}/composer`)}, {contentType: 'form', retry: 'never'})"><fieldset class="composer-fields">${composer(false, true, initial.view)}</fieldset></form><div id="session-meta"><div id="bottom-line"><div class="footer-row"><a id="footer-sessions" class="icon footer-chevron" href="${escape(prefix)}/" aria-label="Sessions" title="Sessions">${icon("back")}</a>
     <div id="footer-instance">${controls.environment}<span>:</span>${controls.cwd}</div><div id="footer-stats"></div>
     <div class="footer-model-context"><div id="footer-model" class="model-summary">${controls.model}${dot}${controls.thinking}</div>${dot}<span id="footer-context" class="context-usage"></span></div>
     <button id="footer-collapse" class="icon footer-chevron" type="button" aria-label="Collapse composer" aria-expanded="true" aria-controls="composer-shell" data-on:click="el.setAttribute('aria-expanded', el.getAttribute('aria-expanded') === 'true' ? 'false' : 'true')">${icon("down")}</button></div></div></div></footer>`,

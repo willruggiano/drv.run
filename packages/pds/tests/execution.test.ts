@@ -134,7 +134,7 @@ await test(
     });
     await response.body?.cancel();
     assert.equal(response.status, 303);
-    assert.equal(new URL(response.headers.get("location")!, base).pathname, `/pds/${path}`);
+    assert.equal(new URL(response.headers.get("location")!, base).pathname, "/pds/");
     await started.promise;
     const running = await app.harness.inspect(context);
     assert.equal(running.scheduling, "running");
