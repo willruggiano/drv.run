@@ -811,7 +811,7 @@ await test(
       assert.deepEqual(await app.list(), []);
       assert.equal((await app.harness.inspect(context)).scheduling, "paused");
       assert.equal(
-        await page.getByRole("button", { name: "Create conversation", exact: true }).count(),
+        await page.getByRole("button", { name: "New empty conversation", exact: true }).count(),
         1,
       );
       await page.getByRole("button", { name: "Open root conversation", exact: true }).click();
@@ -847,6 +847,9 @@ await test(
       faux.setResponses([fauxAssistantMessage("A prefixed conversation")]);
       await page.locator("#message").fill("Continue in this store");
       await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.waitForFunction(
+        () => document.querySelector<HTMLInputElement>("#message")?.value === "",
+      );
       await selectedSession.conversation.waitForIdle(context);
       await idle(page);
       assert.equal((await selectedSession.conversation.agent(context)).model?.modelId, "second");

@@ -39,6 +39,15 @@ export const TaskId = Type.Codec(DecimalId)
   .Decode((value) => Number(value) as D.TaskId)
   .Encode(String);
 
+export const SubmissionId = Type.Codec(DecimalId)
+  .Decode((value) =>
+    Value.Parse(
+      Type.Unsafe<D.SubmissionId>(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
+      Number(value),
+    ),
+  )
+  .Encode(String);
+
 declare const sessionBrand: unique symbol;
 export type SessionId = string & { readonly [sessionBrand]: "id" };
 export type SessionKey = string & { readonly [sessionBrand]: "key" };
