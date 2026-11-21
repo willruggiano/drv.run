@@ -7,7 +7,7 @@ import type * as D from "@earendil-works/pi-durable";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { context } from "../src/application.ts";
 import { SessionId, decode } from "../src/identity.ts";
-import { serve } from "../src/server.ts";
+import { serve, type Acknowledgement } from "../src/server.ts";
 import { sessionsFixture, form, servePrefixed } from "./fixtures.ts";
 
 await test(
@@ -23,8 +23,11 @@ await test(
     const page = await browserPage(t);
     await page.goto(server.origin);
     assert.equal(await page.locator('#composer [name="requestId"]').count(), 1);
-    await page.locator("#admission-options summary").click();
-    await page.locator('[name="requestId"]').fill("request\u0000<&>λ");
+    assert.equal(await page.locator('#composer [name="requestId"]').getAttribute("type"), "hidden");
+    assert.equal(await page.locator("#admission-options").count(), 0);
+    await page.locator('[name="requestId"]').evaluate((element: HTMLInputElement, value) => {
+      element.value = value;
+    }, "request\u0000<&>λ");
     const requestId = await page.locator('[name="requestId"]').inputValue();
     assert.equal(requestId, "request\u0000<&>λ");
     const sessionId = decode(SessionId, await page.locator('[name="sessionId"]').inputValue());
@@ -96,7 +99,7 @@ await test(
       () => document.querySelector<HTMLInputElement>("#message")?.value === "",
     );
     assert.equal(await page.locator("#notice").textContent(), "");
-    assert.equal(await page.locator("#recovery").isHidden(), true);
+    assert.equal(await page.locator("#recovery, #admission, #execution-result").count(), 0);
     assert(
       await app.harness.commit(
         (tx) => tx.submissionByRequest(conversation.id, nextRequest),
@@ -123,7 +126,7 @@ async function browserPage(t: TestContext, javaScriptEnabled = true) {
 }
 
 await test(
-  "absent and mismatched receipts retain locked drafts; explicit new input gets a new ID",
+  "absent and mismatched receipts keep drafts; Send only retries lookup and editing starts new input",
   { timeout: 30_000 },
   async (t) => {
     const { sessions, auth, faux, selection } = await sessionsFixture(t);
@@ -153,6 +156,7 @@ await test(
     await page.route(`**${scope}/composer`, (route) => route.abort("failed"));
     await page.route("**/submissionByRequest?**", async (route) => {
       read++;
+      if (read === 4) return route.fulfill({ status: 404, body: "" });
       const path =
         read === 1
           ? `/api/s/${app.id}/c/${other.id}/submissionByRequest?${new URLSearchParams({ requestId })}`
@@ -167,32 +171,29 @@ await test(
       .locator("#attachments")
       .setInputFiles({ name: "draft.txt", mimeType: "text/plain", buffer: Buffer.from("Keep me") });
     await page.locator("#send").click();
-    await page.locator(`#admission[data-scope="/api/s/${app.id}/c/${other.id}"]`).waitFor();
-    assert.equal(await page.locator("#message").inputValue(), "Uncertain draft");
-    assert.equal(await page.locator("#message").isDisabled(), true);
-    await page.locator("#recover-admission").click();
-    await page.locator('#admission[data-request-id="other"]').waitFor();
-    assert.equal(await page.locator("#message").inputValue(), "Uncertain draft");
-    assert.equal(await page.locator("#message").isDisabled(), true);
-    await page.locator("#recover-admission").click();
-    await page.locator('#admission[data-result="absent"]').waitFor();
-    assert.equal(
-      await page
-        .locator("#attachments")
-        .evaluate((element: HTMLInputElement) => element.files?.length),
-      1,
-    );
-    assert.equal(await page.locator('[name="requestId"]').inputValue(), requestId);
-    assert.equal(writes, 1);
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await page.waitForFunction(
+        () => !document.querySelector<HTMLInputElement>("#message")?.matches(":disabled"),
+      );
+      assert.equal(read, attempt);
+      assert.equal(writes, 1);
+      assert.equal(await page.locator("#message").inputValue(), "Uncertain draft");
+      assert.equal(await page.locator('[name="requestId"]').inputValue(), requestId);
+      assert.equal(await page.locator("#admission, #recovery").count(), 0);
+      assert.equal(
+        await page
+          .locator("#attachments")
+          .evaluate((element: HTMLInputElement) => element.files?.length),
+        1,
+      );
+      if (attempt < 5) await page.locator("#send").click();
+    }
     assert.equal(faux.state.callCount, 2);
-    await page.locator("#edit-draft").click();
-    const changed = await page.locator('[name="requestId"]').inputValue();
-    assert.notEqual(changed, requestId);
-    assert.equal(await page.locator("#message").isDisabled(), false);
-    assert.equal(await page.locator("#message").inputValue(), "Uncertain draft");
     await page.unroute(`**${scope}/composer`);
     faux.setResponses([fauxAssistantMessage("New input")]);
     await page.locator("#message").fill("Changed draft");
+    const changed = await page.locator('[name="requestId"]').inputValue();
+    assert.notEqual(changed, requestId);
     await page.locator("#send").click();
     await page.waitForFunction(
       () => document.querySelector<HTMLInputElement>("#message")?.value === "",
@@ -212,21 +213,18 @@ await test(
       undefined,
     );
     await conversation.waitForIdle(context);
-    await page.locator("#admission-options summary").click();
-    await page.locator('[name="requestId"]').fill(changed);
-    await page.locator('[name="entry"]').fill(JSON.stringify({ kind: "pi.user" }));
-    await page.locator("#message").fill("A rejected draft must not match an old receipt");
+    await page.locator('[name="requestId"]').evaluate((element: HTMLInputElement, value) => {
+      element.value = value;
+    }, changed);
+    await page.locator("#message").fill("/resume");
     await page.locator("#attachments").setInputFiles({
       name: "kept.txt",
       mimeType: "text/plain",
       buffer: Buffer.from("Keep this file"),
     });
     await page.locator("#send").click();
-    await page.locator('#notice[data-field="entry"]').waitFor();
-    assert.equal(
-      await page.locator("#message").inputValue(),
-      "A rejected draft must not match an old receipt",
-    );
+    await page.locator('#notice[data-field="attachments"]').waitFor();
+    assert.equal(await page.locator("#message").inputValue(), "/resume");
     assert.equal(await page.locator("#message").isDisabled(), false);
     assert.equal(
       await page
@@ -262,8 +260,9 @@ await test(
       { name: "pixel.png", mimeType: "image/png", buffer: png },
       { name: "note.txt", mimeType: "text/plain", buffer: Buffer.from("remove me") },
     ]);
-    await page.locator("#admission-options summary").click();
-    await page.locator('[name="requestId"]').fill("invalid\u0000<&>λ");
+    await page.locator('[name="requestId"]').evaluate((element: HTMLInputElement, value) => {
+      element.value = value;
+    }, "invalid\u0000<&>λ");
     const requestId = await page.locator('[name="requestId"]').inputValue();
     await page.locator("#create").click();
     await page.locator('#notice[data-issue="image-model"]').waitFor();
@@ -324,7 +323,9 @@ await test(
     assert.equal(await page.locator("#model").inputValue(), "faux/first");
     assert.equal(writes, 1);
     assert.deepEqual(await sessions.list(), []);
-    await page.locator('[name="requestId"]').fill("accepted\u0000<&>λ");
+    await page.locator('[name="requestId"]').evaluate((element: HTMLInputElement, value) => {
+      element.value = value;
+    }, "accepted\u0000<&>λ");
     faux.setResponses([fauxAssistantMessage("Files accepted")]);
     await page.locator("#create").click();
     await page.waitForURL((url) => url.pathname.endsWith(`/c/${ROOT_CONVERSATION_ID}`));
@@ -372,8 +373,7 @@ await test(
     await page.waitForURL(
       (url) => url.pathname === `/api/s/${sessionId}/c/${ROOT_CONVERSATION_ID}`,
     );
-    assert.equal(await page.locator("#admission").getAttribute("data-request-id"), requestId);
-    assert.equal(await page.locator("#admission").getAttribute("data-result"), "present");
+    assert.equal(await page.locator("#admission, #execution-result, #recovery").count(), 0);
     const app = await sessions.get(sessionId);
     assert(app);
     const receipt = await app.harness.commit(
@@ -381,61 +381,54 @@ await test(
       context,
     );
     assert(receipt);
-    assert.equal(
-      await page.locator("#admission").getAttribute("data-submission-id"),
-      String(receipt.id),
-    );
+    assert.equal(new URL(page.url()).searchParams.get("submissionId"), String(receipt.id));
   },
 );
 
 await test(
-  "native rejection keeps the home scope and draft without treating it as an admission",
+  "HTTP rejection keeps the home scope and draft without treating it as an admission",
   { timeout: 30_000 },
   async (t) => {
     const { sessions, auth, faux } = await sessionsFixture(t);
     const server = await serve(sessions, { auth, port: 0 });
-    t.after(() => server.close());
-    const page = await browserPage(t);
-    await page.goto(server.origin);
-    const sessionId = decode(SessionId, await page.locator('[name="sessionId"]').inputValue());
-    const requestId = await page.locator('[name="requestId"]').inputValue();
-    await page.locator("#admission-options summary").click();
-    await page.locator('[name="whenIdle"]').selectOption("reject");
-    await page.locator("#message").fill("Keep the scope");
-    const rejected = page.waitForResponse(
-      (response) => response.request().method() === "POST" && response.status() === 409,
-    );
-    await page.locator("#create").click();
-    await rejected;
-    await page.waitForFunction(
-      () => !document.querySelector<HTMLInputElement>("#message")?.matches(":disabled"),
-    );
-    assert.equal(await page.locator("#message").inputValue(), "Keep the scope");
-    assert.equal(await page.locator("#recovery").isVisible(), false);
-    assert.equal(await page.locator("#admission").getAttribute("data-submission-id"), null);
-    assert.equal(faux.state.callCount, 0);
-    const app = await sessions.get(sessionId);
-    assert(app);
-    assert.equal(
-      await app.harness.commit(
-        (tx) => tx.submissionByRequest(ROOT_CONVERSATION_ID, requestId),
-        context,
-      ),
-      undefined,
-    );
-    await page.locator('[name="whenIdle"]').selectOption("");
-    assert.equal(await page.locator('[name="sessionId"]').inputValue(), sessionId);
-    assert.notEqual(await page.locator('[name="requestId"]').inputValue(), requestId);
-    faux.setResponses([fauxAssistantMessage("Now admitted")]);
-    await page.locator("#create").click();
-    await page.waitForURL(`${server.origin}/api/s/${sessionId}/c/${ROOT_CONVERSATION_ID}`);
-    assert.equal((await sessions.list()).length, 1);
-    assert.equal((await app.list()).length, 1);
+    try {
+      const page = await browserPage(t);
+      await page.goto(server.origin);
+      const sessionId = decode(SessionId, await page.locator('[name="sessionId"]').inputValue());
+      const requestId = await page.locator('[name="requestId"]').inputValue();
+      await page.route(`${server.origin}/`, (route) => route.fulfill({ status: 409, body: "" }));
+      await page.locator("#message").fill("Keep the scope");
+      const rejected = page.waitForResponse(
+        (response) => response.request().method() === "POST" && response.status() === 409,
+      );
+      await page.locator("#create").click();
+      await rejected;
+      await page.waitForFunction(
+        () => !document.querySelector<HTMLInputElement>("#message")?.matches(":disabled"),
+      );
+      assert.equal(await page.locator("#message").inputValue(), "Keep the scope");
+      assert.equal(await page.locator("#recovery, #admission").count(), 0);
+      assert.equal(faux.state.callCount, 0);
+      assert.deepEqual(await sessions.list(), []);
+      await page.unroute(`${server.origin}/`);
+      await page.locator("#message").fill("Now accept the draft");
+      assert.equal(await page.locator('[name="sessionId"]').inputValue(), sessionId);
+      assert.notEqual(await page.locator('[name="requestId"]').inputValue(), requestId);
+      faux.setResponses([fauxAssistantMessage("Now admitted")]);
+      await page.locator("#create").click();
+      await page.waitForURL(`${server.origin}/api/s/${sessionId}/c/${ROOT_CONVERSATION_ID}`);
+      assert.equal((await sessions.list()).length, 1);
+      const app = await sessions.get(sessionId);
+      assert(app);
+      assert.equal((await app.list()).length, 1);
+    } finally {
+      await server.close();
+    }
   },
 );
 
 await test(
-  "prefixed receipt views preserve every native status and scope without enabling scheduling",
+  "prefixed receipt acknowledgements preserve native variants without presentation, writes, or scheduling",
   { timeout: 30_000 },
   async (t) => {
     const { sessions, auth, selection } = await sessionsFixture(t);
@@ -460,7 +453,7 @@ await test(
         status: "unanswered",
         entry: entry.id,
         reason: "aborted",
-        detail: { value: "<img src=x>", count: 3 },
+        detail: { value: "</script><img src=x>", count: 3 },
       },
       { type: "write", status: "queued" },
       { type: "write", status: "done", entry: entry.id },
@@ -471,6 +464,22 @@ await test(
     ] as const;
     const page = await browserPage(t);
     const scope = `/pds/api/s/${encodeURIComponent(app.id)}/c/${conversation.id}`;
+    const receipt = async (path: string) =>
+      page.locator("#composer").evaluate(
+        (element: HTMLFormElement, location) =>
+          new Promise<Acknowledgement>((resolve) => {
+            const received = (event: CustomEvent<Acknowledgement>) => {
+              if (event.detail.action !== "receipt") return;
+              document.removeEventListener("pds-acknowledgement", received);
+              resolve(event.detail);
+            };
+            document.addEventListener("pds-acknowledgement", received);
+            element.dataset.recovery = location;
+            element.dispatchEvent(new Event("recover-admission"));
+          }),
+        path,
+      );
+    await page.goto(new URL(scope, base).href);
     for (const variant of cases) {
       const record: D.SubmissionRecord = await app.harness.commit(
         (tx) =>
@@ -478,6 +487,7 @@ await test(
             ...variant,
             conversationId: conversation.id,
             requestId: `${variant.type}/${variant.status} '<>&%`,
+            trace: { traceparent: "host-owned-admission-span" },
           }),
         context,
       );
@@ -485,36 +495,34 @@ await test(
         `submissionByRequest?${new URLSearchParams({ requestId: record.requestId! })}`,
         `submissions/status?id=${record.id}`,
       ]) {
-        const response = await page.goto(new URL(`${scope}/${read}`, base).href);
-        assert.equal(response?.status(), 200);
-        assert.equal(response?.headers()["cache-control"], "no-store");
-        const result = page.locator("#admission");
-        assert.equal(await result.getAttribute("data-result"), "present");
-        assert.equal(await result.getAttribute("data-type"), record.type);
-        assert.equal(await result.getAttribute("data-status"), record.status);
-        assert.equal(await result.getAttribute("data-scope"), scope);
+        const response = await page.request.get(new URL(`${scope}/${read}`, base).href, {
+          maxRedirects: 0,
+        });
+        assert.equal(response.status(), 303);
+        assert.equal(response.headers()["cache-control"], "no-store");
+        assert.equal(new URL(response.headers().location!, base).pathname, scope);
+        const result = await receipt(`${scope}/${read}`);
+        assert.equal(result.action, "receipt");
+        assert.equal(result.scope, scope);
+        assert(result.action === "receipt");
+        assert.equal(result.requestId, record.requestId);
+        assert.equal(result.record?.trace, undefined);
+        assert.deepEqual(result.record, {
+          ...variant,
+          id: record.id,
+          conversationId: conversation.id,
+          requestId: record.requestId,
+        });
         assert.equal(
-          await result.getAttribute("data-request-id"),
-          encodeURIComponent(record.requestId!),
+          await page.locator("#admission, #execution-result, #recovery, img").count(),
+          0,
         );
-        assert.equal(await result.getAttribute("data-submission-id"), String(record.id));
-        for (const name of ["entry", "answer", "reason", "detail"] as const) {
-          const field = result.locator(`[data-field="${name}"]`);
-          if (record[name] === undefined) assert.equal(await field.count(), 0);
-          else if (name === "detail") {
-            const value: unknown = JSON.parse((await field.textContent())!);
-            assert.deepEqual(value, record.detail);
-          } else assert.equal(await field.textContent(), String(record[name]));
-        }
-        assert.equal(await result.locator("img").count(), 0);
       }
-      await page.goto(
-        new URL(
-          `/pds/api/s/${encodeURIComponent(app.id)}/c/${other.id}/submissions/status?id=${record.id}`,
-          base,
-        ).href,
+      const absent = await receipt(
+        `/pds/api/s/${encodeURIComponent(app.id)}/c/${other.id}/submissions/status?id=${record.id}`,
       );
-      assert.equal(await page.locator("#admission").getAttribute("data-result"), "absent");
+      assert(absent.action === "receipt");
+      assert.equal(absent.record, undefined);
       assert.equal((await app.harness.inspect(context)).scheduling, "paused");
       assert.deepEqual(await app.harness.commit((tx) => tx.submission(record.id), context), record);
     }

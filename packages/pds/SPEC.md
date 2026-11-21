@@ -82,8 +82,8 @@ PDS behavior; independent-component deployment and retirement gates belong in
     abort, so that a cancellation result accurately describes what was stopped.
 16. As a PDS user, I want browser disconnection to release observation only, so
     that tools and model work do not stop when I close a tab.
-17. As a PDS user, I want explicit inspection and resume, so that viewing
-    interrupted work does not itself enable scheduling.
+17. As a PDS user, I want explicit resume, so that viewing interrupted work does
+    not itself enable scheduling.
 18. As a PDS user, I want reset and compaction to preserve native semantics, so
     that admission, completion, and summary placement remain distinguishable.
 19. As a PDS user, I want current or historical context reads, so that I can
@@ -198,18 +198,16 @@ PDS behavior; independent-component deployment and retirement gates belong in
 | Method | Route                   | Meaning                                                          |
 | ------ | ----------------------- | ---------------------------------------------------------------- |
 | GET    | `/`                     | Home, session navigation, and creation forms                     |
-| GET    | `/api/s`                | List persisted sessions, including unavailable sessions          |
+| GET    | `/api/s`                | Redirect to home                                                 |
 | POST   | `/api/s/open`           | Open/create a store; optional `sessionId`                        |
-| GET    | `S`                     | Session page with conversation navigation and lifecycle controls |
+| GET    | `S`                     | Redirect an existing session to home                             |
 | POST   | `S/root`                | Return existing native root or create it with initial agent/env  |
 | POST   | `S/createConversation`  | Create a native conversation with initial agent/env              |
 | GET    | `C`                     | Conversation page and bounded baseline                           |
-| GET    | `/api/models`           | Available chat-model metadata rendered as HTML                   |
-| GET    | `S/inspect`             | Native Harness inspection without scheduling                     |
 | GET    | `S/scanConversations`   | Paged native conversation records                                |
 | GET    | `S/scanTasks`           | Paged native task records                                        |
 | GET    | `C/watch`               | Fresh bounded baseline then incremental Datastar SSE             |
-| GET    | `C/entries`             | Explicit paged, fork-aware history                               |
+| GET    | `C/entries`             | Inline paged, fork-aware history; normal navigation returns to C |
 | GET    | `C/context`             | Current or historical native context using optional `at`         |
 | GET    | `C/submissionByRequest` | Conversation-scoped lookup by `requestId`                        |
 | GET    | `C/submissions/status`  | Conversation-scoped submission lookup by `id`                    |
@@ -221,17 +219,19 @@ PDS behavior; independent-component deployment and retirement gates belong in
 | POST   | `C/compact`             | Native compaction with optional `instructions`                   |
 | POST   | `C/configure`           | Atomic partial agent and environment change                      |
 
-- Preserve the complete selected REST operation names and methods. All reads use
-  GET with no request body. There is no GraphQL transport, parallel JSON
-  response API, remote transaction language, or generic document-mutation API.
-- Reads return full HTML or requested HTML fragments; enhanced read application
-  may use Datastar element patches. Commands accept ordinary named forms,
-  URL-encoded or multipart as appropriate. Normal successful form navigation
-  uses POST/redirect/GET. Enhanced responses are short Datastar acknowledgements
-  and necessary form/navigation effects, not transcript/configuration replicas.
+- Only home and conversation pages are approved, with login allowed for now. No
+  additional pages, fragments, or controls without explicit user approval.
+- Preserve the selected REST operation names and methods. All reads use GET with
+  no request body. There is no GraphQL transport, parallel JSON response API,
+  remote transaction language, or generic document-mutation API.
+- Reads return HTML, Datastar responses, or navigation to an approved page.
+  Commands accept ordinary named forms, URL-encoded or multipart as appropriate.
+  Normal successful form navigation uses POST/redirect/GET. Enhanced responses
+  are short Datastar acknowledgements and necessary form/navigation effects, not
+  transcript/configuration replicas.
 - Mark application reads, commands, and streams `Cache-Control: no-store`.
-  Return labelled native result variants as HTML, not old JSON `null`, arrays,
-  problem envelopes, or replacement conversation snapshots.
+  Preserve native result variants in Datastar acknowledgements, without receipt
+  pages, result widgets, or replacement conversation snapshots.
 - Browser form helpers may adapt presentation or dispatch supported composer
   commands, but may not add a competing settings API, hidden GET mutation, or
   separate environment mutation endpoint. Canonical operations keep native
@@ -305,7 +305,8 @@ PDS behavior; independent-component deployment and retirement gates belong in
   new ID.
 - `submissionByRequest` preserves the native receipt and its status variants. No
   receipt at a lookup point does not prove a concurrent/disconnected request
-  failed. Render this as absence with uncertainty, not a missing-resource error.
+  failed. Preserve this as absence with uncertainty, not a missing-resource
+  error.
 - Submission status reacquires the native submission and checks its conversation
   scope. Absent or differently scoped submissions produce a successful absence
   representation. They do not start scheduling or wait for settlement.
@@ -317,8 +318,7 @@ PDS behavior; independent-component deployment and retirement gates belong in
   work, and wait for that abort operation's native completion. Preserve
   background boundaries and queued writes. Do not expose a background-abort
   option or strengthen it into termination of every possible task.
-- `inspect` renders native scheduling, task, submission, and inspection-state
-  distinctions without enabling scheduling. `resume` enables scheduling but does
+- `resume`, also available as composer `/resume`, enables scheduling but does
   not promise completion, successful recovery of blocked definitions, or a new
   submission.
 - `reset` preserves an omitted handoff versus an explicitly supplied string and
@@ -577,9 +577,9 @@ PDS behavior; independent-component deployment and retirement gates belong in
 - A 503 does not prove a write failed to commit or permit automatic replay. Do
   not send `Retry-After` without knowing a recovery time. Connection loss
   creates no synthetic response, including no invented 499.
-- Missing submission receipts, abort-submission result variants, blocked
-  inspection states, and persisted task failures are successful read/result
-  representations. Do not turn them into missing-resource or transport errors.
+- Missing submission receipts, abort-submission result variants, and persisted
+  task failures are successful read/result representations. Do not turn them
+  into missing-resource or transport errors.
 - Model metadata exposes only ID, provider, name, input modes, reasoning,
   context window, max tokens, cost, and supported thinking levels from current
   `Models.getAvailable()` in upstream order. No session is required. Empty
@@ -604,8 +604,8 @@ serialized HTML, stdout/stderr, private helpers, or production test hooks.
    recovery without a browser, and one failed store not blocking others.
 2. Every route's method, address, form/query decoding, native argument/result
    mapping, declared error, and unexpected-error fallback. Include page/cursor
-   round trips and invalid/foreign cursors, metadata-only model catalog, and no
-   secret-bearing metadata exposure.
+   round trips and invalid/foreign cursors, and no secret-bearing metadata
+   exposure.
 3. Native input admission, when-busy/when-idle behavior, request-ID recovery
    after lost acknowledgement, scoped status, queued-input withdrawal, explicit
    abort, reset admission, and compaction task/result distinctions. No automatic

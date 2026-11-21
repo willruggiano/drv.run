@@ -55,13 +55,15 @@ adaptation.
   consistent with the Tao of Datastar. The user clarified that this means the
   old HTTP/REST surface still documented there, not the current GraphQL API.
 - Adopt the complete documented REST operation surface, including submission
-  recovery/cancellation, reset, inspection, context, and task reads. This
-  expands PDS's current restricted surface without requiring the old Elm UI.
+  recovery/cancellation, reset, context, and task reads. This expands PDS's
+  current restricted surface without requiring the old Elm UI.
 - Use HTML-first representations rather than a parallel JSON API. Keep operation
   names and HTTP methods; use forms for commands, HTML for reads, and Datastar
   SSE for observation. Short command responses may acknowledge admission or
   report validation errors, but do not become a second conversation-state
-  projection.
+  projection. Only home and conversation pages are approved, with login allowed
+  for now. Additional pages, fragments, and controls require explicit user
+  approval.
 - Limit extraction to the API contract and applicable verification requirements.
   Do not implicitly adopt the separate telemetry deployment, Knip, or 100%
   coverage mandates. Verify semantics against PDS's pinned Pi 1.5.2 rather than
@@ -94,7 +96,7 @@ adaptation.
 
 | Method | Route                  | Meaning                                                         |
 | ------ | ---------------------- | --------------------------------------------------------------- |
-| GET    | `/api/s`               | List persisted sessions, not merely open Harnesses.             |
+| GET    | `/api/s`               | Return to home, which lists persisted sessions.                 |
 | POST   | `/api/s/open`          | Open or create a session; accept a supplied ID or generate one. |
 | POST   | `S/root`               | Get or create the native reserved root conversation.            |
 | POST   | `S/createConversation` | Create another native conversation.                             |

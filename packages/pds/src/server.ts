@@ -33,8 +33,6 @@ import {
 import {
   alert,
   invalidForm,
-  admission,
-  submissionResult,
   configuration,
   metadata,
   conversationPage,
@@ -42,10 +40,6 @@ import {
   page,
   thinking,
   regions,
-  escape,
-  sessionList,
-  sessionPage,
-  modelsPage,
   sessionPath,
   conversationPath,
   loginPage,
@@ -63,6 +57,22 @@ const script = (source: string) =>
   `event: datastar-patch-elements\ndata: selector body\ndata: mode append\ndata: elements <script>${source};document.currentScript.remove()</script>\n\n`;
 const redirect = (location: string) =>
   script(`window.location.assign(${JSON.stringify(location)})`);
+export type Acknowledgement = { scope: string } & (
+  | { action: "submit"; id: D.SubmissionId; requestId: string | undefined }
+  | { action: "receipt"; record: D.SubmissionRecord | undefined; requestId: string | undefined }
+  | {
+      action: "abortSubmission";
+      id: D.SubmissionId;
+      result: Awaited<ReturnType<D.Harness["abortSubmission"]>>;
+    }
+  | { action: "abort" | "resume" }
+);
+
+const acknowledge = (detail: Acknowledgement) =>
+  script(
+    `document.dispatchEvent(new CustomEvent("pds-acknowledgement", {detail:${JSON.stringify(detail).replaceAll("<", "\\u003c")}}))`,
+  );
+
 const assets = new Map<string, readonly [string, string]>([
   ["/assets/datastar.js", ["../assets/datastar.js", "text/javascript"]],
   ["/assets/browser.js", ["../dist/browser.js", "text/javascript"]],
@@ -286,13 +296,12 @@ export async function serve(
           sse(
             response,
             patch(alert()) +
-              patch(
-                admission(
-                  destination,
-                  result.submissionId,
-                  form.has("requestId") ? field(form, "requestId") : undefined,
-                ),
-              ),
+              acknowledge({
+                action: "submit",
+                scope: destination,
+                id: result.submissionId,
+                requestId: form.has("requestId") ? field(form, "requestId") : undefined,
+              }),
           );
         else
           response
@@ -309,16 +318,10 @@ export async function serve(
       sse(response, patch(thinking(sessions, field(form, "model"), field(form, "thinking"))));
       return;
     }
-    if (url.pathname === new URL("api/models", base).pathname) {
-      method(request, response, ["GET"]);
-      queryFields(request, url, []);
-      html(response, await modelsPage(sessions, prefix));
-      return;
-    }
     if (url.pathname === new URL("api/s", base).pathname) {
       method(request, response, ["GET"]);
       queryFields(request, url, []);
-      html(response, page("Sessions", await sessionList(sessions, prefix), "home", prefix));
+      navigate(request, response, `${prefix}/`);
       return;
     }
     if (url.pathname === new URL("api/s/open", base).pathname) {
@@ -356,8 +359,10 @@ export async function serve(
         ["watch", "entries", "submissionByRequest", "submissions/status"].includes(action)
       : action === undefined;
     const write = conversationMatch
-      ? ["submit", "composer", "configure", "abort", "compact"].includes(action ?? "")
-      : ["root", "createConversation"].includes(action ?? "");
+      ? ["submit", "composer", "configure", "abortSubmission", "abort", "compact"].includes(
+          action ?? "",
+        )
+      : ["root", "createConversation", "resume"].includes(action ?? "");
     if (!read && !write) throw new HttpError(404, "Not found.");
     method(request, response, read ? ["GET"] : ["POST"]);
     queryFields(
@@ -370,14 +375,20 @@ export async function serve(
           : action === "submissions/status"
             ? ["id"]
             : action === undefined && conversationMatch
-              ? ["submissionId"]
+              ? ["submissionId", "withdrawal", "id", "aborted"]
               : [],
     );
     const app = await sessions.get(sessionId);
     if (!app) throw new HttpError(404, "Session not found.");
     if (!conversationMatch) {
-      if (!action) html(response, await sessionPage(app, prefix));
-      else {
+      if (!action) navigate(request, response, `${prefix}/`);
+      else if (action === "resume") {
+        fields(await readForm(), []);
+        app.harness.resume();
+        if (request.headers["datastar-request"] === "true")
+          sse(response, acknowledge({ action: "resume", scope: sessionPath(prefix, app.id) }));
+        else navigate(request, response, `${prefix}/`);
+      } else {
         const form = await readForm();
         fields(
           form,
@@ -450,31 +461,44 @@ export async function serve(
                   throw new InvalidRequest("Invalid submission read.", { cause: error });
                 throw error;
               });
-      const markup = submissionResult(path, record, requestId ?? undefined);
-      if (request.headers["datastar-request"] === "true") sse(response, patch(markup));
-      else
-        html(
+      const receipt = record && { ...record };
+      if (receipt) delete receipt.trace;
+      if (request.headers["datastar-request"] === "true")
+        sse(
           response,
-          page(
-            "Submission",
-            `<header id="app-header"><div class="bar"><a href="${escape(path)}">Conversation</a></div></header><main id="main-area"><section class="pane">${markup}</section></main>`,
-            "home",
-            prefix,
-          ),
+          acknowledge({
+            action: "receipt",
+            scope: path,
+            record: receipt,
+            requestId: record?.requestId ?? requestId ?? undefined,
+          }),
         );
+      else navigate(request, response, path);
     } else if (!action) {
       const abort = new AbortController();
       response.once("close", () => abort.abort());
       const watch = await observe(app, conversation, abort.signal);
       const initial = watch.value;
       await watch.stop();
-      const receipt = url.searchParams.has("submissionId")
-        ? submissionResult(
-            path,
-            await statusOf(decode(SubmissionId, url.searchParams.get("submissionId"))),
-          )
-        : undefined;
-      const markup = await conversationPage(app, conversation, initial, prefix, receipt);
+      if (url.searchParams.has("submissionId"))
+        decode(SubmissionId, url.searchParams.get("submissionId"));
+      const withdrawal = url.searchParams.get("withdrawal");
+      if (withdrawal !== null) {
+        if (
+          withdrawal !== "aborted" &&
+          withdrawal !== "already_placed" &&
+          withdrawal !== "settled" &&
+          withdrawal !== "not_found"
+        )
+          throw new InvalidRequest("Invalid withdrawal result.");
+        decode(SubmissionId, url.searchParams.get("id"));
+      } else if (url.searchParams.has("id"))
+        throw new InvalidRequest("Submission ID requires a withdrawal result.");
+      if (url.searchParams.has("aborted")) {
+        if (url.searchParams.get("aborted") !== "true" || withdrawal !== null)
+          throw new InvalidRequest("Invalid abort acknowledgement.");
+      }
+      const markup = await conversationPage(app, conversation, initial, prefix);
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(markup);
     } else if (request.method === "GET" && action === "watch") {
       const abort = new AbortController();
@@ -554,17 +578,7 @@ export async function serve(
       const states = regions.tools(view);
       const markup = `<section id="history-${after ?? "start"}-${before}">${result.next && records[0] ? regions.history(path, records[0].id, after) : ""}${records.map((entry) => regions.entry(entry, states)).join("")}</section>`;
       if (request.headers["datastar-request"] === "true") sse(response, patch(markup));
-      else
-        response
-          .writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
-          .end(
-            page(
-              "Earlier messages",
-              `<header id="app-header"><div class="bar"><a href="${escape(path)}">Conversation</a></div></header><main id="main-area"><section class="pane">${markup}</section></main>`,
-              "home",
-              prefix,
-            ),
-          );
+      else navigate(request, response, path);
     } else if (request.method === "POST" && (action === "composer" || action === "submit")) {
       const form = await readForm();
       fields(form, submissionFields);
@@ -589,13 +603,12 @@ export async function serve(
           ? redirect(conversationPath(prefix, app.id, next.id))
           : typeof result === "number"
             ? patch(alert()) +
-              patch(
-                admission(
-                  path,
-                  result,
-                  form.has("requestId") ? field(form, "requestId") : undefined,
-                ),
-              )
+              acknowledge({
+                action: "submit",
+                scope: path,
+                id: result,
+                requestId: form.has("requestId") ? field(form, "requestId") : undefined,
+              })
             : patch(alert()) + script("document.getElementById('composer').reset()"),
       );
     } else if (request.method === "POST" && action === "configure") {
@@ -607,11 +620,20 @@ export async function serve(
         return;
       }
       sse(response, patch(alert()));
+    } else if (action === "abortSubmission") {
+      const form = await readForm();
+      fields(form, ["id"]);
+      const id = decode(SubmissionId, form.get("id"));
+      const result = await app.harness.abortSubmission(id, context, conversation.id);
+      if (request.headers["datastar-request"] === "true")
+        sse(response, acknowledge({ action: "abortSubmission", scope: path, id, result }));
+      else navigate(request, response, `${path}?withdrawal=${result}&id=${id}`);
     } else if (request.method === "POST" && action === "abort") {
       fields(await readForm(), []);
       await conversation.abort(context);
-      if (request.headers["datastar-request"] === "true") sse(response, patch(alert("Stopped.")));
-      else response.writeHead(303, { Location: path }).end();
+      if (request.headers["datastar-request"] === "true")
+        sse(response, acknowledge({ action: "abort", scope: path }));
+      else navigate(request, response, `${path}?aborted=true`);
     } else if (action === "compact") {
       const form = await readForm();
       fields(form, ["instructions"]);

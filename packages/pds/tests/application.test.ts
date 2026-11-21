@@ -333,7 +333,7 @@ await test("session reads, observations, missing addresses, and model metadata n
   const server = await serve(sessions, { auth, port: 0 });
   t.after(() => server.close());
   const refresh = t.mock.method(models, "refresh");
-  for (const path of ["/", "/api/s", "/api/models"]) {
+  for (const path of ["/", "/api/s"]) {
     const response = await fetch(`${server.origin}${path}`);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store");
@@ -833,7 +833,7 @@ await test("reserved action names remain valid session identities and transport 
   await method.body?.cancel();
   for (const value of ["null", "[]", "not JSON"]) {
     const query = new URLSearchParams({ datastar: value });
-    const response = await fetch(`${server.origin}/api/models?${query}`, {
+    const response = await fetch(`${server.origin}/api/s?${query}`, {
       headers: { "Datastar-Request": "true" },
     });
     assert.equal(response.status, 400);
@@ -1118,4 +1118,28 @@ await test("configuration forms reject unsupported fields, duplicate scalars, an
       env: { type: "local" },
     });
   }
+});
+
+await test("removed navigation and catalog pages do not replace home or conversation", async (t) => {
+  const { servePrefixed } = await import("./fixtures.ts");
+  const { sessions, auth, selection } = await sessionsFixture(t);
+  const base = await servePrefixed(t, sessions, auth, "/pds");
+  const app = await sessions.open(decode(SessionId, "page removal"));
+  const conversation = await app.root(form(selection));
+  const path = `api/s/${encodeURIComponent(app.id)}`;
+  for (const [route, destination] of [
+    ["api/s", "/pds/"],
+    [path, "/pds/"],
+    [`${path}/c/${conversation.id}/entries?before=1`, `/pds/${path}/c/${conversation.id}`],
+  ] as const) {
+    const response = await fetch(new URL(route, base), { redirect: "manual" });
+    await response.body?.cancel();
+    assert.equal(response.status, 303);
+    assert.equal(new URL(response.headers.get("location")!, base).pathname, destination);
+  }
+  const catalog = await fetch(new URL("api/models", base));
+  await catalog.body?.cancel();
+  assert.equal(catalog.status, 404);
+  assert.equal((await app.harness.inspect(context)).scheduling, "paused");
+  assert.equal((await app.list()).length, 1);
 });
