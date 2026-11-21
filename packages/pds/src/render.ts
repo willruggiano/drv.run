@@ -3,7 +3,7 @@ import MarkdownIt from "markdown-it";
 import hljs from "highlight.js";
 import type * as A from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, LiveDoc, SessionFailed, UsageDoc } from "@earendil-works/pi-durable";
 import type * as D from "@earendil-works/pi-durable";
 import type { SessionId } from "./identity.ts";
 import { Env } from "./harness/index.ts";
@@ -11,7 +11,9 @@ import type { EnvTarget } from "./harness/env.ts";
 import { active, type LoginView } from "./login.ts";
 import {
   context,
+  ConversationMetadata,
   environmentValue,
+  SessionUnavailable,
   modelKey,
   type Session,
   type Application,
@@ -164,15 +166,54 @@ async function creationForm(app: Menu, prefix: string, id?: SessionId) {
     ${composer(true, fields.available, id === undefined ? "Create session" : "Create conversation")}</fieldset></form></footer>`;
 }
 
-export async function sessionList(app: Application, prefix: string) {
-  const records = await app.list();
-  return `<section id="session-list" aria-label="Sessions">${records.map((record) => `<div class="session-row" data-session-id="${escape(record.id)}" data-status="${record.status}"><a class="session" href="${escape(sessionPath(prefix, record.id))}">${escape(record.id)}</a><span>${record.status === "open" ? "Open" : "Unavailable"}</span><form method="post" action="${escape(prefix)}/api/s/open"><input type="hidden" name="sessionId" value="${escape(record.id)}"><button>Reopen session</button></form></div>`).join("")}${records.length ? "" : '<p id="sessions-empty">No sessions</p>'}</section>`;
+export async function sessionList(app: Application, prefix: string, limit?: number) {
+  const records = await Promise.all(
+    (await app.list()).map(async (record) => {
+      let availability = record.status;
+      let path = sessionPath(prefix, record.id);
+      let title: string = record.id;
+      let createdAt: number | undefined;
+      let detail = "";
+      if (availability === "open") {
+        try {
+          const owner = await app.get(record.id);
+          assert(owner);
+          // Read only the initial conversation, not each conversation's transcript.
+          const first = await owner.harness.commit(
+            async (tx) => (await tx.scanConversations({ order: "ascending" }, 1)).items[0],
+            context,
+          );
+          if (first) {
+            const [info, agent, env] = await Promise.all([
+              owner.harness.snapshot(ConversationMetadata, first.id, context),
+              owner.harness.snapshot(AgentDoc, first.id, context),
+              owner.harness.snapshot(Env, first.id, context),
+            ]);
+            title = info?.title ?? "Untitled session";
+            createdAt = info?.createdAt;
+            path = conversationPath(prefix, owner.id, first.id);
+            detail = `<span class="session-detail"><span class="session-environment">${escape(environmentLabel(env?.env))}${agent?.cwd ? ` · ${escape(agent.cwd)}` : ""}</span><span class="model-summary"><span class="model-name">${escape(agent?.model?.modelId ?? "No model")}</span></span></span>`;
+          }
+        } catch (error) {
+          if (!(error instanceof SessionUnavailable || error instanceof SessionFailed)) throw error;
+          availability = "unavailable";
+        }
+      }
+      const date = createdAt === undefined ? "" : new Date(createdAt).toISOString().slice(0, 10);
+      return {
+        createdAt: createdAt ?? 0,
+        html: `<div class="session-row" data-session-id="${escape(record.id)}" data-status="${availability}"><a class="session" href="${escape(path)}" aria-label="${escape(title)}"><span class="session-heading"><strong>${escape(title)}</strong>${date ? `<time datetime="${date}">${date}</time>` : ""}</span>${availability === "unavailable" ? '<span class="session-detail">Unavailable</span>' : detail}</a></div>`,
+      };
+    }),
+  );
+  const rows = records.toSorted((left, right) => right.createdAt - left.createdAt).slice(0, limit);
+  return `<div>${rows.length ? '<h2 id="recent-title">Recent sessions</h2>' : ""}<section id="session-list" aria-label="Sessions">${rows.map((row) => row.html).join("")}</section>${rows.length ? "" : '<p id="sessions-empty">No sessions</p>'}</div>`;
 }
 
 export async function home(app: Application, prefix: string): Promise<string> {
   return page(
     "Sessions",
-    `<header id="app-header">${alert()}</header><main id="main-area"><section id="landing" class="pane" aria-label="Sessions">${await sessionList(app, prefix)}<form id="open-session" method="post" action="${escape(prefix)}/api/s/open"><label>Session ID <input name="sessionId" maxlength="128" required></label><button>Open session</button></form><form method="post" action="${escape(prefix)}/api/s/open"><button>New empty session</button></form><a href="${escape(prefix)}/api/models">Models</a><a href="${escape(prefix)}/login">Model login</a></section></main>${await creationForm(app, prefix)}`,
+    `<header id="app-header">${alert()}</header><main id="main-area"><section id="landing" class="pane" aria-label="Sessions">${await sessionList(app, prefix, 5)}</section></main>${await creationForm(app, prefix)}`,
     "home",
     prefix,
   );
