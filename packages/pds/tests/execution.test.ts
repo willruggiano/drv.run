@@ -68,8 +68,20 @@ await test(
   },
 );
 
+await test("execution inspection is not exposed", async (t) => {
+  const { sessions, auth } = await sessionsFixture(t);
+  const base = await servePrefixed(t, sessions, auth, "/pds");
+  const app = await sessions.open();
+  for (const method of ["GET", "POST"]) {
+    const response = await fetch(new URL(`api/s/${app.id}/inspect`, base), { method });
+    await response.body?.cancel();
+    assert.equal(response.status, 404);
+  }
+  assert.equal((await app.harness.inspect(context)).scheduling, "paused");
+});
+
 await test(
-  "inspection is read-only and resume enables scheduling without waiting or repairing blocked tasks",
+  "resume enables scheduling without waiting or repairing blocked tasks",
   { timeout: 10000 },
   async (t) => {
     const started = Promise.withResolvers<void>();
@@ -101,7 +113,7 @@ await test(
     assert.equal(before.tasks.find(({ record }) => record.id === pending)?.state.kind, "pending");
     const path = `api/s/${app.id}`;
     for (let i = 0; i < 2; i++) {
-      const response = await fetch(new URL(`${path}/inspect`, base));
+      const response = await fetch(new URL(path, base));
       await response.body?.cancel();
       assert.equal(response.status, 200);
       assert.equal(response.headers.get("cache-control"), "no-store");
@@ -122,7 +134,7 @@ await test(
     });
     await response.body?.cancel();
     assert.equal(response.status, 303);
-    assert.equal(new URL(response.headers.get("location")!, base).pathname, `/pds/${path}/inspect`);
+    assert.equal(new URL(response.headers.get("location")!, base).pathname, `/pds/${path}`);
     await started.promise;
     const running = await app.harness.inspect(context);
     assert.equal(running.scheduling, "running");
@@ -238,13 +250,12 @@ await test("execution routes enforce methods, scope, request shape and origin wi
   const session = `api/s/${app.id}`;
   const scope = `${session}/c/${conversation.id}`;
   const routes = [
-    [`${session}/inspect`, "GET"],
     [`${session}/resume`, "POST"],
     [`${scope}/abortSubmission`, "POST"],
     [`${scope}/abort`, "POST"],
   ] as const;
   for (const [path, method] of routes) {
-    const wrong = await fetch(new URL(path, base), { method: method === "GET" ? "POST" : "GET" });
+    const wrong = await fetch(new URL(path, base), { method: "GET" });
     await wrong.body?.cancel();
     assert.equal(wrong.status, 405);
     assert.equal(wrong.headers.get("allow"), method);
@@ -268,8 +279,6 @@ await test("execution routes enforce methods, scope, request shape and origin wi
     assert.equal(response.status, 400);
   }
   for (const path of [
-    `${session}/inspect?resumed=false`,
-    `${session}/inspect?resumed=true&resumed=true`,
     `${scope}?withdrawal=bad&id=1`,
     `${scope}?withdrawal=aborted`,
     `${scope}?id=1`,

@@ -23,8 +23,11 @@ await test(
     const page = await browserPage(t);
     await page.goto(server.origin);
     assert.equal(await page.locator('#composer [name="requestId"]').count(), 1);
-    await page.locator("#admission-options summary").click();
-    await page.locator('[name="requestId"]').fill("request\u0000<&>λ");
+    assert.equal(await page.locator('#composer [name="requestId"]').getAttribute("type"), "hidden");
+    assert.equal(await page.locator("#admission-options").count(), 0);
+    await page.locator('[name="requestId"]').evaluate((element: HTMLInputElement, value) => {
+      element.value = value;
+    }, "request\u0000<&>λ");
     const requestId = await page.locator('[name="requestId"]').inputValue();
     assert.equal(requestId, "request\u0000<&>λ");
     const sessionId = decode(SessionId, await page.locator('[name="sessionId"]').inputValue());
@@ -167,15 +170,17 @@ await test(
       .locator("#attachments")
       .setInputFiles({ name: "draft.txt", mimeType: "text/plain", buffer: Buffer.from("Keep me") });
     await page.locator("#send").click();
-    await page.locator(`#admission[data-scope="/api/s/${app.id}/c/${other.id}"]`).waitFor();
+    await page
+      .locator(`#admission[data-scope="/api/s/${app.id}/c/${other.id}"]`)
+      .waitFor({ state: "attached" });
     assert.equal(await page.locator("#message").inputValue(), "Uncertain draft");
     assert.equal(await page.locator("#message").isDisabled(), true);
     await page.locator("#recover-admission").click();
-    await page.locator('#admission[data-request-id="other"]').waitFor();
+    await page.locator('#admission[data-request-id="other"]').waitFor({ state: "attached" });
     assert.equal(await page.locator("#message").inputValue(), "Uncertain draft");
     assert.equal(await page.locator("#message").isDisabled(), true);
     await page.locator("#recover-admission").click();
-    await page.locator('#admission[data-result="absent"]').waitFor();
+    await page.locator('#admission[data-result="absent"]').waitFor({ state: "attached" });
     assert.equal(
       await page
         .locator("#attachments")
@@ -212,21 +217,18 @@ await test(
       undefined,
     );
     await conversation.waitForIdle(context);
-    await page.locator("#admission-options summary").click();
-    await page.locator('[name="requestId"]').fill(changed);
-    await page.locator('[name="entry"]').fill(JSON.stringify({ kind: "pi.user" }));
-    await page.locator("#message").fill("A rejected draft must not match an old receipt");
+    await page.locator('[name="requestId"]').evaluate((element: HTMLInputElement, value) => {
+      element.value = value;
+    }, changed);
+    await page.locator("#message").fill("/resume");
     await page.locator("#attachments").setInputFiles({
       name: "kept.txt",
       mimeType: "text/plain",
       buffer: Buffer.from("Keep this file"),
     });
     await page.locator("#send").click();
-    await page.locator('#notice[data-field="entry"]').waitFor();
-    assert.equal(
-      await page.locator("#message").inputValue(),
-      "A rejected draft must not match an old receipt",
-    );
+    await page.locator('#notice[data-field="attachments"]').waitFor();
+    assert.equal(await page.locator("#message").inputValue(), "/resume");
     assert.equal(await page.locator("#message").isDisabled(), false);
     assert.equal(
       await page
@@ -262,8 +264,9 @@ await test(
       { name: "pixel.png", mimeType: "image/png", buffer: png },
       { name: "note.txt", mimeType: "text/plain", buffer: Buffer.from("remove me") },
     ]);
-    await page.locator("#admission-options summary").click();
-    await page.locator('[name="requestId"]').fill("invalid\u0000<&>λ");
+    await page.locator('[name="requestId"]').evaluate((element: HTMLInputElement, value) => {
+      element.value = value;
+    }, "invalid\u0000<&>λ");
     const requestId = await page.locator('[name="requestId"]').inputValue();
     await page.locator("#create").click();
     await page.locator('#notice[data-issue="image-model"]').waitFor();
@@ -324,7 +327,9 @@ await test(
     assert.equal(await page.locator("#model").inputValue(), "faux/first");
     assert.equal(writes, 1);
     assert.deepEqual(await sessions.list(), []);
-    await page.locator('[name="requestId"]').fill("accepted\u0000<&>λ");
+    await page.locator('[name="requestId"]').evaluate((element: HTMLInputElement, value) => {
+      element.value = value;
+    }, "accepted\u0000<&>λ");
     faux.setResponses([fauxAssistantMessage("Files accepted")]);
     await page.locator("#create").click();
     await page.waitForURL((url) => url.pathname.endsWith(`/c/${ROOT_CONVERSATION_ID}`));
@@ -389,7 +394,7 @@ await test(
 );
 
 await test(
-  "native rejection keeps the home scope and draft without treating it as an admission",
+  "HTTP rejection keeps the home scope and draft without treating it as an admission",
   { timeout: 30_000 },
   async (t) => {
     const { sessions, auth, faux } = await sessionsFixture(t);
@@ -399,8 +404,7 @@ await test(
     await page.goto(server.origin);
     const sessionId = decode(SessionId, await page.locator('[name="sessionId"]').inputValue());
     const requestId = await page.locator('[name="requestId"]').inputValue();
-    await page.locator("#admission-options summary").click();
-    await page.locator('[name="whenIdle"]').selectOption("reject");
+    await page.route(`${server.origin}/`, (route) => route.fulfill({ status: 409, body: "" }));
     await page.locator("#message").fill("Keep the scope");
     const rejected = page.waitForResponse(
       (response) => response.request().method() === "POST" && response.status() === 409,
@@ -414,22 +418,17 @@ await test(
     assert.equal(await page.locator("#recovery").isVisible(), false);
     assert.equal(await page.locator("#admission").getAttribute("data-submission-id"), null);
     assert.equal(faux.state.callCount, 0);
-    const app = await sessions.get(sessionId);
-    assert(app);
-    assert.equal(
-      await app.harness.commit(
-        (tx) => tx.submissionByRequest(ROOT_CONVERSATION_ID, requestId),
-        context,
-      ),
-      undefined,
-    );
-    await page.locator('[name="whenIdle"]').selectOption("");
+    assert.deepEqual(await sessions.list(), []);
+    await page.unroute(`${server.origin}/`);
+    await page.locator("#message").fill("Now accept the draft");
     assert.equal(await page.locator('[name="sessionId"]').inputValue(), sessionId);
     assert.notEqual(await page.locator('[name="requestId"]').inputValue(), requestId);
     faux.setResponses([fauxAssistantMessage("Now admitted")]);
     await page.locator("#create").click();
     await page.waitForURL(`${server.origin}/api/s/${sessionId}/c/${ROOT_CONVERSATION_ID}`);
     assert.equal((await sessions.list()).length, 1);
+    const app = await sessions.get(sessionId);
+    assert(app);
     assert.equal((await app.list()).length, 1);
   },
 );

@@ -36,7 +36,6 @@ import {
   admission,
   submissionResult,
   withdrawalResult,
-  inspectionPage,
   executionResult,
   configuration,
   metadata,
@@ -357,7 +356,7 @@ export async function serve(
     const read = conversationMatch
       ? action === undefined ||
         ["watch", "entries", "submissionByRequest", "submissions/status"].includes(action)
-      : action === undefined || action === "inspect";
+      : action === undefined;
     const write = conversationMatch
       ? ["submit", "composer", "configure", "abortSubmission", "abort", "compact"].includes(
           action ?? "",
@@ -376,29 +375,18 @@ export async function serve(
             ? ["id"]
             : action === undefined && conversationMatch
               ? ["submissionId", "withdrawal", "id", "aborted"]
-              : action === "inspect"
-                ? ["resumed"]
-                : [],
+              : [],
     );
     const app = await sessions.get(sessionId);
     if (!app) throw new HttpError(404, "Session not found.");
     if (!conversationMatch) {
       if (!action) html(response, await sessionPage(app, prefix));
-      else if (action === "inspect") {
-        if (url.searchParams.has("resumed") && url.searchParams.get("resumed") !== "true")
-          throw new InvalidRequest("Invalid resume acknowledgement.");
-        const inspection = await app.harness.inspect(context).catch((error: unknown) => {
-          if (error instanceof StorageRequestError)
-            throw new InvalidRequest("Invalid inspection read.", { cause: error });
-          throw error;
-        });
-        html(response, inspectionPage(app.id, inspection, prefix, url.searchParams.has("resumed")));
-      } else if (action === "resume") {
+      else if (action === "resume") {
         fields(await readForm(), []);
         app.harness.resume();
         if (request.headers["datastar-request"] === "true")
           sse(response, patch(executionResult(sessionPath(prefix, app.id), "resume")));
-        else navigate(request, response, `${sessionPath(prefix, app.id)}/inspect?resumed=true`);
+        else navigate(request, response, sessionPath(prefix, app.id));
       } else {
         const form = await readForm();
         fields(

@@ -82,8 +82,8 @@ PDS behavior; independent-component deployment and retirement gates belong in
     abort, so that a cancellation result accurately describes what was stopped.
 16. As a PDS user, I want browser disconnection to release observation only, so
     that tools and model work do not stop when I close a tab.
-17. As a PDS user, I want explicit inspection and resume, so that viewing
-    interrupted work does not itself enable scheduling.
+17. As a PDS user, I want explicit resume, so that viewing interrupted work does
+    not itself enable scheduling.
 18. As a PDS user, I want reset and compaction to preserve native semantics, so
     that admission, completion, and summary placement remain distinguishable.
 19. As a PDS user, I want current or historical context reads, so that I can
@@ -205,7 +205,6 @@ PDS behavior; independent-component deployment and retirement gates belong in
 | POST   | `S/createConversation`  | Create a native conversation with initial agent/env              |
 | GET    | `C`                     | Conversation page and bounded baseline                           |
 | GET    | `/api/models`           | Available chat-model metadata rendered as HTML                   |
-| GET    | `S/inspect`             | Native Harness inspection without scheduling                     |
 | GET    | `S/scanConversations`   | Paged native conversation records                                |
 | GET    | `S/scanTasks`           | Paged native task records                                        |
 | GET    | `C/watch`               | Fresh bounded baseline then incremental Datastar SSE             |
@@ -317,8 +316,7 @@ PDS behavior; independent-component deployment and retirement gates belong in
   work, and wait for that abort operation's native completion. Preserve
   background boundaries and queued writes. Do not expose a background-abort
   option or strengthen it into termination of every possible task.
-- `inspect` renders native scheduling, task, submission, and inspection-state
-  distinctions without enabling scheduling. `resume` enables scheduling but does
+- `resume`, also available as composer `/resume`, enables scheduling but does
   not promise completion, successful recovery of blocked definitions, or a new
   submission.
 - `reset` preserves an omitted handoff versus an explicitly supplied string and
@@ -577,9 +575,9 @@ PDS behavior; independent-component deployment and retirement gates belong in
 - A 503 does not prove a write failed to commit or permit automatic replay. Do
   not send `Retry-After` without knowing a recovery time. Connection loss
   creates no synthetic response, including no invented 499.
-- Missing submission receipts, abort-submission result variants, blocked
-  inspection states, and persisted task failures are successful read/result
-  representations. Do not turn them into missing-resource or transport errors.
+- Missing submission receipts, abort-submission result variants, and persisted
+  task failures are successful read/result representations. Do not turn them
+  into missing-resource or transport errors.
 - Model metadata exposes only ID, provider, name, input modes, reasoning,
   context window, max tokens, cost, and supported thinking levels from current
   `Models.getAvailable()` in upstream order. No session is required. Empty

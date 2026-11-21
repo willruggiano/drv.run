@@ -263,6 +263,10 @@ async function openSession(options: {
           }, context);
           return undefined;
         }
+        if (command === "/resume" && rest.length === 0) {
+          harness.resume();
+          return undefined;
+        }
         if (command === "/compact") {
           await conversation.compact(rest.join(" ") || undefined, context);
           return undefined;
@@ -289,7 +293,7 @@ async function openSession(options: {
         throw new InvalidForm({
           kind: "field",
           field: "message",
-          message: "Unknown command. Use /new, /cd <path>, or /compact [instructions].",
+          message: "Unknown command. Use /new, /cd <path>, /compact [instructions], or /resume.",
         });
       }
       return submit(conversation, form);

@@ -145,19 +145,11 @@ input { padding: 7px 10px; width: 100%; min-width: 0; }
 [hidden] { display: none !important; }
 fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 #notice:empty, #activity:empty, #admission:empty, #execution-result:empty { display: none; }
-#execution-controls, #execution-result { padding: 6px 16px; font-size: 12px; overflow-wrap: anywhere; }
-#execution-controls summary { cursor: pointer; }
-#execution-controls p, #execution-result p { margin: 6px 0; }
-#execution-controls form { margin-top: 6px; }
-#inspection { overflow-wrap: anywhere; }
-#inspection dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; }
-#inspection dd { margin: 0; white-space: pre-wrap; }
+#execution-result { padding: 6px 16px; font-size: 12px; overflow-wrap: anywhere; }
+#execution-result p { margin: 6px 0; }
 #admission { padding: 6px 16px; font-size: 12px; overflow-wrap: anywhere; }
 #admission dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 4px 0; max-height: 25dvh; overflow-y: auto; }
 #admission dd { margin: 0; white-space: pre-wrap; }
-#admission-options { margin-top: 4px; color: var(--muted); font-size: 12px; }
-#admission-options summary { cursor: pointer; }
-#admission-options label { display: block; margin-top: 6px; }
 #recovery { padding: 6px var(--conversation-right) 6px var(--conversation-left); font-size: 12px; }
 #recovery p { margin: 4px 0; }
 #notice, #activity, #connection:not(.sr-only) { padding: 6px 16px; font-size: 12px; background: var(--activity-bg); }
@@ -227,8 +219,12 @@ img { max-width: 100%; height: auto; }
 #session-meta #bottom-line .footer-chevron { display: none; }
 #queue { grid-row: 3; min-height: 0; max-height: min(25dvh, 220px); overflow-y: auto; container-type: inline-size; }
 #queue:empty { display: none; }
-.queued-messages { margin: 0 var(--conversation-right) 0 var(--conversation-left); padding-bottom: 42px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
-.queued-messages article { padding: 4px 0; }
+.queued-messages { margin: 0 var(--conversation-right) 0 var(--conversation-left); border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.queued-messages > h2 { padding-top: 6px; color: var(--muted); font-size: 10px; font-weight: 400; }
+.queued-messages > article { padding: 4px 0; }
+.queued-messages > article > header { margin-bottom: 0; }
+.queued-messages > article > header > form { margin-left: auto; }
+.queued-messages .icon { display: flex; align-items: center; justify-content: center; width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 0; font-size: 16px; }
 @media (min-width: 1200px) {
   #page[data-view=conversation] #stream { padding-inline: 0; }
   #queue { grid-area: 2 / 1 / auto / -1; }

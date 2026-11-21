@@ -64,7 +64,7 @@ document.addEventListener("datastar-fetch", (event) => {
     } else if (type === "finished" && !acknowledgedControls.has(el)) {
       // Datastar 1.0.5 emits only finished for a network failure with retry: never.
       document.getElementById("notice")!.textContent =
-        "Control outcome is uncertain. Check submission status or execution inspection before trying again. No command was replayed.";
+        "Control outcome is uncertain. Check the conversation and submission status before trying again. No command was replayed.";
     }
   }
   if (el === stream && ["error", "retrying", "retries-failed", "finished"].includes(type)) {
