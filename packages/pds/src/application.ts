@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { readdir, mkdir, lstat, open } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import * as Value from "typebox/value";
+import { isJsonValue } from "@earendil-works/chord/json";
 import type * as C from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
@@ -21,7 +23,22 @@ import { SessionId, SessionKey, decode } from "./identity.ts";
 export const environmentValue = (selected: EnvTarget | undefined): string =>
   selected?.type === "ssh" ? `ssh:${selected.host}` : (selected?.type ?? "");
 
-export class InvalidForm extends Error {}
+export type FormIssue =
+  | { kind: "field"; field: string; message: string }
+  | {
+      kind: "image-model";
+      models: (Pick<A.Model<string>, "provider" | "id" | "name"> & {
+        thinkingLevels: A.ModelThinkingLevel[];
+      })[];
+    };
+
+export class InvalidForm extends Error {
+  readonly issue: FormIssue;
+  constructor(issue: FormIssue) {
+    super(issue.kind === "image-model" ? "Select a model that accepts images." : issue.message);
+    this.issue = issue;
+  }
+}
 
 export const context = BACKGROUND_CONTEXT;
 export const ConversationMetadata = defineDoc<{ title: string; createdAt: number }>({
@@ -80,7 +97,12 @@ async function openSession(options: {
       };
     }, ctx);
     if (!selected) return { env: undefined, selected, cwd };
-    if (!cwd) throw new InvalidForm("Select a working directory.");
+    if (!cwd)
+      throw new InvalidForm({
+        kind: "field",
+        field: "cwd",
+        message: "Select a working directory.",
+      });
     assert(
       selected.type === "local" || selected.type === "ssh",
       "Unsupported execution environment selection.",
@@ -113,6 +135,21 @@ async function openSession(options: {
       void pending.catch(() => environments.delete(key));
     }
     return { env: await pending, selected, cwd };
+  }
+
+  async function submit(conversation: D.Conversation, form: FormData) {
+    const text = field(form, "message");
+    const files = uploads(form);
+    return submitInput(
+      conversation,
+      {
+        type: "input",
+        ...admissionOptions(form),
+        content: await attachments(text, files),
+      },
+      text.trim() || files[0]!.name,
+      options.models,
+    );
   }
 
   let available = true;
@@ -176,37 +213,40 @@ async function openSession(options: {
         context,
       );
     },
-    async submit(conversation: D.Conversation, form: FormData) {
-      const text = field(form, "message");
-      const files = uploads(form);
-      return submitInput(
-        conversation,
-        {
-          type: "input",
-          content: await input(
-            options.models,
-            text,
-            files,
-            (await conversation.agent(context)).model,
-          ),
-        },
-        text || files[0]!.name,
-      );
-    },
+    submit,
     async send(conversation: D.Conversation, form: FormData) {
       const text = field(form, "message").trim();
       const files = uploads(form);
       if (text.startsWith("/")) {
-        if (files.length) throw new InvalidForm("Commands cannot include attachments.");
+        if (files.length)
+          throw new InvalidForm({
+            kind: "field",
+            field: "attachments",
+            message: "Commands cannot include attachments.",
+          });
         const [command, ...rest] = text.split(/\s+/);
         if (command === "/cd") {
           const directory = text.slice(command.length).trim();
-          if (!directory) throw new InvalidForm("Usage: /cd <path>");
+          if (!directory)
+            throw new InvalidForm({
+              kind: "field",
+              field: "message",
+              message: "Usage: /cd <path>",
+            });
           const acquired = await acquireEnvironment(conversation.id, context);
-          if (!acquired.env) throw new InvalidForm("Select an execution environment before /cd.");
+          if (!acquired.env)
+            throw new InvalidForm({
+              kind: "field",
+              field: "message",
+              message: "Select an execution environment before /cd.",
+            });
           const resolved = await acquired.env.absolutePath(directory, context);
           if (!resolved.ok)
-            throw new InvalidForm("Could not resolve the directory in the selected environment.");
+            throw new InvalidForm({
+              kind: "field",
+              field: "message",
+              message: "Could not resolve the directory in the selected environment.",
+            });
           await conversation.commit(async (tx) => {
             const agent = await tx.doc(AgentDoc, conversation.id);
             const selected = (await tx.doc(Env, conversation.id)).env;
@@ -214,7 +254,11 @@ async function openSession(options: {
               agent.cwd !== acquired.cwd ||
               environmentValue(selected) !== environmentValue(acquired.selected)
             )
-              throw new InvalidForm("Environment configuration changed during /cd; try again.");
+              throw new InvalidForm({
+                kind: "field",
+                field: "message",
+                message: "Environment configuration changed during /cd; try again.",
+              });
             await configure(tx, conversation.id, { cwd: resolved.value });
           }, context);
           return undefined;
@@ -242,19 +286,13 @@ async function openSession(options: {
             context,
           );
         }
-        throw new InvalidForm("Unknown command. Use /new, /cd <path>, or /compact [instructions].");
+        throw new InvalidForm({
+          kind: "field",
+          field: "message",
+          message: "Unknown command. Use /new, /cd <path>, or /compact [instructions].",
+        });
       }
-      const content = await input(
-        options.models,
-        text,
-        files,
-        (await conversation.agent(context)).model,
-      );
-      return submitInput(
-        conversation,
-        { type: "input", content, whenBusy: "followUp" },
-        text || files[0]!.name,
-      );
+      return submit(conversation, form);
     },
     close() {
       closing ??= (async () => {
@@ -303,20 +341,28 @@ export const modelKey = (model: { provider: string; id: string }) =>
   `${model.provider}/${model.id}`;
 export const field = (form: FormData, name: string): string => {
   const value = form.get(name);
-  if (typeof value !== "string") throw new InvalidForm(`Missing ${name}.`);
+  if (typeof value !== "string")
+    throw new InvalidForm({ kind: "field", field: name, message: `Missing ${name}.` });
   return value;
 };
 
 const uploads = (form: FormData) =>
   form
     .getAll("attachments")
-    .filter((value): value is File => value instanceof File && value.size > 0);
+    .filter(
+      (value): value is File => value instanceof File && (value.size > 0 || value.name !== ""),
+    );
 
 export async function attachments(
   text: string,
   files: File[],
 ): Promise<Exclude<D.UserInput, string>> {
-  if (!text && !files.length) throw new InvalidForm("Enter a message or attach a file.");
+  if (!text.trim() && !files.length)
+    throw new InvalidForm({
+      kind: "field",
+      field: "message",
+      message: "Enter a message or attach a file.",
+    });
   const content: Exclude<D.UserInput, string> = text ? [{ type: "text", text }] : [];
   for (const file of files) {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -330,13 +376,26 @@ export async function attachments(
         },
       );
     } else {
-      if (bytes.includes(0))
-        throw new InvalidForm(`${file.name}: only images and UTF-8 text files are supported.`);
       let decoded: string;
       try {
         decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      } catch {
-        throw new InvalidForm(`${file.name}: not a UTF-8 text file.`);
+      } catch (error) {
+        if (error instanceof TypeError)
+          throw new InvalidForm({
+            kind: "field",
+            field: "attachments",
+            message: `${file.name}: not a UTF-8 text file.`,
+          });
+        throw error;
+      }
+      for (const character of decoded) {
+        const code = character.charCodeAt(0);
+        if ((code < 32 && ![9, 10, 12, 13].includes(code)) || code === 127)
+          throw new InvalidForm({
+            kind: "field",
+            field: "attachments",
+            message: `${file.name}: only images and UTF-8 text files are supported.`,
+          });
       }
       content.push({ type: "text", text: `Attachment: ${file.name}\n\n${decoded}` });
     }
@@ -355,7 +414,11 @@ function configurationChange(models: A.Models, form: FormData, current: D.AgentS
     new Set(clears).size !== clears.length ||
     clears.some((name) => typeof name !== "string" || !names.includes(name) || form.has(name))
   )
-    throw new InvalidForm("Clear each supported field once, without supplying a value.");
+    throw new InvalidForm({
+      kind: "field",
+      field: "clear",
+      message: "Clear each supported field once, without supplying a value.",
+    });
   const value = (name: string) =>
     clears.includes(name) ? null : form.has(name) ? field(form, name) : undefined;
   const modelValue = value("model");
@@ -363,7 +426,12 @@ function configurationChange(models: A.Models, form: FormData, current: D.AgentS
   if (modelValue === null) model = null;
   else if (modelValue !== undefined) {
     const found = models.getModels().find((candidate) => modelKey(candidate) === modelValue);
-    if (!found) throw new InvalidForm("Select an available model.");
+    if (!found)
+      throw new InvalidForm({
+        kind: "field",
+        field: "model",
+        message: "Select an available model.",
+      });
     model = { provider: found.provider, modelId: found.id };
   }
   const thinkingValue = value("thinking");
@@ -372,16 +440,29 @@ function configurationChange(models: A.Models, form: FormData, current: D.AgentS
   const thinking =
     thinkingValue == null ? thinkingValue : levels.find((level) => level === thinkingValue);
   if (thinkingValue != null && !thinking)
-    throw new InvalidForm("Select a model and a supported thinking level.");
+    throw new InvalidForm({
+      kind: "field",
+      field: "thinking",
+      message: "Select a model and a supported thinking level.",
+    });
   if (
     modelValue &&
     current.thinkingLevel &&
     thinkingValue === undefined &&
     !levels.includes(current.thinkingLevel)
   )
-    throw new InvalidForm("Select a thinking level supported by the new model.");
+    throw new InvalidForm({
+      kind: "field",
+      field: "thinking",
+      message: "Select a thinking level supported by the new model.",
+    });
   const cwd = value("cwd");
-  if (cwd === "") throw new InvalidForm("Working directory cannot be empty.");
+  if (cwd === "")
+    throw new InvalidForm({
+      kind: "field",
+      field: "cwd",
+      message: "Working directory cannot be empty.",
+    });
   const selected = value("env");
   let env: EnvTarget | null | undefined;
   if (selected == null) env = selected;
@@ -389,9 +470,18 @@ function configurationChange(models: A.Models, form: FormData, current: D.AgentS
   else if (selected.startsWith("ssh:")) {
     const host = selected.slice(4);
     if (!host || host.startsWith("-") || /[\s\p{Cc}]/u.test(host))
-      throw new InvalidForm("Enter one SSH host name without options or whitespace.");
+      throw new InvalidForm({
+        kind: "field",
+        field: "env",
+        message: "Enter one SSH host name without options or whitespace.",
+      });
     env = { type: "ssh", host };
-  } else throw new InvalidForm("Select local or ssh:<host>.");
+  } else
+    throw new InvalidForm({
+      kind: "field",
+      field: "env",
+      message: "Select local or ssh:<host>.",
+    });
   const agent: D.AgentChange = {
     ...(modelValue !== undefined && model !== undefined ? { model } : {}),
     ...(thinking !== undefined ? { thinkingLevel: thinking } : {}),
@@ -415,7 +505,9 @@ export interface Application extends Options {
   open(id?: SessionId): Promise<Session>;
   get(id: SessionId): Promise<Session | undefined>;
   list(): Promise<{ id: SessionId; status: "open" | "unavailable" }[]>;
-  compose(form: FormData): Promise<{ sessionId: SessionId; conversation: D.Conversation }>;
+  compose(
+    form: FormData,
+  ): Promise<{ sessionId: SessionId; conversation: D.Conversation; submissionId?: D.SubmissionId }>;
   close(): Promise<void>;
 }
 
@@ -517,15 +609,22 @@ export async function openApplication(
       }));
     },
     async compose(form) {
+      const admission = admissionOptions(form);
       const { agent, env } = configurationChange(options.models, form);
       if (!agent.model || !agent.thinkingLevel || !agent.cwd || !env)
-        throw new InvalidForm(
-          "Select a model, thinking level, working directory, and environment.",
-        );
+        throw new InvalidForm({
+          kind: "field",
+          field: "configuration",
+          message: "Select a model, thinking level, working directory, and environment.",
+        });
       const text = typeof form.get("message") === "string" ? field(form, "message").trim() : "";
       const files = uploads(form);
       if (text.startsWith("/") && (text !== "/new" || files.length))
-        throw new InvalidForm("Start a conversation before using this command.");
+        throw new InvalidForm({
+          kind: "field",
+          field: "message",
+          message: "Start a conversation before using this command.",
+        });
       const content =
         (text && text !== "/new") || files.length
           ? await input(options.models, text, files, agent.model)
@@ -536,24 +635,28 @@ export async function openApplication(
         form.has("sessionId") ? field(form, "sessionId") : randomUUID(),
       );
       const app = await acquire(sessionId, !records.has(sessionId));
-      const conversation = await app.harness.createConversation(
-        {
-          ownership: { kind: "ownerless" },
-          agent,
-          async init(tx, id) {
-            await tx.doc(ConversationMetadata, id);
-            await selectEnvironment(tx, id, env);
-          },
+      const conversation = await app.harness.root(context, {
+        agent,
+        async init(tx, id) {
+          await tx.doc(ConversationMetadata, id);
+          await selectEnvironment(tx, id, env);
         },
-        context,
-      );
-      if (content)
-        await submitInput(
-          conversation,
-          { type: "input", content, whenBusy: "followUp" },
-          text || files[0]!.name,
-        );
-      return { sessionId, conversation };
+      });
+      // An existing root keeps its configuration. Check that selection as well.
+      const submissionId = content
+        ? await submitInput(
+            conversation,
+            {
+              type: "input",
+              ...admission,
+              content,
+            },
+            text.trim() || files[0]!.name,
+            options.models,
+            { agent, env },
+          )
+        : undefined;
+      return { sessionId, conversation, ...(submissionId === undefined ? {} : { submissionId }) };
     },
     close() {
       closing ??= (async () => {
@@ -596,23 +699,151 @@ async function initialize(tx: D.Tx, id: D.ConversationId, options: Options, form
 
 async function input(models: A.Models, text: string, files: File[], model: D.ModelRef | undefined) {
   const content = await attachments(text, files);
-  if (
-    content.some((part) => part.type === "image") &&
-    (!model || !models.getModel(model.provider, model.modelId)?.input.includes("image"))
-  )
-    throw new InvalidForm("Select a model that accepts images.");
+  const available = await models.getAvailable();
+  validateInputModel(content, model, available);
   return content;
+}
+
+function validateInputModel(
+  content: D.UserInput,
+  model: D.ModelRef | undefined,
+  available: readonly A.Model<string>[],
+) {
+  const selected =
+    model &&
+    available.find(
+      (candidate) => candidate.provider === model.provider && candidate.id === model.modelId,
+    );
+  if (
+    typeof content !== "string" &&
+    content.some((part) => part.type === "image") &&
+    !selected?.input.includes("image")
+  )
+    throw new InvalidForm({
+      kind: "image-model",
+      models: available
+        .filter((candidate) => candidate.input.includes("image"))
+        .map((candidate) => ({
+          provider: candidate.provider,
+          id: candidate.id,
+          name: candidate.name,
+          thinkingLevels: getSupportedThinkingLevels(candidate),
+        })),
+    });
+  if (!selected)
+    throw new InvalidForm({ kind: "field", field: "model", message: "Select an available model." });
 }
 
 async function submitInput(
   conversation: D.Conversation,
   draft: D.InputSubmissionDraft,
   title: string,
+  models: A.Models,
+  initial?: { agent: D.AgentChange; env: EnvTarget },
 ) {
+  const available = await models.getAvailable();
   return conversation.commit(async (tx) => {
+    const existing =
+      draft.requestId === undefined
+        ? undefined
+        : await tx.submissionByRequest(conversation.id, draft.requestId);
+    if (!existing) {
+      const current = await tx.doc(AgentDoc, conversation.id);
+      if (
+        initial &&
+        !isDeepStrictEqual(
+          [
+            current.model,
+            current.thinkingLevel,
+            current.cwd,
+            (await tx.doc(Env, conversation.id)).env,
+          ],
+          [initial.agent.model, initial.agent.thinkingLevel, initial.agent.cwd, initial.env],
+        )
+      )
+        throw new InvalidForm({
+          kind: "field",
+          field: "sessionId",
+          message: "Session ID already belongs to a different configuration.",
+        });
+      validateInputModel(draft.content, current.model, available);
+    }
     const id = await conversation.submit(tx, draft);
+    if (existing) return id;
     const info = await tx.doc(ConversationMetadata, conversation.id);
     if (info.title === "New session") info.title = title.slice(0, 100);
     return id;
   }, context);
+}
+
+export const submissionFields = [
+  "message",
+  "attachments",
+  "requestId",
+  "whenBusy",
+  "whenIdle",
+  "entry",
+] as const;
+
+function admissionOptions(form: FormData): Omit<D.InputSubmissionDraft, "type" | "content"> {
+  const requestId = form.has("requestId") ? field(form, "requestId") : undefined;
+  if (requestId !== undefined && (!requestId.trim() || requestId.length > 200))
+    throw new InvalidForm({
+      kind: "field",
+      field: "requestId",
+      message: "Use a nonempty request ID of at most 200 characters.",
+    });
+  const whenBusy = form.has("whenBusy") ? field(form, "whenBusy") : "";
+  const whenIdle = form.has("whenIdle") ? field(form, "whenIdle") : "";
+  if (whenBusy && whenBusy !== "steer" && whenBusy !== "followUp" && whenBusy !== "reject")
+    throw new InvalidForm({
+      kind: "field",
+      field: "whenBusy",
+      message: "Choose steer, followUp, reject, or the native default.",
+    });
+  if (whenIdle && whenIdle !== "reject")
+    throw new InvalidForm({
+      kind: "field",
+      field: "whenIdle",
+      message: "Choose reject or the native default.",
+    });
+  let entry: D.InputEntry | undefined;
+  const encoded = form.has("entry") ? field(form, "entry") : "";
+  if (encoded) {
+    const invalid = () =>
+      new InvalidForm({
+        kind: "field",
+        field: "entry",
+        message:
+          "Use an entry object with a nonempty application kind (not pi.*) and optional JSON data.",
+      });
+    if (Buffer.byteLength(encoded) > 64 * 1024) throw invalid();
+    let value: unknown;
+    try {
+      value = JSON.parse(encoded);
+    } catch (error) {
+      if (error instanceof SyntaxError) throw invalid();
+      throw error;
+    }
+    if (
+      !isJsonValue(value) ||
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      typeof value.kind !== "string" ||
+      !value.kind ||
+      value.kind.startsWith("pi.") ||
+      Object.keys(value).some((key) => key !== "kind" && key !== "data")
+    )
+      throw invalid();
+    entry = { kind: value.kind, ...(value.data === undefined ? {} : { data: value.data }) };
+  }
+  return {
+    ...(requestId === undefined ? {} : { requestId }),
+    ...(whenBusy === "steer" || whenBusy === "followUp" || whenBusy === "reject"
+      ? { whenBusy }
+      : {}),
+    ...(whenIdle === "reject" ? { whenIdle } : {}),
+    ...(entry ? { entry } : {}),
+  };
 }

@@ -11,18 +11,30 @@ import {
   ConversationIdle,
 } from "@earendil-works/pi-durable";
 import type * as D from "@earendil-works/pi-durable";
-import { ConversationId, EntryId, TaskId, SessionId, decode, InvalidRequest } from "./identity.ts";
+import {
+  ConversationId,
+  EntryId,
+  TaskId,
+  SessionId,
+  SubmissionId,
+  decode,
+  InvalidRequest,
+} from "./identity.ts";
 import { observe, Projection, type Patch } from "./watch.ts";
 import { LoginError, type ModelAuth } from "./login.ts";
 import {
   context,
   field,
+  submissionFields,
   InvalidForm,
   SessionUnavailable,
   type Application,
 } from "./application.ts";
 import {
   alert,
+  invalidForm,
+  admission,
+  submissionResult,
   configuration,
   metadata,
   conversationPage,
@@ -93,10 +105,15 @@ export async function serve(
   const sessionRoute = new URLPattern("api/s/:session", base.href);
   const sessionAction = new URLPattern("api/s/:session/:action", base.href);
   const conversationRoute = new URLPattern("api/s/:session/c/:conversation/:action?", base.href);
+  const submissionRoute = new URLPattern(
+    "api/s/:session/c/:conversation/submissions/status",
+    base.href,
+  );
   const inFlight = new Set<Promise<void>>();
   let closing = false;
   const server = createServer((request, response) => {
-    const work = route(request, response)
+    const input: { form?: FormData } = {};
+    const work = route(request, response, input)
       .catch((error: unknown) => {
         if (response.destroyed) return;
         const expected =
@@ -114,13 +131,18 @@ export async function serve(
             : expected
               ? error.message
               : "Request failed. Check the conversation before resending.";
+        const requestId = input.form?.get("requestId");
+        const invalid =
+          error instanceof InvalidForm
+            ? invalidForm(error.issue, typeof requestId === "string" ? requestId : undefined)
+            : undefined;
         if (response.headersSent) response.destroy();
         else if (request.headers["datastar-request"] === "true" && error instanceof InvalidForm) {
           response.writeHead(200, {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-store",
           });
-          response.end(patch(alert(message)));
+          response.end(patch(invalid!));
         } else {
           response.writeHead(
             error instanceof HttpError
@@ -136,7 +158,7 @@ export async function serve(
                       : 500,
             { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
           );
-          response.end(page("Error", alert(message), "home", prefix));
+          response.end(page("Error", invalid ?? alert(message), "home", prefix));
         }
       })
       .finally(() => {
@@ -145,12 +167,20 @@ export async function serve(
     inFlight.add(work);
   });
 
-  async function route(request: IncomingMessage, response: ServerResponse) {
+  async function route(
+    request: IncomingMessage,
+    response: ServerResponse,
+    input: { form?: FormData },
+  ) {
     assert(request.url);
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Cache-Control", "no-store");
     if (closing) throw new SessionUnavailable("PDS is closing.");
     const url = new URL(request.url, base);
+    async function readForm() {
+      input.form = await formData(request, url);
+      return input.form;
+    }
     const address = server.address();
     assert(address && typeof address !== "string");
     const origin = options.origin
@@ -195,7 +225,7 @@ export async function serve(
         throw new HttpError(404, "Not found.");
       method(request, response, ["POST"]);
       queryFields(request, url, []);
-      const form = await formData(request, url);
+      const form = await readForm();
       fields(
         form,
         action === "start"
@@ -239,7 +269,7 @@ export async function serve(
       queryFields(request, url, []);
       if (request.method === "GET") html(response, await home(sessions, prefix));
       else {
-        const form = await formData(request, url);
+        const form = await readForm();
         fields(form, [
           "sessionId",
           "model",
@@ -247,32 +277,35 @@ export async function serve(
           "cwd",
           "env",
           "clear",
-          "message",
-          "attachments",
+          ...submissionFields,
         ]);
         const result = await sessions.compose(form);
-        navigate(
-          request,
-          response,
-          conversationPath(prefix, result.sessionId, result.conversation.id),
-        );
+        const destination = conversationPath(prefix, result.sessionId, result.conversation.id);
+        if (result.submissionId === undefined) navigate(request, response, destination);
+        else if (request.headers["datastar-request"] === "true")
+          sse(
+            response,
+            patch(alert()) +
+              patch(
+                admission(
+                  destination,
+                  result.submissionId,
+                  form.has("requestId") ? field(form, "requestId") : undefined,
+                ),
+              ),
+          );
+        else
+          response
+            .writeHead(303, { Location: `${destination}?submissionId=${result.submissionId}` })
+            .end();
       }
       return;
     }
     if (url.pathname === new URL("thinking", base).pathname) {
       method(request, response, ["POST"]);
       queryFields(request, url, []);
-      const form = await formData(request, url);
-      fields(form, [
-        "sessionId",
-        "model",
-        "thinking",
-        "cwd",
-        "env",
-        "clear",
-        "message",
-        "attachments",
-      ]);
+      const form = await readForm();
+      fields(form, ["sessionId", "model", "thinking", "cwd", "env", "clear", ...submissionFields]);
       sse(response, patch(thinking(sessions, field(form, "model"), field(form, "thinking"))));
       return;
     }
@@ -293,7 +326,7 @@ export async function serve(
       method(request, response, ["GET", "POST"]);
       if (request.method === "POST") {
         queryFields(request, url, []);
-        const form = await formData(request, url);
+        const form = await readForm();
         fields(form, ["sessionId"]);
         const app = await sessions.open(
           form.has("sessionId") ? decode(SessionId, field(form, "sessionId")) : undefined,
@@ -302,7 +335,10 @@ export async function serve(
         return;
       }
     }
-    const conversationMatch = conversationRoute.exec(url.href)?.pathname.groups;
+    const statusMatch = submissionRoute.exec(url.href)?.pathname.groups;
+    const conversationMatch = statusMatch
+      ? { ...statusMatch, action: "submissions/status" }
+      : conversationRoute.exec(url.href)?.pathname.groups;
     const sessionMatch =
       sessionRoute.exec(url.href)?.pathname.groups ?? sessionAction.exec(url.href)?.pathname.groups;
     const match = conversationMatch ?? sessionMatch;
@@ -316,20 +352,33 @@ export async function serve(
     }
     const action = match.action;
     const read = conversationMatch
-      ? action === undefined || action === "watch" || action === "entries"
+      ? action === undefined ||
+        ["watch", "entries", "submissionByRequest", "submissions/status"].includes(action)
       : action === undefined;
     const write = conversationMatch
       ? ["submit", "composer", "configure", "abort", "compact"].includes(action ?? "")
       : ["root", "createConversation"].includes(action ?? "");
     if (!read && !write) throw new HttpError(404, "Not found.");
     method(request, response, read ? ["GET"] : ["POST"]);
-    queryFields(request, url, action === "entries" ? ["before", "after"] : []);
+    queryFields(
+      request,
+      url,
+      action === "entries"
+        ? ["before", "after"]
+        : action === "submissionByRequest"
+          ? ["requestId"]
+          : action === "submissions/status"
+            ? ["id"]
+            : action === undefined && conversationMatch
+              ? ["submissionId"]
+              : [],
+    );
     const app = await sessions.get(sessionId);
     if (!app) throw new HttpError(404, "Session not found.");
     if (!conversationMatch) {
       if (!action) html(response, await sessionPage(app, prefix));
       else {
-        const form = await formData(request, url);
+        const form = await readForm();
         fields(
           form,
           action === "root"
@@ -342,9 +391,18 @@ export async function serve(
           if (kind === "task") {
             const taskId = decode(TaskId, field(form, "taskId"));
             if (!(await app.harness.getTask(taskId, context)))
-              throw new InvalidForm("Owning task does not exist in this session.");
+              throw new InvalidForm({
+                kind: "field",
+                field: "taskId",
+                message: "Owning task does not exist in this session.",
+              });
             ownership = { kind: "task", taskId };
-          } else if (kind !== "ownerless") throw new InvalidForm("Unknown conversation ownership.");
+          } else if (kind !== "ownerless")
+            throw new InvalidForm({
+              kind: "field",
+              field: "ownership",
+              message: "Unknown conversation ownership.",
+            });
         }
         if (ownership.kind === "ownerless" && form.has("taskId"))
           throw new InvalidRequest("Task ID requires task ownership.");
@@ -364,13 +422,59 @@ export async function serve(
       });
     if (!conversation) throw new HttpError(404, "Conversation not found.");
     const path = conversationPath(prefix, app.id, conversation.id);
-    if (!action) {
+    const statusOf = async (id: D.SubmissionId) => {
+      try {
+        const handle = await app.harness.submission(id, context);
+        const record = await handle?.status(context);
+        return record?.conversationId === conversation.id ? record : undefined;
+      } catch (error) {
+        if (error instanceof StorageRequestError)
+          throw new InvalidRequest("Invalid submission read.", { cause: error });
+        throw error;
+      }
+    };
+    if (action === "submissionByRequest" || action === "submissions/status") {
+      const requestId = url.searchParams.get("requestId");
+      if (
+        action === "submissionByRequest" &&
+        (requestId === null || !requestId.trim() || requestId.length > 200)
+      )
+        throw new InvalidRequest("Use a nonempty request ID of at most 200 characters.");
+      const record =
+        action === "submissions/status"
+          ? await statusOf(decode(SubmissionId, url.searchParams.get("id")))
+          : await app.harness
+              .commit((tx) => tx.submissionByRequest(conversation.id, requestId!), context)
+              .catch((error: unknown) => {
+                if (error instanceof StorageRequestError)
+                  throw new InvalidRequest("Invalid submission read.", { cause: error });
+                throw error;
+              });
+      const markup = submissionResult(path, record, requestId ?? undefined);
+      if (request.headers["datastar-request"] === "true") sse(response, patch(markup));
+      else
+        html(
+          response,
+          page(
+            "Submission",
+            `<header id="app-header"><div class="bar"><a href="${escape(path)}">Conversation</a></div></header><main id="main-area"><section class="pane">${markup}</section></main>`,
+            "home",
+            prefix,
+          ),
+        );
+    } else if (!action) {
       const abort = new AbortController();
       response.once("close", () => abort.abort());
       const watch = await observe(app, conversation, abort.signal);
       const initial = watch.value;
       await watch.stop();
-      const markup = await conversationPage(app, conversation, initial, prefix);
+      const receipt = url.searchParams.has("submissionId")
+        ? submissionResult(
+            path,
+            await statusOf(decode(SubmissionId, url.searchParams.get("submissionId"))),
+          )
+        : undefined;
+      const markup = await conversationPage(app, conversation, initial, prefix, receipt);
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(markup);
     } else if (request.method === "GET" && action === "watch") {
       const abort = new AbortController();
@@ -456,14 +560,14 @@ export async function serve(
           .end(
             page(
               "Earlier messages",
-              `<main><a href="${escape(path)}">Conversation</a>${markup}</main>`,
+              `<header id="app-header"><div class="bar"><a href="${escape(path)}">Conversation</a></div></header><main id="main-area"><section class="pane">${markup}</section></main>`,
               "home",
               prefix,
             ),
           );
     } else if (request.method === "POST" && (action === "composer" || action === "submit")) {
-      const form = await formData(request, url);
-      fields(form, ["message", "attachments"]);
+      const form = await readForm();
+      fields(form, submissionFields);
       const result =
         action === "composer"
           ? await app.send(conversation, form)
@@ -472,7 +576,9 @@ export async function serve(
       if (request.headers["datastar-request"] !== "true") {
         response
           .writeHead(303, {
-            Location: conversationPath(prefix, app.id, next?.id ?? conversation.id),
+            Location:
+              conversationPath(prefix, app.id, next?.id ?? conversation.id) +
+              (typeof result === "number" ? `?submissionId=${result}` : ""),
           })
           .end();
         return;
@@ -481,13 +587,19 @@ export async function serve(
         response,
         next
           ? redirect(conversationPath(prefix, app.id, next.id))
-          : patch(
-              alert() +
-                `<div id="admission" hidden${typeof result === "number" ? ` data-submission-id="${result}"` : ""}></div>`,
-            ) + script("document.getElementById('composer').reset()"),
+          : typeof result === "number"
+            ? patch(alert()) +
+              patch(
+                admission(
+                  path,
+                  result,
+                  form.has("requestId") ? field(form, "requestId") : undefined,
+                ),
+              )
+            : patch(alert()) + script("document.getElementById('composer').reset()"),
       );
     } else if (request.method === "POST" && action === "configure") {
-      const form = await formData(request, url);
+      const form = await readForm();
       fields(form, ["model", "thinking", "cwd", "env", "clear"]);
       await app.configure(conversation, form);
       if (request.headers["datastar-request"] !== "true") {
@@ -496,12 +608,12 @@ export async function serve(
       }
       sse(response, patch(alert()));
     } else if (request.method === "POST" && action === "abort") {
-      fields(await formData(request, url), []);
+      fields(await readForm(), []);
       await conversation.abort(context);
       if (request.headers["datastar-request"] === "true") sse(response, patch(alert("Stopped.")));
       else response.writeHead(303, { Location: path }).end();
     } else if (action === "compact") {
-      const form = await formData(request, url);
+      const form = await readForm();
       fields(form, ["instructions"]);
       await conversation.compact(
         form.has("instructions") ? field(form, "instructions") : undefined,
@@ -601,6 +713,11 @@ function fields(input: FormData | URLSearchParams, allowed: readonly string[]) {
 }
 
 function queryFields(request: IncomingMessage, url: URL, allowed: readonly string[]) {
+  if (
+    request.method === "GET" &&
+    (Number(request.headers["content-length"]) > 0 || request.headers["transfer-encoding"])
+  )
+    throw new InvalidRequest("GET requests must not contain a body.");
   const enhanced = request.headers["datastar-request"] === "true";
   fields(url.searchParams, enhanced ? [...allowed, "datastar"] : allowed);
   const envelope = url.searchParams.get("datastar");
