@@ -302,3 +302,39 @@ document.addEventListener(
   },
   true,
 );
+
+// Presentation handlers stay here rather than becoming programs inside HTML attributes.
+document.addEventListener("keydown", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) return;
+  if (event.key !== "Enter") return;
+  if (input.id === "message" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    input.form?.requestSubmit();
+  } else if (input.hasAttribute("data-blur-on-enter")) {
+    event.preventDefault();
+    input.blur();
+  }
+});
+document.addEventListener(
+  "change",
+  (event) => {
+    const select = event.target;
+    if (select instanceof HTMLSelectElement && select.hasAttribute("data-choice-label"))
+      select.nextElementSibling!.textContent = select.selectedOptions[0]!.label;
+  },
+  true,
+);
+document.getElementById("last")?.addEventListener("click", () => {
+  Array.from(document.querySelectorAll('#stream article[data-role="user"]'))
+    .at(-1)
+    ?.scrollIntoView({ block: "start" });
+});
+document.getElementById("top")?.addEventListener("click", () => {
+  if (stream) stream.scrollTop = 0;
+});
+document.getElementById("footer-collapse")?.addEventListener("click", (event) => {
+  const button = event.currentTarget;
+  if (button instanceof HTMLButtonElement)
+    button.setAttribute("aria-expanded", String(button.getAttribute("aria-expanded") !== "true"));
+});

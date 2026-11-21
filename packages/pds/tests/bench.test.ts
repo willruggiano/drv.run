@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { context } from "../src/application.ts";
 import { suite } from "../bench/index.ts";
-import type { Patch } from "../src/watch.ts";
+import type { Patch } from "../src/datastar.ts";
 import { fixture, form } from "./fixtures.ts";
 
 await test("benchmark selects the largest stored conversation and builds all workloads without mutating the database", async (t) => {
@@ -69,6 +69,8 @@ await test("benchmark selects the largest stored conversation and builds all wor
       ["entry-appends", 104],
       ["context-boundaries", 2],
       ["synthetic-response-and-finalization", 17],
+      ["bounded-history-and-progress", 17],
+      ["full-transcript-history-and-progress", 17],
       ["synthetic-tool-progress", 16],
     ],
   );

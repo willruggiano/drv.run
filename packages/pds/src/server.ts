@@ -3,7 +3,6 @@ import { once } from "node:events";
 import { MIMEType } from "node:util";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createGzip, constants } from "node:zlib";
 import {
   SessionFailed,
   StorageRequestError,
@@ -13,14 +12,15 @@ import {
 import type * as D from "@earendil-works/pi-durable";
 import {
   ConversationId,
-  EntryId,
   TaskId,
   SessionId,
   SubmissionId,
   decode,
   InvalidRequest,
 } from "./identity.ts";
-import { observe, Projection, type Patch } from "./watch.ts";
+import { observe, Projection } from "./watch.ts";
+import { patch, script, redirect, sse, stream } from "./datastar.ts";
+import { historyQuery, readHistory } from "./history.ts";
 import { LoginError, type ModelAuth } from "./login.ts";
 import {
   context,
@@ -39,24 +39,14 @@ import {
   home,
   page,
   thinking,
-  regions,
+  historyId,
+  historyPage,
   sessionPath,
   conversationPath,
   loginPage,
   loginPanel,
 } from "./render.ts";
 
-// Datastar v1.0.5 wire format: https://data-star.dev/reference/sse_events
-export function patch(markup: string, options: Omit<Patch, "html"> = {}): string {
-  return `event: datastar-patch-elements\n${options.selector ? `data: selector ${options.selector}\n` : ""}${options.mode ? `data: mode ${options.mode}\n` : ""}${markup
-    .split(/\r\n|\r|\n/)
-    .map((line) => `data: elements ${line}`)
-    .join("\n")}\n\n`;
-}
-const script = (source: string) =>
-  `event: datastar-patch-elements\ndata: selector body\ndata: mode append\ndata: elements <script>${source};document.currentScript.remove()</script>\n\n`;
-const redirect = (location: string) =>
-  script(`window.location.assign(${JSON.stringify(location)})`);
 export type Acknowledgement = { scope: string } & (
   | { action: "submit"; id: D.SubmissionId; requestId: string | undefined }
   | { action: "receipt"; record: D.SubmissionRecord | undefined; requestId: string | undefined }
@@ -126,21 +116,8 @@ export async function serve(
     const work = route(request, response, input)
       .catch((error: unknown) => {
         if (response.destroyed) return;
-        const expected =
-          error instanceof InvalidForm ||
-          error instanceof HttpError ||
-          error instanceof InvalidRequest ||
-          error instanceof SessionUnavailable ||
-          error instanceof SessionFailed ||
-          error instanceof ConversationBusy ||
-          error instanceof ConversationIdle;
-        if (!expected) console.error("PDS request failed unexpectedly.");
-        const message =
-          error instanceof SessionUnavailable || error instanceof SessionFailed
-            ? "Session is unavailable."
-            : expected
-              ? error.message
-              : "Request failed. Check the conversation before resending.";
+        const failure = httpFailure(error);
+        if (failure.unexpected) console.error("PDS request failed unexpectedly.");
         const requestId = input.form?.get("requestId");
         const invalid =
           error instanceof InvalidForm
@@ -154,21 +131,11 @@ export async function serve(
           });
           response.end(patch(invalid!));
         } else {
-          response.writeHead(
-            error instanceof HttpError
-              ? error.status
-              : error instanceof InvalidForm
-                ? 200
-                : error instanceof InvalidRequest
-                  ? 400
-                  : error instanceof SessionUnavailable || error instanceof SessionFailed
-                    ? 503
-                    : error instanceof ConversationBusy || error instanceof ConversationIdle
-                      ? 409
-                      : 500,
-            { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-          );
-          response.end(page("Error", invalid ?? alert(message), "home", prefix));
+          response.writeHead(failure.status, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store",
+          });
+          response.end(page("Error", invalid ?? alert(failure.message), "home", prefix));
         }
       })
       .finally(() => {
@@ -369,7 +336,7 @@ export async function serve(
       request,
       url,
       action === "entries"
-        ? ["before", "after"]
+        ? ["minEntryId", "maxEntryId", "order", "cursor", "projection"]
         : action === "submissionByRequest"
           ? ["requestId"]
           : action === "submissions/status"
@@ -504,81 +471,60 @@ export async function serve(
       const abort = new AbortController();
       response.once("close", () => abort.abort());
       const watch = await observe(app, conversation, abort.signal);
-      const compressed = request.headers["accept-encoding"]?.split(/[, ]+/).includes("gzip");
-      response.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "X-Accel-Buffering": "no",
-        ...(compressed ? { "Content-Encoding": "gzip", Vary: "Accept-Encoding" } : {}),
-      });
-      const output = compressed ? createGzip({ flush: constants.Z_SYNC_FLUSH }) : response;
-      if (output !== response) {
-        output.on("error", () => response.destroy());
-        output.pipe(response);
-        response.once("close", () => output.destroy());
-      }
-      const writeChunk = async (data: string) => {
-        abort.signal.throwIfAborted();
-        if (!output.write(data)) await once(output, "drain", { signal: abort.signal });
-      };
-      const projection = new Projection(path, {
-        configuration: () => configuration(app, conversation, prefix),
-        metadata: (view) => metadata(app, conversation, view),
-      });
-      const render = async (value: typeof watch.value, ops?: Parameters<Projection["update"]>[1]) =>
-        (await projection.update(value, ops))
-          .map(({ html: markup, ...patchOptions }) => patch(markup, patchOptions))
-          .join("");
       try {
-        await writeChunk(
-          patch('<div id="connection" class="sr-only" role="status">Connected</div>') +
-            (await render(watch.value)),
-        );
-        watch.start(async (call) => {
-          assert(call.kind === "value");
-          await writeChunk(await render(call.value, call.ops));
+        const projection = new Projection(path, {
+          configuration: () => configuration(app, conversation, prefix),
+          metadata: (view) => metadata(app, conversation, view),
         });
-      } catch (error) {
-        await watch.stop();
-        throw error;
-      }
-      const end = await watch.closed;
-      if (!response.destroyed) {
+        const render = async (
+          value: typeof watch.value,
+          ops?: Parameters<Projection["update"]>[1],
+        ) =>
+          (await projection.update(value, ops))
+            .map(({ html: markup, ...patchOptions }) => patch(markup, patchOptions))
+            .join("");
+        // Acquisition and first rendering can still return a declared HTTP error.
+        const baseline = await render(watch.value);
+        const compressed =
+          request.headers["accept-encoding"]?.split(/[, ]+/).includes("gzip") ?? false;
+        const output = stream(response, compressed, abort.signal);
+        await output.write(
+          patch('<div id="connection" class="sr-only" role="status">Connected</div>') + baseline,
+        );
+        let delivery: Promise<void> | undefined;
+        watch.start((call) => {
+          assert(call.kind === "value");
+          delivery = render(call.value, call.ops).then((events) => output.write(events));
+          return delivery;
+        });
+        const end = await watch.closed;
+        // stop/abort detaches immediately; a callback already running must finish too.
+        // Watch.closed carries its failure; joining here must not replace that outcome.
+        await delivery?.catch(() => {});
+        if (response.destroyed) return;
         if (end.kind === "failed" || end.kind === "listener_error")
-          output.write(patch(alert("Conversation stream failed. Reconnecting…")));
+          await output.write(
+            patch(
+              '<div id="connection" role="status">Conversation stream failed. Reconnecting…</div>',
+            ),
+          );
         output.end();
+      } finally {
+        await watch.stop();
       }
     } else if (request.method === "GET" && action === "entries") {
-      const before = decode(EntryId, url.searchParams.get("before"));
-      const after = url.searchParams.has("after")
-        ? decode(EntryId, url.searchParams.get("after"))
-        : undefined;
-      if (before < 1 || (after !== undefined && after >= before))
-        throw new InvalidRequest("Invalid history interval.");
-      // The checked exclusive interval yields safe, nonnegative inclusive IDs.
-      const result = await conversation
-        .entries(
-          {
-            order: "descending",
-            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The validated interval keeps before - 1 a nonnegative safe integer.
-            maxEntryId: (before - 1) as D.EntryId,
-            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- The validated interval keeps after + 1 a nonnegative safe integer.
-            ...(after === undefined ? {} : { minEntryId: (after + 1) as D.EntryId }),
-          },
-          50,
-          undefined,
-          context,
-        )
-        .catch((error: unknown) => {
-          if (error instanceof StorageRequestError)
-            throw new InvalidRequest("Invalid history request.", { cause: error });
-          throw error;
-        });
-      const records = result.items.toReversed();
-      const view = { entries: records, docs: {} };
-      const states = regions.tools(view);
-      const markup = `<section id="history-${after ?? "start"}-${before}">${result.next && records[0] ? regions.history(path, records[0].id, after) : ""}${records.map((entry) => regions.entry(entry, states)).join("")}</section>`;
-      if (request.headers["datastar-request"] === "true") sse(response, patch(markup));
-      else navigate(request, response, path);
+      const selection = historyQuery(url.searchParams);
+      const result = await readHistory(conversation, selection);
+      if (request.headers["datastar-request"] === "true") {
+        // Consume this exact placeholder. A duplicate or stale response has no target.
+        sse(
+          response,
+          patch(historyPage(path, selection, result), {
+            selector: `#${historyId(path, selection)}`,
+            mode: "replace",
+          }),
+        );
+      } else navigate(request, response, path);
     } else if (request.method === "POST" && (action === "composer" || action === "submit")) {
       const form = await readForm();
       fields(form, submissionFields);
@@ -597,20 +543,19 @@ export async function serve(
           .end();
         return;
       }
-      sse(
-        response,
-        next
-          ? redirect(conversationPath(prefix, app.id, next.id))
-          : typeof result === "number"
-            ? patch(alert()) +
-              acknowledge({
-                action: "submit",
-                scope: path,
-                id: result,
-                requestId: form.has("requestId") ? field(form, "requestId") : undefined,
-              })
-            : patch(alert()) + script("document.getElementById('composer').reset()"),
-      );
+      let events: string;
+      if (next) events = redirect(conversationPath(prefix, app.id, next.id));
+      else if (typeof result === "number")
+        events =
+          patch(alert()) +
+          acknowledge({
+            action: "submit",
+            scope: path,
+            id: result,
+            requestId: form.has("requestId") ? field(form, "requestId") : undefined,
+          });
+      else events = patch(alert()) + script("document.getElementById('composer').reset()");
+      sse(response, events);
     } else if (request.method === "POST" && action === "configure") {
       const form = await readForm();
       fields(form, ["model", "thinking", "cwd", "env", "clear"]);
@@ -665,10 +610,6 @@ export async function serve(
   };
 }
 
-function sse(response: ServerResponse, events: string) {
-  response.writeHead(200, { "Content-Type": "text/event-stream" }).end(events);
-}
-
 async function formData(request: IncomingMessage, url: URL): Promise<FormData> {
   const type = request.headers["content-type"] ?? "application/x-www-form-urlencoded";
   let media: string;
@@ -718,6 +659,21 @@ class HttpError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+function httpFailure(error: unknown): { status: number; message: string; unexpected?: boolean } {
+  if (error instanceof HttpError) return { status: error.status, message: error.message };
+  if (error instanceof InvalidForm) return { status: 200, message: error.message };
+  if (error instanceof InvalidRequest) return { status: 400, message: error.message };
+  if (error instanceof SessionUnavailable || error instanceof SessionFailed)
+    return { status: 503, message: "Session is unavailable." };
+  if (error instanceof ConversationBusy || error instanceof ConversationIdle)
+    return { status: 409, message: error.message };
+  return {
+    status: 500,
+    message: "Request failed. Check the conversation before resending.",
+    unexpected: true,
+  };
 }
 
 function fields(input: FormData | URLSearchParams, allowed: readonly string[]) {

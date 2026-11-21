@@ -5,7 +5,8 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { LiveDoc } from "@earendil-works/pi-durable";
 import { context } from "../src/application.ts";
 import { configuration, metadata } from "../src/render.ts";
-import { observe, Projection, type Patch } from "../src/watch.ts";
+import type { Patch } from "../src/datastar.ts";
+import { observe, Projection } from "../src/watch.ts";
 import { fixture, form } from "./fixtures.ts";
 
 await test("bounded projection never highlights committed history on partial updates", async (t) => {

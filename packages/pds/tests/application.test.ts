@@ -1130,7 +1130,7 @@ await test("removed navigation and catalog pages do not replace home or conversa
   for (const [route, destination] of [
     ["api/s", "/pds/"],
     [path, "/pds/"],
-    [`${path}/c/${conversation.id}/entries?before=1`, `/pds/${path}/c/${conversation.id}`],
+    [`${path}/c/${conversation.id}/entries?maxEntryId=0`, `/pds/${path}/c/${conversation.id}`],
   ] as const) {
     const response = await fetch(new URL(route, base), { redirect: "manual" });
     await response.body?.cancel();
