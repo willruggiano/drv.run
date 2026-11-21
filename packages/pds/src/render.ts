@@ -96,7 +96,29 @@ export function submissionResult(
           )
           .join("")}</dl>`
       : "<p>No submission found at this time. Admission may still be in progress. Do not resend automatically.</p>"
-  }</section>`;
+  }${record?.type === "input" && record.status === "queued" ? withdrawForm(path, record.id) : ""}</section>`;
+}
+
+function withdrawForm(path: string, id: D.SubmissionId) {
+  return `<form method="post" action="${escape(path)}/abortSubmission" data-execution-control data-on:submit="@post(${js(`${path}/abortSubmission`)}, {contentType: 'form', retry: 'never'})"><input type="hidden" name="id" value="${id}"><button>Withdraw queued input ${id}</button></form>`;
+}
+
+export function executionResult(path: string, action?: "abort" | "resume") {
+  return `<section id="execution-result" role="status" data-scope="${escape(path)}"${action ? ` data-action="${action}"` : ""}>${action === "abort" ? "Abort completed for ordinary owned work. Queued inputs withdrawn; queued writes and background work are preserved." : action === "resume" ? "Scheduling enabled. This does not promise completion or recovery of blocked tasks." : ""}</section>`;
+}
+
+export function withdrawalResult(
+  path: string,
+  id: D.SubmissionId,
+  result: Awaited<ReturnType<D.Harness["abortSubmission"]>>,
+) {
+  const explanation = {
+    aborted: "Queued submission withdrawn.",
+    already_placed: "Submission already placed. Execution was not aborted.",
+    settled: "Submission already settled.",
+    not_found: "No submission found in this conversation.",
+  }[result];
+  return `<section id="execution-result" role="status" data-action="abortSubmission" data-result="${result}" data-scope="${escape(path)}" data-submission-id="${id}"><p>${result}: ${explanation}</p><a href="${escape(path)}/submissions/status?id=${id}">Submission ${id} status</a></section>`;
 }
 
 export function invalidForm(issue: FormIssue, requestId?: string) {
@@ -270,7 +292,7 @@ export async function sessionList(app: Application, prefix: string, limit?: numb
 export async function home(app: Application, prefix: string): Promise<string> {
   return page(
     "Sessions",
-    `<header id="app-header">${alert()}<section id="admission" role="status"></section></header><main id="main-area"><section id="landing" class="pane" aria-label="Sessions">${await sessionList(app, prefix, 5)}</section></main>${await creationForm(app, prefix)}`,
+    `<header id="app-header">${alert()}<section id="admission" role="status"></section><section id="execution-result" role="status"></section></header><main id="main-area"><section id="landing" class="pane" aria-label="Sessions">${await sessionList(app, prefix, 5)}</section></main>${await creationForm(app, prefix)}`,
     "home",
     prefix,
   );
@@ -288,7 +310,39 @@ export async function sessionPage(app: Session, prefix: string): Promise<string>
   );
   return page(
     `Session ${app.id}`,
-    `<header id="app-header"><div class="bar"><a href="${escape(prefix)}/">Sessions</a><h1 class="header-title" title="${escape(app.id)}">${escape(app.id)}</h1></div>${alert()}</header><main id="main-area"><section id="landing" class="pane" aria-label="Conversations"><div id="session-list">${rows.join("")}</div><form method="post" action="${escape(base)}/root"><button>Open root conversation</button></form><form method="post" action="${escape(base)}/createConversation"><button>New empty conversation</button></form></section></main>`,
+    `<header id="app-header"><div class="bar"><a href="${escape(prefix)}/">Sessions</a><h1 class="header-title" title="${escape(app.id)}">${escape(app.id)}</h1></div>${alert()}</header><main id="main-area"><section id="landing" class="pane" aria-label="Conversations"><div id="session-list">${rows.join("")}</div><a href="${escape(base)}/inspect">Inspect execution</a><form method="post" action="${escape(base)}/root"><button>Open root conversation</button></form><form method="post" action="${escape(base)}/createConversation"><button>New empty conversation</button></form></section></main>`,
+    "home",
+    prefix,
+  );
+}
+
+export function inspectionPage(
+  id: SessionId,
+  inspection: D.HarnessInspection,
+  prefix: string,
+  resumed = false,
+) {
+  const base = sessionPath(prefix, id);
+  const fields = (values: object) =>
+    `<dl>${Object.entries(values)
+      .filter(([, value]) => value !== undefined)
+      .map(
+        ([name, value]) =>
+          `<dt>${name}</dt><dd data-field="${name}">${escape(typeof value === "object" ? JSON.stringify(value) : value)}</dd>`,
+      )
+      .join("")}</dl>`;
+  const tasks = inspection.tasks.map(({ record, state }) => {
+    // The native blocked error is unknown and may contain storage paths or secret-bearing causes.
+    const details = state.kind === "blocked" ? { kind: state.kind, reason: state.reason } : state;
+    return `<article data-task-id="${record.id}" data-state="${state.kind}"><h3>Task ${record.id}</h3><a href="${escape(conversationPath(prefix, id, record.conversationId))}">Conversation ${record.conversationId}</a>${fields({ id: record.id, kind: record.kind, version: record.version, conversationId: record.conversationId, owner: record.owner, background: record.background, abortRequested: record.abortRequested, abortReason: record.abortReason, state: record.state })}<div data-inspection>${fields(details)}${state.kind === "blocked" && state.error !== undefined ? '<p data-field="error">Task definition could not be loaded or migrated.</p>' : ""}</div></article>`;
+  });
+  const submissions = inspection.submissions.map((record) => {
+    const path = conversationPath(prefix, id, record.conversationId);
+    return `<article data-submission-id="${record.id}" data-status="${record.status}" data-type="${record.type}"><h3><a href="${escape(path)}/submissions/status?id=${record.id}">Submission ${record.id}</a></h3>${fields(record)}${record.type === "input" && record.status === "queued" ? withdrawForm(path, record.id) : ""}</article>`;
+  });
+  return page(
+    "Execution inspection",
+    `<header id="app-header"><div class="bar"><a href="${escape(base)}">Conversations</a><h1>Execution inspection</h1></div>${alert()}${executionResult(base, resumed ? "resume" : undefined)}</header><main id="main-area"><section id="inspection" class="pane" data-scheduling="${inspection.scheduling}"><p>Scheduling: <strong>${inspection.scheduling}</strong></p><a href="${escape(base)}/inspect">Refresh inspection</a><form method="post" action="${escape(base)}/resume" data-execution-control data-on:submit="@post(${js(`${base}/resume`)}, {contentType: 'form', retry: 'never'})"><button>Resume scheduling</button></form><p>Point-in-time native inspection. Reading does not enable scheduling.</p><h2>Live tasks</h2>${tasks.join("") || "<p>No live tasks.</p>"}<h2>Unsettled submissions</h2>${submissions.join("") || "<p>No unsettled submissions.</p>"}</section></main>`,
     "home",
     prefix,
   );
@@ -333,13 +387,14 @@ export async function conversationPage(
   initial: { view: D.ConversationView; head: D.EntryRecord | null },
   prefix: string,
   receipt = '<section id="admission" role="status"></section>',
+  result = '<section id="execution-result" role="status"></section>',
 ): Promise<string> {
   const controls = await configuration(app, conversation, prefix);
   const base = conversationPath(prefix, app.id, conversation.id);
   return page(
     `Conversation ${conversation.id}`,
-    `<header id="app-header"><div class="bar"><h1><a id="conversation-title" class="header-title" href="${escape(sessionPath(prefix, app.id))}" aria-label="Conversations">Conversation ${conversation.id}</a></h1></div>${alert()}<form id="abort-command" method="post" action="${escape(base)}/abort" data-on:submit="@post(${js(`${base}/abort`)}, {contentType: 'form', retry: 'never'})"></form>${receipt}<div id="connection" role="status">Connecting…</div><div id="activity" role="status"></div><div id="status" class="sr-only" role="status"></div></header>
-    <main id="main-area"><section id="stream" class="pane" tabindex="0" aria-label="Conversation" data-init="@get(${js(`${base}/watch`)}, {requestCancellation: 'cleanup', retry: 'always'})">${baseline(initial.view, initial.head, base, true)}</section></main><div id="queue"></div>
+    `<header id="app-header"><div class="bar"><h1><a id="conversation-title" class="header-title" href="${escape(sessionPath(prefix, app.id))}" aria-label="Conversations">Conversation ${conversation.id}</a></h1></div>${alert()}<details id="execution-controls"><summary>Execution controls</summary><a href="${escape(sessionPath(prefix, app.id))}/inspect">Inspect execution</a><form id="abort-command" method="post" action="${escape(base)}/abort" data-execution-control data-on:submit="@post(${js(`${base}/abort`)}, {contentType: 'form', retry: 'never'})"><button>Abort ordinary work</button></form><p>Withdraws queued inputs and waits for ordinary owned work to abort. Preserves queued writes and background work.</p></details>${receipt}${result}<div id="connection" role="status">Connecting…</div><div id="activity" role="status"></div><div id="status" class="sr-only" role="status"></div></header>
+    <main id="main-area"><section id="stream" class="pane" tabindex="0" aria-label="Conversation" data-init="@get(${js(`${base}/watch`)}, {requestCancellation: 'cleanup', retry: 'always'})">${baseline(initial.view, initial.head, base, true)}</section></main>${queue(initial.view, base)}
     <footer id="app-footer" class="composer-area"><div id="conversation-navigation" role="group" aria-label="Conversation navigation"><button id="latest" type="button" aria-label="Latest" title="Latest">${icon("latest")}</button><button id="last" type="button" data-on:click="Array.from(document.querySelectorAll('#stream article[data-role=user]')).at(-1)?.scrollIntoView({block: 'start'})" aria-label="Last user message" title="Last user message">${icon("up")}</button><button id="top" type="button" data-on:click="document.getElementById('stream').scrollTop = 0" aria-label="Top" title="Top">${icon("top")}</button></div>
     <form id="composer" data-on:reset="$_hasInput = false; $_hasFiles = false" method="post" action="${escape(base)}/composer" data-scope="${escape(base)}" enctype="multipart/form-data" data-indicator:_sending data-on:submit="@post(${js(`${base}/composer`)}, {contentType: 'form', retry: 'never'})"><fieldset class="composer-fields">${composer(false)}</fieldset>${recovery}</form><div id="session-meta"><div id="bottom-line"><div class="footer-row"><a id="footer-sessions" class="icon footer-chevron" href="${escape(sessionPath(prefix, app.id))}" aria-label="Conversations" title="Conversations">${icon("back")}</a>
     <div id="footer-instance">${controls.environment}<span>:</span>${controls.cwd}</div><div id="footer-stats"></div>
@@ -485,10 +540,10 @@ function status(view: D.ConversationView): string {
     <div id="failures">${liveState.runFailure ? `<p class="error" role="alert">${escape(liveState.runFailure.reason)}: ${escape(liveState.runFailure.detail ?? "")}</p>` : ""}${liveState.compactionFailure ? `<p class="error" role="alert">Compaction failed: ${escape(liveState.compactionFailure.error)}</p>` : ""}</div>`;
 }
 
-function queue(view: D.ConversationView): string {
+function queue(view: D.ConversationView, path: string): string {
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- Durable supplies InboxDoc values; the view map erases their type.
   const inbox = (view.docs[InboxDoc.definition.kind] ?? { items: [] }) as D.InboxState;
-  return `<div id="queue">${inbox.items.length ? `<div class="queued-messages">${inbox.items.map((item) => `<article id="queued-${item.id}" data-role="user"><header><span class="speaker">Queued ${escape(item.mode)}</span></header>${"content" in item ? content({ role: "user", content: item.content, timestamp: 0 }) : "Context update"}</article>`).join("")}</div>` : ""}</div>`;
+  return `<div id="queue">${inbox.items.length ? `<div class="queued-messages">${inbox.items.map((item) => `<article id="queued-${item.id}" data-role="user"><header><span class="speaker">Queued ${escape(item.mode)}</span></header>${"content" in item ? content({ role: "user", content: item.content, timestamp: 0 }) : "Context update"}${item.mode !== "write" ? withdrawForm(path, item.id) : ""}</article>`).join("")}</div>` : ""}</div>`;
 }
 
 function toolUpdates(

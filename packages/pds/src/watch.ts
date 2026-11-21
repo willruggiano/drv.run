@@ -204,7 +204,8 @@ export class Projection {
       cached("live", regions.live(view));
     if (baseline || changed("view", "docs", LiveDoc.definition.kind))
       cached("status", regions.status(view));
-    if (changed("view", "docs", InboxDoc.definition.kind)) cached("queue", regions.queue(view));
+    if (changed("view", "docs", InboxDoc.definition.kind))
+      cached("queue", regions.queue(view, this.address));
     if (
       !baseline &&
       (changed("view", "entries") || changed("view", "docs", LiveDoc.definition.kind, "tools"))

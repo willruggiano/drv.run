@@ -43,8 +43,30 @@ if (stream && latest) {
     follow();
   });
 }
+const acknowledgedControls = new WeakSet<Element>();
 document.addEventListener("datastar-fetch", (event) => {
   const { type, el } = event.detail;
+  if (el instanceof HTMLFormElement && el.hasAttribute("data-execution-control")) {
+    const result = document.getElementById("execution-result")!;
+    if (type === "started") {
+      acknowledgedControls.delete(el);
+      document.getElementById("notice")!.replaceChildren();
+      result.replaceChildren();
+      for (const name of ["action", "result", "submissionId"]) delete result.dataset[name];
+    } else if (type === "datastar-patch-elements") {
+      const path = new URL(el.action).pathname;
+      const id = el.elements.namedItem("id");
+      if (
+        `${result.dataset.scope}/${result.dataset.action}` === path &&
+        (!(id instanceof HTMLInputElement) || result.dataset.submissionId === id.value)
+      )
+        acknowledgedControls.add(el);
+    } else if (type === "finished" && !acknowledgedControls.has(el)) {
+      // Datastar 1.0.5 emits only finished for a network failure with retry: never.
+      document.getElementById("notice")!.textContent =
+        "Control outcome is uncertain. Check submission status or execution inspection before trying again. No command was replayed.";
+    }
+  }
   if (el === stream && ["error", "retrying", "retries-failed", "finished"].includes(type)) {
     const connection = document.getElementById("connection")!;
     connection.classList.remove("sr-only");
@@ -56,6 +78,7 @@ document.addEventListener("datastar-fetch", (event) => {
     el !== stream &&
     el.id !== "composer" &&
     el.id !== "recover-admission" &&
+    !el.hasAttribute("data-execution-control") &&
     (type === "error" || type === "retries-failed")
   ) {
     document.getElementById("notice")!.textContent =

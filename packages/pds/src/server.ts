@@ -35,6 +35,9 @@ import {
   invalidForm,
   admission,
   submissionResult,
+  withdrawalResult,
+  inspectionPage,
+  executionResult,
   configuration,
   metadata,
   conversationPage,
@@ -354,10 +357,12 @@ export async function serve(
     const read = conversationMatch
       ? action === undefined ||
         ["watch", "entries", "submissionByRequest", "submissions/status"].includes(action)
-      : action === undefined;
+      : action === undefined || action === "inspect";
     const write = conversationMatch
-      ? ["submit", "composer", "configure", "abort", "compact"].includes(action ?? "")
-      : ["root", "createConversation"].includes(action ?? "");
+      ? ["submit", "composer", "configure", "abortSubmission", "abort", "compact"].includes(
+          action ?? "",
+        )
+      : ["root", "createConversation", "resume"].includes(action ?? "");
     if (!read && !write) throw new HttpError(404, "Not found.");
     method(request, response, read ? ["GET"] : ["POST"]);
     queryFields(
@@ -370,14 +375,31 @@ export async function serve(
           : action === "submissions/status"
             ? ["id"]
             : action === undefined && conversationMatch
-              ? ["submissionId"]
-              : [],
+              ? ["submissionId", "withdrawal", "id", "aborted"]
+              : action === "inspect"
+                ? ["resumed"]
+                : [],
     );
     const app = await sessions.get(sessionId);
     if (!app) throw new HttpError(404, "Session not found.");
     if (!conversationMatch) {
       if (!action) html(response, await sessionPage(app, prefix));
-      else {
+      else if (action === "inspect") {
+        if (url.searchParams.has("resumed") && url.searchParams.get("resumed") !== "true")
+          throw new InvalidRequest("Invalid resume acknowledgement.");
+        const inspection = await app.harness.inspect(context).catch((error: unknown) => {
+          if (error instanceof StorageRequestError)
+            throw new InvalidRequest("Invalid inspection read.", { cause: error });
+          throw error;
+        });
+        html(response, inspectionPage(app.id, inspection, prefix, url.searchParams.has("resumed")));
+      } else if (action === "resume") {
+        fields(await readForm(), []);
+        app.harness.resume();
+        if (request.headers["datastar-request"] === "true")
+          sse(response, patch(executionResult(sessionPath(prefix, app.id), "resume")));
+        else navigate(request, response, `${sessionPath(prefix, app.id)}/inspect?resumed=true`);
+      } else {
         const form = await readForm();
         fields(
           form,
@@ -457,7 +479,7 @@ export async function serve(
           response,
           page(
             "Submission",
-            `<header id="app-header"><div class="bar"><a href="${escape(path)}">Conversation</a></div></header><main id="main-area"><section class="pane">${markup}</section></main>`,
+            `<header id="app-header"><div class="bar"><a href="${escape(path)}">Conversation</a></div>${alert()}</header><main id="main-area"><section class="pane">${executionResult(path)}${markup}</section></main>`,
             "home",
             prefix,
           ),
@@ -474,7 +496,29 @@ export async function serve(
             await statusOf(decode(SubmissionId, url.searchParams.get("submissionId"))),
           )
         : undefined;
-      const markup = await conversationPage(app, conversation, initial, prefix, receipt);
+      const withdrawal = url.searchParams.get("withdrawal");
+      let result: string | undefined;
+      if (withdrawal !== null) {
+        if (
+          withdrawal !== "aborted" &&
+          withdrawal !== "already_placed" &&
+          withdrawal !== "settled" &&
+          withdrawal !== "not_found"
+        )
+          throw new InvalidRequest("Invalid withdrawal result.");
+        result = withdrawalResult(
+          path,
+          decode(SubmissionId, url.searchParams.get("id")),
+          withdrawal,
+        );
+      } else if (url.searchParams.has("id"))
+        throw new InvalidRequest("Submission ID requires a withdrawal result.");
+      if (url.searchParams.has("aborted")) {
+        if (url.searchParams.get("aborted") !== "true" || withdrawal !== null)
+          throw new InvalidRequest("Invalid abort acknowledgement.");
+        result = executionResult(path, "abort");
+      }
+      const markup = await conversationPage(app, conversation, initial, prefix, receipt, result);
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(markup);
     } else if (request.method === "GET" && action === "watch") {
       const abort = new AbortController();
@@ -607,11 +651,20 @@ export async function serve(
         return;
       }
       sse(response, patch(alert()));
+    } else if (action === "abortSubmission") {
+      const form = await readForm();
+      fields(form, ["id"]);
+      const id = decode(SubmissionId, form.get("id"));
+      const result = await app.harness.abortSubmission(id, context, conversation.id);
+      if (request.headers["datastar-request"] === "true")
+        sse(response, patch(withdrawalResult(path, id, result)));
+      else navigate(request, response, `${path}?withdrawal=${result}&id=${id}`);
     } else if (request.method === "POST" && action === "abort") {
       fields(await readForm(), []);
       await conversation.abort(context);
-      if (request.headers["datastar-request"] === "true") sse(response, patch(alert("Stopped.")));
-      else response.writeHead(303, { Location: path }).end();
+      if (request.headers["datastar-request"] === "true")
+        sse(response, patch(executionResult(path, "abort")));
+      else navigate(request, response, `${path}?aborted=true`);
     } else if (action === "compact") {
       const form = await readForm();
       fields(form, ["instructions"]);
