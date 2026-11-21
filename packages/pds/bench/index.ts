@@ -9,8 +9,8 @@ import type * as A from "@earendil-works/pi-ai";
 import type * as D from "@earendil-works/pi-durable";
 import hljs from "highlight.js";
 import { regions } from "../src/render.ts";
-import { patch } from "../src/server.ts";
-import { Projection, type Patch } from "../src/watch.ts";
+import { patch, type Patch } from "../src/datastar.ts";
+import { Projection } from "../src/watch.ts";
 
 type State = Parameters<Projection["update"]>[0];
 type Frame = { state: State; ops: readonly Delta.Op[] };
@@ -133,7 +133,13 @@ export function suite(path: string, conversation?: number) {
           return async (emit) => {
             for (const page of pages) {
               const tools = regions.tools({ entries: page, docs: {} });
-              emit([{ html: page.map((entry) => regions.entry(entry, tools)).join("") }]);
+              emit([
+                {
+                  html: page
+                    .map((entry) => regions.entry(entry, tools, `/api/s/benchmark/c/${record.id}`))
+                    .join(""),
+                },
+              ]);
             }
           };
         },
@@ -230,6 +236,58 @@ export function suite(path: string, conversation?: number) {
     const final = frames[index]!;
     updates.push({ state: final.state, ops: [...final.ops, ["d", ["view", "docs", "pi.live"]]] });
     progress("synthetic-response-and-finalization", before, updates);
+  }
+  if (response) {
+    // Equal history and partial updates. The comparison reconstructs the original
+    // full-transcript strategy with this renderer, isolating projection work.
+    const address = `/api/s/benchmark/c/${record.id}`;
+    const full: State = {
+      ...baseline,
+      view: { conversation: record, docs: baseline.view.docs, entries },
+    };
+    const updates = Array.from({ length: chunks }, (_, step) => ({
+      generation: {
+        attempt: 1,
+        message: copyJson({
+          ...response.message,
+          content: response.message.content
+            .filter((part) => part.type === "text")
+            .map((part) => ({
+              ...part,
+              text: part.text.slice(0, Math.ceil((part.text.length * (step + 1)) / chunks)),
+            })),
+        }),
+      },
+    }));
+    cases.push(
+      {
+        name: "bounded-history-and-progress",
+        operations: chunks + 1,
+        async setup() {
+          const current = projection();
+          return async (emit) => {
+            emit(await current.update(baseline));
+            for (const update of updates) {
+              const frame = liveFrame(baseline, update);
+              emit(await current.update(frame.state, frame.ops));
+            }
+          };
+        },
+      },
+      {
+        name: "full-transcript-history-and-progress",
+        operations: chunks + 1,
+        async setup() {
+          return async (emit) => {
+            emit([{ html: regions.baseline(full.view, full.head, address, true) }]);
+            for (const update of updates) {
+              const frame = liveFrame(full, update);
+              emit([{ html: regions.baseline(frame.state.view, full.head, address, true) }]);
+            }
+          };
+        },
+      },
+    );
   }
   if (output) {
     const { call, index, text } = output;

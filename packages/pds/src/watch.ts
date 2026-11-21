@@ -9,6 +9,7 @@ import { AgentDoc, InboxDoc, LiveDoc, UsageDoc } from "@earendil-works/pi-durabl
 import type * as D from "@earendil-works/pi-durable";
 import { Env } from "./harness/index.ts";
 import { context, environmentValue, type Session } from "./application.ts";
+import type { Patch } from "./datastar.ts";
 import { regions } from "./render.ts";
 
 type State = {
@@ -139,8 +140,6 @@ function prefix(op: Delta.Op): Delta.Op {
   }
 }
 
-export type Patch = { html: string; selector?: string; mode?: "append" };
-
 /** Disposable per-observer HTML projection, not a second conversation store. */
 export class Projection {
   #head: number | null | undefined;
@@ -180,7 +179,7 @@ export class Projection {
       this.#last = view.entries.at(-1)?.id ?? -1;
       this.#html.delete("live");
       this.#html.delete("status");
-      this.#tools = regions.toolUpdates(view);
+      this.#tools = regions.toolUpdates(view, this.address);
       this.#calls = regions.calls(view);
     } else if (changed("view", "entries")) {
       const added = view.entries.filter(
@@ -193,7 +192,7 @@ export class Projection {
             : "";
         const tools = regions.tools(view, this.#calls);
         patches.push({
-          html: gap + added.map((record) => regions.entry(record, tools)).join(""),
+          html: gap + added.map((record) => regions.entry(record, tools, this.address)).join(""),
           selector: "#entries",
           mode: "append",
         });
@@ -201,7 +200,7 @@ export class Projection {
       }
     }
     if (baseline || changed("view", "docs", LiveDoc.definition.kind, "generation"))
-      cached("live", regions.live(view));
+      cached("live", regions.live(view, this.address));
     if (baseline || changed("view", "docs", LiveDoc.definition.kind))
       cached("status", regions.status(view));
     if (changed("view", "docs", InboxDoc.definition.kind))
@@ -210,7 +209,7 @@ export class Projection {
       !baseline &&
       (changed("view", "entries") || changed("view", "docs", LiveDoc.definition.kind, "tools"))
     ) {
-      const tools = regions.toolUpdates(view, this.#calls);
+      const tools = regions.toolUpdates(view, this.address, this.#calls);
       for (const [id, html] of tools)
         if (this.#tools.has(id) && this.#tools.get(id) !== html) patches.push({ html });
       this.#tools = tools;

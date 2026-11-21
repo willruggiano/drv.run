@@ -63,12 +63,14 @@ await test(
           await page.locator('#composer [name="requestId"]').getAttribute("type"),
           "hidden",
         );
-        const button = page.locator(`#queued-${queued}`).getByRole("button", {
+        const button = page.locator(`#queue [data-submission-id="${queued}"]`).getByRole("button", {
           name: "Cancel queued message",
           exact: true,
         });
         const withdrawalBounds = await button.boundingBox();
-        const queueBounds = await page.locator(`#queued-${queued}`).boundingBox();
+        const queueBounds = await page
+          .locator(`#queue [data-submission-id="${queued}"]`)
+          .boundingBox();
         const stop = page.getByRole("button", { name: "Stop", exact: true });
         assert.equal(await stop.isVisible(), true);
         assert(withdrawalBounds && queueBounds);
@@ -93,7 +95,9 @@ await test(
         const posted = page.waitForResponse((response) => response.request().method() === "POST");
         await button.click();
         assert.equal((await posted).status(), enhanced ? 200 : 303);
-        await page.locator(`#queued-${queued}`).waitFor({ state: "detached" });
+        await page
+          .locator(`#queue [data-submission-id="${queued}"]`)
+          .waitFor({ state: "detached" });
         assert.equal(await page.locator("#execution-result, #admission, #recovery").count(), 0);
         if (enhanced)
           assert.equal(await page.locator("#message").inputValue(), "Unsubmitted draft");
